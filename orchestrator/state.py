@@ -40,3 +40,44 @@ class Execution(BaseModel):
     slippage_bps: float | None = None
     broker_order_id: str | None = None
     error: str | None = None
+
+
+# ── TickState ─────────────────────────────────────────────────────────
+from typing import Any
+
+
+class TickState(BaseModel):
+    """Complete shared state schema. Agents read/write session.state[key]."""
+
+    # Seeded at tick start
+    tick_id: str = ""
+    tickers: list[str] = Field(default_factory=list)
+
+    # Written by analyst before_callbacks
+    technical_data: dict[str, Any] = Field(default_factory=dict)
+    fundamental_data: dict[str, Any] = Field(default_factory=dict)
+    sentiment_data: dict[str, Any] = Field(default_factory=dict)
+    smart_money_data: dict[str, Any] | None = None
+
+    # Written by analyst LLMs
+    technical_signals: list[Any] = Field(default_factory=list)
+    fundamental_signals: list[Any] = Field(default_factory=list)
+    sentiment_signals: list[Any] = Field(default_factory=list)
+    smart_money_signals: list[Any] = Field(default_factory=list)
+
+    # Persistent across ticks
+    memory_buffer: list[Any] = Field(default_factory=list)
+    day_digest: str = ""
+    thesis: str = ""
+    positions: dict[str, Any] = Field(default_factory=dict)
+    last_executed_tick_id: str | None = None
+
+    # Written by strategist
+    strategist_decision: Any = None
+
+    # Written by risk gate
+    final_orders: list[Any] = Field(default_factory=list)
+    risk_clamps_applied: list[Any] = Field(default_factory=list)
+
+    # Written by executor
+    executions: list[Any] = Field(default_factory=list)
