@@ -17,3 +17,15 @@ technical_analyst = LlmAgent(
     before_agent_callback=technical_fetch_callback,
     after_agent_callback=make_exhaustive_validator("technical_signals"),
 )
+
+
+def _build_technical_analyst() -> LlmAgent:
+    return LlmAgent(
+        name="TechnicalAnalyst",
+        model="gemini-2.0-flash-001",
+        instruction=TECHNICAL_INSTRUCTION,
+        output_schema=list[TechnicalSignal],
+        output_key="technical_signals",
+        before_agent_callback=technical_fetch_callback,
+        after_agent_callback=make_exhaustive_validator("technical_signals"),
+    )

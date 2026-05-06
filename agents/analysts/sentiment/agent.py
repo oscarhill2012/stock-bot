@@ -16,3 +16,15 @@ sentiment_analyst = LlmAgent(
     before_agent_callback=sentiment_fetch_callback,
     after_agent_callback=make_exhaustive_validator("sentiment_signals"),
 )
+
+
+def _build_sentiment_analyst() -> LlmAgent:
+    return LlmAgent(
+        name="SentimentAnalyst",
+        model="gemini-2.0-flash-001",
+        instruction=SENTIMENT_INSTRUCTION,
+        output_schema=list[SentimentSignal],
+        output_key="sentiment_signals",
+        before_agent_callback=sentiment_fetch_callback,
+        after_agent_callback=make_exhaustive_validator("sentiment_signals"),
+    )
