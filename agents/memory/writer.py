@@ -28,3 +28,63 @@ async def append_with_eviction(
     _compress = compress_fn or compress
     new_digest = await _compress(day_digest, evicted)
     return buffer, new_digest
+
+
+from typing import AsyncGenerator
+
+from google.adk.agents import BaseAgent
+from google.adk.agents.invocation_context import InvocationContext
+from google.adk.events import Event
+
+from .dedup import detect_repeat
+from .embeddings import embed
+
+
+class MemoryWriter(BaseAgent):
+    name: str = "MemoryWriter"
+
+    async def _run_async_impl(
+        self, ctx: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+        state = ctx.session.state
+        decision = state.get("strategist_decision")
+        if decision is None:
+            return
+
+        buffer: list[BufferEntry] = state.get("memory_buffer", [])
+        day_digest: str = state.get("day_digest", "")
+        executions = state.get("executions", [])
+
+        new_entry = BufferEntry(
+            timestamp=__import__("datetime").datetime.now(
+                tz=__import__("datetime").timezone.utc
+            ),
+            decision_tag=decision.get("decision_tag", "unknown") if isinstance(decision, dict)
+                         else decision.decision_tag,
+            reasoning_summary=(
+                decision.get("reasoning", "")[:120] if isinstance(decision, dict)
+                else decision.reasoning[:120]
+            ),
+            smart_money_seen=bool(state.get("smart_money_signals")),
+            executions_count=len(executions),
+        )
+
+        is_rep = await detect_repeat(new_entry, buffer, embed)
+        new_entry = new_entry.model_copy(update={"is_repeat": is_rep})
+
+        updated_buffer, updated_digest = await append_with_eviction(
+            buffer, new_entry, day_digest
+        )
+
+        state["memory_buffer"] = [e.model_dump() for e in updated_buffer]
+        state["day_digest"] = updated_digest
+        if isinstance(decision, dict):
+            state["thesis"] = decision.get("updated_thesis", state.get("thesis", ""))
+        else:
+            state["thesis"] = decision.updated_thesis
+        # No events to yield — pure state mutation
+        return
+        yield  # required to make this a generator
+
+
+memory_writer = MemoryWriter()
