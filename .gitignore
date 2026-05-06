@@ -44,6 +44,7 @@ htmlcov/
 .vscode/
 *.swp
 *.swo
+StockBot.code-workspace
 
 # OS
 .DS_Store

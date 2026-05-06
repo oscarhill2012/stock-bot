@@ -11,7 +11,7 @@ python_version = "3.12"
 strict = true
 warn_unused_ignores = true
 ignore_missing_imports = true
-files = ["agents", "broker", "orchestrator", "baselines"]
+files = ["src/agents", "src/broker", "src/orchestrator", "src/baselines"]
 
 [[tool.mypy.overrides]]
 module = "tests.*"
