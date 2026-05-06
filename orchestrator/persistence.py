@@ -66,6 +66,74 @@ def load_recent_buffer(session: Session, tick_id: str, limit: int = 24) -> list[
     return result
 
 
+# ── TradeLog ──────────────────────────────────────────────────────────
+
+class TradeLogRow(Base):
+    __tablename__ = "trade_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ticker: Mapped[str] = mapped_column(String, index=True)
+    opened_at: Mapped[datetime] = mapped_column(DateTime)
+    closed_at: Mapped[datetime] = mapped_column(DateTime)
+    opened_price: Mapped[float] = mapped_column(Float)
+    closed_price: Mapped[float] = mapped_column(Float)
+    pnl_dollar: Mapped[float] = mapped_column(Float)
+    pnl_pct: Mapped[float] = mapped_column(Float)
+    holding_period_hours: Mapped[int] = mapped_column(Integer)
+    horizon_intent: Mapped[str] = mapped_column(String)
+    opened_tag: Mapped[str] = mapped_column(String)
+    closed_tag: Mapped[str] = mapped_column(String)
+    opened_rationale: Mapped[str] = mapped_column(String)
+    close_reason: Mapped[str] = mapped_column(String)
+    catalyst_realised: Mapped[bool] = mapped_column(Boolean)
+
+
+def save_trade_log_entry(session: Session, entry: dict) -> None:
+    row = TradeLogRow(**entry)
+    session.add(row)
+    session.flush()
+
+
+# ── PortfolioSnapshot ─────────────────────────────────────────────────
+
+class PortfolioSnapshotRow(Base):
+    __tablename__ = "portfolio_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tick_id: Mapped[str] = mapped_column(String, index=True)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime)
+    bot_total_value: Mapped[float] = mapped_column(Float)
+    bot_cash: Mapped[float] = mapped_column(Float)
+    bot_positions_value: Mapped[float] = mapped_column(Float)
+    bot_position_count: Mapped[int] = mapped_column(Integer)
+    spy_price: Mapped[float] = mapped_column(Float)
+    spy_value_if_held: Mapped[float] = mapped_column(Float)
+    bot_return_pct: Mapped[float] = mapped_column(Float)
+    spy_return_pct: Mapped[float] = mapped_column(Float)
+    excess_return_pct: Mapped[float] = mapped_column(Float)
+    holdings_breakdown_json: Mapped[str] = mapped_column(String, default="{}")
+
+
+def save_portfolio_snapshot(session: Session, snap: dict) -> None:
+    import json as json_mod
+    row = PortfolioSnapshotRow(
+        tick_id=snap["tick_id"],
+        recorded_at=snap.get("recorded_at", __import__("datetime").datetime.now(__import__("datetime").timezone.utc)),
+        bot_total_value=snap["bot_total_value"],
+        bot_cash=snap["bot_cash"],
+        bot_positions_value=snap["bot_positions_value"],
+        bot_position_count=snap["bot_position_count"],
+        spy_price=snap["spy_price"],
+        spy_value_if_held=snap["spy_value_if_held"],
+        bot_return_pct=snap["bot_return_pct"],
+        spy_return_pct=snap["spy_return_pct"],
+        excess_return_pct=snap["excess_return_pct"],
+        holdings_breakdown_json=json_mod.dumps(snap.get("holdings_breakdown", {})),
+    )
+    session.add(row)
+    session.flush()
+
+
 def make_engine(db_url: str = "sqlite://"):
     return create_engine(db_url)
 
