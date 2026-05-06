@@ -15,3 +15,12 @@ def _clamp_negatives(weights: dict[str, float], clamps: list[ClampRecord]) -> No
         if w < 0:
             clamps.append(ClampRecord(rule="no_short", ticker=t, before=w, after=0.0))
             weights[t] = 0.0
+
+
+def _clamp_max_position(weights: dict[str, float], clamps: list[ClampRecord]) -> None:
+    for t, w in list(weights.items()):
+        if w > MAX_POSITION_WEIGHT:
+            clamps.append(
+                ClampRecord(rule="max_position", ticker=t, before=w, after=MAX_POSITION_WEIGHT)
+            )
+            weights[t] = MAX_POSITION_WEIGHT
