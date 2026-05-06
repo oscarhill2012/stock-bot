@@ -1,7 +1,7 @@
 """Tier 1 unit tests for each risk-gate clamp, in algorithm order."""
 import pytest
 
-from agents.risk_gate.constraints import _clamp_negatives, _clamp_max_position, _clamp_cash_floor, _clamp_max_delta
+from agents.risk_gate.constraints import _clamp_negatives, _clamp_max_position, _clamp_cash_floor, _clamp_max_delta, _clamp_max_turnover
 from orchestrator.state import ClampRecord
 
 
@@ -93,3 +93,22 @@ def test_max_delta_handles_new_position():
     clamps: list[ClampRecord] = []
     _clamp_max_delta(proposed, current, clamps)
     assert proposed["NVDA"] == pytest.approx(0.01)
+
+
+def test_turnover_scales_when_sum_over_threshold():
+    proposed = {"AAPL": 0.20, "MSFT": 0.20, "NVDA": 0.20}
+    current  = {"AAPL": 0.0,  "MSFT": 0.0,  "NVDA": 0.0}
+    # total |delta| = 0.60; must scale all to total = 0.30 (each ÷ 2)
+    clamps: list[ClampRecord] = []
+    _clamp_max_turnover(proposed, current, clamps)
+    assert sum(abs(proposed[t] - current.get(t, 0.0)) for t in proposed) == pytest.approx(0.30)
+    assert proposed["AAPL"] == pytest.approx(0.10)
+
+
+def test_turnover_noop_when_under_threshold():
+    proposed = {"AAPL": 0.10, "MSFT": 0.10}
+    current  = {"AAPL": 0.0,  "MSFT": 0.0}     # total |delta| = 0.20, fine
+    clamps: list[ClampRecord] = []
+    _clamp_max_turnover(proposed, current, clamps)
+    assert proposed == {"AAPL": 0.10, "MSFT": 0.10}
+    assert clamps == []

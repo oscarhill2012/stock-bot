@@ -57,3 +57,24 @@ def _clamp_max_delta(
                 ClampRecord(rule="max_delta", ticker=t, before=p, after=new_w)
             )
             proposed[t] = new_w
+
+
+def _clamp_max_turnover(
+    proposed: dict[str, float],
+    current: dict[str, float],
+    clamps: list[ClampRecord],
+) -> None:
+    deltas = {t: proposed[t] - current.get(t, 0.0) for t in proposed}
+    turnover = sum(abs(d) for d in deltas.values())
+    if turnover <= MAX_TOTAL_TURNOVER:
+        return
+    scale = MAX_TOTAL_TURNOVER / turnover
+    for t in list(proposed.keys()):
+        before = proposed[t]
+        new_delta = deltas[t] * scale
+        after = current.get(t, 0.0) + new_delta
+        if before != after:
+            clamps.append(
+                ClampRecord(rule="max_turnover", ticker=t, before=before, after=after)
+            )
+            proposed[t] = after
