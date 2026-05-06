@@ -8,7 +8,8 @@ limiters are sized correctly — retries here are for connection blips.
 from __future__ import annotations
 
 import logging
-from typing import Callable, TypeVar
+from collections.abc import Callable
+from typing import TypeVar
 
 from tenacity import (
     before_sleep_log,

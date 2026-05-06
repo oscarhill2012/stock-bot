@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -14,7 +13,7 @@ class NewsArticle(BaseModel):
     url: str
     source: str = ""
     published_at: datetime
-    sentiment: Optional[float] = Field(
+    sentiment: float | None = Field(
         default=None,
         description="Per-article sentiment in [-1.0, 1.0] when supplied by provider.",
     )

@@ -19,19 +19,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import date, datetime, timedelta, timezone
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable
+from datetime import UTC, date, datetime, timedelta
+from typing import Any
 
 from .models import (
-    Filing,
-    InsiderTrade,
-    NewsArticle,
-    NotableHolder,
-    PoliticianTrade,
     ProviderError,
-    SocialSentiment,
     StockSignalBundle,
-    StockStats,
 )
 from .providers import (
     get_company_filings,
@@ -129,7 +123,7 @@ async def get_stock_signal_bundle(
 
     return StockSignalBundle(
         ticker=symbol,
-        generated_at=datetime.now(tz=timezone.utc),
+        generated_at=datetime.now(tz=UTC),
         stats=stats,
         news=news,
         social_sentiment=social,

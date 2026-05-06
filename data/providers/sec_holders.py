@@ -11,7 +11,7 @@ Same identity / rate-limit pattern as `sec_insiders.py` and
 from __future__ import annotations
 
 import asyncio
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal
 
 from edgar import Company, set_identity
@@ -59,7 +59,7 @@ def _build(filing: Any, symbol: str) -> NotableHolder | None:
         return None
 
     filed_date = _coerce_date(getattr(filing, "filing_date", None)) or date.today()
-    filed_at = datetime.combine(filed_date, datetime.min.time(), tzinfo=timezone.utc)
+    filed_at = datetime.combine(filed_date, datetime.min.time(), tzinfo=UTC)
 
     # The filer of an SC 13D/G is the holder, not the issuer — that's
     # exactly the name we want for `holder`.

@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import date, datetime, timedelta
-from typing import Any, Optional
+from typing import Any
 
 import requests
 
@@ -39,7 +39,7 @@ def _coerce_side(raw: Any) -> TradeSide:
     return _SIDE_MAP.get(str(raw).strip().lower(), "unknown")
 
 
-def _parse_date(raw: Any) -> Optional[date]:
+def _parse_date(raw: Any) -> date | None:
     if not raw:
         return None
     try:
@@ -51,7 +51,7 @@ def _parse_date(raw: Any) -> Optional[date]:
             return None
 
 
-def _parse_amount_range(raw: Any) -> tuple[Optional[float], Optional[float]]:
+def _parse_amount_range(raw: Any) -> tuple[float | None, float | None]:
     if raw is None:
         return None, None
     text = str(raw).replace("$", "").replace(",", "").strip()
@@ -67,7 +67,7 @@ def _parse_amount_range(raw: Any) -> tuple[Optional[float], Optional[float]]:
 
 
 @with_retry
-def _fetch_trades(symbol: Optional[str], api_key: str) -> list[dict]:
+def _fetch_trades(symbol: str | None, api_key: str) -> list[dict]:
     s = get_settings()
     url = f"{s.quiver_base_url.rstrip('/')}/live/congresstrading"
     headers = {"Authorization": f"Bearer {api_key}", "Accept": "application/json"}
@@ -82,7 +82,7 @@ def _fetch_trades(symbol: Optional[str], api_key: str) -> list[dict]:
 
 
 async def get_public_figure_trades(
-    ticker: Optional[str] = None,
+    ticker: str | None = None,
     lookback_days: int = 90,
 ) -> list[PoliticianTrade]:
     api_key = get_settings().quiver_quant_api_key

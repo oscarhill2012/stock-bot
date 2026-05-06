@@ -6,8 +6,6 @@ working) still imports cleanly. Providers that need a key raise
 """
 from __future__ import annotations
 
-from typing import Optional
-
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,15 +21,15 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    finnhub_api_key: Optional[str] = None
-    quiver_quant_api_key: Optional[str] = None
-    edgar_identity: Optional[str] = None  # SEC mandates a contact in User-Agent: "Name email@x"
+    finnhub_api_key: str | None = None
+    quiver_quant_api_key: str | None = None
+    edgar_identity: str | None = None  # SEC mandates a contact in User-Agent: "Name email@x"
 
     quiver_base_url: str = "https://api.quiverquant.com/beta"
     http_timeout_seconds: float = 15.0
 
 
-_cached: Optional[Settings] = None
+_cached: Settings | None = None
 
 
 def get_settings() -> Settings:
@@ -41,7 +39,7 @@ def get_settings() -> Settings:
     return _cached
 
 
-def require(key: str, value: Optional[str], provider: str) -> str:
+def require(key: str, value: str | None, provider: str) -> str:
     if not value:
         raise ProviderConfigError(
             f"{provider} requires {key} but it is unset. Add it to .env."

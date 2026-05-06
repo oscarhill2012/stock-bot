@@ -7,7 +7,7 @@ ExtractorApi gave us, but free.
 from __future__ import annotations
 
 import asyncio
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from typing import Any
 
 from edgar import Company, set_identity
@@ -67,7 +67,7 @@ def _build_filing(filing: Any, symbol: str, include_excerpts: bool) -> Filing:
     form_type = str(getattr(filing, "form", ""))
 
     filed_date = _coerce_date(getattr(filing, "filing_date", None)) or date.today()
-    filed_at = datetime.combine(filed_date, datetime.min.time(), tzinfo=timezone.utc)
+    filed_at = datetime.combine(filed_date, datetime.min.time(), tzinfo=UTC)
 
     accession = (
         getattr(filing, "accession_no", None)

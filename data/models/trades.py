@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Literal, Optional
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -12,24 +12,24 @@ TradeSide = Literal["buy", "sell", "exchange", "unknown"]
 class PoliticianTrade(BaseModel):
     ticker: str
     politician: str
-    chamber: Optional[str] = Field(default=None, description="House or Senate.")
-    party: Optional[str] = None
+    chamber: str | None = Field(default=None, description="House or Senate.")
+    party: str | None = None
     side: TradeSide
     transaction_date: date
-    disclosure_date: Optional[date] = None
-    amount_min_usd: Optional[float] = None
-    amount_max_usd: Optional[float] = None
+    disclosure_date: date | None = None
+    amount_min_usd: float | None = None
+    amount_max_usd: float | None = None
 
 
 class InsiderTrade(BaseModel):
     ticker: str
     insider_name: str
-    insider_title: Optional[str] = None
+    insider_title: str | None = None
     side: TradeSide
     shares: float
-    price_per_share: Optional[float] = None
+    price_per_share: float | None = None
     transaction_date: date
-    filed_at: Optional[datetime] = None
+    filed_at: datetime | None = None
     form_type: str = "4"
 
 
@@ -53,4 +53,4 @@ class NotableHolder(BaseModel):
     is_amendment: bool = False
     filed_at: datetime
     accession_no: str
-    url: Optional[str] = None
+    url: str | None = None

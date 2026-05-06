@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import math
-from datetime import date, datetime, timedelta, timezone
-from typing import Any, Iterator
+from collections.abc import Iterator
+from datetime import UTC, date, datetime, timedelta
+from typing import Any
 
 from edgar import Company, set_identity
 
@@ -94,7 +95,7 @@ def _extract(
     insider = getattr(form4, "insider_name", None) or "unknown"
     title = getattr(form4, "position", None)
     filed_date = _coerce_date(getattr(filing, "filing_date", None)) or date.today()
-    filed_at = datetime.combine(filed_date, datetime.min.time(), tzinfo=timezone.utc)
+    filed_at = datetime.combine(filed_date, datetime.min.time(), tzinfo=UTC)
     form_type = str(getattr(filing, "form", "4"))
 
     for row in _iter_rows(table):

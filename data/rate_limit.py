@@ -107,4 +107,4 @@ def slowest_min_interval_seconds(*limiters: AsyncRateLimiter) -> float:
     of these sources. Trading faster than this means the strategist is
     re-deciding without new information.
     """
-    return max((l.min_interval_seconds for l in limiters), default=0.0)
+    return max((lim.min_interval_seconds for lim in limiters), default=0.0)

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -35,9 +34,9 @@ class StockSignalBundle(BaseModel):
 
     ticker: str
     generated_at: datetime
-    stats: Optional[StockStats] = None
+    stats: StockStats | None = None
     news: list[NewsArticle] = Field(default_factory=list)
-    social_sentiment: Optional[SocialSentiment] = None
+    social_sentiment: SocialSentiment | None = None
     insider_trades: list[InsiderTrade] = Field(default_factory=list)
     politician_trades: list[PoliticianTrade] = Field(default_factory=list)
     notable_holders: list[NotableHolder] = Field(default_factory=list)

@@ -7,8 +7,7 @@ sync, so we run it in a thread via `asyncio.to_thread`.
 from __future__ import annotations
 
 import asyncio
-from datetime import date, datetime, timezone
-from typing import Optional
+from datetime import UTC, date, datetime
 
 import finnhub
 
@@ -34,7 +33,7 @@ async def get_stock_news(
     from_date: date,
     to_date: date,
     *,
-    limit: Optional[int] = 50,
+    limit: int | None = 50,
 ) -> list[NewsArticle]:
     symbol = ticker.upper()
     await FINNHUB.acquire()
@@ -52,9 +51,9 @@ async def get_stock_news(
     for item in raw:
         ts = item.get("datetime")
         published = (
-            datetime.fromtimestamp(ts, tz=timezone.utc)
+            datetime.fromtimestamp(ts, tz=UTC)
             if isinstance(ts, (int, float)) and ts > 0
-            else datetime.now(timezone.utc)
+            else datetime.now(UTC)
         )
         articles.append(
             NewsArticle(
