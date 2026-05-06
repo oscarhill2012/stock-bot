@@ -40,3 +40,20 @@ def _clamp_cash_floor(weights: dict[str, float], clamps: list[ClampRecord]) -> N
                 ClampRecord(rule="cash_floor", ticker=t, before=before, after=after)
             )
             weights[t] = after
+
+
+def _clamp_max_delta(
+    proposed: dict[str, float],
+    current: dict[str, float],
+    clamps: list[ClampRecord],
+) -> None:
+    for t, p in list(proposed.items()):
+        c = current.get(t, 0.0)
+        delta = p - c
+        if abs(delta) > MAX_DELTA_PER_TICKER:
+            capped = MAX_DELTA_PER_TICKER if delta > 0 else -MAX_DELTA_PER_TICKER
+            new_w = c + capped
+            clamps.append(
+                ClampRecord(rule="max_delta", ticker=t, before=p, after=new_w)
+            )
+            proposed[t] = new_w

@@ -1,7 +1,7 @@
 """Tier 1 unit tests for each risk-gate clamp, in algorithm order."""
 import pytest
 
-from agents.risk_gate.constraints import _clamp_negatives, _clamp_max_position, _clamp_cash_floor
+from agents.risk_gate.constraints import _clamp_negatives, _clamp_max_position, _clamp_cash_floor, _clamp_max_delta
 from orchestrator.state import ClampRecord
 
 
@@ -59,3 +59,37 @@ def test_cash_floor_noop_when_under_threshold():
     _clamp_cash_floor(weights, clamps)
     assert weights == {"AAPL": 0.40, "MSFT": 0.40}
     assert clamps == []
+
+
+def test_max_delta_caps_per_ticker_buy():
+    proposed = {"AAPL": 0.10}
+    current = {"AAPL": 0.05}                   # delta = +0.05, must cap at +0.01
+    clamps: list[ClampRecord] = []
+    _clamp_max_delta(proposed, current, clamps)
+    assert proposed["AAPL"] == pytest.approx(0.06)
+    assert clamps[0].rule == "max_delta"
+
+
+def test_max_delta_caps_per_ticker_sell():
+    proposed = {"AAPL": 0.0}
+    current = {"AAPL": 0.05}                   # delta = -0.05, must cap at -0.01
+    clamps: list[ClampRecord] = []
+    _clamp_max_delta(proposed, current, clamps)
+    assert proposed["AAPL"] == pytest.approx(0.04)
+
+
+def test_max_delta_no_op_within_threshold():
+    proposed = {"AAPL": 0.06}
+    current = {"AAPL": 0.05}                   # delta = +0.01 — exactly at threshold
+    clamps: list[ClampRecord] = []
+    _clamp_max_delta(proposed, current, clamps)
+    assert proposed["AAPL"] == 0.06
+    assert clamps == []
+
+
+def test_max_delta_handles_new_position():
+    proposed = {"NVDA": 0.05}
+    current = {}                               # opening — full 0.05 must clamp to 0.01
+    clamps: list[ClampRecord] = []
+    _clamp_max_delta(proposed, current, clamps)
+    assert proposed["NVDA"] == pytest.approx(0.01)
