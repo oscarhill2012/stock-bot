@@ -78,3 +78,17 @@ def _clamp_max_turnover(
                 ClampRecord(rule="max_turnover", ticker=t, before=before, after=after)
             )
             proposed[t] = after
+
+
+def apply_constraints(
+    proposed: dict[str, float],
+    current: dict[str, float],
+) -> list[ClampRecord]:
+    """Mutate `proposed` to satisfy all hard rules. Returns clamp telemetry."""
+    clamps: list[ClampRecord] = []
+    _clamp_negatives(proposed, clamps)
+    _clamp_max_position(proposed, clamps)
+    _clamp_cash_floor(proposed, clamps)
+    _clamp_max_delta(proposed, current, clamps)
+    _clamp_max_turnover(proposed, current, clamps)
+    return clamps

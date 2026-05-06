@@ -1,7 +1,7 @@
 """Tier 1 unit tests for each risk-gate clamp, in algorithm order."""
 import pytest
 
-from agents.risk_gate.constraints import _clamp_negatives, _clamp_max_position, _clamp_cash_floor, _clamp_max_delta, _clamp_max_turnover
+from agents.risk_gate.constraints import _clamp_negatives, _clamp_max_position, _clamp_cash_floor, _clamp_max_delta, _clamp_max_turnover, apply_constraints
 from orchestrator.state import ClampRecord
 
 
@@ -112,3 +112,20 @@ def test_turnover_noop_when_under_threshold():
     _clamp_max_turnover(proposed, current, clamps)
     assert proposed == {"AAPL": 0.10, "MSFT": 0.10}
     assert clamps == []
+
+
+def test_apply_constraints_runs_in_documented_order():
+    # Negative weight + oversized weight + sum > 0.90 + delta > 1% — all hit.
+    proposed = {"AAPL": -0.05, "MSFT": 0.50, "NVDA": 0.45}
+    current  = {"AAPL": 0.0,   "MSFT": 0.0,  "NVDA": 0.0}
+    clamps = apply_constraints(proposed, current)
+    # AAPL clamped to 0 (no_short)
+    assert proposed["AAPL"] == 0.0
+    # max_position then cash_floor leave per-ticker <=0.20 and sum <=0.90 …
+    # … then max_delta clamps each remaining buy to +0.01 from 0
+    assert proposed["MSFT"] == pytest.approx(0.01)
+    assert proposed["NVDA"] == pytest.approx(0.01)
+    rules = [c.rule for c in clamps]
+    assert "no_short" in rules
+    assert "max_position" in rules
+    assert "max_delta" in rules
