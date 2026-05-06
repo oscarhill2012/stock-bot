@@ -7,12 +7,13 @@ from .filings import Filing
 from .market import OHLCBar, StockStats
 from .news import NewsArticle
 from .sentiment import SocialSentiment, SocialSentimentSnapshot
-from .trades import InsiderTrade, PoliticianTrade, TradeSide
+from .trades import InsiderTrade, NotableHolder, PoliticianTrade, TradeSide
 
 __all__ = [
     "Filing",
     "InsiderTrade",
     "NewsArticle",
+    "NotableHolder",
     "OHLCBar",
     "PoliticianTrade",
     "ProviderError",

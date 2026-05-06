@@ -26,6 +26,7 @@ from .models import (
     Filing,
     InsiderTrade,
     NewsArticle,
+    NotableHolder,
     PoliticianTrade,
     ProviderError,
     SocialSentiment,
@@ -35,6 +36,7 @@ from .models import (
 from .providers import (
     get_company_filings,
     get_insider_trades,
+    get_notable_holders,
     get_public_figure_trades,
     get_social_sentiment,
     get_stock_news,
@@ -51,6 +53,7 @@ _DEFAULTS: dict[str, Any] = {
     "social": None,
     "insiders": [],
     "politicians": [],
+    "notable_holders": [],
     "filings": [],
 }
 
@@ -70,6 +73,8 @@ async def get_stock_signal_bundle(
     news_lookback_days: int = 7,
     insider_lookback_days: int = 30,
     politician_lookback_days: int = 90,
+    notable_holder_lookback_days: int = 180,
+    notable_holder_limit: int = 20,
     history_period: str = "1y",
     history_interval: str = "1d",
     filings_per_form: int = 3,
@@ -88,7 +93,7 @@ async def get_stock_signal_bundle(
     today = date.today()
     errors: list[ProviderError] = []
 
-    stats, news, social, insiders, politicians, filings = await asyncio.gather(
+    stats, news, social, insiders, politicians, holders, filings = await asyncio.gather(
         _safe("stats", get_stock_stats(symbol, period=history_period, interval=history_interval), errors),
         _safe(
             "news",
@@ -100,6 +105,15 @@ async def get_stock_signal_bundle(
         _safe(
             "politicians",
             get_public_figure_trades(symbol, lookback_days=politician_lookback_days),
+            errors,
+        ),
+        _safe(
+            "notable_holders",
+            get_notable_holders(
+                symbol,
+                lookback_days=notable_holder_lookback_days,
+                limit=notable_holder_limit,
+            ),
             errors,
         ),
         _safe(
@@ -121,6 +135,7 @@ async def get_stock_signal_bundle(
         social_sentiment=social,
         insider_trades=insiders,
         politician_trades=politicians,
+        notable_holders=holders,
         filings=filings,
         min_decision_interval_seconds=slowest_min_interval_seconds(
             FINNHUB, QUIVER, EDGAR, YFINANCE

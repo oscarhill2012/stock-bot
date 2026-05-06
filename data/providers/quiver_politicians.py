@@ -1,7 +1,15 @@
-"""`get_public_figure_trades` — Quiver Quant congressional disclosures (async, rate-limited)."""
+"""`get_public_figure_trades` — Quiver Quant congressional disclosures (async, rate-limited).
+
+Quiver's free tier is currently unavailable. Until access is restored
+this provider soft-fails to `[]` when `QUIVER_QUANT_API_KEY` is unset —
+the bundle keeps building and the EDGAR-based `get_notable_holders`
+provider fills the "smart money" slot in the meantime. Restoring Quiver
+is a matter of adding the key back to `.env`; no code change needed.
+"""
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import date, datetime, timedelta
 from typing import Any, Optional
 
@@ -10,7 +18,9 @@ import requests
 from ..models import PoliticianTrade, TradeSide
 from ..rate_limit import QUIVER
 from ..retry import with_retry
-from ..settings import get_settings, require
+from ..settings import get_settings
+
+logger = logging.getLogger(__name__)
 
 _SIDE_MAP: dict[str, TradeSide] = {
     "purchase": "buy",
@@ -57,10 +67,8 @@ def _parse_amount_range(raw: Any) -> tuple[Optional[float], Optional[float]]:
 
 
 @with_retry
-def _fetch_trades(symbol: Optional[str]) -> list[dict]:
+def _fetch_trades(symbol: Optional[str], api_key: str) -> list[dict]:
     s = get_settings()
-    api_key = require("QUIVER_QUANT_API_KEY", s.quiver_quant_api_key, "get_public_figure_trades")
-
     url = f"{s.quiver_base_url.rstrip('/')}/live/congresstrading"
     headers = {"Authorization": f"Bearer {api_key}", "Accept": "application/json"}
     params: dict[str, Any] = {}
@@ -77,9 +85,16 @@ async def get_public_figure_trades(
     ticker: Optional[str] = None,
     lookback_days: int = 90,
 ) -> list[PoliticianTrade]:
+    api_key = get_settings().quiver_quant_api_key
+    if not api_key:
+        # Soft-fail: Quiver free tier unavailable. EDGAR's notable_holders
+        # carries the "smart money" signal until the key returns.
+        logger.debug("QUIVER_QUANT_API_KEY unset — get_public_figure_trades returning []")
+        return []
+
     symbol = ticker.upper() if ticker else None
     await QUIVER.acquire()
-    payload = await asyncio.to_thread(_fetch_trades, symbol)
+    payload = await asyncio.to_thread(_fetch_trades, symbol, api_key)
 
     cutoff = date.today() - timedelta(days=lookback_days)
     trades: list[PoliticianTrade] = []

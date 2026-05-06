@@ -10,7 +10,7 @@ from .filings import Filing
 from .market import StockStats
 from .news import NewsArticle
 from .sentiment import SocialSentiment
-from .trades import InsiderTrade, PoliticianTrade
+from .trades import InsiderTrade, NotableHolder, PoliticianTrade
 
 
 class ProviderError(BaseModel):
@@ -40,6 +40,7 @@ class StockSignalBundle(BaseModel):
     social_sentiment: Optional[SocialSentiment] = None
     insider_trades: list[InsiderTrade] = Field(default_factory=list)
     politician_trades: list[PoliticianTrade] = Field(default_factory=list)
+    notable_holders: list[NotableHolder] = Field(default_factory=list)
     filings: list[Filing] = Field(default_factory=list)
     min_decision_interval_seconds: float = Field(
         default=0.0,
