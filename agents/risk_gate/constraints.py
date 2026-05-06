@@ -24,3 +24,19 @@ def _clamp_max_position(weights: dict[str, float], clamps: list[ClampRecord]) ->
                 ClampRecord(rule="max_position", ticker=t, before=w, after=MAX_POSITION_WEIGHT)
             )
             weights[t] = MAX_POSITION_WEIGHT
+
+
+def _clamp_cash_floor(weights: dict[str, float], clamps: list[ClampRecord]) -> None:
+    total = sum(weights.values())
+    threshold = 1.0 - CASH_FLOOR_WEIGHT
+    if total <= threshold:
+        return
+    scale = threshold / total
+    for t in list(weights.keys()):
+        before = weights[t]
+        after = before * scale
+        if before != after:
+            clamps.append(
+                ClampRecord(rule="cash_floor", ticker=t, before=before, after=after)
+            )
+            weights[t] = after

@@ -1,7 +1,7 @@
 """Tier 1 unit tests for each risk-gate clamp, in algorithm order."""
 import pytest
 
-from agents.risk_gate.constraints import _clamp_negatives, _clamp_max_position
+from agents.risk_gate.constraints import _clamp_negatives, _clamp_max_position, _clamp_cash_floor
 from orchestrator.state import ClampRecord
 
 
@@ -39,4 +39,23 @@ def test_clamp_max_position_no_op_when_within_cap():
     clamps: list[ClampRecord] = []
     _clamp_max_position(weights, clamps)
     assert weights == {"AAPL": 0.20, "MSFT": 0.15}
+    assert clamps == []
+
+
+def test_cash_floor_scales_when_sum_over_threshold():
+    weights = {"AAPL": 0.50, "MSFT": 0.50}     # sum = 1.0, must shrink to 0.90
+    clamps: list[ClampRecord] = []
+    _clamp_cash_floor(weights, clamps)
+    assert sum(weights.values()) == pytest.approx(0.90)
+    assert weights["AAPL"] == pytest.approx(0.45)
+    assert weights["MSFT"] == pytest.approx(0.45)
+    assert len(clamps) == 2
+    assert all(c.rule == "cash_floor" for c in clamps)
+
+
+def test_cash_floor_noop_when_under_threshold():
+    weights = {"AAPL": 0.40, "MSFT": 0.40}     # sum = 0.80, fine
+    clamps: list[ClampRecord] = []
+    _clamp_cash_floor(weights, clamps)
+    assert weights == {"AAPL": 0.40, "MSFT": 0.40}
     assert clamps == []
