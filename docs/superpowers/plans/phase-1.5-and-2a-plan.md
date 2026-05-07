@@ -2935,6 +2935,265 @@ git commit -m "docs: mark phase 1.5 K/L/M/N/O/P as done or superseded by phase 2
 
 ---
 
+## Task 18: Final docs — README.txt + deploy guide refresh
+
+**Run last.** All other tasks must be merged before starting this one — the docs describe what is actually in the repo, so they're written from the post-implementation state.
+
+**Files:**
+- Create: `README.txt` (repo root)
+- Create: `.env.example` (repo root)
+- Modify: `deploy/README.md` (final pass; Task 16 wrote v1, this verifies it matches the as-built system)
+- Modify: `README.md` (repo root — slim it to a one-line pointer at `README.txt`)
+
+- [ ] **Step 1: Create `.env.example`**
+
+`.env.example` is whitelisted in `.gitignore` (`!.env.example`) but doesn't exist yet. It documents every variable the bot reads, with safe placeholder values (no real secrets).
+
+Create `.env.example`:
+
+```
+# Copy to .env and fill in real values. Never commit .env.
+
+# === Stock data providers ===
+FINNHUB_API_KEY=your_finnhub_key_here          # https://finnhub.io/dashboard
+QUIVER_QUANT_API_KEY=your_quiver_quant_key_here  # https://www.quiverquant.com/api  (optional — Smart Money degrades gracefully)
+EDGAR_IDENTITY=Your Name your@email.com        # SEC mandates contact in User-Agent
+
+# === Brokerage (Trading 212) ===
+TRADING212_API_KEY=your_trading212_paper_key_here
+TRADING212_MODE=paper                          # paper | live
+TRADING212_BASE_URL=https://demo.trading212.com  # https://live.trading212.com for live
+
+# === Google ADK ===
+# Either a direct API key OR Vertex credentials, not both.
+# GOOGLE_API_KEY=your_google_api_key_here
+GOOGLE_GENAI_USE_VERTEXAI=true
+GOOGLE_ADK_PROJECT=your_gcp_project_id
+GOOGLE_CLOUD_LOCATION=us-central1
+
+# === StockBot runtime ===
+STOCKBOT_ENV=dev                               # dev (SQLite) | prod (Postgres via DATABASE_URL)
+DATABASE_URL=                                  # required when STOCKBOT_ENV=prod
+SCHEDULER_JOB=stockbot-tick                    # Cloud Scheduler job name (prod)
+LOG_LEVEL=INFO
+```
+
+- [ ] **Step 2: Walk through every script and lifecycle command listed below**
+
+Before writing the README, manually run each of these from a fresh shell to confirm the README will not lie. If any fails, fix the underlying code in that task's commit (do not paper over it in the README):
+
+```bash
+PYTHONPATH=src python -m scripts.init_db --db-url sqlite:///data/test_smoke.db
+PYTHONPATH=src python -m scripts.smoke_run --ticks 1
+PYTHONPATH=src python -m scripts.plot_equity --db-url sqlite:///data/test_smoke.db --out /tmp/x.png
+PYTHONPATH=src python -m scripts.hard_reset --db-url sqlite:///data/test_smoke.db --archive-dir data/archives --yes
+rm data/test_smoke.db
+```
+
+Each command must exit 0. Note any deviations from the README copy below and fix the README accordingly.
+
+- [ ] **Step 3: Create `README.txt`**
+
+Plain text, no markdown rendering. Sections separated by `===` lines. Concrete commands, in order.
+
+Create `README.txt` at the repo root:
+
+```text
+================================================================================
+StockBot — agentic paper-trading bot (Phase 1.5 + 2a complete)
+================================================================================
+
+WHAT THIS IS
+------------
+A multi-agent stock-trading system built on Google ADK. Four specialised
+analysts (Technical, Fundamental, Sentiment, Smart Money) feed signals to a
+single Strategist agent, which is constrained by a deterministic RiskGate
+and executed against Trading 212's paper account. Runs once per hour during
+US market hours via Cloud Run Jobs + Cloud Scheduler. Compares performance
+against SPY buy-and-hold.
+
+CURRENT STATE
+-------------
+What works:
+  - End-to-end multi-agent pipeline (4 analysts -> strategist -> risk gate
+    -> executor -> memory -> snapshot), all signals persisted for attribution.
+  - Trading 212 paper-account broker with a fake-broker test double.
+  - Cloud SQL Postgres / SQLite persistence behind one SessionService factory.
+  - Lifecycle scripts: hard_reset (pause + archive + truncate) and initialise
+    (pre-flight + anchor snapshot + scheduler resume).
+  - Static bot-vs-SPY equity-curve PNG.
+  - Local validation: smoke_run (3 ticks, FakeBroker, real LLMs) and
+    replay_backtest (30-day walk-forward).
+  - Cloud deployment artefacts: Dockerfile, cloudbuild.yaml, scheduler.yaml.
+
+What is intentionally NOT here yet:
+  - Local web dashboard (Phase 2b).
+  - Pluralised deliberation / multiple strategists (Phase 2c).
+  - MLP baseline (Phase 3).
+  - Live trading: gated by >=30 days beating SPY on Sharpe AND cumulative
+    return. Manual flip only.
+
+================================================================================
+FROM CLONE TO RUNNING
+================================================================================
+
+PREREQUISITES
+-------------
+  - Python 3.12
+  - git
+  - A Trading 212 practice account + API key
+  - A Finnhub API key
+  - A GCP project (only required for cloud deployment, not for local runs)
+  - gcloud CLI logged in (only for cloud deployment)
+  - Docker (only required if you build the image locally; Cloud Build does
+    this for you in the deploy path)
+
+1. CLONE AND ENTER THE REPO
+---------------------------
+  git clone <repo-url> StockBot
+  cd StockBot
+
+2. CREATE A VIRTUALENV AND INSTALL DEPENDENCIES
+-----------------------------------------------
+  python -m venv .venv
+  # Windows PowerShell:
+  .venv\Scripts\Activate.ps1
+  # macOS / Linux:
+  source .venv/bin/activate
+
+  pip install -r requirements.txt
+
+3. CONFIGURE ENVIRONMENT
+------------------------
+  cp .env.example .env
+  # Edit .env and fill in:
+  #   FINNHUB_API_KEY
+  #   TRADING212_API_KEY (paper)
+  #   EDGAR_IDENTITY
+  #   GOOGLE_ADK_PROJECT (your GCP project id)
+  # Leave QUIVER_QUANT_API_KEY blank if you don't have one — Smart Money
+  # analyst degrades gracefully.
+
+4. RUN THE TEST SUITE
+---------------------
+  pytest
+
+  Expected: all unit + integration tests pass (replay tests are skipped by
+  default; they're long-running and need real LLMs).
+
+5. VERIFY YOUR SETUP WITH A LOCAL SMOKE RUN
+-------------------------------------------
+  PYTHONPATH=src python -m scripts.smoke_run --ticks 1
+
+  Runs one full tick against FakeBroker with real LLMs and real data
+  providers. Costs ~$0.07. Confirms your API keys and ADK auth work.
+
+6. (OPTIONAL) RUN A 30-DAY HISTORICAL BACKTEST
+----------------------------------------------
+  PYTHONPATH=src python -m scripts.replay_backtest --window 30d
+
+  Walk-forward through 30 days of cached yfinance data. Useful for tuning
+  the strategist prompt before deploying.
+
+================================================================================
+DEPLOY TO GCP (PAPER TRADING)
+================================================================================
+
+The bot only trades autonomously when running in GCP. Local commands above
+are for validation. The full deployment runbook (one-time GCP setup, secrets,
+service account, Cloud Build trigger, Cloud SQL, Cloud Scheduler) is in:
+
+  deploy/README.md
+
+Short version, assuming GCP setup from deploy/README.md is complete:
+
+  1. Push to main; Cloud Build builds + deploys the Cloud Run Job.
+  2. From your laptop:
+       PYTHONPATH=src python -m scripts.initialise --capital 10000 \
+         --broker-mode paper --scheduler-job stockbot-tick
+     This runs pre-flight checks, writes the equity-curve anchor, and
+     resumes Cloud Scheduler. The bot starts trading on the next cron firing.
+  3. Watch logs:
+       gcloud run jobs executions list --job=stockbot-tick --region=us-central1
+
+================================================================================
+RESET AND START OVER
+================================================================================
+
+  1. PYTHONPATH=src python -m scripts.hard_reset \
+       --scheduler-job stockbot-tick --starting-capital 10000
+     Pauses the scheduler, archives every StockBot table to
+     data/archives/<timestamp>.db (or a Postgres archive schema in prod),
+     and truncates the live tables.
+
+  2. Reset the Trading 212 practice account in their UI
+     (Settings -> Practice account -> Reset).
+
+  3. PYTHONPATH=src python -m scripts.initialise --capital 10000 \
+       --broker-mode paper --scheduler-job stockbot-tick
+     Verifies the reset, writes a fresh anchor, resumes the scheduler.
+
+================================================================================
+VIEWING PERFORMANCE
+================================================================================
+
+  PYTHONPATH=src python -m scripts.plot_equity \
+    --out docs/performance/$(date +%Y-%m-%d).png
+
+  Renders bot-vs-SPY equity curve since the last reset, plus an excess-
+  return overlay. Reads from portfolio_snapshots.
+
+================================================================================
+WHERE TO LOOK NEXT
+================================================================================
+
+  deploy/README.md               GCP setup runbook + kickoff checklist + live-trading gate
+  docs/Phase1-build/             Phase 1 design docs and per-area design notes
+  docs/superpowers/specs/        Approved feature specs (phase 2a, future phases)
+  docs/superpowers/plans/        Implementation plans (this phase, future phases)
+  src/agents/                    The four analysts + strategist + executor + memory
+  src/orchestrator/pipeline.py   ADK SequentialAgent composition (the "brain wiring")
+  src/baselines/                 SPY metrics + equity-curve library (shared with future dashboard)
+  src/lifecycle/                 hard_reset and initialise libraries
+  src/scripts/                   CLI entrypoints (PYTHONPATH=src python -m scripts.<name>)
+```
+
+- [ ] **Step 4: Slim the existing `README.md`**
+
+`README.md` currently has only "# stock-bot\nAgentic stock bot using Google ADK." which is stale once `README.txt` exists. Replace its contents with a one-line pointer:
+
+```markdown
+# StockBot
+
+Agentic paper-trading bot built on Google ADK. **See [`README.txt`](README.txt) for the canonical project overview, current state, and from-clone-to-running instructions.**
+```
+
+- [ ] **Step 5: Final pass on `deploy/README.md`**
+
+Re-read `deploy/README.md` (created in Task 16) end to end, with the as-built system in front of you. Verify each:
+
+  a) Every command listed actually exists as written. In particular:
+     - `gcloud scheduler jobs pause stockbot-tick --location=us-central1` matches the location used at job-create time.
+     - The Artifact Registry image path matches the substitutions in `deploy/cloudbuild.yaml`.
+     - The service-account email pattern matches what the create command produces.
+  b) The kickoff-checklist section lists exactly the validation commands that exist (`scripts.smoke_run`, `scripts.replay_backtest`, `scripts.plot_equity`, `scripts.initialise`).
+  c) The live-trading gate description is consistent with `README.txt` ("beat SPY on Sharpe AND cumulative return for >=30 days, MLP deferred to Phase 3").
+
+If any drift is found, fix it in `deploy/README.md`. No reformatting just for taste.
+
+- [ ] **Step 6: Sanity check the new operator path**
+
+A reader following `README.txt` from a clean clone (no `.env`, no `.venv`) should be able to reach step 5 (smoke run) without consulting any other document. Re-read `README.txt` with that lens. Fix any step that assumes prior knowledge.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add README.txt README.md .env.example deploy/README.md
+git commit -m "docs: README.txt entrypoint + deploy guide refresh"
+```
+
+---
+
 ## Self-Review
 
 **1. Spec coverage** — every section of `phase-2a-groundwork-design.md` is implemented:
@@ -2963,6 +3222,7 @@ Phase 1.5 carry-forward:
 - O3 → Task 16
 - P1 → Task 16 (kickoff checklist in `deploy/README.md`)
 - P2 → Task 16 (live-trading gate section in `deploy/README.md`)
+- Final docs (`README.txt`, `.env.example`, deploy-guide refresh) → Task 18
 
 **2. Placeholder scan** — no TBD/TODO/"add appropriate error handling"/"similar to Task N" markers. The replay-backtest fixture-mode comment is intentional: full fixture wiring is explicitly Phase 2 follow-up per phase1.5 §L2.
 
