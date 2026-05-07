@@ -1,0 +1,34 @@
+# Build → push → deploy a Cloud Run Job for StockBot.
+# Triggered by Cloud Build on push to main.
+substitutions:
+  _REGION: us-central1
+  _REPO: stockbot
+  _JOB_NAME: stockbot-tick
+  _IMAGE: ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_JOB_NAME}:${SHORT_SHA}
+
+steps:
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args: ["build", "-t", "${_IMAGE}", "-f", "deploy/Dockerfile", "."]
+
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args: ["push", "${_IMAGE}"]
+
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - jobs
+      - update
+      - ${_JOB_NAME}
+      - --image=${_IMAGE}
+      - --region=${_REGION}
+      - --project=${PROJECT_ID}
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+images:
+  - ${_IMAGE}
