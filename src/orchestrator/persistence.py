@@ -135,6 +135,80 @@ def save_portfolio_snapshot(session: Session, snap: dict) -> None:
     session.flush()
 
 
+# ── AttributionSignals ────────────────────────────────────────────────
+
+class AttributionSignalsRow(Base):
+    """One row per analyst signal per tick. `analyst` discriminates type-specific columns."""
+
+    __tablename__ = "attribution_signals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tick_id: Mapped[str] = mapped_column(String, index=True)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime)
+    analyst: Mapped[str] = mapped_column(String, index=True)
+    ticker: Mapped[str] = mapped_column(String, index=True)
+    direction: Mapped[str] = mapped_column(String)
+
+    # Dense-analyst fields (NULL for smart_money rows)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    key_factors_json: Mapped[str] = mapped_column(String, default="[]")
+
+    # Sentiment-only
+    top_headlines_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    social_score_delta: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # Smart-money-only
+    conviction: Mapped[str | None] = mapped_column(String, nullable=True)
+    insiders_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    politicians_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    total_dollar_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+def save_attribution_signal(
+    session: Session,
+    *,
+    tick_id: str,
+    analyst: str,
+    signal: dict,
+) -> None:
+    """Persist one analyst signal. `analyst` must be technical|fundamental|sentiment|smart_money."""
+    from datetime import timezone
+    now = datetime.now(tz=timezone.utc)
+    common = dict(
+        tick_id=tick_id,
+        recorded_at=now,
+        analyst=analyst,
+        ticker=signal["ticker"],
+        direction=signal["direction"],
+    )
+    if analyst == "smart_money":
+        row = AttributionSignalsRow(
+            **common,
+            confidence=None,
+            key_factors_json="[]",
+            conviction=signal.get("conviction"),
+            insiders_json=json.dumps(signal.get("insiders", [])),
+            politicians_json=json.dumps(signal.get("politicians", [])),
+            total_dollar_value=signal.get("total_dollar_value"),
+        )
+    else:
+        row = AttributionSignalsRow(
+            **common,
+            confidence=signal.get("confidence"),
+            key_factors_json=json.dumps(signal.get("key_factors", [])),
+            top_headlines_json=(
+                json.dumps(signal["top_headlines"])
+                if analyst == "sentiment" and "top_headlines" in signal
+                else None
+            ),
+            social_score_delta=(
+                signal.get("social_score_delta") if analyst == "sentiment" else None
+            ),
+        )
+    session.add(row)
+    session.flush()
+
+
 def make_engine(db_url: str = "sqlite://"):
     return create_engine(db_url)
 
