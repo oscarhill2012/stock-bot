@@ -144,3 +144,32 @@ def make_session_factory(engine):
 
 def create_all(engine) -> None:
     Base.metadata.create_all(engine)
+
+
+# ── ADK SessionService factory ────────────────────────────────────────
+
+import os
+
+
+def make_session_service():
+    """Return a DatabaseSessionService configured by STOCKBOT_ENV.
+
+    Dev: sqlite at ./data/stockbot.db (created on demand).
+    Prod: DATABASE_URL env var (Postgres in deploy).
+    """
+    from google.adk.sessions import DatabaseSessionService
+
+    env = os.environ.get("STOCKBOT_ENV", "dev").lower()
+    if env == "prod":
+        url = os.environ.get("DATABASE_URL")
+        if not url:
+            raise RuntimeError(
+                "STOCKBOT_ENV=prod requires DATABASE_URL to be set."
+            )
+        return DatabaseSessionService(db_url=url)
+
+    # dev — aiosqlite driver required by DatabaseSessionService (uses async engine)
+    from pathlib import Path
+    data_dir = Path("data")
+    data_dir.mkdir(exist_ok=True)
+    return DatabaseSessionService(db_url=f"sqlite+aiosqlite:///{data_dir.absolute()}/stockbot.db")

@@ -9,8 +9,8 @@ from datetime import datetime, timezone
 async def run_once(broker, session=None) -> dict:
     """Run one hourly tick and return summary."""
     from google.adk import Runner
-    from google.adk.sessions import InMemorySessionService
 
+    from orchestrator.persistence import make_session_service
     from orchestrator.pipeline import build_pipeline
     from orchestrator.stock_picker import get_watchlist
 
@@ -18,7 +18,7 @@ async def run_once(broker, session=None) -> dict:
     tickers = get_watchlist()
 
     pipeline = build_pipeline(broker, session)
-    session_service = InMemorySessionService()
+    session_service = make_session_service()
     runner = Runner(
         agent=pipeline,
         app_name="StockBot",
