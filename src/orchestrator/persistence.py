@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime
 
 from sqlalchemy import JSON, Boolean, DateTime, Float, Integer, String, create_engine
@@ -147,8 +148,6 @@ def create_all(engine) -> None:
 
 
 # ── ADK SessionService factory ────────────────────────────────────────
-
-import os
 
 
 def make_session_service():
