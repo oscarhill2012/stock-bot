@@ -49,10 +49,12 @@ def build_pipeline(broker, db_session=None) -> SequentialAgent:
     from agents.executor.agent import build_executor
     from agents.risk_gate.agent import RiskGateAgent
     from agents.snapshot.agent import build_snapshotter
+    from agents.attribution.writer import build_attribution_writer
     return SequentialAgent(
         name="HourlyTick",
         sub_agents=[
             _build_analyst_pool(),
+            build_attribution_writer(db_session),
             _build_strategist(),
             RiskGateAgent(broker=broker),
             build_executor(broker, db_session),

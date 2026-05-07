@@ -16,10 +16,10 @@ def test_pipeline_name():
     assert pipeline.name == "HourlyTick"
 
 
-def test_pipeline_has_six_stages():
+def test_pipeline_has_seven_stages():
     broker = FakeBroker(starting_cash=10_000.0, prices={})
     pipeline = build_pipeline(broker)
-    assert len(pipeline.sub_agents) == 6
+    assert len(pipeline.sub_agents) == 7
 
 
 def test_pipeline_stage_names():
@@ -27,8 +27,9 @@ def test_pipeline_stage_names():
     pipeline = build_pipeline(broker)
     names = [a.name for a in pipeline.sub_agents]
     assert names[0] == "AnalystPool"
-    assert names[1] == "Strategist"
-    assert names[2] == "RiskGate"
-    assert names[3] == "Executor"
-    assert names[4] == "MemoryWriter"
-    assert names[5] == "Snapshotter"
+    assert names[1] == "AttributionWriter"
+    assert names[2] == "Strategist"
+    assert names[3] == "RiskGate"
+    assert names[4] == "Executor"
+    assert names[5] == "MemoryWriter"
+    assert names[6] == "Snapshotter"
