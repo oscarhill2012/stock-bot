@@ -1,0 +1,16 @@
+# Cloud Scheduler config for the hourly StockBot tick.
+# Apply with: gcloud scheduler jobs create http stockbot-tick --location=us-central1 \
+#   --schedule="30 9-15 * * 1-5" --time-zone=America/New_York \
+#   --uri=...  --oidc-service-account-email=...
+name: stockbot-tick
+schedule: "30 9-15 * * 1-5"
+timeZone: America/New_York
+description: "Hourly tick for StockBot during US market hours."
+httpTarget:
+  uri: "https://${REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${PROJECT_ID}/jobs/stockbot-tick:run"
+  httpMethod: POST
+  oidcToken:
+    serviceAccountEmail: stockbot-runner@${PROJECT_ID}.iam.gserviceaccount.com
+retryConfig:
+  retryCount: 1
+  maxRetryDuration: 300s
