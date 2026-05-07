@@ -1,0 +1,12 @@
+**/__pycache__/
+**/*.pyc
+.venv/
+venv/
+data/
+docs/
+graphify-out/
+.git/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+tests/
