@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-_WATCHLIST_PATH = Path(__file__).parent.parent.parent / "config" / "watchlist.json"
+_WATCHLIST_PATH = Path(__file__).parent.parent / "config" / "watchlist.json"
 
 
 def get_watchlist() -> list[str]:
