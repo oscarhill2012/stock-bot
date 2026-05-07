@@ -9,11 +9,13 @@ from .portfolio import Portfolio
 
 
 class Fill(BaseModel):
-    id: str
+    """Confirmed execution details returned by the broker after an order fills."""
+
+    id: str                      # broker-assigned order ID
     ticker: str
     action: Literal["BUY", "SELL"]
-    quantity: float
-    price: float
+    quantity: float              # shares actually filled (may differ from requested)
+    price: float                 # execution price per share
 
 
 class BrokerRejection(Exception):
@@ -21,6 +23,8 @@ class BrokerRejection(Exception):
 
 
 class Broker(Protocol):
+    """Structural interface satisfied by Trading212Broker, FakeBroker, and any future adapters."""
+
     async def submit_market(
         self, ticker: str, action: Literal["BUY", "SELL"], quantity: float
     ) -> Fill: ...

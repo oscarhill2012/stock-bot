@@ -43,7 +43,9 @@ def _parse_window(window: str) -> timedelta:
     raise SystemExit(f"unsupported window format: {window} (use Nd)")
 
 
-def run_replay(*, window: str, fixture_dir: Path | None, starting_cash: float = 10_000.0) -> ReplaySummary:
+async def _run_replay_async(
+    *, window: str, fixture_dir: Path | None, starting_cash: float = 10_000.0
+) -> ReplaySummary:
     tickers = get_watchlist()
     days = _parse_window(window).days
     end = datetime.now(tz=timezone.utc).date()
@@ -69,15 +71,23 @@ def run_replay(*, window: str, fixture_dir: Path | None, starting_cash: float = 
             if i < len(history[t]):
                 broker.set_price(t, history[t][i])
 
-        asyncio.run(run_once(broker))
+        await run_once(broker)
         ticks_completed += 1
 
-    portfolio = asyncio.run(broker.get_portfolio())
+    portfolio = await broker.get_portfolio()
     return ReplaySummary(
         ticks_completed=ticks_completed,
         final_cash=portfolio.cash,
         final_position_count=len(portfolio.positions),
     )
+
+
+def run_replay(*, window: str, fixture_dir: Path | None, starting_cash: float = 10_000.0) -> ReplaySummary:
+    return asyncio.run(_run_replay_async(
+        window=window,
+        fixture_dir=fixture_dir,
+        starting_cash=starting_cash,
+    ))
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -10,20 +10,32 @@ def weights_to_orders(
     portfolio: Portfolio,
     prices: dict[str, float],
 ) -> list[Order]:
+    """Convert a target weight map into a list of actionable Orders.
+
+    Skips tickers where the weight change is smaller than ORDER_EPSILON to
+    avoid submitting hairline adjustments. Raises ValueError if a required
+    price is missing from `prices`.
+    """
     total = portfolio.total_value
     current = portfolio.current_weights()
     orders: list[Order] = []
+
     for ticker, new_w in target.items():
         old_w = current.get(ticker, 0.0)
         delta_w = new_w - old_w
+
+        # Skip negligible changes to avoid unnecessary round-trips.
         if abs(delta_w) < ORDER_EPSILON:
             continue
+
         if ticker not in prices:
             raise ValueError(f"no price for {ticker}")
+
         notional = abs(delta_w) * total
         qty = notional / prices[ticker]
         action = "BUY" if delta_w > 0 else "SELL"
         orders.append(
             Order(ticker=ticker, action=action, quantity=qty, est_price=prices[ticker])
         )
+
     return orders

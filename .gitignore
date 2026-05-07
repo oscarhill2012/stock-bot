@@ -35,7 +35,6 @@ htmlcov/
 .cache/
 .mypy_cache/
 .ruff_cache/
-pytest.*
 
 # Jupyter
 .ipynb_checkpoints/
@@ -55,6 +54,7 @@ bash.exe.stackdump
 
 # Project-specific
 graphify-out/
+.graphifyignore
 docs/performance/*.csv
 docs/performance/*.parquet
 logs/

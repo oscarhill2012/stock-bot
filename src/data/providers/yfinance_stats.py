@@ -13,6 +13,7 @@ from ..retry import with_retry
 
 
 def _f(d: dict[str, Any], *keys: str) -> float | None:
+    """Try each key in order; return the first finite float found, or None."""
     for k in keys:
         v = d.get(k)
         if v is None:

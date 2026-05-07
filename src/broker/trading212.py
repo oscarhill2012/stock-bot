@@ -9,10 +9,17 @@ from .portfolio import Portfolio, Position
 from .protocol import BrokerRejection, Fill
 
 PAPER_BASE = "https://demo.trading212.com"
-LIVE_BASE = "https://live.trading212.com"
+LIVE_BASE  = "https://live.trading212.com"
 
 
 class Trading212Broker:
+    """Async broker adapter wrapping the Trading 212 REST API.
+
+    `instrument_map` maps ticker symbols (e.g. "AAPL") to Trading 212's
+    internal instrument codes (e.g. "AAPL_US_EQ"). Build this map once at
+    startup using the /instruments endpoint.
+    """
+
     def __init__(
         self,
         *,
@@ -31,6 +38,7 @@ class Trading212Broker:
         return {"Authorization": self._api_key, "Content-Type": "application/json"}
 
     def _instrument(self, ticker: str) -> str:
+        """Look up Trading 212 instrument code; raise BrokerRejection if missing."""
         if ticker not in self._instruments:
             raise BrokerRejection(f"unknown instrument for {ticker}")
         return self._instruments[ticker]
@@ -38,6 +46,7 @@ class Trading212Broker:
     async def submit_market(
         self, ticker: str, action: Literal["BUY", "SELL"], quantity: float
     ) -> Fill:
+        """Submit a market order. Positive quantity = buy; negative = sell in T212's API."""
         signed_qty = quantity if action == "BUY" else -quantity
         try:
             resp = await self._client.post(
@@ -59,12 +68,14 @@ class Trading212Broker:
         )
 
     async def position_size(self, ticker: str) -> float:
+        """Return shares currently held for `ticker`, or 0 if not in portfolio."""
         resp = await self._client.get(
             f"{self.base_url}/api/v0/equity/portfolio",
             headers=self._headers(),
         )
         resp.raise_for_status()
         data = await resp.json() if callable(getattr(resp, "json", None)) else resp.json()
+
         code = self._instrument(ticker)
         for pos in data:
             if pos["ticker"] == code:
@@ -72,6 +83,7 @@ class Trading212Broker:
         return 0.0
 
     async def get_portfolio(self) -> Portfolio:
+        """Fetch cash balance and all open positions from T212."""
         acct = await self._client.get(
             f"{self.base_url}/api/v0/equity/account/cash",
             headers=self._headers(),
@@ -87,6 +99,7 @@ class Trading212Broker:
         port.raise_for_status()
         items = await port.json() if callable(getattr(port, "json", None)) else port.json()
 
+        # Reverse the instrument map so we can convert T212 codes back to tickers.
         rev = {v: k for k, v in self._instruments.items()}
         positions: dict[str, Position] = {}
         for it in items:
@@ -98,4 +111,5 @@ class Trading212Broker:
                 avg_cost=float(it["averagePrice"]),
                 last_price=float(it["currentPrice"]),
             )
+
         return Portfolio(cash=cash, positions=positions)

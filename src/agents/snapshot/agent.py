@@ -11,6 +11,16 @@ from google.adk.events import Event
 
 
 class SnapshotterAgent(BaseAgent):
+    """Records a portfolio snapshot (bot vs SPY) into the DB after each tick.
+
+    The snapshot includes the bot's total value, cash, and position count,
+    alongside the current SPY price, so the equity_curve module can compute
+    relative performance without additional data fetches.
+
+    Starting capital and initial SPY price are frozen into session state on
+    the first tick and reused for all subsequent return calculations.
+    """
+
     name: str = "Snapshotter"
     broker: Any
     db_session: Any = None
@@ -25,12 +35,12 @@ class SnapshotterAgent(BaseAgent):
         tick_id = state.get("tick_id", "unknown")
 
         portfolio = await self.broker.get_portfolio()
-        bot_total = portfolio.total_value
-        bot_cash = portfolio.cash
+        bot_total          = portfolio.total_value
+        bot_cash           = portfolio.cash
         bot_positions_value = bot_total - bot_cash
-        bot_position_count = len(portfolio.positions)
+        bot_position_count  = len(portfolio.positions)
 
-        # Fetch SPY price
+        # Fetch the latest SPY close for the benchmark comparison.
         try:
             import yfinance as yf
             spy_ticker = yf.Ticker("SPY")
@@ -39,32 +49,34 @@ class SnapshotterAgent(BaseAgent):
         except Exception:
             spy_price = 0.0
 
-        # Starting capital from state (frozen on first tick)
+        # Anchor starting capital and SPY price on the very first tick.
         if "starting_capital" not in state:
             state["starting_capital"] = bot_total
         start = state["starting_capital"]
-        spy_start = state.get("spy_start_price", spy_price)
+
         if "spy_start_price" not in state:
             state["spy_start_price"] = spy_price
+        spy_start = state.get("spy_start_price", spy_price)
 
-        bot_return_pct = (bot_total - start) / start * 100 if start else 0.0
-        spy_return_pct = (spy_price - spy_start) / spy_start * 100 if spy_start else 0.0
+        # Compute returns relative to the anchor.
+        bot_return_pct  = (bot_total - start) / start * 100 if start else 0.0
+        spy_return_pct  = (spy_price - spy_start) / spy_start * 100 if spy_start else 0.0
         excess_return_pct = bot_return_pct - spy_return_pct
         spy_value_if_held = start * (1 + spy_return_pct / 100)
 
         snap = {
-            "tick_id": tick_id,
-            "recorded_at": datetime.now(tz=timezone.utc),
-            "bot_total_value": bot_total,
-            "bot_cash": bot_cash,
-            "bot_positions_value": bot_positions_value,
-            "bot_position_count": bot_position_count,
-            "spy_price": spy_price,
-            "spy_value_if_held": spy_value_if_held,
-            "bot_return_pct": bot_return_pct,
-            "spy_return_pct": spy_return_pct,
-            "excess_return_pct": excess_return_pct,
-            "holdings_breakdown": portfolio.current_weights(),
+            "tick_id":              tick_id,
+            "recorded_at":          datetime.now(tz=timezone.utc),
+            "bot_total_value":      bot_total,
+            "bot_cash":             bot_cash,
+            "bot_positions_value":  bot_positions_value,
+            "bot_position_count":   bot_position_count,
+            "spy_price":            spy_price,
+            "spy_value_if_held":    spy_value_if_held,
+            "bot_return_pct":       bot_return_pct,
+            "spy_return_pct":       spy_return_pct,
+            "excess_return_pct":    excess_return_pct,
+            "holdings_breakdown":   portfolio.current_weights(),
         }
 
         if self.db_session:
@@ -74,8 +86,9 @@ class SnapshotterAgent(BaseAgent):
 
         state["last_snapshot"] = snap
         return
-        yield
+        yield  # required to make this an async generator
 
 
 def build_snapshotter(broker, db_session=None) -> SnapshotterAgent:
+    """Factory used by the pipeline builder to wire in the broker and DB session."""
     return SnapshotterAgent(broker=broker, db_session=db_session)

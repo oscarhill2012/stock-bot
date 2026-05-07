@@ -28,6 +28,7 @@ class BufferEntryRow(Base):
 
 
 def save_buffer_entry(session: Session, entry_data: dict, tick_id: str) -> None:
+    """Persist one memory buffer entry. `session.flush()` is called; caller commits."""
     from agents.memory.schema import BufferEntry
     entry = BufferEntry.model_validate(entry_data)
     row = BufferEntryRow(
@@ -45,6 +46,7 @@ def save_buffer_entry(session: Session, entry_data: dict, tick_id: str) -> None:
 
 
 def load_recent_buffer(session: Session, tick_id: str, limit: int = 24) -> list[dict]:
+    """Return the `limit` most-recent buffer entries for `tick_id`, oldest first."""
     from agents.memory.schema import BufferEntry
     rows = (
         session.query(BufferEntryRow)
@@ -90,6 +92,7 @@ class TradeLogRow(Base):
 
 
 def save_trade_log_entry(session: Session, entry: dict) -> None:
+    """Persist one closed-trade record. Caller is responsible for committing."""
     row = TradeLogRow(**entry)
     session.add(row)
     session.flush()
@@ -116,6 +119,7 @@ class PortfolioSnapshotRow(Base):
 
 
 def save_portfolio_snapshot(session: Session, snap: dict) -> None:
+    """Persist one equity-curve data point. Caller is responsible for committing."""
     import json as json_mod
     row = PortfolioSnapshotRow(
         tick_id=snap["tick_id"],
@@ -210,14 +214,17 @@ def save_attribution_signal(
 
 
 def make_engine(db_url: str = "sqlite://"):
+    """Create a SQLAlchemy engine for the given URL. Default is an in-memory SQLite."""
     return create_engine(db_url)
 
 
 def make_session_factory(engine):
+    """Return a sessionmaker bound to `engine`."""
     return sessionmaker(bind=engine)
 
 
 def create_all(engine) -> None:
+    """Create all StockBot tables if they don't already exist (idempotent)."""
     Base.metadata.create_all(engine)
 
 

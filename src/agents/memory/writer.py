@@ -2,12 +2,19 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from typing import AsyncGenerator
+
+from google.adk.agents import BaseAgent
+from google.adk.agents.invocation_context import InvocationContext
+from google.adk.events import Event
 
 from .compress import compress
+from .dedup import detect_repeat
+from .embeddings import embed
 from .schema import BufferEntry
 
-BUFFER_MAX = 24
-BUFFER_EVICT_AT = 25  # evict when buffer reaches this size
+BUFFER_MAX   = 24
+BUFFER_EVICT_AT = 25  # evict the oldest entry when buffer reaches this size
 
 
 async def append_with_eviction(
@@ -16,31 +23,33 @@ async def append_with_eviction(
     day_digest: str,
     compress_fn: Callable[[str, BufferEntry, Callable | None], Awaitable[str]] | None = None,
 ) -> tuple[list[BufferEntry], str]:
-    """Append new_entry, evicting oldest when buffer is full.
+    """Append new_entry to the buffer, evicting the oldest when full.
+
+    If the buffer length reaches BUFFER_EVICT_AT, the head is popped and
+    merged into `day_digest` via the compress function (LLM or fast-path).
 
     Returns (updated_buffer, updated_day_digest).
     """
     buffer = list(buffer)
     buffer.append(new_entry)
+
     if len(buffer) < BUFFER_EVICT_AT:
         return buffer, day_digest
+
     evicted = buffer.pop(0)
     _compress = compress_fn or compress
     new_digest = await _compress(day_digest, evicted)
     return buffer, new_digest
 
 
-from typing import AsyncGenerator
-
-from google.adk.agents import BaseAgent
-from google.adk.agents.invocation_context import InvocationContext
-from google.adk.events import Event
-
-from .dedup import detect_repeat
-from .embeddings import embed
-
-
 class MemoryWriter(BaseAgent):
+    """ADK BaseAgent that appends a decision record after every tick.
+
+    Reads the strategist decision from session state, builds a BufferEntry,
+    runs semantic dedup, and calls append_with_eviction. All state mutations
+    are written back into session.state — no events are emitted.
+    """
+
     name: str = "MemoryWriter"
 
     async def _run_async_impl(
@@ -59,10 +68,14 @@ class MemoryWriter(BaseAgent):
             timestamp=__import__("datetime").datetime.now(
                 tz=__import__("datetime").timezone.utc
             ),
-            decision_tag=decision.get("decision_tag", "unknown") if isinstance(decision, dict)
-                         else decision.decision_tag,
+            decision_tag=(
+                decision.get("decision_tag", "unknown")
+                if isinstance(decision, dict)
+                else decision.decision_tag
+            ),
             reasoning_summary=(
-                decision.get("reasoning", "")[:120] if isinstance(decision, dict)
+                decision.get("reasoning", "")[:120]
+                if isinstance(decision, dict)
                 else decision.reasoning[:120]
             ),
             smart_money_seen=bool(state.get("smart_money_signals")),
@@ -78,13 +91,15 @@ class MemoryWriter(BaseAgent):
 
         state["memory_buffer"] = [e.model_dump() for e in updated_buffer]
         state["day_digest"] = updated_digest
+
         if isinstance(decision, dict):
             state["thesis"] = decision.get("updated_thesis", state.get("thesis", ""))
         else:
             state["thesis"] = decision.updated_thesis
-        # No events to yield — pure state mutation
+
+        # No events to yield — pure state mutation.
         return
-        yield  # required to make this a generator
+        yield  # required to make this an async generator
 
 
 memory_writer = MemoryWriter()

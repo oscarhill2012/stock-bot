@@ -14,6 +14,16 @@ from orchestrator.state import MIN_HELD_WEIGHT
 
 
 class RiskGateAgent(BaseAgent):
+    """Pure-Python deterministic agent that sits between the Strategist and the Executor.
+
+    Responsibilities:
+    1. Clamp the strategist's target weights to satisfy hard risk rules.
+    2. Validate position lifecycle contracts (close_reasons for any closing).
+    3. Convert the clamped weights into concrete broker Orders.
+
+    No LLM calls — this agent is fast and fully deterministic.
+    """
+
     name: str = "RiskGate"
     broker: Any = None
 
@@ -36,18 +46,16 @@ class RiskGateAgent(BaseAgent):
         )
 
         proposed = dict(decision.target_weights)
-        # Keep original weights for lifecycle validation (pre-clamp)
+        # Snapshot pre-clamp weights for lifecycle validation below.
         original_weights = dict(proposed)
 
-        # Current weights from portfolio
         if self.broker:
             portfolio = await self.broker.get_portfolio()
             current_weights = portfolio.current_weights()
-            # Start with position prices; supplement with broker's internal prices if available
-            prices = {
-                t: pos.last_price for t, pos in portfolio.positions.items()
-            }
-            # FakeBroker exposes _prices for test convenience
+
+            # Build a price map from portfolio positions, then fill any gaps
+            # from FakeBroker's injected _prices (used in tests).
+            prices = {t: pos.last_price for t, pos in portfolio.positions.items()}
             if hasattr(self.broker, "_prices"):
                 for t, p in self.broker._prices.items():
                     if t not in prices:
@@ -56,12 +64,13 @@ class RiskGateAgent(BaseAgent):
             current_weights = {}
             prices = {}
 
+        # Apply all hard constraints in order; returns telemetry for logging.
         clamps = apply_constraints(proposed, current_weights)
 
-        # Lifecycle check: only validate closings (RiskGate enforces close_reasons;
-        # new open validation is handled by the Strategist callback)
+        # Lifecycle check — only closing positions need a recorded reason.
+        # New-open validation is handled earlier by the Strategist callback.
         for t, new_w in original_weights.items():
-            was_open = current_weights.get(t, 0.0) >= MIN_HELD_WEIGHT
+            was_open  = current_weights.get(t, 0.0) >= MIN_HELD_WEIGHT
             will_be_open = new_w >= MIN_HELD_WEIGHT
             if was_open and not will_be_open and t not in decision.close_reasons:
                 from agents.risk_gate.lifecycle import StrategistContractViolation
@@ -77,7 +86,8 @@ class RiskGateAgent(BaseAgent):
         state["final_orders"] = [o.model_dump() for o in orders]
         state["risk_clamps_applied"] = [c.model_dump() for c in clamps]
         return
-        yield
+        yield  # required to make this an async generator
 
 
+# Module-level singleton — pipeline uses RiskGateAgent(broker=...) factory instead.
 risk_gate_agent = RiskGateAgent()

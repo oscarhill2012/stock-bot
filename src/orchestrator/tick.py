@@ -7,14 +7,22 @@ from datetime import datetime, timezone
 
 
 async def run_once(broker, session=None) -> dict:
-    """Run one hourly tick and return summary."""
+    """Run one hourly tick and return the final session state dict.
+
+    Creates a fresh ADK session, seeds the initial tick state, runs the
+    full pipeline, then reads back the completed session state.
+    """
     from google.adk import Runner
+    from google.genai import types as genai_types
 
     from orchestrator.persistence import make_session_service
     from orchestrator.pipeline import build_pipeline
     from orchestrator.stock_picker import get_watchlist
 
-    tick_id = f"tick-{datetime.now(tz=timezone.utc).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    tick_id = (
+        f"tick-{datetime.now(tz=timezone.utc).strftime('%Y%m%dT%H%M%S')}"
+        f"-{uuid.uuid4().hex[:8]}"
+    )
     tickers = get_watchlist()
 
     pipeline = build_pipeline(broker, session)
@@ -25,6 +33,7 @@ async def run_once(broker, session=None) -> dict:
         session_service=session_service,
     )
 
+    # Create a fresh session with the minimal state every tick needs.
     adk_session = await session_service.create_session(
         app_name="StockBot",
         user_id="stockbot",
@@ -38,7 +47,6 @@ async def run_once(broker, session=None) -> dict:
         },
     )
 
-    from google.genai import types as genai_types
     events = runner.run_async(
         user_id="stockbot",
         session_id=adk_session.id,
@@ -59,9 +67,13 @@ async def run_once(broker, session=None) -> dict:
 
 
 def main():
+    """CLI entry point for running one tick against the real Trading 212 broker."""
     import argparse
+    import os
+
+    import httpx
+
     from broker.trading212 import Trading212Broker
-    import httpx, os
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", default="paper", choices=["paper", "live"])

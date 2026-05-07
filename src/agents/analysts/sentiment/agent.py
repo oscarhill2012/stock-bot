@@ -1,3 +1,4 @@
+"""Sentiment analyst LlmAgent — Gemini Flash scores news and social signals."""
 from __future__ import annotations
 
 from google.adk.agents import LlmAgent
@@ -7,6 +8,7 @@ from .fetch import sentiment_fetch_callback
 from .prompts import SENTIMENT_INSTRUCTION
 from .schema import SentimentSignal
 
+# Module-level singleton used by unit tests that construct the agent directly.
 sentiment_analyst = LlmAgent(
     name="SentimentAnalyst",
     model="gemini-2.0-flash-001",

@@ -1,83 +1,91 @@
-"""Shared state schemas — TickState built incrementally across phases."""
+"""Shared state schemas — TickState built incrementally across pipeline phases."""
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-# ── constants ────────────────────────────────────────────────────────
-MIN_HELD_WEIGHT: float = 0.001
-MAX_POSITION_WEIGHT: float = 0.20
-CASH_FLOOR_WEIGHT: float = 0.10
-MAX_DELTA_PER_TICKER: float = 0.01
-MAX_TOTAL_TURNOVER: float = 0.30
-ORDER_EPSILON: float = 1e-6
+# ── Risk-gate constants ───────────────────────────────────────────────────────
+MIN_HELD_WEIGHT: float    = 0.001   # position is considered "open" above this threshold
+MAX_POSITION_WEIGHT: float = 0.20   # single-ticker concentration cap
+CASH_FLOOR_WEIGHT: float   = 0.10   # minimum cash reserve fraction
+MAX_DELTA_PER_TICKER: float = 0.01  # maximum weight change per tick per ticker
+MAX_TOTAL_TURNOVER: float  = 0.30   # maximum total portfolio turnover per tick
+ORDER_EPSILON: float       = 1e-6   # weight change below this is ignored (no order generated)
 
 
-# ── orders + clamp telemetry ─────────────────────────────────────────
+# ── Orders + clamp telemetry ──────────────────────────────────────────────────
+
 class Order(BaseModel):
+    """A trade instruction produced by the risk gate for the executor."""
+
     ticker: str
     action: Literal["BUY", "SELL"]
-    quantity: float
-    est_price: float
+    quantity: float     # shares to trade
+    est_price: float    # price used to size the order (may differ from fill price)
 
 
 class ClampRecord(BaseModel):
+    """Telemetry for one constraint application — logged for analysis."""
+
     rule: Literal[
         "max_position", "max_delta", "cash_floor", "max_turnover", "no_short"
     ]
     ticker: str | None
-    before: float
-    after: float
+    before: float   # weight before the clamp
+    after: float    # weight after the clamp
 
 
 class Execution(BaseModel):
+    """Result of submitting one Order to the broker."""
+
     order: Order
     status: Literal["filled", "rejected", "partial"]
-    actual_price: float | None = None
+    actual_price: float | None    = None
     actual_quantity: float | None = None
-    slippage_bps: float | None = None
-    broker_order_id: str | None = None
-    error: str | None = None
+    slippage_bps: float | None    = None  # basis-points slippage vs est_price
+    broker_order_id: str | None   = None
+    error: str | None             = None
 
 
-# ── TickState ─────────────────────────────────────────────────────────
-from typing import Any
-
+# ── TickState ─────────────────────────────────────────────────────────────────
 
 class TickState(BaseModel):
-    """Complete shared state schema. Agents read/write session.state[key]."""
+    """Complete shared state schema. Agents read/write session.state[key].
 
-    # Seeded at tick start
+    Fields are grouped by which pipeline stage writes them.
+    """
+
+    # Seeded at tick start by the entrypoint.
     tick_id: str = ""
     tickers: list[str] = Field(default_factory=list)
 
-    # Written by analyst before_callbacks
-    technical_data: dict[str, Any] = Field(default_factory=dict)
-    fundamental_data: dict[str, Any] = Field(default_factory=dict)
-    sentiment_data: dict[str, Any] = Field(default_factory=dict)
+    # Written by analyst before_callbacks (raw data fetched from providers).
+    technical_data: dict[str, Any]      = Field(default_factory=dict)
+    fundamental_data: dict[str, Any]    = Field(default_factory=dict)
+    sentiment_data: dict[str, Any]      = Field(default_factory=dict)
     smart_money_data: dict[str, Any] | None = None
 
-    # Written by analyst LLMs
-    technical_signals: list[Any] = Field(default_factory=list)
-    fundamental_signals: list[Any] = Field(default_factory=list)
-    sentiment_signals: list[Any] = Field(default_factory=list)
-    smart_money_signals: list[Any] = Field(default_factory=list)
+    # Written by analyst LLMs (structured signal objects).
+    technical_signals: list[Any]    = Field(default_factory=list)
+    fundamental_signals: list[Any]  = Field(default_factory=list)
+    sentiment_signals: list[Any]    = Field(default_factory=list)
+    smart_money_signals: list[Any]  = Field(default_factory=list)
 
-    # Persistent across ticks
-    memory_buffer: list[Any] = Field(default_factory=list)
-    day_digest: str = ""
-    thesis: str = ""
+    # Persistent across ticks (loaded from and saved to the ADK session store).
+    memory_buffer: list[Any]  = Field(default_factory=list)
+    day_digest: str           = ""
+    thesis: str               = ""
     positions: dict[str, Any] = Field(default_factory=dict)
     last_executed_tick_id: str | None = None
 
-    # Written by strategist
+    # Written by the Strategist LlmAgent.
     strategist_decision: Any = None
 
-    # Written by risk gate
-    final_orders: list[Any] = Field(default_factory=list)
+    # Written by the RiskGate.
+    final_orders: list[Any]        = Field(default_factory=list)
     risk_clamps_applied: list[Any] = Field(default_factory=list)
 
-    # Written by executor
+    # Written by the Executor.
     executions: list[Any] = Field(default_factory=list)
