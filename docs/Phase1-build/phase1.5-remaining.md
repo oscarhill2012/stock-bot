@@ -1,5 +1,11 @@
 # Phase 1.5 — Remaining Tasks
 
+> **Status (2026-05-07):** Phases K, L, O, P implemented as part of the combined
+> Phase 1.5 + Phase 2a plan. M and N1 are now provided by the Phase 2a baseline
+> stack (`src/baselines/spy.py`, `src/baselines/equity_curve.py`,
+> `src/scripts/plot_equity.py`). N2 (MLP) is deferred to Phase 3. N3 is
+> simplified to a 2-way bot-vs-SPY comparison (the plotter covers it).
+
 What's left after the initial agent/broker/orchestrator implementation. Phases K–P from `docs/phase1-agents.md`, deferred to continue tomorrow.
 
 **Status:** Phases A–J implemented and passing (110 tests). All source code lives under `src/`.
@@ -48,6 +54,8 @@ What's left after the initial agent/broker/orchestrator implementation. Phases K
 
 ## Phase M — Equity plotter
 
+> **SUPERSEDED by Phase 2a:** This work is now covered by `src/baselines/spy.py`, `src/baselines/equity_curve.py`, and `src/scripts/plot_equity.py`.
+
 ### M1: plot_equity.py
 - Write `scripts/plot_equity.py`
 - Reads `portfolio_snapshots` table from SQLite/Postgres
@@ -60,19 +68,21 @@ What's left after the initial agent/broker/orchestrator implementation. Phases K
 
 ## Phase N — Baselines
 
+> **SUPERSEDED by Phase 2a:** This work is now covered by `src/baselines/spy.py`, `src/baselines/equity_curve.py`, and `src/scripts/plot_equity.py`.
+
 ### N1: SPY buy-and-hold baseline
 - Write `src/baselines/spy.py`
 - Pull SPY OHLCV via yfinance, compute: cumulative return, annualised return, Sharpe, max drawdown, Calmar
 - Reference: `docs/baselines.md`
 - Commit: `feat(baselines): SPY buy-and-hold baseline`
 
-### N2: PyTorch MLP baseline
-- Write `src/baselines/mlp.py`
-- 11 features: rolling returns, volume changes, vol, MA gaps, RSI
-- Walk-forward training, threshold trading rule
-- Reference: `docs/2026-05-06-mlp-model.md`
-- Test: feature engineering on fixture; convergence (loss < 0.7 BCE on 1y fake data)
-- Commit: `feat(baselines): MLPBaseline matches docs/2026-05-06-mlp-model.md`
+### N2: PyTorch MLP baseline (DEFERRED to Phase 3)
+
+Originally part of the live-trading gate per `docs/baselines.md`. Deferred:
+the simpler bot-vs-SPY comparison covers Phase 1's "is the bot beating
+buy-and-hold?" question. Reintroduce when Phase 3 model training begins.
+
+> **SUPERSEDED by Phase 2a:** This work is now covered by `src/baselines/spy.py`, `src/baselines/equity_curve.py`, and `src/scripts/plot_equity.py`.
 
 ### N3: 3-way evaluation harness
 - Write `src/baselines/evaluate.py`
@@ -127,6 +137,8 @@ Add to `deploy/README.md`:
 ---
 
 ## Notes for next session
+
+> **Note (2026-05-07):** Work complete. These notes are historical.
 
 - **`PYTHONPATH=src`** required for running scripts directly (pytest handles this automatically via `pytest.ini`)
 - **ADK 1.32**: `analyst_pool`, `strategist_agent`, `memory_writer` are factory functions (not module-level singletons) due to ADK's single-parent enforcement — see `src/orchestrator/pipeline.py`
