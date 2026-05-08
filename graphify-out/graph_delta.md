@@ -104,6 +104,28 @@ data.secrets.require_key, non-secret config in DataConfig.
   finnhub_social.py, sec_filings.py, sec_holders.py, sec_insiders.py,
   quiver_politicians.py.
 
+## 2026-05-08 — config/ + scripts/ promoted to project root
+
+Moved JSON config and CLI entrypoints out of `src/`. Project-root `config/`
+now holds both `data.json` (already there) and `watchlist.json` (relocated
+from `src/config/`); `src/config/` is gone. CLI scripts moved from
+`src/scripts/` to `scripts/`.
+
+- New nodes: `config/README.md` (config-file index + per-file setting tables)
+- Moved nodes (path only):
+  - `src/config/watchlist.json` → `config/watchlist.json`
+  - `src/scripts/{__init__,hard_reset,init_db,initialise,plot_equity,replay_backtest,smoke_run,test_bundle}.py` → `scripts/<same>.py`
+- Removed nodes: `src/config/` directory (now empty)
+- Changed nodes:
+  - `src/orchestrator/stock_picker.py` — `_WATCHLIST_PATH` resolves via `Path(__file__).resolve().parents[2] / "config" / "watchlist.json"` (project root) instead of `src/config/`
+  - `scripts/initialise.py` + `scripts/hard_reset.py` — `--watchlist` default is now `config/watchlist.json`
+  - `tests/unit/test_initialise_cli.py` — passes `--watchlist config/watchlist.json`
+  - `pytest.ini` — `pythonpath = . src` (was `pythonpath = src`) so tests can import `scripts.<name>` from project root
+  - `.claude/CLAUDE.md` — config + scripts conventions updated
+  - `README.txt` — "Where to look next" lists `scripts/` + `config/`
+- CLI invocation unchanged: `PYTHONPATH=src python -m scripts.<name>` still works because Python adds cwd to sys.path for `-m` (resolves `scripts.*` from root) while `PYTHONPATH=src` resolves `broker.*`, `orchestrator.*`, `lifecycle.*`, etc.
+- Phase 4 Plan A note: the planned `src/config/digest.py` is left for that plan to decide — recommended to inline the constants in `src/contract/digest.py` (since they're behavioural defaults, not JSON config).
+
 ## 2026-05-08 — Phase 4 directory created; superseded specs/plans removed
 
 Strategist v2 + Analyst→Strategist contract design + plan docs consolidated under `docs/Phase4-stratergist-and-analysts/` and re-sliced into four sub-plans (A → B → C → D) so each is invocable via `superpowers:subagent-driven-development`. No code changes yet — this is a docs reorg.

@@ -41,7 +41,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--archive-dir", default="data/archives")
     p.add_argument("--scheduler-job", default=os.environ.get("SCHEDULER_JOB"),
                    help="Cloud Scheduler job name to pause (skipped for SQLite)")
-    p.add_argument("--watchlist", default="src/config/watchlist.json")
+    p.add_argument("--watchlist", default="config/watchlist.json")
     p.add_argument("--broker-mode", default="paper")
     p.add_argument("--starting-capital", type=float, default=10000.0,
                    help="Starting capital of the run being archived")

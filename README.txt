@@ -154,4 +154,5 @@ WHERE TO LOOK NEXT
   src/orchestrator/pipeline.py   ADK SequentialAgent composition (the "brain wiring")
   src/baselines/                 SPY metrics + equity-curve library (shared with future dashboard)
   src/lifecycle/                 hard_reset and initialise libraries
-  src/scripts/                   CLI entrypoints (PYTHONPATH=src python -m scripts.<name>)
+  scripts/                       CLI entrypoints (PYTHONPATH=src python -m scripts.<name>)
+  config/                        JSON config files (data.json, watchlist.json) — see config/README.md

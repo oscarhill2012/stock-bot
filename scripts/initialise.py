@@ -47,7 +47,7 @@ async def main_async(argv: list[str] | None = None) -> int:
     p.add_argument("--db-url", default=None)
     p.add_argument("--capital", type=float, required=True)
     p.add_argument("--broker-mode", default="paper", choices=["paper", "live"])
-    p.add_argument("--watchlist", default="src/config/watchlist.json")
+    p.add_argument("--watchlist", default="config/watchlist.json")
     p.add_argument("--scheduler-job", default=os.environ.get("SCHEDULER_JOB"))
     args = p.parse_args(argv)
 

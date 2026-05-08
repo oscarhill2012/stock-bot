@@ -4,7 +4,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-_WATCHLIST_PATH = Path(__file__).parent.parent / "config" / "watchlist.json"
+# Project root is two levels above src/orchestrator/.
+_WATCHLIST_PATH = Path(__file__).resolve().parents[2] / "config" / "watchlist.json"
 
 
 def get_watchlist() -> list[str]:

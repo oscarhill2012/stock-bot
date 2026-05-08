@@ -32,6 +32,6 @@ async def test_main_calls_initialise(tmp_path, monkeypatch):
         "--db-url", f"sqlite:///{db_path}",
         "--capital", "10000",
         "--broker-mode", "paper",
-        "--watchlist", "src/config/watchlist.json",
+        "--watchlist", "config/watchlist.json",
     ])
     assert rc == 0
