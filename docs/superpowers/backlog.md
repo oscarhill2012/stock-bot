@@ -11,7 +11,7 @@ When a segment is specced, move it from this file into a real spec under `docs/s
 The strategist is being grown in three goals. Items below are tagged with which goal they belong to.
 
 - **Goal 1 — Strategist v2.** *In flight.* Spec: `docs/superpowers/specs/strategist-v2-design.md`, plan: `docs/superpowers/plans/strategist-v2.md`. Single LLM strategist, per-ticker stance output, knows about its own held positions (rendered thesis + live state), lifecycle is derived not declared. Substrate from the dropped council/exit-rules specs (lifecycle validation, telemetry tables, `opening_tick_id`/`closing_tick_id` FKs) was absorbed into v2.
-- **Goal 2 — Analyst → Strategist contract.** *Next brainstorm.* Make the analyst surface predictable, weighted, and structured enough that the strategist (and later, the knowledge base) can reason over it without bespoke parsing per analyst.
+- **Goal 2 — Analyst → Strategist contract.** *Specced.* Spec: `docs/superpowers/specs/analyst-strategist-contract-design.md`. Hybrid analysts (deterministic feature extractors + LLM verdict on top), code-only digest collapses 4 → 1 `TickerEvidence` per ticker, equal-weight default with slot for learned weights, persisted as `AnalystEvidenceRow` + `TickerEvidenceRow`. Implementation plan TBD.
 - **Goal 3 — Knowledge base / self-improvement.** *Long arc.* The strategist learns from its own outcomes. The user's framing: "save the signal, not the trade." Stock-agnostic pattern recall, not a vector DB of past trades. Needs Goal 1 telemetry shipped + weeks of paper data before it can be designed concretely.
 
 A few items previously in this backlog (council debate, persona memory, persona model diversity) are gone — they assumed the council architecture, which v2 dropped. If multi-LLM deliberation ever comes back, it'll be a fresh design conversation gated on Goal 3 outcome data.
@@ -20,39 +20,19 @@ A few items previously in this backlog (council debate, persona memory, persona 
 
 ## Tier 1 — Major (likely become full specs)
 
-### B1. Analyst → Strategist contract  *(Goal 2 — next up)*
-
-**Origin:** Identified during the strategist v2 retrospective. v2 fixes the strategist's *internal* legibility (per-ticker stance, lifecycle derivation, held-position context) but leaves the *input* surface unchanged. Today the strategist sees a heterogeneous bag of `AnalystSignal` objects with free-form `evidence` dicts and a single per-family weight in `ANALYST_WEIGHTS`. The strategist re-derives meaning each tick.
-
-**The goal in plain English:** the strategist should consume a clean, schema-stable signal surface where each analyst's evidence has known keys, each evidence key carries an explicit "this is what bullish/bearish means here" interpretation, and weights are applied consistently. After this work, plugging in a new analyst or reweighting an existing one is a config change, not a prompt change.
-
-**Scope hints (for the brainstorm):**
-- Audit current analysts (technical, fundamental, sentiment, smart_money) — what does each emit as `evidence`? Where does `SmartMoneySignal` diverge from the base `AnalystSignal`? Should they unify?
-- Decide whether evidence becomes a typed schema per analyst (Pydantic subclasses) or stays a dict with documented keys.
-- Decide where weighting lives: in the prompt as verbal trust hints, in a numerical aggregation step before the prompt, or in a new "signal pre-digest" agent.
-- `ANALYST_WEIGHTS` today is per-family. Does v2 of the contract still hand the strategist 4 separate signals, or does a pre-digest collapse them into one structured "market read" object?
-- How does this contract make Goal 3 (knowledge base) easier — i.e., what does an "outcome-attributed signal" look like once we want to ask "did this evidence shape predict the outcome?"
-
-**Key questions to brainstorm:**
-- What's the minimum schema we can lock in now without painting ourselves into a corner before the knowledge base exists?
-- Is there a "signal pre-digest" stage worth adding to the pipeline, or does the strategist consume raw signals directly under a tighter contract?
-- How should we handle analysts that legitimately disagree (e.g., fundamentals bullish, sentiment bearish)? Today that's the strategist's problem; should the contract give it a structured way to see the disagreement?
-- Per-analyst confidence calibration: are confidences across analysts comparable today? (Almost certainly not.) How do we make them comparable enough to weight?
-
-**Dependencies:** Goal 1 (strategist v2) shipped, so we have a stable consumer with telemetry to validate against.
-
----
+> *B1 (Analyst → Strategist contract) was specced — see `docs/superpowers/specs/analyst-strategist-contract-design.md`. Numbering retained; B5 still references "Goal 2" semantics.*
 
 ### B2. Knowledge base — design the learning loop  *(Goal 3 — long arc, design only)*
 
 **Origin:** The user's explicit Goal 3 framing: the bot should learn from outcomes. "We make money because we notice signals that infer we can earn money. Save the signal, not the trade." Stock-agnostic pattern recall, not a vector DB of past trades.
 
-**Substrate already in place after Goal 1:**
-- `TickerStanceRow` — per-ticker strategist stance per tick (rationale, conviction, lifecycle, evidence_refs).
-- `StrategistDecisionRow` — final tick decisions with full metadata.
-- `TradeLogRow.opening_tick_id` / `closing_tick_id` — outcome attribution joins back to the tick that opened/closed each position.
-- `AnalystSignal.evidence` — structured numerics across all analysts (cleaner once Goal 2 lands).
-- `PositionThesis` rendered into prompts — the strategist's stated *why* is now persisted alongside the *what*.
+**Substrate already in place after Goals 1 + 2:**
+- `TickerStanceRow` — per-ticker strategist stance per tick (rationale, conviction, lifecycle, evidence_refs). *(Goal 1.)*
+- `StrategistDecisionRow` — final tick decisions with full metadata. *(Goal 1.)*
+- `TradeLogRow.opening_tick_id` / `closing_tick_id` — outcome attribution joins back to the tick that opened/closed each position. *(Goal 1.)*
+- `TickerEvidenceRow` — the canonical per-ticker per-tick evidence object (aggregate direction, confidence, disagreement, snapshotted weights). *This is the KB lookup primitive.* *(Goal 2.)*
+- `AnalystEvidenceRow` — per-analyst-per-ticker structured features + verdict, JSON-extensible. *(Goal 2.)*
+- `PositionThesis` rendered into prompts — the strategist's stated *why* is now persisted alongside the *what*. *(Goal 1.)*
 
 **The goal in plain English:** when the strategist is about to act on signal pattern X, it should know "the last N times we saw something shaped like X, here's what happened." Not "the last time we bought AAPL," but "the last time technicals looked oversold while smart-money inflows were trending positive."
 
@@ -64,7 +44,7 @@ A few items previously in this backlog (council debate, persona memory, persona 
 - Storage shape: separate "lessons" table? Annotated `TickerStanceRow`? A side index that maps signal-pattern → outcome statistics?
 - Read path vs write path: when does the loop *learn* (between ticks? batched nightly?) vs *get consulted* (every tick? only on novel patterns?)?
 
-**Dependencies:** Goal 1 shipped + Goal 2 contract stable + ~weeks of paper-trading data accumulated. This brainstorm is design-only until that data exists; jumping to implementation early risks designing for an imaginary distribution.
+**Dependencies:** Goal 1 shipped + Goal 2 contract shipped + ~weeks of paper-trading data accumulated. This brainstorm is design-only until that data exists; jumping to implementation early risks designing for an imaginary distribution.
 
 **Likely outcome of the brainstorm:** decompose Goal 3 into sub-projects (e.g., "outcome attribution table," "signal pattern primitive," "lookup → prompt injection," "weight learning"). Each becomes its own spec.
 
@@ -105,14 +85,15 @@ A few items previously in this backlog (council debate, persona memory, persona 
 
 ### B5. Per-evidence-key analyst weighting
 
-**Origin:** Goal 2 will land per-family weights. This is the next refinement.
+**Origin:** Goal 2 lands per-family weights with an explicit slot for nested per-key extension (`DEFAULT_ANALYST_WEIGHTS` in `src/config/digest.py`, applied mathematically in `src/contract/digest.py`). This is the next refinement on top of that contract.
 
 **The goal:** instead of "trust smart_money 1.5×", learn that "smart_money's `n_politicians > 2` is highly predictive but `total_dollar_value` alone is noise."
 
 **Key questions:**
-- Storage: extend the Goal 2 contract to a nested `{analyst: {key: weight}}`? Or a separate `EVIDENCE_WEIGHTS` config layered on top?
+- Storage: extend `DEFAULT_ANALYST_WEIGHTS` to a nested `{analyst: {feature_key: weight}}` shape directly, or a separate `EVIDENCE_WEIGHTS` config layered on top?
+- Where in the digest does per-key weighting apply: at feature time (re-scaling features into the aggregate), at vote time (each analyst's confidence is a weighted blend of its features), or both?
 - Override mechanism: can a learned weighting shadow the hand-set defaults, or must they merge?
-- Where does the weighting apply: in the strategist prompt (verbal "trust this more"), in a pre-digest aggregator (mathematical reweighting), or both?
+- Snapshotting: `weights_used` on `TickerEvidence.aggregate` is currently a flat `dict[str, float]`. Does it become nested too, or do we add a sibling `feature_weights_used`?
 
 **Dependencies:** Goal 2 (analyst contract) shipped. Strongly coupled to Goal 3 (knowledge base) — this is one of the things that loop should learn rather than have hand-tuned.
 
@@ -169,7 +150,7 @@ A few items previously in this backlog (council debate, persona memory, persona 
 ```
 Goal 1 (strategist v2, in flight)
    │
-   ├── Goal 2 = B1 (analyst contract)
+   ├── Goal 2 = B1 (analyst contract)         — specced, awaiting plan
    │       │
    │       └── B5 (per-evidence weighting)   ─┐
    │                                          │
@@ -183,6 +164,6 @@ Goal 1 (strategist v2, in flight)
    └── B7 (cost observability)   — independent, low priority but feeds B2
 ```
 
-**Rough order if doing them in series:** B1 → B6 → B7 → B2 (long arc) → B5 → B4 → B3 → B8.
+**Rough order if doing them in series:** B1 (specced) → B6 → B7 → B2 (long arc) → B5 → B4 → B3 → B8.
 
 Most are independent enough to reorder by what hurts most in operation. The one strict ordering is **B1 before B2**: the knowledge base needs a clean signal contract to reason over.
