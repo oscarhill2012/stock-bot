@@ -55,3 +55,13 @@ def test_insider_trades_edgar_registers_on_import() -> None:
 
     entry = _REGISTRY[("insider_trades", "edgar")]
     assert entry.upstream == "edgar"
+
+
+def test_politician_trades_quiver_registers_on_import() -> None:
+    import data.providers.politician_trades.quiver  # noqa: F401
+    from data.registry import _LIMITERS, _REGISTRY
+
+    entry = _REGISTRY[("politician_trades", "quiver")]
+    assert entry.upstream == "quiver"
+    assert _LIMITERS["quiver"].rate_per_minute == 30
+    assert _LIMITERS["quiver"].capacity == 10

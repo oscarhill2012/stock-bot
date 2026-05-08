@@ -23,12 +23,10 @@ from collections.abc import Awaitable
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+from . import providers as _providers  # noqa: F401  — triggers @register decorators
 from .models import (
     ProviderError,
     StockSignalBundle,
-)
-from .providers import (
-    get_public_figure_trades,
 )
 from .rate_limit import EDGAR, FINNHUB, QUIVER, YFINANCE, slowest_min_interval_seconds
 from .registry import dispatch
@@ -41,7 +39,7 @@ _DEFAULTS: dict[str, Any] = {
     "news": [],
     "social_sentiment": None,
     "insider_trades": [],
-    "politicians": [],
+    "politician_trades": [],   # was "politicians"
     "notable_holders": [],
     "filings": [],
 }
@@ -96,8 +94,8 @@ async def get_stock_signal_bundle(
               dispatch("insider_trades", symbol, lookback_days=insider_lookback_days),
               errors),
         _safe(
-            "politicians",
-            get_public_figure_trades(symbol, lookback_days=politician_lookback_days),
+            "politician_trades",
+            dispatch("politician_trades", symbol, lookback_days=politician_lookback_days),
             errors,
         ),
         _safe(

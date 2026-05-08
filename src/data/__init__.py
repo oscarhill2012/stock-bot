@@ -32,6 +32,7 @@ edgartools direct EDGAR access (free, 10 req/sec), the floor is now
 treat it as the data-refresh floor: re-deciding faster means churning
 on stale signals.
 """
+from . import providers as _providers  # noqa: F401  — triggers @register decorators
 from .aggregator import get_stock_signal_bundle, get_stock_signal_bundle_blocking
 from .models import (
     Filing,
@@ -45,9 +46,6 @@ from .models import (
     SocialSentimentSnapshot,
     StockSignalBundle,
     StockStats,
-)
-from .providers import (
-    get_public_figure_trades,
 )
 from .rate_limit import (
     ALL_LIMITERS,
@@ -101,6 +99,19 @@ async def get_social_sentiment(ticker: str):
 async def get_insider_trades(ticker: str, *, lookback_days: int = 30):
     """Fetch SEC Form 4 insider trades for `ticker` via the active provider."""
     return await _dispatch("insider_trades", ticker.upper(), lookback_days=lookback_days)
+
+
+async def get_public_figure_trades(
+    ticker: str | None = None,
+    *,
+    lookback_days: int = 90,
+):
+    """Fetch politician/congressional trades via the active provider."""
+    return await _dispatch(
+        "politician_trades",
+        ticker.upper() if ticker else None,
+        lookback_days=lookback_days,
+    )
 
 
 async def get_notable_holders(
