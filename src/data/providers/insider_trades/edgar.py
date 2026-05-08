@@ -1,4 +1,4 @@
-"""`get_insider_trades` — Form 4 via `edgartools` (free EDGAR, 10 req/sec cap).
+"""`fetch` — Form 4 via `edgartools` (free EDGAR, 10 req/sec cap).
 
 edgartools wraps SEC EDGAR directly: no API key, no quota — just a
 mandatory contact email in the User-Agent. Set `EDGAR_IDENTITY` in
@@ -15,15 +15,15 @@ from typing import Any
 
 from edgar import Company, set_identity
 
-from ..models import InsiderTrade, TradeSide
-from ..rate_limit import EDGAR
-from ..retry import with_retry
-from ..settings import get_settings, require
+from data.registry import _LIMITERS, register
+from data.retry import with_retry
+from data.secrets import require_key
+
+from ...models import InsiderTrade, TradeSide
 
 
 def _ensure_identity() -> None:
-    s = get_settings()
-    identity = require("EDGAR_IDENTITY", s.edgar_identity, "get_insider_trades")
+    identity = require_key("EDGAR_IDENTITY")
     set_identity(identity)
 
 
@@ -149,20 +149,20 @@ def _parse_form4(filing: Any, symbol: str) -> list[InsiderTrade]:
     return out
 
 
-async def get_insider_trades(ticker: str, lookback_days: int = 30) -> list[InsiderTrade]:
+@register(domain="insider_trades", name="edgar", upstream="edgar", rate_per_minute=600, burst=20)
+async def fetch(ticker: str, lookback_days: int = 30) -> list[InsiderTrade]:
     """Form 4 buys/sells filed in the last `lookback_days` for `ticker`.
 
-    Acquires one EDGAR token to list filings, then one per filing to
-    parse. At 10 req/sec this is comfortably under the SEC cap.
+    Acquires one EDGAR token per filing to parse. At 10 req/sec this is
+    comfortably under the SEC cap.
     """
     symbol = ticker.upper()
 
-    await EDGAR.acquire()
     filings = await asyncio.to_thread(_list_form4_filings, symbol, lookback_days)
 
     all_trades: list[InsiderTrade] = []
     for filing in filings:
-        await EDGAR.acquire()
+        await _LIMITERS["edgar"].acquire()
         try:
             trades = await asyncio.to_thread(_parse_form4, filing, symbol)
         except Exception:

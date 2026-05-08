@@ -47,7 +47,6 @@ from .models import (
     StockStats,
 )
 from .providers import (
-    get_insider_trades,
     get_public_figure_trades,
 )
 from .rate_limit import (
@@ -97,6 +96,11 @@ async def get_stock_news(
 async def get_social_sentiment(ticker: str):
     """Fetch social-sentiment snapshot for `ticker` via the active provider."""
     return await _dispatch("social_sentiment", ticker.upper())
+
+
+async def get_insider_trades(ticker: str, *, lookback_days: int = 30):
+    """Fetch SEC Form 4 insider trades for `ticker` via the active provider."""
+    return await _dispatch("insider_trades", ticker.upper(), lookback_days=lookback_days)
 
 
 async def get_notable_holders(

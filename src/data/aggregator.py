@@ -28,7 +28,6 @@ from .models import (
     StockSignalBundle,
 )
 from .providers import (
-    get_insider_trades,
     get_public_figure_trades,
 )
 from .rate_limit import EDGAR, FINNHUB, QUIVER, YFINANCE, slowest_min_interval_seconds
@@ -41,7 +40,7 @@ _DEFAULTS: dict[str, Any] = {
     "stats": None,
     "news": [],
     "social_sentiment": None,
-    "insiders": [],
+    "insider_trades": [],
     "politicians": [],
     "notable_holders": [],
     "filings": [],
@@ -93,7 +92,9 @@ async def get_stock_signal_bundle(
             errors,
         ),
         _safe("social_sentiment", dispatch("social_sentiment", symbol), errors),
-        _safe("insiders", get_insider_trades(symbol, lookback_days=insider_lookback_days), errors),
+        _safe("insider_trades",
+              dispatch("insider_trades", symbol, lookback_days=insider_lookback_days),
+              errors),
         _safe(
             "politicians",
             get_public_figure_trades(symbol, lookback_days=politician_lookback_days),

@@ -47,3 +47,11 @@ def test_notable_holders_edgar_registers_on_import() -> None:
     assert entry.upstream == "edgar"
     # Same limiter singleton as filings/edgar.
     assert _LIMITERS["edgar"].rate_per_minute == 600
+
+
+def test_insider_trades_edgar_registers_on_import() -> None:
+    import data.providers.insider_trades.edgar  # noqa: F401
+    from data.registry import _REGISTRY
+
+    entry = _REGISTRY[("insider_trades", "edgar")]
+    assert entry.upstream == "edgar"
