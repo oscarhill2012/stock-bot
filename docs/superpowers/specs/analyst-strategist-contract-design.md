@@ -15,7 +15,7 @@ This produces three concrete problems:
 
 1. **The strategist re-derives meaning every tick from prose.** Any structured aggregation — weighted vote, disagreement detection, override rationale — has to be re-done by the LLM in-prompt, which is slow and inconsistent across runs.
 2. **Weighting is unmeasurable.** Whatever `ANALYST_WEIGHTS` "means" lives in prose. We can't A/B it, can't tune it from data, and can't tell whether it's helping or hurting.
-3. **There is no compact, KB-friendly artefact per (ticker, tick).** The substrate Goal 3 needs — "the last N times the *signal shape* looked like X, here's what happened" — doesn't exist as a single addressable object. The cost of *not* fixing this is real: every paper-trading week without a clean primitive is a week of lossy data the KB can't reason over.
+3. **There is no compact, KB-friendly artefact per (ticker, tick).** The substrate Goal 3 needs — "the last N times the *signal shape* looked like X, here's what happened" — doesn't exist as a single addressable object. Landing this contract before paper trading starts means the KB writes the right shape from tick zero rather than retrofitting later.
 
 ## Goal
 
@@ -33,7 +33,7 @@ After this work, plugging in a new analyst, reweighting an existing one, or ship
 - **Per-evidence-key weighting (B5).** The contract leaves a slot for nested `{analyst: {key: weight}}` weighting, but only per-analyst weights are wired in this spec.
 - **KB read path / lookup primitive / outcome attribution joins.** The contract produces and persists the KB primitive; reading it, embedding it, joining it to `TradeLogRow` outcomes is all B2.
 - **Discretisation / feature buckets** (e.g., `rsi_zone`). Numerics are stored richly; bucketing decisions belong with KB design once we have data.
-- **Replay tooling** (B8). Phase 3 of the rollout would benefit from "rerun the digest from stored rows" but it's not in scope here.
+- **Replay tooling** (B8). Useful when changing the digest math against historical data, but not needed here.
 - **Sub-tick exits, trailing stops, risk-clamp persistence, cost observability.** Independent backlog items.
 - **Live-trading gate change.** This spec ships entirely under paper trading.
 
@@ -55,8 +55,6 @@ After this work, plugging in a new analyst, reweighting an existing one, or ship
 ---
 
 ## Architecture
-
-The diagram below is the **end-state** (post-Phase 3). Phase 2 is a transitional shape where the LlmAgent's `output_schema` is unchanged and `pack_callback` translates legacy signals to `AnalystEvidence` — see the Rollout section.
 
 ```
 analysts (4 parallel, unchanged shape)        digest (NEW, pure Python)         strategist (prompt updated)
@@ -323,28 +321,27 @@ The other three follow the same shape against their respective provider models (
 **Per-analyst pipeline integration.** Each analyst's existing `fetch_callback` is unchanged. Two new callbacks are added per analyst:
 
 - `features_callback` (before LLM) — runs `extract_*_features` for every ticker, stashes `state["<analyst>_features"]`.
-- `pack_callback` (after LLM) — reads the existing `state["<analyst>_signals"]` plus `state["<analyst>_features"]` and packs them into a `<Analyst>Evidence` per ticker, stashes `state["<analyst>_evidence"]`.
+- `pack_callback` (after LLM) — reads `state["<analyst>_verdicts"]` plus `state["<analyst>_features"]` and packs them into a `<Analyst>Evidence` per ticker, stashes `state["<analyst>_evidence"]`.
 
-In Phase 2 the LLM's `output_schema` is **unchanged** — the analyst still emits `list[<Analyst>Signal]` exactly as today. The `pack_callback` translates: `direction` and `confidence` lift directly off the existing signal; `rationale` is composed by joining `key_factors` (already capped at 3 × 80 chars). This keeps the legacy `*_signals` writers unbroken during the dual-write window.
+The LlmAgent's `output_schema` changes to `list[AnalystVerdict]` and `output_key` to `<analyst>_verdicts`. The legacy `<Analyst>Signal` classes and `*_signals` state keys are removed in the same PR — the bot isn't running anywhere yet, so there's no dual-write window to maintain.
 
-In Phase 3 the LLM's `output_schema` changes to `list[AnalystVerdict]` (no more `key_factors`), the `pack_callback` simplifies, and the legacy state keys are retired.
-
-The LLM prompt is updated in Phase 2 to receive both the raw data and the pre-computed numerics. The LLM never sees a `features` dict it might "improve" — features are computed and frozen *before* the LLM runs. This is what makes the contract drift-resistant: the numeric primitives don't depend on the model version.
+The LLM prompt is updated to receive both the raw data and the pre-computed numerics. The LLM never sees a `features` dict it might "improve" — features are computed and frozen *before* the LLM runs. This is what makes the contract drift-resistant: the numeric primitives don't depend on the model version.
 
 ---
 
 ## Strategist consumption
 
-**State key changes.** During migration, both old and new shapes coexist. The LlmAgent's `output_key` keeps writing the four existing signal lists in Phase 2 (and stops in Phase 3 when output_schema changes to `AnalystVerdict`).
+**State key changes.** The legacy `*_signals` keys are removed; new keys replace them.
 
-| State key | Phase 2 | Phase 3 |
+| State key | Removed | Added |
 |---|---|---|
-| `technical_signals` … `smart_money_signals` (`list[<Analyst>Signal]`) | written by LlmAgent's `output_key`, unchanged shape | retired |
-| `<analyst>_features` (`dict[ticker, dict[str, float]]`) | written by `features_callback` | unchanged |
-| `<analyst>_evidence` (`list[<Analyst>Evidence]`) | written by `pack_callback` (translates from legacy signal in Phase 2) | written by `pack_callback` (direct from `AnalystVerdict`) |
-| **`ticker_evidence`** (`list[TickerEvidence]`) | written by digest step | unchanged |
+| `technical_signals` … `smart_money_signals` (`list[<Analyst>Signal]`) | yes | — |
+| `<analyst>_features` (`dict[ticker, dict[str, float]]`) | — | written by `features_callback` |
+| `<analyst>_verdicts` (`list[AnalystVerdict]`) | — | written by LlmAgent's `output_key` |
+| `<analyst>_evidence` (`list[<Analyst>Evidence]`) | — | written by `pack_callback` |
+| **`ticker_evidence`** (`list[TickerEvidence]`) | — | written by digest step |
 
-Strategist reads only `ticker_evidence` from Phase 2 onward — never touches the legacy `*_signals`.
+Strategist reads only `ticker_evidence`.
 
 **Prompt change.** The four `{*_signals}` blocks plus the SmartMoney bias paragraph are replaced by:
 
@@ -428,7 +425,7 @@ class TickerEvidenceRow(Base):
 
 **No outcome-attribution joins yet.** `TickerEvidenceRow` does *not* link to `TradeLogRow.opening_tick_id` here. That join is exactly what B2 needs to design properly; adding it ad-hoc now would lock in a shape Goal 3 might want different.
 
-**No backfill of historical data.** Existing `AttributionSignalsRow` rows aren't migrated. They're a different shape and B2 will decide whether they're useful (probably skipped — paper-trading volume since v2 is small).
+**No backfill of historical data.** The bot isn't running yet, so any rows in `attribution_signals` are from local development runs — pre-contract, lossy, and not worth migrating. The table stays in the schema but we stop writing to it.
 
 ---
 
@@ -465,29 +462,25 @@ Extend `scripts/smoke_run`: one tick on FakeBroker with real LLMs, asserts `stat
 
 ## Rollout
 
-Three phases, each a separate PR. Rolling all of this in one PR is high-risk on an autonomously-trading bot.
+Two PRs. The bot isn't running anywhere yet (no live, no paper) — there's no production state to protect, so the dual-write / paper-data-checkpoint patterns that would normally apply here are unnecessary. Splitting at all is purely for review tractability.
 
-**Phase 1 — Contract types + extractors + digest (no wiring).**
+**PR 1 — Contract types + extractors + digest (additive, no wiring).**
 - Add `src/contract/` module (types + digest math).
 - Add `src/config/digest.py` + `src/config/README.txt`.
 - Add `features.py` to each of the four analyst modules.
-- Layer 1 + Layer 2 tests pass. Nothing reads from the new modules yet — purely additive code, lowest risk.
+- Layer 1 + Layer 2 tests pass. Nothing reads from the new modules yet — purely additive code.
 
-**Phase 2 — Wire into pipeline + persistence.**
-- Wire `features_callback` and `pack_callback` into each of the four analyst agents. `output_schema` of each LlmAgent stays unchanged in this phase; `pack_callback` translates the existing `<Analyst>Signal` shape into `<Analyst>Evidence` using `key_factors` for `rationale`.
+**PR 2 — Wire it in and retire the legacy shape.**
+- Wire `features_callback` and `pack_callback` into each of the four analyst agents.
+- Change each LlmAgent's `output_schema` to `list[AnalystVerdict]`, `output_key` to `<analyst>_verdicts`.
 - Add `build_ticker_evidence` step to the orchestrator after the analyst pool.
 - Add `AnalystEvidenceRow`, `TickerEvidenceRow`, and their writer.
-- Update each analyst's prompt to include `state["<analyst>_features"]` as read-only context.
+- Update each analyst's prompt to include `state["<analyst>_features"]` as read-only context, drop the request for `key_factors`.
 - Update strategist prompt to consume `state["ticker_evidence"]`.
-- Old `*_signals` state keys keep being written by the LlmAgents (unchanged output_schema); old `AttributionSignalsRow` keeps being persisted. New `<analyst>_evidence`, `ticker_evidence` exist alongside.
-- Smoke run + 1-week paper trading at this state.
+- Remove the four `*_signals` state keys, the `AttributionSignalsRow` writer, the `<Analyst>Signal` classes, and `key_factors`. (The `attribution_signals` table stays in the schema for any historical data; we just stop writing to it.)
+- Layer 3 smoke run on FakeBroker confirms `state["ticker_evidence"]` is populated and `target_weights` covers the watchlist.
 
-**Phase 3 — Retire legacy (separate PR after a paper-trading week).**
-- Change each LlmAgent's `output_schema` to `list[AnalystVerdict]`. `pack_callback` simplifies (no more translation from `key_factors`).
-- Drop the four `*_signals` state keys.
-- Drop `AttributionSignalsRow` writes (table stays for historical data).
-- Remove `key_factors` and the legacy `<Analyst>Signal` classes from `agents/analysts/_common.py` and per-analyst `schema.py`.
-- Lands once Phase 2 has produced a clean week of dual-write data and we've sanity-checked that `TickerEvidenceRow` matches what we'd want.
+If or when paper trading starts, the rollout calculus changes — but that's a future migration concern, not this spec's.
 
 ---
 
