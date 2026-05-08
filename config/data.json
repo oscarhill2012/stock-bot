@@ -1,0 +1,23 @@
+{
+  "providers": {
+    "stats": "yfinance",
+    "news": "finnhub",
+    "social_sentiment": "finnhub",
+    "insider_trades": "edgar",
+    "politician_trades": "quiver",
+    "notable_holders": "edgar",
+    "filings": "edgar"
+  },
+  "defaults": {
+    "news_lookback_days": 7,
+    "insider_lookback_days": 30,
+    "politician_lookback_days": 90,
+    "notable_holder_lookback_days": 180,
+    "notable_holder_limit": 20,
+    "history_period": "1y",
+    "history_interval": "1d",
+    "filings_per_form": 3,
+    "include_filing_excerpts": true
+  },
+  "http_timeout_seconds": 15.0
+}
