@@ -34,9 +34,9 @@ from .providers import (
     get_public_figure_trades,
     get_social_sentiment,
     get_stock_news,
-    get_stock_stats,
 )
 from .rate_limit import EDGAR, FINNHUB, QUIVER, YFINANCE, slowest_min_interval_seconds
+from .registry import dispatch
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +88,7 @@ async def get_stock_signal_bundle(
     errors: list[ProviderError] = []
 
     stats, news, social, insiders, politicians, holders, filings = await asyncio.gather(
-        _safe("stats", get_stock_stats(symbol, period=history_period, interval=history_interval), errors),
+        _safe("stats", dispatch("stats", symbol, period=history_period, interval=history_interval), errors),
         _safe(
             "news",
             get_stock_news(symbol, today - timedelta(days=news_lookback_days), today),

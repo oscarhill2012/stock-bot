@@ -53,7 +53,6 @@ from .providers import (
     get_public_figure_trades,
     get_social_sentiment,
     get_stock_news,
-    get_stock_stats,
 )
 from .rate_limit import (
     ALL_LIMITERS,
@@ -64,6 +63,7 @@ from .rate_limit import (
     AsyncRateLimiter,
     slowest_min_interval_seconds,
 )
+from .registry import dispatch as _dispatch
 from .settings import ProviderConfigError, get_settings
 
 # The data-refresh floor for a complete bundle. The strategist agent
@@ -71,6 +71,12 @@ from .settings import ProviderConfigError, get_settings
 MIN_DECISION_INTERVAL_SECONDS: float = slowest_min_interval_seconds(
     FINNHUB, QUIVER, EDGAR, YFINANCE
 )
+
+
+async def get_stock_stats(ticker: str, period: str = "1y", interval: str = "1d"):
+    """Fetch OHLCV + fundamentals for `ticker` via the active stats provider."""
+    return await _dispatch("stats", ticker.upper(), period=period, interval=interval)
+
 
 __all__ = [
     # Endpoints
