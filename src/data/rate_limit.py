@@ -67,6 +67,11 @@ class AsyncRateLimiter:
         """
         return 1.0 / self._bucket.rate_per_second
 
+    @property
+    def capacity(self) -> int:
+        """Burst capacity (max tokens the bucket holds at any moment)."""
+        return self._bucket.capacity
+
     async def acquire(self) -> None:
         """Block until one token is available, then consume it."""
         async with self._lock:
