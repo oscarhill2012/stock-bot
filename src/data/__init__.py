@@ -48,7 +48,6 @@ from .models import (
 )
 from .providers import (
     get_insider_trades,
-    get_notable_holders,
     get_public_figure_trades,
 )
 from .rate_limit import (
@@ -98,6 +97,19 @@ async def get_stock_news(
 async def get_social_sentiment(ticker: str):
     """Fetch social-sentiment snapshot for `ticker` via the active provider."""
     return await _dispatch("social_sentiment", ticker.upper())
+
+
+async def get_notable_holders(
+    ticker: str,
+    *,
+    lookback_days: int = 180,
+    limit: int = 20,
+):
+    """Fetch notable EDGAR 13F holders for `ticker` via the active provider."""
+    return await _dispatch(
+        "notable_holders", ticker.upper(),
+        lookback_days=lookback_days, limit=limit,
+    )
 
 
 async def get_company_filings(

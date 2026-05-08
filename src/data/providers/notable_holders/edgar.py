@@ -1,12 +1,12 @@
-"""`get_notable_holders` — SC 13D / 13G beneficial-ownership filings via `edgartools`.
+"""`fetch` — SC 13D / 13G beneficial-ownership filings via `edgartools`.
 
 Free EDGAR equivalent of Quiver's "smart money" feed: anyone crossing
 5% beneficial ownership of an issuer must file a Schedule 13D (active
 intent) or 13G (passive). Amendments (13D/A, 13G/A) signal a stake
 change. Filer = the holder; subject = the issuer (our `ticker`).
 
-Same identity / rate-limit pattern as `sec_insiders.py` and
-`sec_filings.py`: needs `EDGAR_IDENTITY` in `.env`, capped at 10 req/sec.
+Same identity / rate-limit pattern as `filings/edgar.py`:
+needs `EDGAR_IDENTITY` in `.env`, capped at 10 req/sec.
 """
 from __future__ import annotations
 
@@ -16,18 +16,17 @@ from typing import Any, Literal
 
 from edgar import Company, set_identity
 
-from ..models import NotableHolder
-from ..rate_limit import EDGAR
-from ..retry import with_retry
-from ..settings import get_settings, require
+from data.registry import register
+from data.retry import with_retry
+from data.secrets import require_key
+
+from ...models import NotableHolder
 
 _FORMS = ("SC 13D", "SC 13G", "SC 13D/A", "SC 13G/A")
 
 
 def _ensure_identity() -> None:
-    s = get_settings()
-    identity = require("EDGAR_IDENTITY", s.edgar_identity, "get_notable_holders")
-    set_identity(identity)
+    set_identity(require_key("EDGAR_IDENTITY"))
 
 
 def _coerce_date(v: Any) -> date | None:
@@ -102,7 +101,14 @@ def _list_holder_filings(symbol: str, lookback_days: int, limit: int) -> list[An
     return list(filings.head(max(1, min(limit, 50))))
 
 
-async def get_notable_holders(
+@register(
+    domain="notable_holders",
+    name="edgar",
+    upstream="edgar",
+    rate_per_minute=600,
+    burst=20,
+)
+async def fetch(
     ticker: str,
     lookback_days: int = 180,
     limit: int = 20,
@@ -114,7 +120,6 @@ async def get_notable_holders(
     """
     symbol = ticker.upper()
 
-    await EDGAR.acquire()
     filings = await asyncio.to_thread(_list_holder_filings, symbol, lookback_days, limit)
 
     out: list[NotableHolder] = []

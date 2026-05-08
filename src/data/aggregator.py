@@ -29,7 +29,6 @@ from .models import (
 )
 from .providers import (
     get_insider_trades,
-    get_notable_holders,
     get_public_figure_trades,
 )
 from .rate_limit import EDGAR, FINNHUB, QUIVER, YFINANCE, slowest_min_interval_seconds
@@ -102,11 +101,9 @@ async def get_stock_signal_bundle(
         ),
         _safe(
             "notable_holders",
-            get_notable_holders(
-                symbol,
-                lookback_days=notable_holder_lookback_days,
-                limit=notable_holder_limit,
-            ),
+            dispatch("notable_holders", symbol,
+                     lookback_days=notable_holder_lookback_days,
+                     limit=notable_holder_limit),
             errors,
         ),
         _safe(
