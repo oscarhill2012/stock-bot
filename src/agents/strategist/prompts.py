@@ -5,7 +5,6 @@ You are the portfolio strategist for an algorithmic trading bot. You integrate s
 four analyst agents to set target portfolio weights for the next trading hour.
 
 ## Current State
-Portfolio: {portfolio}
 Active Positions: {positions}
 Memory Buffer (last 8 ticks): {memory_buffer}
 Day Digest: {day_digest}

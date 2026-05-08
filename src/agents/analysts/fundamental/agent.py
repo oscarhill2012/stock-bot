@@ -11,7 +11,7 @@ from .schema import FundamentalSignal
 # Module-level singleton used by unit tests that construct the agent directly.
 fundamental_analyst = LlmAgent(
     name="FundamentalAnalyst",
-    model="gemini-2.0-flash-001",
+    model="gemini-2.5-flash-lite",
     instruction=FUNDAMENTAL_INSTRUCTION,
     output_schema=list[FundamentalSignal],
     output_key="fundamental_signals",
@@ -23,7 +23,7 @@ fundamental_analyst = LlmAgent(
 def _build_fundamental_analyst() -> LlmAgent:
     return LlmAgent(
         name="FundamentalAnalyst",
-        model="gemini-2.0-flash-001",
+        model="gemini-2.5-flash-lite",
         instruction=FUNDAMENTAL_INSTRUCTION,
         output_schema=list[FundamentalSignal],
         output_key="fundamental_signals",

@@ -1,6 +1,7 @@
 """Smart Money gate: skip LLM if no material insider/politician/holder activity."""
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 from google.adk.agents.callback_context import CallbackContext
@@ -16,6 +17,8 @@ INSIDER_THRESHOLD = 100_000
 INSIDER_LOOKBACK_DAYS = 14
 POLITICIAN_LOOKBACK_DAYS = 30
 HOLDER_LOOKBACK_DAYS = 90
+
+logger = logging.getLogger(__name__)
 
 
 async def smart_money_fetch_callback(
@@ -33,9 +36,21 @@ async def smart_money_fetch_callback(
     has_signal = False
 
     for ticker in tickers:
-        insiders = await get_insider_trades(ticker, lookback_days=INSIDER_LOOKBACK_DAYS)
-        politicians = await get_public_figure_trades(ticker, lookback_days=POLITICIAN_LOOKBACK_DAYS)
-        holders = await get_notable_holders(ticker, lookback_days=HOLDER_LOOKBACK_DAYS)
+        try:
+            insiders = await get_insider_trades(ticker, lookback_days=INSIDER_LOOKBACK_DAYS)
+        except Exception as exc:
+            logger.warning("insider_trades fetch failed for %s: %s", ticker, exc)
+            insiders = []
+        try:
+            politicians = await get_public_figure_trades(ticker, lookback_days=POLITICIAN_LOOKBACK_DAYS)
+        except Exception as exc:
+            logger.warning("politician_trades fetch failed for %s: %s", ticker, exc)
+            politicians = []
+        try:
+            holders = await get_notable_holders(ticker, lookback_days=HOLDER_LOOKBACK_DAYS)
+        except Exception as exc:
+            logger.warning("notable_holders fetch failed for %s: %s", ticker, exc)
+            holders = []
 
         smart_money_data["insiders"][ticker] = [
             t.model_dump() if hasattr(t, "model_dump") else t for t in insiders

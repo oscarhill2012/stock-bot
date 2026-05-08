@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
 
 
 async def run_once(broker, session=None) -> dict:
@@ -55,8 +58,20 @@ async def run_once(broker, session=None) -> dict:
             role="user",
         ),
     )
-    async for _ in events:
-        pass
+    try:
+        async for _ in events:
+            pass
+    except (AttributeError, BaseException) as exc:
+        # ADK 1.32 has a known runner-cleanup bug: after the pipeline runs, the
+        # runner may raise AttributeError('NoneType'.partial) or a
+        # BaseExceptionGroup wrapping GeneratorExit from parallel-agent teardown.
+        # Both happen *after* session state has been written, so the tick result
+        # is still available via session_service.get_session(). We log and
+        # continue; the caller reads state from the session service below.
+        logger.warning(
+            "ADK runner raised during tick %s (pipeline likely completed): %s: %s",
+            tick_id, type(exc).__name__, exc,
+        )
 
     updated = await session_service.get_session(
         app_name="StockBot",

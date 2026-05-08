@@ -28,9 +28,15 @@ try:
     import httpx
     import requests
 
+    # Retry connection-level errors only. HTTPError / HTTPStatusError cover
+    # 4xx/5xx responses — those are API-layer failures (auth, rate-limit, server
+    # error) that won't resolve on a fast retry, so we let them propagate
+    # immediately and let the aggregator's _safe() wrapper soft-fail the domain.
     _RETRYABLE = (
-        requests.exceptions.RequestException,
-        httpx.HTTPError,
+        requests.exceptions.ConnectionError,
+        requests.exceptions.Timeout,
+        httpx.ConnectError,
+        httpx.TimeoutException,
         ConnectionError,
         TimeoutError,
     )
