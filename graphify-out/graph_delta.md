@@ -103,3 +103,14 @@ data.secrets.require_key, non-secret config in DataConfig.
 - Flat provider modules deleted: yfinance_stats.py, finnhub_news.py,
   finnhub_social.py, sec_filings.py, sec_holders.py, sec_insiders.py,
   quiver_politicians.py.
+
+## 2026-05-08 — Phase 4 directory created; superseded specs/plans removed
+
+Strategist v2 + Analyst→Strategist contract design + plan docs consolidated under `docs/Phase4-stratergist-and-analysts/` and re-sliced into four sub-plans (A → B → C → D) so each is invocable via `superpowers:subagent-driven-development`. No code changes yet — this is a docs reorg.
+
+- New nodes: `docs/Phase4-stratergist-and-analysts/spec.md`, `plan-A-contract-scaffolding.md`, `plan-B-extractors-dual-emit.md`, `plan-C-strategist-v2.md`, `plan-D-cleanup.md`
+- Removed nodes (docs): `docs/superpowers/specs/{strategist-council-design,exit-rules-and-telemetry-design,strategist-v2-design,analyst-strategist-contract-design}.md`, `docs/superpowers/plans/{strategist-council,exit-rules-and-telemetry,strategist-v2,analyst-strategist-contract}.md`
+- Updated nodes: `docs/superpowers/backlog.md` — Goal 1 / Goal 2 entries replaced with a single Phase 4 pointer, B-tier dependency lines updated to reference Phase 4 plans
+- Anticipated future code structure (carried forward into Phase 4 plans, unchanged): `src/contract/{types,digest,extractors/*}.py`, `src/config/digest.py`, `src/agents/contract/evidence_writer.py`, ORM rows `AnalystEvidenceRow` + `TickerEvidenceRow` + `TickerStanceRow` in `src/orchestrator/persistence.py`, retirement of `src/agents/attribution/writer.py` + `AttributionSignalsRow` (deferred to Plan D)
+- `docs/superpowers/specs/` and `docs/superpowers/plans/` now contain only the `data-provider-shell` pair plus `backlog.md` — the strategist/contract track lives entirely under Phase 4
+

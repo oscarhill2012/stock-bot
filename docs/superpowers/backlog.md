@@ -10,9 +10,13 @@ When a segment is specced, move it from this file into a real spec under `docs/s
 
 The strategist is being grown in three goals. Items below are tagged with which goal they belong to.
 
-- **Goal 1 — Strategist v2.** *In flight.* Spec: `docs/superpowers/specs/strategist-v2-design.md`, plan: `docs/superpowers/plans/strategist-v2.md`. Single LLM strategist, per-ticker stance output, knows about its own held positions (rendered thesis + live state), lifecycle is derived not declared. Substrate from the dropped council/exit-rules specs (lifecycle validation, telemetry tables, `opening_tick_id`/`closing_tick_id` FKs) was absorbed into v2.
-- **Goal 2 — Analyst → Strategist contract.** *Specced.* Spec: `docs/superpowers/specs/analyst-strategist-contract-design.md`. Hybrid analysts (deterministic feature extractors + LLM verdict on top), code-only digest collapses 4 → 1 `TickerEvidence` per ticker, equal-weight default with slot for learned weights, persisted as `AnalystEvidenceRow` + `TickerEvidenceRow`. Implementation plan TBD.
-- **Goal 3 — Knowledge base / self-improvement.** *Long arc.* The strategist learns from its own outcomes. The user's framing: "save the signal, not the trade." Stock-agnostic pattern recall, not a vector DB of past trades. Needs Goal 1 telemetry shipped + weeks of paper data before it can be designed concretely.
+- **Goals 1 + 2 — Strategist v2 + Analyst → Strategist contract.** *Specced and planned together under Phase 4.* Spec: `docs/Phase4-stratergist-and-analysts/spec.md`. Implementation broken into four sub-plans, each invocable via `superpowers:subagent-driven-development`:
+  - `plan-A-contract-scaffolding.md` — additive types, digest aggregator, config (zero integration risk)
+  - `plan-B-extractors-dual-emit.md` — per-analyst feature extractors + dual-emit callback (legacy `*_signals` and new `*_evidence` coexist)
+  - `plan-C-strategist-v2.md` — strategist rewrite against the new contract, per-ticker stance output, derived lifecycle, held-position context, TradeLog FKs
+  - `plan-D-cleanup.md` — drop dual-emit, persist `AnalystEvidenceRow` + `TickerEvidenceRow`, retire `AttributionWriter`, delete legacy `<Analyst>Signal` schemas
+  Substrate from the earlier dropped council / exit-rules specs (lifecycle validation, telemetry tables, `opening_tick_id`/`closing_tick_id` FKs) was absorbed into Plan C.
+- **Goal 3 — Knowledge base / self-improvement.** *Long arc.* The strategist learns from its own outcomes. The user's framing: "save the signal, not the trade." Stock-agnostic pattern recall, not a vector DB of past trades. Needs Phase 4 telemetry shipped + weeks of paper data before it can be designed concretely.
 
 A few items previously in this backlog (council debate, persona memory, persona model diversity) are gone — they assumed the council architecture, which v2 dropped. If multi-LLM deliberation ever comes back, it'll be a fresh design conversation gated on Goal 3 outcome data.
 
@@ -20,19 +24,19 @@ A few items previously in this backlog (council debate, persona memory, persona 
 
 ## Tier 1 — Major (likely become full specs)
 
-> *B1 (Analyst → Strategist contract) was specced — see `docs/superpowers/specs/analyst-strategist-contract-design.md`. Numbering retained; B5 still references "Goal 2" semantics.*
+> *B1 (Analyst → Strategist contract) is consolidated into Phase 4 — see `docs/Phase4-stratergist-and-analysts/spec.md` and plans A–D. Numbering retained; B5 still references "Goal 2" semantics.*
 
 ### B2. Knowledge base — design the learning loop  *(Goal 3 — long arc, design only)*
 
 **Origin:** The user's explicit Goal 3 framing: the bot should learn from outcomes. "We make money because we notice signals that infer we can earn money. Save the signal, not the trade." Stock-agnostic pattern recall, not a vector DB of past trades.
 
-**Substrate already in place after Goals 1 + 2:**
-- `TickerStanceRow` — per-ticker strategist stance per tick (rationale, conviction, lifecycle, evidence_refs). *(Goal 1.)*
-- `StrategistDecisionRow` — final tick decisions with full metadata. *(Goal 1.)*
-- `TradeLogRow.opening_tick_id` / `closing_tick_id` — outcome attribution joins back to the tick that opened/closed each position. *(Goal 1.)*
-- `TickerEvidenceRow` — the canonical per-ticker per-tick evidence object (aggregate direction, confidence, disagreement, snapshotted weights). *This is the KB lookup primitive.* *(Goal 2.)*
-- `AnalystEvidenceRow` — per-analyst-per-ticker structured features + verdict, JSON-extensible. *(Goal 2.)*
-- `PositionThesis` rendered into prompts — the strategist's stated *why* is now persisted alongside the *what*. *(Goal 1.)*
+**Substrate already in place after Phase 4 (Goals 1 + 2):**
+- `TickerStanceRow` — per-ticker strategist stance per tick (rationale, conviction, lifecycle, evidence_refs). *(Plan C.)*
+- `StrategistDecisionRow` — final tick decisions with full metadata. *(Plan C.)*
+- `TradeLogRow.opening_tick_id` / `closing_tick_id` — outcome attribution joins back to the tick that opened/closed each position. *(Plan C.)*
+- `TickerEvidenceRow` — the canonical per-ticker per-tick evidence object (aggregate direction, confidence, disagreement, snapshotted weights). *This is the KB lookup primitive.* *(Plan D.)*
+- `AnalystEvidenceRow` — per-analyst-per-ticker structured features + verdict, JSON-extensible. *(Plan D.)*
+- `PositionThesis` rendered into prompts — the strategist's stated *why* is now persisted alongside the *what*. *(Plan C.)*
 
 **The goal in plain English:** when the strategist is about to act on signal pattern X, it should know "the last N times we saw something shaped like X, here's what happened." Not "the last time we bought AAPL," but "the last time technicals looked oversold while smart-money inflows were trending positive."
 
@@ -44,7 +48,7 @@ A few items previously in this backlog (council debate, persona memory, persona 
 - Storage shape: separate "lessons" table? Annotated `TickerStanceRow`? A side index that maps signal-pattern → outcome statistics?
 - Read path vs write path: when does the loop *learn* (between ticks? batched nightly?) vs *get consulted* (every tick? only on novel patterns?)?
 
-**Dependencies:** Goal 1 shipped + Goal 2 contract shipped + ~weeks of paper-trading data accumulated. This brainstorm is design-only until that data exists; jumping to implementation early risks designing for an imaginary distribution.
+**Dependencies:** Phase 4 shipped (all four plans A–D) + ~weeks of paper-trading data accumulated. This brainstorm is design-only until that data exists; jumping to implementation early risks designing for an imaginary distribution.
 
 **Likely outcome of the brainstorm:** decompose Goal 3 into sub-projects (e.g., "outcome attribution table," "signal pattern primitive," "lookup → prompt injection," "weight learning"). Each becomes its own spec.
 
@@ -54,7 +58,7 @@ A few items previously in this backlog (council debate, persona memory, persona 
 
 ### B3. Real-time / sub-tick exit evaluation
 
-**Origin:** Carried over from the original exit-rules spec. v2 evaluates exits only at hourly tick boundaries — if AAPL crashes at 14:23, we won't notice until 15:00.
+**Origin:** Carried over from the original exit-rules spec (now retired into Phase 4). v2 evaluates exits only at hourly tick boundaries — if AAPL crashes at 14:23, we won't notice until 15:00.
 
 **The goal:** evaluate floors (and possibly ceilings) at sub-hour granularity so the bot doesn't sleep through a flash crash.
 
@@ -79,13 +83,13 @@ A few items previously in this backlog (council debate, persona memory, persona 
 - Asymmetric handling: easy to *raise* a stop (lock in profit), risky to *lower* it (loss aversion). Should lowering require an explicit decision tag the strategist must justify?
 - Telemetry: how do we record stop revisions vs original — extend `TickerStanceRow`, or a dedicated `ThesisRevisionRow`?
 
-**Dependencies:** Goal 1 shipped.
+**Dependencies:** Phase 4 (Plan C) shipped.
 
 ---
 
 ### B5. Per-evidence-key analyst weighting
 
-**Origin:** Goal 2 lands per-family weights with an explicit slot for nested per-key extension (`DEFAULT_ANALYST_WEIGHTS` in `src/config/digest.py`, applied mathematically in `src/contract/digest.py`). This is the next refinement on top of that contract.
+**Origin:** Phase 4 Plan A lands per-family weights with an explicit slot for nested per-key extension (`DEFAULT_ANALYST_WEIGHTS` in `src/config/digest.py`, applied mathematically in `src/contract/digest.py`). This is the next refinement on top of that contract.
 
 **The goal:** instead of "trust smart_money 1.5×", learn that "smart_money's `n_politicians > 2` is highly predictive but `total_dollar_value` alone is noise."
 
@@ -95,7 +99,7 @@ A few items previously in this backlog (council debate, persona memory, persona 
 - Override mechanism: can a learned weighting shadow the hand-set defaults, or must they merge?
 - Snapshotting: `weights_used` on `TickerEvidence.aggregate` is currently a flat `dict[str, float]`. Does it become nested too, or do we add a sibling `feature_weights_used`?
 
-**Dependencies:** Goal 2 (analyst contract) shipped. Strongly coupled to Goal 3 (knowledge base) — this is one of the things that loop should learn rather than have hand-tuned.
+**Dependencies:** Phase 4 (Plans A + D) shipped. Strongly coupled to Goal 3 (knowledge base) — this is one of the things that loop should learn rather than have hand-tuned.
 
 ---
 
@@ -103,7 +107,7 @@ A few items previously in this backlog (council debate, persona memory, persona 
 
 ### B6. Persist `risk_clamps_applied`
 
-**Origin:** Carried over from the original exit-rules spec; not absorbed into v2.
+**Origin:** Carried over from the original exit-rules spec (now retired into Phase 4); not absorbed into v2.
 
 **The goal:** add a `RiskClampRow` table so we can analyse "did the cash floor / max-position cap block trades that would have been profitable?"
 
@@ -141,22 +145,20 @@ A few items previously in this backlog (council debate, persona memory, persona 
 - Where do replays live: a separate CLI? A test-style runner under `tests/replay/`?
 - Diffing: how do we render "original decision vs replayed decision" usefully — per-ticker stance diff?
 
-**Dependencies:** Goal 1 telemetry shipped (so there's something to replay). Cleaner once Goal 3 is being designed, since validating its experiments is the main use case.
+**Dependencies:** Phase 4 telemetry shipped (so there's something to replay). Cleaner once Goal 3 is being designed, since validating its experiments is the main use case.
 
 ---
 
 ## How segments interact
 
 ```
-Goal 1 (strategist v2, in flight)
+Phase 4 (Goals 1 + 2 — strategist v2 + analyst contract, plans A→B→C→D)
    │
-   ├── Goal 2 = B1 (analyst contract)         — specced, awaiting plan
-   │       │
-   │       └── B5 (per-evidence weighting)   ─┐
-   │                                          │
-   ├── Goal 3 = B2 (knowledge base, long arc)─┼── (B5 is one of B2's outputs)
-   │                                          │
-   │                                          └── B8 (replay tooling — validates B2's experiments)
+   ├── B5 (per-evidence weighting) ─┐
+   │                                 │
+   ├── Goal 3 = B2 (knowledge base, long arc) ─┼── (B5 is one of B2's outputs)
+   │                                 │
+   │                                 └── B8 (replay tooling — validates B2's experiments)
    │
    ├── B3 (sub-tick exit)        — independent, any time
    ├── B4 (trailing stops)       — small extension on top of v2
@@ -164,6 +166,6 @@ Goal 1 (strategist v2, in flight)
    └── B7 (cost observability)   — independent, low priority but feeds B2
 ```
 
-**Rough order if doing them in series:** B1 (specced) → B6 → B7 → B2 (long arc) → B5 → B4 → B3 → B8.
+**Rough order if doing them in series:** Phase 4 plans A → B → C → D → B6 → B7 → B2 (long arc) → B5 → B4 → B3 → B8.
 
-Most are independent enough to reorder by what hurts most in operation. The one strict ordering is **B1 before B2**: the knowledge base needs a clean signal contract to reason over.
+Most are independent enough to reorder by what hurts most in operation. The one strict ordering is **Phase 4 before B2**: the knowledge base needs a clean signal contract and decision telemetry to reason over.
