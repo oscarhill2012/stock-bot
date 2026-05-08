@@ -3,12 +3,8 @@
 Each provider awaits its limiter before issuing an upstream call. When
 no tokens are available the coroutine sleeps until one is — there is
 no drop, no error, no retry storm. Callers therefore must not rely on
-a tight decision cadence: **the slowest limiter sets the floor on how
-often a complete signal bundle can refresh**.
-
-That floor is exposed as `slowest_min_interval_seconds(...)` and
-surfaced on `StockSignalBundle.min_decision_interval_seconds` so the
-strategist agent can guard against trading faster than its data.
+a tight decision cadence: the slowest limiter sets the floor on how
+often a complete signal bundle can refresh.
 
 Per `docs/data-sources.md` free-tier caps:
 
@@ -67,6 +63,11 @@ class AsyncRateLimiter:
         """
         return 1.0 / self._bucket.rate_per_second
 
+    @property
+    def capacity(self) -> int:
+        """Burst capacity (max tokens the bucket holds at any moment)."""
+        return self._bucket.capacity
+
     async def acquire(self) -> None:
         """Block until one token is available, then consume it."""
         async with self._lock:
@@ -83,28 +84,3 @@ class AsyncRateLimiter:
                 deficit = 1.0 - b.tokens
                 await asyncio.sleep(deficit / b.rate_per_second)
 
-
-# Per-budget singletons. Finnhub is shared across news + social;
-# EDGAR is shared across insider trades + company filings.
-FINNHUB = AsyncRateLimiter("finnhub", rate_per_minute=60, burst=30)
-QUIVER = AsyncRateLimiter("quiver", rate_per_minute=30, burst=10)
-EDGAR = AsyncRateLimiter("edgar", rate_per_minute=600, burst=20)  # SEC's 10 req/sec cap
-YFINANCE = AsyncRateLimiter("yfinance", rate_per_minute=60, burst=30)
-
-
-ALL_LIMITERS: dict[str, AsyncRateLimiter] = {
-    "finnhub": FINNHUB,
-    "quiver": QUIVER,
-    "edgar": EDGAR,
-    "yfinance": YFINANCE,
-}
-
-
-def slowest_min_interval_seconds(*limiters: AsyncRateLimiter) -> float:
-    """Return the longest min-interval across the given limiters.
-
-    This is the data-refresh floor for any decision flow that uses all
-    of these sources. Trading faster than this means the strategist is
-    re-deciding without new information.
-    """
-    return max((lim.min_interval_seconds for lim in limiters), default=0.0)

@@ -14,14 +14,14 @@ import logging
 import sys
 import time
 
-from data import MIN_DECISION_INTERVAL_SECONDS, get_stock_signal_bundle
+from data import get_stock_signal_bundle, min_decision_interval_seconds
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 
 
 async def main(ticker: str) -> int:
     print(f"--- Fetching bundle for {ticker} ---")
-    print(f"Package floor: MIN_DECISION_INTERVAL_SECONDS = {MIN_DECISION_INTERVAL_SECONDS:.2f}s")
+    print(f"Package floor: min_decision_interval_seconds = {min_decision_interval_seconds():.2f}s")
 
     t0 = time.monotonic()
     bundle = await get_stock_signal_bundle(

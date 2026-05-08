@@ -30,7 +30,7 @@ def _build_strategist():
     from agents.strategist.schema import StrategistDecision
     return LlmAgent(
         name="Strategist",
-        model="gemini-2.0-pro-001",
+        model="gemini-2.5-pro",
         instruction=STRATEGIST_INSTRUCTION,
         output_schema=StrategistDecision,
         output_key="strategist_decision",

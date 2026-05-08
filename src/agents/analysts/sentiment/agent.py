@@ -11,7 +11,7 @@ from .schema import SentimentSignal
 # Module-level singleton used by unit tests that construct the agent directly.
 sentiment_analyst = LlmAgent(
     name="SentimentAnalyst",
-    model="gemini-2.0-flash-001",
+    model="gemini-2.5-flash-lite",
     instruction=SENTIMENT_INSTRUCTION,
     output_schema=list[SentimentSignal],
     output_key="sentiment_signals",
@@ -23,7 +23,7 @@ sentiment_analyst = LlmAgent(
 def _build_sentiment_analyst() -> LlmAgent:
     return LlmAgent(
         name="SentimentAnalyst",
-        model="gemini-2.0-flash-001",
+        model="gemini-2.5-flash-lite",
         instruction=SENTIMENT_INSTRUCTION,
         output_schema=list[SentimentSignal],
         output_key="sentiment_signals",

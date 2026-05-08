@@ -10,7 +10,7 @@ from .schema import TechnicalSignal
 
 technical_analyst = LlmAgent(
     name="TechnicalAnalyst",
-    model="gemini-2.0-flash-001",
+    model="gemini-2.5-flash-lite",
     instruction=TECHNICAL_INSTRUCTION,
     output_schema=list[TechnicalSignal],
     output_key="technical_signals",
@@ -22,7 +22,7 @@ technical_analyst = LlmAgent(
 def _build_technical_analyst() -> LlmAgent:
     return LlmAgent(
         name="TechnicalAnalyst",
-        model="gemini-2.0-flash-001",
+        model="gemini-2.5-flash-lite",
         instruction=TECHNICAL_INSTRUCTION,
         output_schema=list[TechnicalSignal],
         output_key="technical_signals",

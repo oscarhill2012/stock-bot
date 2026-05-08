@@ -1,22 +1,10 @@
-"""Per-source provider modules. All async, all rate-limited.
+"""Per-source provider modules. Importing each module triggers its @register call."""
+from .filings import edgar as _filings_edgar  # noqa: F401
+from .insider_trades import edgar as _insider_trades_edgar  # noqa: F401
+from .news import finnhub as _news_finnhub  # noqa: F401
+from .notable_holders import edgar as _notable_holders_edgar  # noqa: F401
+from .politician_trades import quiver as _politician_trades_quiver  # noqa: F401
+from .social_sentiment import finnhub as _social_finnhub  # noqa: F401
+from .stats import yfinance as _stats_yfinance  # noqa: F401
 
-Agents must not import from these directly — go through
-`data.aggregator.get_stock_signal_bundle` instead.
-"""
-from .finnhub_news import get_stock_news
-from .finnhub_social import get_social_sentiment
-from .quiver_politicians import get_public_figure_trades
-from .sec_filings import get_company_filings
-from .sec_holders import get_notable_holders
-from .sec_insiders import get_insider_trades
-from .yfinance_stats import get_stock_stats
-
-__all__ = [
-    "get_stock_news",
-    "get_social_sentiment",
-    "get_public_figure_trades",
-    "get_company_filings",
-    "get_insider_trades",
-    "get_notable_holders",
-    "get_stock_stats",
-]
+__all__: list[str] = []

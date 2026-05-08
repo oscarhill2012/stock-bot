@@ -1,4 +1,4 @@
-"""`get_stock_stats` — yfinance OHLCV history + fundamentals (async, self-throttled)."""
+"""yfinance stats provider — OHLCV history + fundamentals (rate-limited via registry)."""
 from __future__ import annotations
 
 import asyncio
@@ -7,9 +7,10 @@ from typing import Any
 
 import yfinance as yf
 
-from ..models import OHLCBar, StockStats
-from ..rate_limit import YFINANCE
-from ..retry import with_retry
+from data.registry import register
+from data.retry import with_retry
+
+from ...models import OHLCBar, StockStats
 
 
 def _f(d: dict[str, Any], *keys: str) -> float | None:
@@ -77,11 +78,13 @@ def _fetch_stats(symbol: str, period: str, interval: str) -> StockStats:
     )
 
 
-async def get_stock_stats(
-    ticker: str,
-    period: str = "1y",
-    interval: str = "1d",
-) -> StockStats:
+@register(
+    domain="stats",
+    name="yfinance",
+    upstream="yfinance",
+    rate_per_minute=60,
+    burst=30,
+)
+async def fetch(ticker: str, *, period: str = "1y", interval: str = "1d") -> StockStats:
     symbol = ticker.upper()
-    await YFINANCE.acquire()
     return await asyncio.to_thread(_fetch_stats, symbol, period, interval)

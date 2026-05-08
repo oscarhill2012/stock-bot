@@ -1,24 +1,21 @@
-"""`get_public_figure_trades` — Quiver Quant congressional disclosures (async, rate-limited).
-
-Quiver's free tier is currently unavailable. Until access is restored
-this provider soft-fails to `[]` when `QUIVER_QUANT_API_KEY` is unset —
-the bundle keeps building and the EDGAR-based `get_notable_holders`
-provider fills the "smart money" slot in the meantime. Restoring Quiver
-is a matter of adding the key back to `.env`; no code change needed.
-"""
+"""Quiver Quant congressional-trades provider (soft-fail when key is unset)."""
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from datetime import date, datetime, timedelta
 from typing import Any
 
 import requests
 
-from ..models import PoliticianTrade, TradeSide
-from ..rate_limit import QUIVER
-from ..retry import with_retry
-from ..settings import get_settings
+from data.registry import register
+from data.retry import with_retry
+
+from ...models import PoliticianTrade, TradeSide
+
+_BASE_URL = "https://api.quiverquant.com/beta"
+_HTTP_TIMEOUT = 15.0  # mirrors today's settings.http_timeout_seconds default
 
 logger = logging.getLogger(__name__)
 
@@ -68,32 +65,38 @@ def _parse_amount_range(raw: Any) -> tuple[float | None, float | None]:
 
 @with_retry
 def _fetch_trades(symbol: str | None, api_key: str) -> list[dict]:
-    s = get_settings()
-    url = f"{s.quiver_base_url.rstrip('/')}/live/congresstrading"
+    url = f"{_BASE_URL}/live/congresstrading"
     headers = {"Authorization": f"Bearer {api_key}", "Accept": "application/json"}
     params: dict[str, Any] = {}
     if symbol:
         params["ticker"] = symbol
 
-    resp = requests.get(url, headers=headers, params=params, timeout=s.http_timeout_seconds)
+    resp = requests.get(url, headers=headers, params=params, timeout=_HTTP_TIMEOUT)
     resp.raise_for_status()
     payload = resp.json() if resp.content else []
     return payload if isinstance(payload, list) else []
 
 
-async def get_public_figure_trades(
+@register(
+    domain="politician_trades",
+    name="quiver",
+    upstream="quiver",
+    rate_per_minute=30,
+    burst=10,
+)
+async def fetch(
     ticker: str | None = None,
+    *,
     lookback_days: int = 90,
 ) -> list[PoliticianTrade]:
-    api_key = get_settings().quiver_quant_api_key
+    api_key = os.getenv("QUIVER_QUANT_API_KEY")
     if not api_key:
-        # Soft-fail: Quiver free tier unavailable. EDGAR's notable_holders
-        # carries the "smart money" signal until the key returns.
-        logger.debug("QUIVER_QUANT_API_KEY unset — get_public_figure_trades returning []")
+        # Soft-fail: free tier unavailable. EDGAR's notable_holders carries
+        # the smart-money signal until the key returns.
+        logger.debug("QUIVER_QUANT_API_KEY unset — fetch returning []")
         return []
 
     symbol = ticker.upper() if ticker else None
-    await QUIVER.acquire()
     payload = await asyncio.to_thread(_fetch_trades, symbol, api_key)
 
     cutoff = date.today() - timedelta(days=lookback_days)

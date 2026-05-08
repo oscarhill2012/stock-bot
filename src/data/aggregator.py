@@ -23,20 +23,12 @@ from collections.abc import Awaitable
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+from . import providers as _providers  # noqa: F401  — triggers @register decorators
 from .models import (
     ProviderError,
     StockSignalBundle,
 )
-from .providers import (
-    get_company_filings,
-    get_insider_trades,
-    get_notable_holders,
-    get_public_figure_trades,
-    get_social_sentiment,
-    get_stock_news,
-    get_stock_stats,
-)
-from .rate_limit import EDGAR, FINNHUB, QUIVER, YFINANCE, slowest_min_interval_seconds
+from .registry import dispatch, min_decision_interval_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -44,21 +36,28 @@ logger = logging.getLogger(__name__)
 _DEFAULTS: dict[str, Any] = {
     "stats": None,
     "news": [],
-    "social": None,
-    "insiders": [],
-    "politicians": [],
+    "social_sentiment": None,
+    "insider_trades": [],
+    "politician_trades": [],   # was "politicians"
     "notable_holders": [],
     "filings": [],
 }
 
 
-async def _safe(name: str, coro: Awaitable, errors: list[ProviderError]) -> Any:
+async def _safe(domain: str, coro: Awaitable, errors: list[ProviderError]) -> Any:
     try:
         return await coro
     except Exception as exc:  # provider boundary — catch-all is intentional
-        logger.warning("provider %s failed: %s", name, exc)
-        errors.append(ProviderError(provider=name, message=f"{type(exc).__name__}: {exc}"))
-        return _DEFAULTS[name]
+        from .config import get_config
+
+        provider_name = get_config().providers[domain]
+        logger.warning("provider %s (%s) failed: %s", provider_name, domain, exc)
+        errors.append(ProviderError(
+            domain=domain,
+            provider=provider_name,
+            message=f"{type(exc).__name__}: {exc}",
+        ))
+        return _DEFAULTS[domain]
 
 
 async def get_stock_signal_bundle(
@@ -88,35 +87,35 @@ async def get_stock_signal_bundle(
     errors: list[ProviderError] = []
 
     stats, news, social, insiders, politicians, holders, filings = await asyncio.gather(
-        _safe("stats", get_stock_stats(symbol, period=history_period, interval=history_interval), errors),
+        _safe("stats", dispatch("stats", symbol, period=history_period, interval=history_interval), errors),
         _safe(
             "news",
-            get_stock_news(symbol, today - timedelta(days=news_lookback_days), today),
+            dispatch("news", symbol,
+                     from_date=today - timedelta(days=news_lookback_days),
+                     to_date=today),
             errors,
         ),
-        _safe("social", get_social_sentiment(symbol), errors),
-        _safe("insiders", get_insider_trades(symbol, lookback_days=insider_lookback_days), errors),
+        _safe("social_sentiment", dispatch("social_sentiment", symbol), errors),
+        _safe("insider_trades",
+              dispatch("insider_trades", symbol, lookback_days=insider_lookback_days),
+              errors),
         _safe(
-            "politicians",
-            get_public_figure_trades(symbol, lookback_days=politician_lookback_days),
+            "politician_trades",
+            dispatch("politician_trades", symbol, lookback_days=politician_lookback_days),
             errors,
         ),
         _safe(
             "notable_holders",
-            get_notable_holders(
-                symbol,
-                lookback_days=notable_holder_lookback_days,
-                limit=notable_holder_limit,
-            ),
+            dispatch("notable_holders", symbol,
+                     lookback_days=notable_holder_lookback_days,
+                     limit=notable_holder_limit),
             errors,
         ),
         _safe(
             "filings",
-            get_company_filings(
-                symbol,
-                limit=filings_per_form,
-                include_excerpts=include_filing_excerpts,
-            ),
+            dispatch("filings", symbol,
+                     limit=filings_per_form,
+                     include_excerpts=include_filing_excerpts),
             errors,
         ),
     )
@@ -131,9 +130,7 @@ async def get_stock_signal_bundle(
         politician_trades=politicians,
         notable_holders=holders,
         filings=filings,
-        min_decision_interval_seconds=slowest_min_interval_seconds(
-            FINNHUB, QUIVER, EDGAR, YFINANCE
-        ),
+        min_decision_interval_seconds=min_decision_interval_seconds(),
         errors=errors,
     )
 

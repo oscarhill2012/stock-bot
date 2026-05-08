@@ -10,7 +10,7 @@ from .schema import SmartMoneySignal
 # Module-level singleton used by unit tests that construct the agent directly.
 smart_money_analyst = LlmAgent(
     name="SmartMoneyAnalyst",
-    model="gemini-2.0-flash-001",
+    model="gemini-2.5-flash-lite",
     instruction=SMART_MONEY_INSTRUCTION,
     output_schema=list[SmartMoneySignal],
     output_key="smart_money_signals",
@@ -22,7 +22,7 @@ smart_money_analyst = LlmAgent(
 def _build_smart_money_analyst() -> LlmAgent:
     return LlmAgent(
         name="SmartMoneyAnalyst",
-        model="gemini-2.0-flash-001",
+        model="gemini-2.5-flash-lite",
         instruction=SMART_MONEY_INSTRUCTION,
         output_schema=list[SmartMoneySignal],
         output_key="smart_money_signals",

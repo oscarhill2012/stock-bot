@@ -45,7 +45,7 @@ async def _default_llm_compress(prev_digest: str, new_summary: str) -> str:
     )
     client = genai.Client()
     response = client.models.generate_content(
-        model="gemini-2.0-flash-001",
+        model="gemini-2.5-flash-lite",
         contents=prompt,
     )
     result = response.text[:DIGEST_BUDGET]

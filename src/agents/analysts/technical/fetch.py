@@ -1,12 +1,15 @@
 """Technical analyst data fetch callback."""
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 from google.adk.agents.callback_context import CallbackContext
 from google.genai import types as genai_types
 
 from data import get_stock_stats
+
+logger = logging.getLogger(__name__)
 
 
 async def technical_fetch_callback(
@@ -18,7 +21,11 @@ async def technical_fetch_callback(
 
     technical_data = {}
     for ticker in tickers:
-        stats = await get_stock_stats(ticker)
+        try:
+            stats = await get_stock_stats(ticker)
+        except Exception as exc:
+            logger.warning("stats fetch failed for %s: %s", ticker, exc)
+            stats = None
         technical_data[ticker] = stats.model_dump() if hasattr(stats, "model_dump") else stats
 
     state["technical_data"] = technical_data

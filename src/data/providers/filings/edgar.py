@@ -1,9 +1,4 @@
-"""`get_company_filings` — 10-K / 10-Q / 8-K via `edgartools` (free EDGAR).
-
-Risk Factors (Item 1A) and MD&A (Item 7 / Part 1 Item 2) are extracted
-from the parsed 10-K / 10-Q section index — same data sec-api.io's
-ExtractorApi gave us, but free.
-"""
+"""EDGAR 10-K/10-Q/8-K filings provider (rate-limited via registry)."""
 from __future__ import annotations
 
 import asyncio
@@ -12,10 +7,11 @@ from typing import Any
 
 from edgar import Company, set_identity
 
-from ..models import Filing
-from ..rate_limit import EDGAR
-from ..retry import with_retry
-from ..settings import get_settings, require
+from data.registry import _LIMITERS, register
+from data.retry import with_retry
+from data.secrets import require_key
+
+from ...models import Filing
 
 _EXCERPT_CHARS = 2000
 
@@ -28,9 +24,7 @@ _SECTION_KEYS = {
 
 
 def _ensure_identity() -> None:
-    s = get_settings()
-    identity = require("EDGAR_IDENTITY", s.edgar_identity, "get_company_filings")
-    set_identity(identity)
+    set_identity(require_key("EDGAR_IDENTITY"))
 
 
 def _coerce_date(v: Any) -> date | None:
@@ -125,27 +119,31 @@ def _build_filing_with_identity(filing: Any, symbol: str, include_excerpts: bool
     return _build_filing(filing, symbol, include_excerpts)
 
 
-async def get_company_filings(
+@register(
+    domain="filings",
+    name="edgar",
+    upstream="edgar",
+    rate_per_minute=600,
+    burst=20,
+)
+async def fetch(
     ticker: str,
     form_types: tuple[str, ...] = ("10-K", "10-Q", "8-K"),
     limit: int = 5,
     *,
     include_excerpts: bool = True,
 ) -> list[Filing]:
-    """Latest `limit` filings of the given `form_types` for `ticker`.
-
-    Acquires one EDGAR token for the index, then one per filing if
-    excerpts are requested (each `filing.obj()` is one HTTP roundtrip).
-    """
+    """Latest `limit` filings of the given `form_types` for `ticker`."""
     symbol = ticker.upper()
 
-    await EDGAR.acquire()
+    # The registry's dispatch already acquired one EDGAR token for the
+    # index fetch. Per-filing fetches require additional tokens.
     filings = await asyncio.to_thread(_list_filings, symbol, form_types, limit)
 
     out: list[Filing] = []
     for filing in filings:
         if include_excerpts:
-            await EDGAR.acquire()
+            await _LIMITERS["edgar"].acquire()  # per-filing HTTP roundtrip
         try:
             built = await asyncio.to_thread(
                 _build_filing_with_identity, filing, symbol, include_excerpts

@@ -2,7 +2,7 @@ from agents.strategist.prompts import STRATEGIST_INSTRUCTION
 
 
 def test_prompt_contains_portfolio():
-    assert "{portfolio}" in STRATEGIST_INSTRUCTION
+    assert "{positions}" in STRATEGIST_INSTRUCTION
 
 
 def test_prompt_contains_all_signal_types():
