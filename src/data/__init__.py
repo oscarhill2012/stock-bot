@@ -52,7 +52,6 @@ from .providers import (
     get_notable_holders,
     get_public_figure_trades,
     get_social_sentiment,
-    get_stock_news,
 )
 from .rate_limit import (
     ALL_LIMITERS,
@@ -76,6 +75,26 @@ MIN_DECISION_INTERVAL_SECONDS: float = slowest_min_interval_seconds(
 async def get_stock_stats(ticker: str, period: str = "1y", interval: str = "1d"):
     """Fetch OHLCV + fundamentals for `ticker` via the active stats provider."""
     return await _dispatch("stats", ticker.upper(), period=period, interval=interval)
+
+
+async def get_stock_news(
+    ticker: str,
+    from_date=None,
+    to_date=None,
+    *,
+    limit: int | None = 50,
+):
+    """Fetch news articles for `ticker` via the active news provider."""
+    from datetime import date as _d
+    from datetime import timedelta as _td
+    today = _d.today()
+    return await _dispatch(
+        "news",
+        ticker.upper(),
+        from_date=from_date or (today - _td(days=7)),
+        to_date=to_date or today,
+        limit=limit,
+    )
 
 
 __all__ = [

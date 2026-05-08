@@ -9,3 +9,11 @@ def test_stats_yfinance_registers_on_import() -> None:
 
     entry = _REGISTRY[("stats", "yfinance")]
     assert entry.upstream == "yfinance"
+
+
+def test_news_finnhub_registers_on_import() -> None:
+    import data.providers.news.finnhub  # noqa: F401
+    from data.registry import _REGISTRY
+
+    entry = _REGISTRY[("news", "finnhub")]
+    assert entry.upstream == "finnhub"

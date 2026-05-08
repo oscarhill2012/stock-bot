@@ -33,7 +33,6 @@ from .providers import (
     get_notable_holders,
     get_public_figure_trades,
     get_social_sentiment,
-    get_stock_news,
 )
 from .rate_limit import EDGAR, FINNHUB, QUIVER, YFINANCE, slowest_min_interval_seconds
 from .registry import dispatch
@@ -91,7 +90,9 @@ async def get_stock_signal_bundle(
         _safe("stats", dispatch("stats", symbol, period=history_period, interval=history_interval), errors),
         _safe(
             "news",
-            get_stock_news(symbol, today - timedelta(days=news_lookback_days), today),
+            dispatch("news", symbol,
+                     from_date=today - timedelta(days=news_lookback_days),
+                     to_date=today),
             errors,
         ),
         _safe("social", get_social_sentiment(symbol), errors),
