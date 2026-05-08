@@ -47,7 +47,6 @@ from .models import (
     StockStats,
 )
 from .providers import (
-    get_company_filings,
     get_insider_trades,
     get_notable_holders,
     get_public_figure_trades,
@@ -99,6 +98,20 @@ async def get_stock_news(
 async def get_social_sentiment(ticker: str):
     """Fetch social-sentiment snapshot for `ticker` via the active provider."""
     return await _dispatch("social_sentiment", ticker.upper())
+
+
+async def get_company_filings(
+    ticker: str,
+    form_types: tuple[str, ...] = ("10-K", "10-Q", "8-K"),
+    limit: int = 5,
+    *,
+    include_excerpts: bool = True,
+):
+    """Fetch SEC filings for `ticker` via the active filings provider."""
+    return await _dispatch(
+        "filings", ticker.upper(),
+        form_types=form_types, limit=limit, include_excerpts=include_excerpts,
+    )
 
 
 __all__ = [

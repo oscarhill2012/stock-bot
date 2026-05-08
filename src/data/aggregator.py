@@ -28,7 +28,6 @@ from .models import (
     StockSignalBundle,
 )
 from .providers import (
-    get_company_filings,
     get_insider_trades,
     get_notable_holders,
     get_public_figure_trades,
@@ -112,11 +111,9 @@ async def get_stock_signal_bundle(
         ),
         _safe(
             "filings",
-            get_company_filings(
-                symbol,
-                limit=filings_per_form,
-                include_excerpts=include_filing_excerpts,
-            ),
+            dispatch("filings", symbol,
+                     limit=filings_per_form,
+                     include_excerpts=include_filing_excerpts),
             errors,
         ),
     )
