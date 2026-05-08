@@ -51,7 +51,6 @@ from .providers import (
     get_insider_trades,
     get_notable_holders,
     get_public_figure_trades,
-    get_social_sentiment,
 )
 from .rate_limit import (
     ALL_LIMITERS,
@@ -95,6 +94,11 @@ async def get_stock_news(
         to_date=to_date or today,
         limit=limit,
     )
+
+
+async def get_social_sentiment(ticker: str):
+    """Fetch social-sentiment snapshot for `ticker` via the active provider."""
+    return await _dispatch("social_sentiment", ticker.upper())
 
 
 __all__ = [

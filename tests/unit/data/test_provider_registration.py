@@ -17,3 +17,13 @@ def test_news_finnhub_registers_on_import() -> None:
 
     entry = _REGISTRY[("news", "finnhub")]
     assert entry.upstream == "finnhub"
+
+
+def test_social_sentiment_finnhub_registers_on_import() -> None:
+    import data.providers.social_sentiment.finnhub  # noqa: F401
+    from data.registry import _LIMITERS, _REGISTRY
+
+    entry = _REGISTRY[("social_sentiment", "finnhub")]
+    assert entry.upstream == "finnhub"
+    # Same upstream as news/finnhub — must share the limiter singleton.
+    assert _LIMITERS["finnhub"] is _LIMITERS["finnhub"]

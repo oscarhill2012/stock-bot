@@ -1,4 +1,4 @@
-"""`get_social_sentiment` — Finnhub Reddit + Twitter aggregate (async, rate-limited)."""
+"""Finnhub social-sentiment provider (rate-limited via registry)."""
 from __future__ import annotations
 
 import asyncio
@@ -6,16 +6,15 @@ from typing import Any
 
 import finnhub
 
-from ..models import SocialSentiment, SocialSentimentSnapshot
-from ..rate_limit import FINNHUB
-from ..retry import with_retry
-from ..settings import get_settings, require
+from data.registry import register
+from data.retry import with_retry
+from data.secrets import require_key
+
+from ...models import SocialSentiment, SocialSentimentSnapshot
 
 
 def _client() -> finnhub.Client:
-    s = get_settings()
-    api_key = require("FINNHUB_API_KEY", s.finnhub_api_key, "get_social_sentiment")
-    return finnhub.Client(api_key=api_key)
+    return finnhub.Client(api_key=require_key("FINNHUB_API_KEY"))
 
 
 @with_retry
@@ -47,9 +46,15 @@ def _summarise(rows: list[dict[str, Any]], platform: str) -> SocialSentimentSnap
     )
 
 
-async def get_social_sentiment(ticker: str) -> SocialSentiment:
+@register(
+    domain="social_sentiment",
+    name="finnhub",
+    upstream="finnhub",
+    rate_per_minute=60,
+    burst=30,
+)
+async def fetch(ticker: str) -> SocialSentiment:
     symbol = ticker.upper()
-    await FINNHUB.acquire()
     payload = await asyncio.to_thread(_fetch_social, symbol)
 
     snapshots = [

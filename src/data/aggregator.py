@@ -32,7 +32,6 @@ from .providers import (
     get_insider_trades,
     get_notable_holders,
     get_public_figure_trades,
-    get_social_sentiment,
 )
 from .rate_limit import EDGAR, FINNHUB, QUIVER, YFINANCE, slowest_min_interval_seconds
 from .registry import dispatch
@@ -43,7 +42,7 @@ logger = logging.getLogger(__name__)
 _DEFAULTS: dict[str, Any] = {
     "stats": None,
     "news": [],
-    "social": None,
+    "social_sentiment": None,
     "insiders": [],
     "politicians": [],
     "notable_holders": [],
@@ -95,7 +94,7 @@ async def get_stock_signal_bundle(
                      to_date=today),
             errors,
         ),
-        _safe("social", get_social_sentiment(symbol), errors),
+        _safe("social_sentiment", dispatch("social_sentiment", symbol), errors),
         _safe("insiders", get_insider_trades(symbol, lookback_days=insider_lookback_days), errors),
         _safe(
             "politicians",
