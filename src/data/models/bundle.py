@@ -15,6 +15,7 @@ from .trades import InsiderTrade, NotableHolder, PoliticianTrade
 class ProviderError(BaseModel):
     """Captured per-provider failure so the bundle can degrade gracefully."""
 
+    domain: str
     provider: str
     message: str
 

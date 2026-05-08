@@ -1,11 +1,12 @@
+# ruff: noqa: E402  — imports after _validate_active_providers_are_registered() are intentional
 """Data-source layer for StockBot.
 
 Public surface for agents:
 
-    from data import get_stock_signal_bundle, MIN_DECISION_INTERVAL_SECONDS
+    from data import get_stock_signal_bundle, min_decision_interval_seconds
 
     bundle = await get_stock_signal_bundle("AAPL")
-    # bundle.min_decision_interval_seconds == MIN_DECISION_INTERVAL_SECONDS
+    # bundle.min_decision_interval_seconds == min_decision_interval_seconds()
     # — do not re-decide for this ticker faster than that.
 
 Per `docs/data-sources.md`, agents should not import provider modules
@@ -26,13 +27,29 @@ also means the slowest source dictates the trading cadence.
 | yfinance | 60 / min (self)  | 1 s                    |
 | EDGAR    | 600 / min (10/s) | 0.1 s                  |
 
-`MIN_DECISION_INTERVAL_SECONDS` exposes the slowest of these. With
+`min_decision_interval_seconds()` exposes the slowest of these. With
 edgartools direct EDGAR access (free, 10 req/sec), the floor is now
 ~2 s (Quiver) — no longer the SEC. The strategist agent should still
 treat it as the data-refresh floor: re-deciding faster means churning
 on stale signals.
 """
 from . import providers as _providers  # noqa: F401  — triggers @register decorators
+
+
+def _validate_active_providers_are_registered() -> None:
+    from .config import get_config
+    from .registry import _REGISTRY
+
+    cfg = get_config()
+    missing = [(d, n) for d, n in cfg.providers.items() if (d, n) not in _REGISTRY]
+    if missing:
+        raise RuntimeError(
+            f"config/data.json references unregistered (domain, provider) pairs: {missing}"
+        )
+
+
+_validate_active_providers_are_registered()
+
 from .aggregator import get_stock_signal_bundle, get_stock_signal_bundle_blocking
 from .models import (
     Filing,
@@ -56,14 +73,9 @@ from .rate_limit import (
     AsyncRateLimiter,
     slowest_min_interval_seconds,
 )
-from .registry import dispatch as _dispatch
+from .registry import dispatch as _dispatch  # noqa: F401  (re-export)
+from .registry import min_decision_interval_seconds
 from .settings import ProviderConfigError, get_settings
-
-# The data-refresh floor for a complete bundle. The strategist agent
-# must not re-decide for a given ticker faster than this.
-MIN_DECISION_INTERVAL_SECONDS: float = slowest_min_interval_seconds(
-    FINNHUB, QUIVER, EDGAR, YFINANCE
-)
 
 
 async def get_stock_stats(ticker: str, period: str = "1y", interval: str = "1d"):
@@ -175,5 +187,5 @@ __all__ = [
     "YFINANCE",
     "ALL_LIMITERS",
     "slowest_min_interval_seconds",
-    "MIN_DECISION_INTERVAL_SECONDS",
+    "min_decision_interval_seconds",
 ]

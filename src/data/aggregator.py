@@ -28,8 +28,7 @@ from .models import (
     ProviderError,
     StockSignalBundle,
 )
-from .rate_limit import EDGAR, FINNHUB, QUIVER, YFINANCE, slowest_min_interval_seconds
-from .registry import dispatch
+from .registry import dispatch, min_decision_interval_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -45,13 +44,20 @@ _DEFAULTS: dict[str, Any] = {
 }
 
 
-async def _safe(name: str, coro: Awaitable, errors: list[ProviderError]) -> Any:
+async def _safe(domain: str, coro: Awaitable, errors: list[ProviderError]) -> Any:
     try:
         return await coro
     except Exception as exc:  # provider boundary — catch-all is intentional
-        logger.warning("provider %s failed: %s", name, exc)
-        errors.append(ProviderError(provider=name, message=f"{type(exc).__name__}: {exc}"))
-        return _DEFAULTS[name]
+        from .config import get_config
+
+        provider_name = get_config().providers[domain]
+        logger.warning("provider %s (%s) failed: %s", provider_name, domain, exc)
+        errors.append(ProviderError(
+            domain=domain,
+            provider=provider_name,
+            message=f"{type(exc).__name__}: {exc}",
+        ))
+        return _DEFAULTS[domain]
 
 
 async def get_stock_signal_bundle(
@@ -124,9 +130,7 @@ async def get_stock_signal_bundle(
         politician_trades=politicians,
         notable_holders=holders,
         filings=filings,
-        min_decision_interval_seconds=slowest_min_interval_seconds(
-            FINNHUB, QUIVER, EDGAR, YFINANCE
-        ),
+        min_decision_interval_seconds=min_decision_interval_seconds(),
         errors=errors,
     )
 
