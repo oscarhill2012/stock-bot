@@ -89,7 +89,7 @@ A few items previously in this backlog (council debate, persona memory, persona 
 
 ### B5. Per-evidence-key analyst weighting
 
-**Origin:** Phase 4 Plan A lands per-family weights with an explicit slot for nested per-key extension (`DEFAULT_ANALYST_WEIGHTS` in `src/config/digest.py`, applied mathematically in `src/contract/digest.py`). This is the next refinement on top of that contract.
+**Origin:** Phase 4 Plan A lands per-family weights with an explicit slot for nested per-key extension (`DEFAULT_ANALYST_WEIGHTS` in `src/contract/digest_defaults.py`, applied mathematically in `src/contract/digest.py`). This is the next refinement on top of that contract.
 
 **The goal:** instead of "trust smart_money 1.5×", learn that "smart_money's `n_politicians > 2` is highly predictive but `total_dollar_value` alone is noise."
 

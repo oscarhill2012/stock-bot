@@ -872,31 +872,46 @@ from contract.evidence import AnalystEvidence, AnalystVerdict
 from contract.ticker_evidence import AggregateVerdict, TickerEvidence
 
 
-def _ev(analyst: str, direction: str, conf: float, features: dict[str, float] | None = None,
+def _ev(analyst: str, lean: str, conf: float, features: dict[str, float] | None = None,
         ticker: str = "AAPL") -> AnalystEvidence:
     return AnalystEvidence(
-        ticker=ticker, analyst=analyst, features=features or {},
-        verdict=AnalystVerdict(direction=direction, confidence=conf, rationale=f"{analyst} {direction}"),
+        ticker=ticker, analyst=analyst,
+        tick_id="tick_X",
+        recorded_at=datetime(2026, 5, 8, 14, 0, tzinfo=timezone.utc),
+        features=features or {}, feature_warnings=[],
+        verdict=AnalystVerdict(
+            lean=lean, magnitude=conf, confidence=conf,
+            rationale=f"{analyst} {lean}", key_factors=[],
+        ),
     )
 
 
-def _te(ticker: str = "AAPL", direction: str = "bullish", magnitude: float = 0.5,
+def _te(ticker: str = "AAPL", lean: str = "bullish", magnitude: float = 0.5,
         disagreement: float = 0.1) -> TickerEvidence:
     return TickerEvidence(
         ticker=ticker,
         tick_id="tick_X",
         recorded_at=datetime(2026, 5, 8, 14, 0, tzinfo=timezone.utc),
         per_analyst={
-            "technical": _ev("technical", direction, 0.7, {"rsi_14": 60.0}, ticker),
-            "fundamental": _ev("fundamental", direction, 0.6, {"pe_trailing": 28.5}, ticker),
-            "sentiment": _ev("sentiment", direction, 0.5, {"news_count_7d": 5.0}, ticker),
-            "smart_money": _ev("smart_money", "neutral", 0.0, {"is_no_data": 1.0}, ticker),
+            "technical": _ev("technical", lean, 0.7, {"rsi_14": 60.0}, ticker),
+            "fundamental": _ev("fundamental", lean, 0.6, {"pe_trailing": 28.5}, ticker),
+            "sentiment": _ev("sentiment", lean, 0.5, {"news_count_7d": 5.0}, ticker),
+            "smart_money": AnalystEvidence(
+                ticker=ticker, analyst="smart_money",
+                tick_id="tick_X",
+                recorded_at=datetime(2026, 5, 8, 14, 0, tzinfo=timezone.utc),
+                features={"is_no_data": 1.0}, feature_warnings=[],
+                verdict=AnalystVerdict(
+                    lean="neutral", magnitude=0.0, confidence=0.0,
+                    rationale="no filings", key_factors=[], is_no_data=True,
+                ),
+            ),
         },
         aggregate=AggregateVerdict(
-            direction=direction, magnitude=magnitude,
-            weights_used={"technical": 1.0, "fundamental": 1.0, "sentiment": 1.0, "smart_money": 1.0},
+            lean=lean, magnitude=magnitude, confidence=0.6,
+            disagreement=disagreement, summary=f"3 {lean} / 1 no_data",
         ),
-        disagreement_score=disagreement,
+        weights={"technical": 1.0, "fundamental": 1.0, "sentiment": 1.0, "smart_money": 1.0},
     )
 
 
@@ -917,7 +932,7 @@ def test_single_ticker_block_contains_all_sections():
     assert "smart_money" in out.lower()
 
 
-def test_disagreement_score_rendered():
+def test_disagreement_rendered():
     out = render_ticker_evidence([_te(disagreement=0.42)])
     assert "0.42" in out or "disagreement" in out.lower()
 
@@ -929,8 +944,8 @@ def test_no_data_smart_money_marked_clearly():
 
 
 def test_multiple_tickers_in_output():
-    aapl = _te(ticker="AAPL", direction="bullish")
-    msft = _te(ticker="MSFT", direction="bearish")
+    aapl = _te(ticker="AAPL", lean="bullish")
+    msft = _te(ticker="MSFT", lean="bearish")
     out = render_ticker_evidence([aapl, msft])
     assert "AAPL" in out
     assert "MSFT" in out
@@ -953,8 +968,8 @@ Create `src/agents/strategist/evidence_view.py`:
 ```python
 """Render TickerEvidence as a prompt-ready string for the strategist.
 
-One block per ticker: aggregate direction + magnitude + disagreement, then a
-compact per-analyst summary with the locked feature catalogue values.
+One block per ticker: aggregate lean + magnitude + confidence + disagreement,
+then a compact per-analyst summary with the locked feature catalogue values.
 """
 from __future__ import annotations
 
@@ -980,7 +995,8 @@ def _format_per_analyst(te: TickerEvidence) -> list[str]:
             lines.append(f"  - {analyst:<12} no_data")
             continue
         lines.append(
-            f"  - {analyst:<12} {ev.verdict.direction:<7} conf={ev.verdict.confidence:.2f}  "
+            f"  - {analyst:<12} {ev.verdict.lean:<7} mag={ev.verdict.magnitude:.2f} "
+            f"conf={ev.verdict.confidence:.2f}  "
             f"[{_format_features(ev.features)}]  — {ev.verdict.rationale[:60]}"
         )
     return lines
@@ -992,11 +1008,14 @@ def render_ticker_evidence(items: Iterable[TickerEvidence]) -> str:
         return "(no evidence this tick)"
     blocks: list[str] = []
     for te in items:
+        agg = te.aggregate
         block = [
             te.ticker,
-            f"  Aggregate: {te.aggregate.direction} (magnitude {te.aggregate.magnitude:.2f}, "
-            f"disagreement {te.disagreement_score:.2f})",
+            f"  Aggregate: {agg.lean} (magnitude {agg.magnitude:.2f}, "
+            f"confidence {agg.confidence:.2f}, disagreement {agg.disagreement:.2f})",
+            f"  Summary: {agg.summary}" if agg.summary else "",
         ]
+        block = [line for line in block if line]
         block.extend(_format_per_analyst(te))
         blocks.append("\n".join(block))
     return "\n\n".join(blocks)
@@ -1354,11 +1373,17 @@ def _portfolio(holdings: dict | None = None, cash: float = 1000.0) -> Portfolio:
     )
 
 
-def _ev(analyst: str, direction: str = "neutral", conf: float = 0.0,
+def _ev(analyst: str, lean: str = "neutral", conf: float = 0.0,
         ticker: str = "AAPL") -> AnalystEvidence:
     return AnalystEvidence(
-        ticker=ticker, analyst=analyst, features={},
-        verdict=AnalystVerdict(direction=direction, confidence=conf, rationale="x"),
+        ticker=ticker, analyst=analyst,
+        tick_id="t",
+        recorded_at=datetime(2026, 5, 8, 14, 0, tzinfo=timezone.utc),
+        features={}, feature_warnings=[],
+        verdict=AnalystVerdict(
+            lean=lean, magnitude=conf, confidence=conf,
+            rationale="x", key_factors=[],
+        ),
     )
 
 
@@ -1368,10 +1393,11 @@ def _te(ticker: str = "AAPL") -> TickerEvidence:
         recorded_at=datetime(2026, 5, 8, 14, 0, tzinfo=timezone.utc),
         per_analyst={a: _ev(a, "neutral", 0.0, ticker) for a in
                       ("technical", "fundamental", "sentiment", "smart_money")},
-        aggregate=AggregateVerdict(direction="neutral", magnitude=0.0,
-                                   weights_used={"technical": 1.0, "fundamental": 1.0,
-                                                 "sentiment": 1.0, "smart_money": 1.0}),
-        disagreement_score=0.0,
+        aggregate=AggregateVerdict(
+            lean="neutral", magnitude=0.0, confidence=0.0,
+            disagreement=0.0, summary="all neutral",
+        ),
+        weights={"technical": 1.0, "fundamental": 1.0, "sentiment": 1.0, "smart_money": 1.0},
     )
 
 
@@ -1575,7 +1601,7 @@ from agents.strategist.prompts import STRATEGIST_INSTRUCTION
 from agents.strategist.schema import StrategistDecision
 from agents.strategist.stance_schema import TickerStance
 from broker.portfolio import Portfolio
-from config.digest import DEFAULT_ANALYST_WEIGHTS
+from contract.digest_defaults import DEFAULT_ANALYST_WEIGHTS
 from contract.digest import build_ticker_evidence
 from contract.evidence import AnalystEvidence
 from contract.ticker_evidence import TickerEvidence
@@ -2683,10 +2709,16 @@ def test_strategist_v2_emits_per_ticker_stances_with_held_position():
         positions={"AAPL": Position(quantity=10.0, avg_cost=192.40, last_price=198.50)},
     )
 
-    def _ev(analyst, direction, conf, ticker):
+    def _ev(analyst, lean, conf, ticker):
         return AnalystEvidence(
-            ticker=ticker, analyst=analyst, features={},
-            verdict=AnalystVerdict(direction=direction, confidence=conf, rationale="x"),
+            ticker=ticker, analyst=analyst,
+            tick_id="tick_TEST",
+            recorded_at=datetime.now(tz=timezone.utc),
+            features={}, feature_warnings=[],
+            verdict=AnalystVerdict(
+                lean=lean, magnitude=conf, confidence=conf,
+                rationale="x", key_factors=[],
+            ),
         ).model_dump(mode="json")
 
     session_service = InMemorySessionService()

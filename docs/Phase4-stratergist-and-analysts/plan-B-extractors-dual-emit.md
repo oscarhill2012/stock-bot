@@ -6,6 +6,16 @@
 
 **Architecture:** New `src/contract/extractors/` package — one extractor per analyst, each takes the same upstream data the analyst's fetch callback already pulls (state key `state["{analyst}_data"]`) and returns a `dict[str, float]` of features. A new shared after-callback factory `make_dual_emit_callback` chains the existing exhaustive validator with an evidence-building step. Each analyst agent gains the new after-callback wired up.
 
+**Translation from legacy `AnalystSignal` → new `AnalystVerdict`:**
+- `direction` → `lean` (1:1, identical literal values).
+- `confidence` → `confidence` (1:1).
+- `key_factors` → `key_factors` (carried as a structured list — DO NOT collapse into rationale; this is the substrate the future knowledge-base will pattern-match against).
+- `rationale` (new field, not in legacy `AnalystSignal`) is rendered from `key_factors` joined by `" | "`, truncated to 160 chars. This keeps the human-readable string for prompts while the structured list survives for the KB.
+- `magnitude` (new field, not in legacy) is set equal to `confidence` during dual-emit. The legacy schema can't distinguish "how-far-from-neutral" from "how-sure"; Plan D's evidence-only callback re-prompts the LLM for a real magnitude. Treat the dual-emit value as a placeholder.
+- `is_no_data` is derived from the extractor's `is_no_data` feature (smart_money only).
+
+The `AnalystEvidence` envelope gains `tick_id` (from `state["tick_id"]`) and `recorded_at` (now), plus `feature_warnings` (empty list during dual-emit — the legacy fetch callbacks don't surface warnings; Plan D's per-extractor warnings get plumbed through there).
+
 **Tech Stack:** Python 3.11+, Pydantic v2, pandas + pandas-ta (added in Plan A), pytest.
 
 **Reference reading before starting:**
@@ -60,15 +70,24 @@ def _fake_extractor(raw: Any, ticker: str) -> dict[str, float]:
     return {"toy_feature": 1.0}
 
 
+def _state_with(tickers, signals, data) -> _State:
+    return _State(
+        tick_id="2026-05-08T14:00:00Z",
+        tickers=tickers,
+        technical_signals=signals,
+        technical_data=data,
+    )
+
+
 def test_dual_emit_writes_evidence_for_each_signal():
-    state = _State(
-        tickers=["AAPL", "MSFT"],
-        technical_signals=[
+    state = _state_with(
+        ["AAPL", "MSFT"],
+        [
             AnalystSignal(ticker="AAPL", direction="bullish", confidence=0.7,
                           key_factors=["RSI 42"]).model_dump(),
             AnalystSignal(ticker="MSFT", direction="neutral", confidence=0.4).model_dump(),
         ],
-        technical_data={"AAPL": {"x": 1}, "MSFT": {"x": 2}},
+        {"AAPL": {"x": 1}, "MSFT": {"x": 2}},
     )
     callback = make_dual_emit_callback(
         analyst="technical",
@@ -85,40 +104,48 @@ def test_dual_emit_writes_evidence_for_each_signal():
 
     parsed = [AnalystEvidence.model_validate(e) for e in evidence_list]
     by_ticker = {e.ticker: e for e in parsed}
-    assert by_ticker["AAPL"].verdict.direction == "bullish"
+    assert by_ticker["AAPL"].verdict.lean == "bullish"
     assert by_ticker["AAPL"].verdict.confidence == 0.7
+    # During dual-emit, magnitude proxies confidence (legacy can't separate them).
+    assert by_ticker["AAPL"].verdict.magnitude == 0.7
     assert by_ticker["AAPL"].features == {"toy_feature": 1.0}
     assert by_ticker["AAPL"].analyst == "technical"
+    assert by_ticker["AAPL"].tick_id == "2026-05-08T14:00:00Z"
+    assert by_ticker["AAPL"].feature_warnings == []
 
 
-def test_dual_emit_carries_rationale_from_key_factors():
-    state = _State(
-        tickers=["AAPL"],
-        technical_signals=[
+def test_dual_emit_preserves_key_factors_as_structured_list():
+    """Legacy AnalystSignal.key_factors must survive as a list on AnalystVerdict —
+    NOT collapsed into rationale. This list is the future knowledge-base lookup
+    primitive (backlog B2)."""
+    state = _state_with(
+        ["AAPL"],
+        [
             AnalystSignal(ticker="AAPL", direction="bullish", confidence=0.6,
                           key_factors=["RSI cooled", "uptrend intact", "volume up"]).model_dump(),
         ],
-        technical_data={"AAPL": {}},
+        {"AAPL": {}},
     )
     cb = make_dual_emit_callback("technical", "technical_signals", "technical_data",
                                   "technical_evidence", _fake_extractor)
     cb(_Ctx(state))
 
     ev = AnalystEvidence.model_validate(state["technical_evidence"][0])
-    # Rationale is joined key_factors
+    assert ev.verdict.key_factors == ["RSI cooled", "uptrend intact", "volume up"]
+    # Rationale is the joined factors (for prompt readability)
     assert "RSI cooled" in ev.verdict.rationale
     assert "uptrend intact" in ev.verdict.rationale
 
 
 def test_dual_emit_truncates_rationale_to_160_chars():
     long_factor = "x" * 200
-    state = _State(
-        tickers=["AAPL"],
-        technical_signals=[
+    state = _state_with(
+        ["AAPL"],
+        [
             AnalystSignal(ticker="AAPL", direction="bullish", confidence=0.5,
                           key_factors=[long_factor]).model_dump(),
         ],
-        technical_data={"AAPL": {}},
+        {"AAPL": {}},
     )
     cb = make_dual_emit_callback("technical", "technical_signals", "technical_data",
                                   "technical_evidence", _fake_extractor)
@@ -129,12 +156,12 @@ def test_dual_emit_truncates_rationale_to_160_chars():
 
 def test_dual_emit_reprompts_on_missing_tickers():
     """If the LLM missed tickers, we still re-prompt rather than silently filling."""
-    state = _State(
-        tickers=["AAPL", "MSFT"],
-        technical_signals=[
+    state = _state_with(
+        ["AAPL", "MSFT"],
+        [
             AnalystSignal(ticker="AAPL", direction="bullish", confidence=0.7).model_dump(),
         ],
-        technical_data={"AAPL": {}, "MSFT": {}},
+        {"AAPL": {}, "MSFT": {}},
     )
     cb = make_dual_emit_callback("technical", "technical_signals", "technical_data",
                                   "technical_evidence", _fake_extractor)
@@ -148,12 +175,12 @@ def test_dual_emit_reprompts_on_missing_tickers():
 
 def test_dual_emit_handles_empty_features_gracefully():
     """If extractor returns {}, evidence still validates with empty features."""
-    state = _State(
-        tickers=["AAPL"],
-        technical_signals=[
+    state = _state_with(
+        ["AAPL"],
+        [
             AnalystSignal(ticker="AAPL", direction="neutral", confidence=0.0).model_dump(),
         ],
-        technical_data={"AAPL": {}},
+        {"AAPL": {}},
     )
     cb = make_dual_emit_callback(
         "technical", "technical_signals", "technical_data", "technical_evidence",
@@ -164,6 +191,29 @@ def test_dual_emit_handles_empty_features_gracefully():
     assert ev.features == {}
 
 
+def test_dual_emit_smart_money_no_data_flag_propagates():
+    """smart_money extractor's `is_no_data` feature must set the verdict's
+    is_no_data flag so the digest aggregator drops the verdict from voting."""
+    state = _State(
+        tick_id="t",
+        tickers=["AAPL"],
+        smart_money_signals=[
+            AnalystSignal(ticker="AAPL", direction="neutral", confidence=0.0).model_dump(),
+        ],
+        smart_money_data={"AAPL": {}},
+    )
+    cb = make_dual_emit_callback(
+        analyst="smart_money",
+        signals_key="smart_money_signals",
+        data_key="smart_money_data",
+        evidence_key="smart_money_evidence",
+        extractor=lambda raw, ticker: {"is_no_data": 1.0},
+    )
+    cb(_Ctx(state))
+    ev = AnalystEvidence.model_validate(state["smart_money_evidence"][0])
+    assert ev.verdict.is_no_data is True
+
+
 def test_dual_emit_isolates_ticker_data_to_extractor():
     """Extractor is called with the per-ticker slice of `state[data_key]`, not the whole dict."""
     seen: list = []
@@ -172,13 +222,13 @@ def test_dual_emit_isolates_ticker_data_to_extractor():
         seen.append((ticker, raw))
         return {}
 
-    state = _State(
-        tickers=["AAPL", "MSFT"],
-        technical_signals=[
+    state = _state_with(
+        ["AAPL", "MSFT"],
+        [
             AnalystSignal(ticker="AAPL", direction="bullish", confidence=0.5).model_dump(),
             AnalystSignal(ticker="MSFT", direction="bearish", confidence=0.5).model_dump(),
         ],
-        technical_data={"AAPL": {"price": 100}, "MSFT": {"price": 200}},
+        {"AAPL": {"price": 100}, "MSFT": {"price": 200}},
     )
     cb = make_dual_emit_callback("technical", "technical_signals", "technical_data",
                                   "technical_evidence", _spy)
@@ -200,6 +250,7 @@ Open `src/agents/analysts/_common.py`. Add to the existing file (do NOT replace 
 ```python
 # ── Dual-emit (legacy AnalystSignal + new AnalystEvidence) ────────────────────
 
+from datetime import datetime, timezone
 from typing import Callable
 
 from contract.evidence import AnalystEvidence, AnalystName, AnalystVerdict
@@ -216,9 +267,21 @@ def make_dual_emit_callback(
 
     1. Validates exhaustiveness (re-prompts if any watchlist ticker missing).
     2. For each emitted legacy `<Analyst>Signal`, runs the per-ticker feature
-       extractor against `state[data_key][ticker]` and builds an `AnalystEvidence`.
+       extractor against `state[data_key][ticker]` and builds an `AnalystEvidence`
+       in the new richer shape.
     3. Writes the evidence list to `state[evidence_key]` (alongside the existing
        `state[signals_key]` — both keys coexist for the duration of dual-emit).
+
+    Translation rules (legacy `AnalystSignal` → new `AnalystVerdict`):
+      - `direction`     → `lean`               (1:1)
+      - `confidence`    → `confidence`         (1:1)
+      - `key_factors`   → `key_factors`        (carried as a list — KB primitive)
+      - `key_factors`   → `rationale`          (joined string for prompt readability,
+                                                truncated to 160 chars)
+      - (no source)     → `magnitude`          (set equal to confidence — placeholder
+                                                until Plan D's evidence-only callback
+                                                re-prompts the LLM for a real value)
+      - extractor's `is_no_data` feature → `verdict.is_no_data`
 
     The legacy signal stays untouched; downstream consumers (`attribution_writer`,
     `memory_writer`) still read it. Plan C will start reading `state[evidence_key]`
@@ -236,25 +299,35 @@ def make_dual_emit_callback(
         state = callback_context.state
         signals_raw = state.get(signals_key, []) or []
         per_ticker_data = state.get(data_key, {}) or {}
+        tick_id = state.get("tick_id", "unknown")
+        recorded_at = datetime.now(tz=timezone.utc)
 
         evidence_list: list[dict] = []
         for sig in signals_raw:
             sig_dict = sig if isinstance(sig, dict) else sig.model_dump()
             ticker = sig_dict["ticker"]
             features = extractor(per_ticker_data.get(ticker, {}), ticker)
-            rationale = " | ".join(sig_dict.get("key_factors", []) or [])
+            key_factors = list(sig_dict.get("key_factors", []) or [])
+
+            rationale = " | ".join(key_factors)
             if not rationale:
                 rationale = f"{analyst} {sig_dict['direction']}"
             rationale = rationale[:160]
 
+            confidence = float(sig_dict["confidence"])
             evidence = AnalystEvidence(
                 ticker=ticker,
                 analyst=analyst,
+                tick_id=tick_id,
+                recorded_at=recorded_at,
                 features=features,
+                feature_warnings=[],
                 verdict=AnalystVerdict(
-                    direction=sig_dict["direction"],
-                    confidence=sig_dict["confidence"],
+                    lean=sig_dict["direction"],
+                    magnitude=confidence,
+                    confidence=confidence,
                     rationale=rationale,
+                    key_factors=key_factors[:8],
                     is_no_data=bool(features.get("is_no_data", 0.0) >= 1.0),
                 ),
             )
@@ -271,7 +344,7 @@ If `tests/unit/agents/analysts/__init__.py` does not exist, create it empty.
 - [ ] **Step 4: Run tests**
 
 Run: `.venv/Scripts/python -m pytest tests/unit/agents/analysts/test_dual_emit.py -v`
-Expected: PASS (6 tests).
+Expected: PASS (7 tests).
 
 - [ ] **Step 5: Commit**
 

@@ -24,14 +24,24 @@ The two follow-on goals — Goal 1 (single-strategist v2 with per-ticker stance)
 
 **Risk:** zero. Pure new code, nothing imports it yet, nothing changes.
 
-**Adds:** `src/contract/{evidence,ticker_evidence,digest}.py`, `src/config/digest.py`, fixtures under `tests/fixtures/contract/`, the `pandas-ta` dependency.
+**Adds:** `src/contract/{evidence,ticker_evidence,digest,digest_defaults}.py`, fixtures under `tests/fixtures/contract/`, the `pandas-ta` dependency.
 
 **Defines:**
-- `AnalystVerdict` — `direction: Literal["bullish","bearish","neutral"]`, `confidence: float [0,1]`, `rationale: str (≤160)`, `is_no_data: bool`.
-- `AnalystEvidence` — `ticker`, `analyst: Literal["technical","fundamental","sentiment","smart_money"]`, `features: dict[str, float]`, `verdict: AnalystVerdict`.
-- `AggregateVerdict` — `direction`, `magnitude: float [0,1]`, `weights_used: dict[str, float]`.
-- `TickerEvidence` — `ticker`, `tick_id`, `recorded_at`, `per_analyst: dict[str, AnalystEvidence]`, `aggregate: AggregateVerdict`, `disagreement_score: float [0,1]`.
-- `build_ticker_evidence(per_analyst, ticker, tick_id, recorded_at, weights) → TickerEvidence`. The aggregator math: weighted vote with `DIRECTION_DEAD_ZONE = 0.15` margin, variance-based disagreement, neutral-fill for missing analysts. Default weights all 1.0 (`DEFAULT_ANALYST_WEIGHTS = {"technical": 1.0, "fundamental": 1.0, "sentiment": 1.0, "smart_money": 1.0}`); knob lives in `src/config/digest.py`.
+- `AnalystVerdict` — `lean: Literal["bullish","bearish","neutral"]`, `magnitude: float [0,1]`, `confidence: float [0,1]`, `rationale: str (≤160)`, `key_factors: list[str] (≤8)`, `is_no_data: bool`. `magnitude` and `confidence` are independent: magnitude = "how strong is the signal," confidence = "how sure am I about it." Both are required by the future learning loop (see *Schema affordances for Goal 3* below).
+- `AnalystEvidence` — `ticker`, `analyst: Literal["technical","fundamental","sentiment","smart_money"]`, `tick_id`, `recorded_at`, `features: dict[str, float]`, `feature_warnings: list[str]`, `verdict: AnalystVerdict`.
+- `AggregateVerdict` — `lean: Literal["bullish","bearish","neutral"]`, `magnitude: float [0,1]`, `confidence: float [0,1]`, `disagreement: float [0,1]`, `summary: str (≤240)`. `disagreement` lives inside the aggregate (not as a sibling on `TickerEvidence`) so the whole stance object is one self-contained KB lookup row. `summary` is the short rendered string for prompt injection ("3 bullish / 1 neutral / 0 bearish").
+- `TickerEvidence` — `ticker`, `tick_id`, `recorded_at`, `per_analyst: dict[str, AnalystEvidence]`, `aggregate: AggregateVerdict`, `weights: dict[str, float]` (snapshotted weights actually used at this tick — top-level so `weights` can evolve without breaking aggregate-row equality).
+- `build_ticker_evidence(per_analyst, ticker, tick_id, recorded_at, weights) → TickerEvidence`. The aggregator math: weighted vote with `DIRECTION_DEAD_ZONE = 0.15` margin, variance-based disagreement, neutral-fill for missing analysts. Default weights all 1.0 (`DEFAULT_ANALYST_WEIGHTS = {"technical": 1.0, "fundamental": 1.0, "sentiment": 1.0, "smart_money": 1.0}`); knob lives in `src/contract/digest_defaults.py` (co-located with the aggregator, not promoted to JSON config).
+
+**Schema affordances for Goal 3 (knowledge base / learning loop):**
+
+Several fields go beyond the bare-minimum direction/confidence shape. They exist *now* (not later) because retrofitting them after the loop is designed would mean a second migration of every persisted evidence row. Each is annotated in `src/contract/evidence.py` and `src/contract/ticker_evidence.py` docstrings:
+
+- **Per-analyst `magnitude` independent of `confidence`** — substrate for B5 (per-evidence-key analyst weighting). The KB will want to learn that "smart_money is right *when its magnitude is high*, regardless of confidence" — needs both axes recorded.
+- **Per-analyst `key_factors` as a structured list (not a free-form string)** — KB pattern-recall lookup primitive. "Find past ticks where technicals listed `{rsi_oversold, breaking_50ma}`" only works if `key_factors` is queryable.
+- **Aggregate `confidence` distinct from `magnitude`** — KB can key on signal *shape*: a high-magnitude/low-confidence aggregate ("strong but uncertain") is operationally different from both-high.
+- **Aggregate `summary`** — short rendered string the KB can splice into the strategist prompt without re-deriving from raw verdicts ("similar past setup: [summary] → [outcome]").
+- **`weights` at TickerEvidence top-level** — keeps aggregate equality stable across weight-tuning experiments (B5).
 
 **Doesn't change:** any existing analyst, the strategist, the pipeline, persistence. After Plan A merges, the bot runs identically; Plan A's modules are dead until Plan B imports them.
 
@@ -59,7 +69,7 @@ The two follow-on goals — Goal 1 (single-strategist v2 with per-ticker stance)
 | `sentiment` | `news_count_7d`, `pct_news_positive_7d`, `pct_news_negative_7d`, `headline_polarity_mean_7d` (-1…+1), `social_volume_z` (vs 30d, optional → 0.0 if no provider) |
 | `smart_money` | `n_politicians`, `n_buys_30d`, `n_sells_30d`, `total_dollar_value_buys`, `total_dollar_value_sells`, `net_flow_dollar`, `is_no_data` (1.0/0.0 — neutral-fill flag for sparse coverage) |
 
-Sparseness rule: `smart_money` returns `is_no_data = 1.0` and zeros elsewhere when no filings cover this ticker; the aggregator then treats its `verdict.direction` as `"neutral"` regardless.
+Sparseness rule: `smart_money` returns `is_no_data = 1.0` and zeros elsewhere when no filings cover this ticker; the aggregator then treats its `verdict.lean` as `"neutral"` regardless.
 
 ### Plan C — Strategist v2 against new contract (touches strategist exactly once)
 
@@ -114,11 +124,13 @@ The strategist sees per-ticker `TickerEvidence` — *not* four flat lists of ana
 
 ```
 build_ticker_evidence:
-    weighted_dirs = sum(weight[a] * sign(direction[a]) * confidence[a] for a in analysts)
-    if abs(weighted_dirs) < DIRECTION_DEAD_ZONE: aggregate.direction = "neutral"
-    else: aggregate.direction = sign(weighted_dirs)
-    aggregate.magnitude = abs(weighted_dirs) / sum(weight[a] for a in analysts)
-    disagreement_score = variance({sign(direction[a]) * confidence[a]}) normalised to [0,1]
+    weighted = sum(weight[a] * sign(lean[a]) * confidence[a] for a in analysts)
+    if abs(weighted) < DIRECTION_DEAD_ZONE: aggregate.lean = "neutral"
+    else: aggregate.lean = sign(weighted)
+    aggregate.magnitude   = abs(weighted) / sum(weight[a] for a in analysts)
+    aggregate.confidence  = mean(confidence[a] for a in contributing analysts)
+    aggregate.disagreement = variance({sign(lean[a]) * confidence[a]}) normalised to [0,1]
+    aggregate.summary     = "X bullish / Y neutral / Z bearish"
 ```
 
 Why dead-zone: prevents flip-flopping when one analyst at low confidence drags the aggregate across zero. `0.15` is the magnitude threshold below which we report `"neutral"` regardless of the sign of the weighted sum.
@@ -171,7 +183,7 @@ If/when paper trading starts before Plan D is merged, the cleanup gets slightly 
 
 ## Test strategy
 
-- **Tier 1 (no LLM, run on every commit):** Pydantic schema round-trips, lifecycle derivation truth tables, digest math (direction sign, magnitude, dead zone, disagreement score), held-view rendering golden output, validation callback's reprompt branches, ORM persistence round-trips.
+- **Tier 1 (no LLM, run on every commit):** Pydantic schema round-trips, lifecycle derivation truth tables, digest math (lean sign, magnitude, dead zone, aggregate confidence, disagreement, summary), held-view rendering golden output, validation callback's reprompt branches, ORM persistence round-trips.
 - **Tier 2 (gated by `RUN_LLM_TESTS=1`):** one strategist smoke that runs `strategist_agent` against fixture state with one held position and asserts a parseable exhaustive `TickerStance` set comes back. Per analyst: one smoke that runs the analyst against captured-data fixtures and asserts the `AnalystEvidence` parses + features dict has all expected keys.
 - **Tier 3 (manual smoke):** `scripts/smoke_run.py --ticks 3` end-to-end, verify `TickerStanceRow` + `AnalystEvidenceRow` + `TickerEvidenceRow` rows land in the dev SQLite.
 
