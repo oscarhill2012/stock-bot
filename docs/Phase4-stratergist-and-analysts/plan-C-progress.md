@@ -21,7 +21,7 @@ exactly where the previous session stopped.
 | **Chunk 1 — Strategist-internal foundation** | C1–C6 | `phase4/planC-foundation` | ✅ approved by final Opus audit; staged for stacked merge |
 | Chunk 2 — Strategist rewrite | C7–C9 | `phase4/planC-strategist-rewrite` (off Chunk 1 tip) | ✅ audited; ready for Chunk 3 stack |
 | Chunk 3 — Persistence + wiring | C10–C14 | `phase4/planC-persistence-and-wiring` (off Chunk 2 tip `c0136f7`) | ✅ audited; ready for Chunk 4 stack |
-| Chunk 4 — Verify | C15–C16 | (not started — branches off Chunk 3 tip) | — |
+| Chunk 4 — Verify | C15–C16 | `phase4/planC-verify` (off Chunk 3 tip `54bbb65`) | in flight |
 
 **Stacked-branch policy:** Plan C is one coherent rewrite — Chunk 1 alone is dead
 code until C9 wires it in. The four chunk branches form a stack (each branches off
@@ -112,9 +112,24 @@ strategist runs.
 
 ---
 
-### Chunk 4 — `phase4/planC-verify`
+## Chunk 4 — `phase4/planC-verify`
+
+**Branch:** off Chunk 3 tip (`54bbb65`).
+**Worktree:** `.claude/worktrees/phase4-planC-chunk4`
+**Venv:** symlinked from main repo's `.venv`
+
+**Scope:** Verify the full Plan C stack. C15 adds a gated LLM-touching smoke test for
+the live strategist (skipped by default; runs only when `RUN_LLM_TESTS=1`). C16 runs
+the final regression pass, cleans up any Plan-C-introduced ruff debt (including the
+3 carry-overs on `persistence.py` per the Chunk 3 audit follow-up #1), and appends
+the Plan C entry to `graphify-out/graph_delta.md`. After C16 lands, the whole
+chunk-1 → chunk-2 → chunk-3 → chunk-4 stack merges to `main` as one PR.
+
+**Tasks:**
+
 - [ ] C15 — Tier 2 LLM-touching smoke (gated by `RUN_LLM_TESTS=1`). Plan §C15.
-- [ ] C16 — Final regression pass + graphify delta. Plan §C16.
+- [ ] C16 — Final regression pass + ruff cleanup + graphify delta. Plan §C16.
+- [ ] **Final review** — Opus cross-task audit of C15-C16 (smoke gating + regression cleanliness).
 
 ---
 
