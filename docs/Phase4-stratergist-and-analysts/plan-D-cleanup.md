@@ -156,7 +156,7 @@ def test_save_ticker_evidence_round_trip(db_session):
 - [ ] **Step 2: Run test to verify it fails**
 
 ```
-.venv/Scripts/python -m pytest tests/integration/test_evidence_persistence.py -v
+.venv/bin/python -m pytest tests/integration/test_evidence_persistence.py -v
 ```
 Expected: FAIL with `ImportError: cannot import name 'AnalystEvidenceRow'`.
 
@@ -277,14 +277,14 @@ from sqlalchemy import Boolean, DateTime, Float, Integer, String  # add Boolean 
 - [ ] **Step 4: Run test to verify it passes**
 
 ```
-.venv/Scripts/python -m pytest tests/integration/test_evidence_persistence.py -v
+.venv/bin/python -m pytest tests/integration/test_evidence_persistence.py -v
 ```
 Expected: 2 passed.
 
 - [ ] **Step 5: Run full suite**
 
 ```
-.venv/Scripts/python -m pytest tests/ -v
+.venv/bin/python -m pytest tests/ -v
 ```
 Expected: all green (no behaviour changes yet — only new declarations).
 
@@ -416,7 +416,7 @@ def test_factory_returns_named_agent():
 - [ ] **Step 2: Run test to verify it fails**
 
 ```
-.venv/Scripts/python -m pytest tests/integration/test_evidence_writer.py -v
+.venv/bin/python -m pytest tests/integration/test_evidence_writer.py -v
 ```
 Expected: FAIL with `ModuleNotFoundError: agents.contract.evidence_writer`.
 
@@ -505,7 +505,7 @@ def build_evidence_writer(db_session=None) -> EvidenceWriter:
 - [ ] **Step 4: Run test to verify it passes**
 
 ```
-.venv/Scripts/python -m pytest tests/integration/test_evidence_writer.py -v
+.venv/bin/python -m pytest tests/integration/test_evidence_writer.py -v
 ```
 Expected: 3 passed.
 
@@ -582,7 +582,7 @@ def test_writes_only_evidence_state_key():
 - [ ] **Step 2: Run test to verify it fails**
 
 ```
-.venv/Scripts/python -m pytest tests/agents/analysts/test_evidence_callback.py -v
+.venv/bin/python -m pytest tests/agents/analysts/test_evidence_callback.py -v
 ```
 Expected: FAIL with `ImportError: cannot import name 'make_evidence_callback'`.
 
@@ -694,7 +694,7 @@ Repeat for `fundamental`, `sentiment`, and `smart_money` — same pattern, just 
 - [ ] **Step 5: Run targeted tests**
 
 ```
-.venv/Scripts/python -m pytest tests/agents/analysts/ -v
+.venv/bin/python -m pytest tests/agents/analysts/ -v
 ```
 Expected: green. Any test that asserted on `state["{analyst}_signals"]` should already have been migrated by Plan B's tests; if any survive, retire them now.
 
@@ -801,7 +801,7 @@ async def test_smart_money_seen_false_when_only_no_data(monkeypatch):
 - [ ] **Step 3: Run test to verify it fails**
 
 ```
-.venv/Scripts/python -m pytest tests/agents/memory/test_writer_smart_money_seen.py -v
+.venv/bin/python -m pytest tests/agents/memory/test_writer_smart_money_seen.py -v
 ```
 Expected: at least one FAIL — `smart_money_seen` defaults to `False` because the writer still reads `smart_money_signals`.
 
@@ -843,7 +843,7 @@ Move the `datetime` / `timezone` imports to the top of the file while you're the
 - [ ] **Step 5: Run test to verify it passes**
 
 ```
-.venv/Scripts/python -m pytest tests/agents/memory/test_writer_smart_money_seen.py -v
+.venv/bin/python -m pytest tests/agents/memory/test_writer_smart_money_seen.py -v
 ```
 Expected: 2 passed.
 
@@ -869,7 +869,7 @@ Open `tests/integration/test_pipeline_composition.py`. Find the assertion `asser
 - [ ] **Step 2: Run test to verify it fails**
 
 ```
-.venv/Scripts/python -m pytest tests/integration/test_pipeline_composition.py -v
+.venv/bin/python -m pytest tests/integration/test_pipeline_composition.py -v
 ```
 Expected: FAIL — pipeline still wires `build_attribution_writer`.
 
@@ -905,14 +905,14 @@ def build_pipeline(broker, db_session=None) -> SequentialAgent:
 - [ ] **Step 4: Run test to verify it passes**
 
 ```
-.venv/Scripts/python -m pytest tests/integration/test_pipeline_composition.py -v
+.venv/bin/python -m pytest tests/integration/test_pipeline_composition.py -v
 ```
 Expected: pass.
 
 - [ ] **Step 5: Run full integration suite**
 
 ```
-.venv/Scripts/python -m pytest tests/integration/ -v
+.venv/bin/python -m pytest tests/integration/ -v
 ```
 Expected: all green. The legacy `test_attribution_writer.py` will fail at this point because `AttributionWriter` is no longer wired but its source file still exists; it will be deleted in Task D6.
 
@@ -936,7 +936,7 @@ git commit -m "feat(pipeline): swap AttributionWriter for EvidenceWriter"
 - [ ] **Step 1: Confirm no remaining references**
 
 ```
-.venv/Scripts/python -m pytest tests/ --collect-only 2>&1 | head -40
+.venv/bin/python -m pytest tests/ --collect-only 2>&1 | head -40
 ```
 
 Then:
@@ -964,14 +964,14 @@ In `src/orchestrator/persistence.py`, remove the `# ── AttributionSignals` b
 - [ ] **Step 4: Run full suite**
 
 ```
-.venv/Scripts/python -m pytest tests/ -v
+.venv/bin/python -m pytest tests/ -v
 ```
 Expected: all green.
 
 - [ ] **Step 5: Run ruff to catch dead imports**
 
 ```
-.venv/Scripts/python -m ruff check src/ tests/
+.venv/bin/python -m ruff check src/ tests/
 ```
 Expected: clean.
 
@@ -1018,14 +1018,14 @@ If any analyst's `__init__.py` re-exports the deleted class, drop the line.
 - [ ] **Step 3: Run full suite**
 
 ```
-.venv/Scripts/python -m pytest tests/ -v
+.venv/bin/python -m pytest tests/ -v
 ```
 Expected: all green.
 
 - [ ] **Step 4: Run ruff**
 
 ```
-.venv/Scripts/python -m ruff check src/ tests/
+.venv/bin/python -m ruff check src/ tests/
 ```
 Expected: clean.
 
@@ -1055,12 +1055,12 @@ git commit -m "refactor(analysts): delete legacy <Analyst>Signal Pydantic classe
 - [ ] **Step 1: Full test sweep**
 
 ```
-.venv/Scripts/python -m pytest tests/ -v
+.venv/bin/python -m pytest tests/ -v
 ```
 Expected: all green.
 
 ```
-.venv/Scripts/python -m ruff check src/ tests/
+.venv/bin/python -m ruff check src/ tests/
 ```
 Expected: clean.
 
@@ -1118,7 +1118,7 @@ grep -rn "strategist-council\|exit-rules-and-telemetry\|strategist-v2\|analyst-s
 Expected: only references inside `docs/Phase4-stratergist-and-analysts/` (which legitimately mention the predecessor names) and inside the new `graph_delta.md` entry.
 
 ```
-.venv/Scripts/python -m pytest tests/ -v
+.venv/bin/python -m pytest tests/ -v
 ```
 Expected: all green.
 

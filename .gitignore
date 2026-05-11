@@ -55,6 +55,7 @@ bash.exe.stackdump
 # Project-specific
 graphify-out/
 .graphifyignore
+.graphify_*
 docs/performance/*.csv
 docs/performance/*.parquet
 logs/

@@ -18,7 +18,7 @@
 
 **Project conventions:**
 - PYTHONPATH root = `src/`. Imports use `from agents.strategist.lifecycle import …`.
-- Run pytest as `.venv/Scripts/python -m pytest`.
+- Run pytest as `.venv/bin/python -m pytest` on Linux/macOS, or `.venv\Scripts\python -m pytest` on Windows.
 - One commit per task. Conventional Commits prefixes.
 
 **Pre-requisites:** Plans A + B merged.
@@ -106,7 +106,7 @@ def test_round_trip():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/strategist/test_stance_schema.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/strategist/test_stance_schema.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'agents.strategist.stance_schema'`.
 
 - [ ] **Step 3: Write the schema**
@@ -143,7 +143,7 @@ class TickerStance(BaseModel):
 
 - [ ] **Step 4: Run tests**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/strategist/test_stance_schema.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/strategist/test_stance_schema.py -v`
 Expected: PASS (9 tests).
 
 - [ ] **Step 5: Commit**
@@ -226,7 +226,7 @@ def test_close_at_exact_epsilon_boundary():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/strategist/test_lifecycle.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/strategist/test_lifecycle.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'agents.strategist.lifecycle'`.
 
 - [ ] **Step 3: Write the lifecycle module**
@@ -278,7 +278,7 @@ def derive_lifecycle_action(
 
 - [ ] **Step 4: Run tests**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/strategist/test_lifecycle.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/strategist/test_lifecycle.py -v`
 Expected: PASS (10 tests).
 
 - [ ] **Step 5: Commit**
@@ -340,7 +340,7 @@ def test_opened_tick_id_round_trip():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/strategist/test_position_thesis_opened_tick_id.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/strategist/test_position_thesis_opened_tick_id.py -v`
 Expected: FAIL — `PositionThesis` has no `opened_tick_id` field.
 
 - [ ] **Step 3: Add the field**
@@ -354,12 +354,12 @@ Don't change any other field, the class structure, or imports.
 
 - [ ] **Step 4: Run tests**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/strategist/test_position_thesis_opened_tick_id.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/strategist/test_position_thesis_opened_tick_id.py -v`
 Expected: PASS (2 tests).
 
 - [ ] **Step 5: Run all strategist unit tests for regression**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/strategist/ -v`
+Run: `.venv/bin/python -m pytest tests/unit/strategist/ -v`
 Expected: All passing.
 
 - [ ] **Step 6: Commit**
@@ -496,7 +496,7 @@ def test_open_falls_back_to_zero_when_no_price():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/strategist/test_derivation.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/strategist/test_derivation.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'agents.strategist.derivation'`.
 
 - [ ] **Step 3: Write the derivation module**
@@ -585,7 +585,7 @@ def derive_legacy_fields(
 
 - [ ] **Step 4: Run tests**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/strategist/test_derivation.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/strategist/test_derivation.py -v`
 Expected: PASS (6 tests).
 
 - [ ] **Step 5: Commit**
@@ -731,7 +731,7 @@ def test_accepts_thesis_instance_or_dict():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/strategist/test_held_view.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/strategist/test_held_view.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'agents.strategist.held_view'`.
 
 - [ ] **Step 3: Write the held-view module**
@@ -838,7 +838,7 @@ def render_held_positions_view(
 
 - [ ] **Step 4: Run tests**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/strategist/test_held_view.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/strategist/test_held_view.py -v`
 Expected: PASS (7 tests).
 
 - [ ] **Step 5: Commit**
@@ -959,7 +959,7 @@ def test_features_visible_in_output():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/strategist/test_evidence_view.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/strategist/test_evidence_view.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'agents.strategist.evidence_view'`.
 
 - [ ] **Step 3: Write the evidence-view module**
@@ -1023,7 +1023,7 @@ def render_ticker_evidence(items: Iterable[TickerEvidence]) -> str:
 
 - [ ] **Step 4: Run tests**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/strategist/test_evidence_view.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/strategist/test_evidence_view.py -v`
 Expected: PASS (6 tests).
 
 - [ ] **Step 5: Commit**
@@ -1101,7 +1101,7 @@ def test_legacy_fields_preserved():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/strategist/test_decision_schema_v2.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/strategist/test_decision_schema_v2.py -v`
 Expected: FAIL — `StrategistDecision` has no `stances` / `trim_reasons` fields.
 
 - [ ] **Step 3: Add the fields**
@@ -1160,12 +1160,12 @@ If the existing module had additional content, preserve it. Only the changes des
 
 - [ ] **Step 4: Run tests**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/strategist/test_decision_schema_v2.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/strategist/test_decision_schema_v2.py -v`
 Expected: PASS (4 tests).
 
 - [ ] **Step 5: Run all strategist tests for regression**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/strategist/ -v`
+Run: `.venv/bin/python -m pytest tests/unit/strategist/ -v`
 Expected: All passing.
 
 - [ ] **Step 6: Commit**
@@ -1255,7 +1255,7 @@ def test_template_renders_with_all_required_slots():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/strategist/test_prompts_v2.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/strategist/test_prompts_v2.py -v`
 Expected: FAIL — current prompt lacks `{ticker_evidence}` and `{held_positions_view}`.
 
 - [ ] **Step 3: Replace the prompt template**
@@ -1316,7 +1316,7 @@ Watchlist: {tickers}
 
 - [ ] **Step 4: Run tests**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/strategist/test_prompts_v2.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/strategist/test_prompts_v2.py -v`
 Expected: PASS (8 tests).
 
 - [ ] **Step 5: Commit**
@@ -1576,7 +1576,7 @@ def test_after_derives_legacy_fields_on_valid_input():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/strategist/test_strategist_callbacks_v2.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/strategist/test_strategist_callbacks_v2.py -v`
 Expected: FAIL — `_evidence_view_before_callback` and the v2 versions of the other callbacks don't exist.
 
 - [ ] **Step 3: Rewrite the agent module**
@@ -1788,12 +1788,12 @@ strategist_agent = LlmAgent(
 
 - [ ] **Step 4: Run the v2 callback tests**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/strategist/test_strategist_callbacks_v2.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/strategist/test_strategist_callbacks_v2.py -v`
 Expected: PASS (8 tests).
 
 - [ ] **Step 5: Run all strategist tests**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/strategist/ -v`
+Run: `.venv/bin/python -m pytest tests/unit/strategist/ -v`
 Expected: All passing.
 
 - [ ] **Step 6: Commit**
@@ -1879,7 +1879,7 @@ def test_nullable_lifecycle_fields(db):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/orchestrator/test_persistence_ticker_stance.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/orchestrator/test_persistence_ticker_stance.py -v`
 Expected: FAIL — `TickerStanceRow` and `save_ticker_stance` don't exist.
 
 - [ ] **Step 3: Add the row + helper**
@@ -1945,17 +1945,17 @@ If the existing file's imports don't already cover `Mapped`, `mapped_column`, `I
 
 - [ ] **Step 4: Verify schema creates cleanly**
 
-Run: `.venv/Scripts/python -c "from sqlalchemy import create_engine; from orchestrator.persistence import Base; e = create_engine('sqlite://'); Base.metadata.create_all(e); print('OK')"`
+Run: `.venv/bin/python -c "from sqlalchemy import create_engine; from orchestrator.persistence import Base; e = create_engine('sqlite://'); Base.metadata.create_all(e); print('OK')"`
 Expected: `OK`.
 
 - [ ] **Step 5: Run tests**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/orchestrator/test_persistence_ticker_stance.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/orchestrator/test_persistence_ticker_stance.py -v`
 Expected: PASS (2 tests).
 
 - [ ] **Step 6: Run all persistence tests**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/orchestrator/ -v`
+Run: `.venv/bin/python -m pytest tests/unit/orchestrator/ -v`
 Expected: All passing.
 
 - [ ] **Step 7: Commit**
@@ -2074,7 +2074,7 @@ def test_tick_id_columns_nullable(db):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/orchestrator/test_trade_log_tick_id_fks.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/orchestrator/test_trade_log_tick_id_fks.py -v`
 Expected: FAIL — `TradeLogRow` lacks the new columns.
 
 - [ ] **Step 3: Add the columns**
@@ -2087,7 +2087,7 @@ Open `src/orchestrator/persistence.py`. Find the `TradeLogRow` class. Add at the
 
 - [ ] **Step 4: Run tests**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/orchestrator/test_trade_log_tick_id_fks.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/orchestrator/test_trade_log_tick_id_fks.py -v`
 Expected: PASS (3 tests).
 
 - [ ] **Step 5: Commit**
@@ -2213,7 +2213,7 @@ def test_factory_returns_agent(db):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/strategist/test_decision_writer.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/strategist/test_decision_writer.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'agents.strategist.decision_writer'`.
 
 - [ ] **Step 3: Write the writer**
@@ -2296,7 +2296,7 @@ def build_strategist_decision_writer(db_session=None) -> StrategistDecisionWrite
 
 - [ ] **Step 4: Run tests**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/strategist/test_decision_writer.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/strategist/test_decision_writer.py -v`
 Expected: PASS (4 tests).
 
 - [ ] **Step 5: Commit**
@@ -2466,7 +2466,7 @@ If `FakeBroker` doesn't accept `seed_positions` / `fills_at` kwargs, look at the
 
 - [ ] **Step 4: Run test to verify it fails**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/executor/test_open_positions_state.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/executor/test_open_positions_state.py -v`
 Expected: FAIL — executor doesn't currently write `state["positions"][ticker]` on BUY; the trade-log helper doesn't populate `opening_tick_id` / `closing_tick_id`.
 
 - [ ] **Step 5: Update the executor**
@@ -2526,12 +2526,12 @@ If `save_trade_log_entry` doesn't exist in your `persistence.py`, add a tiny hel
 
 - [ ] **Step 6: Run executor tests**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/executor/test_open_positions_state.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/executor/test_open_positions_state.py -v`
 Expected: PASS (3 tests).
 
 - [ ] **Step 7: Run full executor regression**
 
-Run: `.venv/Scripts/python -m pytest tests/ -v -k "executor"`
+Run: `.venv/bin/python -m pytest tests/ -v -k "executor"`
 Expected: PASS.
 
 - [ ] **Step 8: Commit**
@@ -2585,7 +2585,7 @@ def test_pipeline_stage_count_increased_by_one():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/orchestrator/test_pipeline_wiring_v2.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/orchestrator/test_pipeline_wiring_v2.py -v`
 Expected: FAIL — pipeline currently has 7 stages.
 
 - [ ] **Step 3: Read the existing pipeline**
@@ -2641,12 +2641,12 @@ If `_build_strategist`'s structure in the existing pipeline differs (e.g. it tak
 
 - [ ] **Step 5: Run tests**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/orchestrator/test_pipeline_wiring_v2.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/orchestrator/test_pipeline_wiring_v2.py -v`
 Expected: PASS (2 tests).
 
 - [ ] **Step 6: Run all unit tests for full regression**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/ -v`
+Run: `.venv/bin/python -m pytest tests/unit/ -v`
 Expected: All passing.
 
 - [ ] **Step 7: Commit**
@@ -2753,7 +2753,7 @@ The exact `Runner` API may differ across ADK versions — check existing integra
 
 - [ ] **Step 2: Run the smoke (gated)**
 
-Run: `RUN_LLM_TESTS=1 .venv/Scripts/python -m pytest tests/integration/test_strategist_v2_smoke.py -v`
+Run: `RUN_LLM_TESTS=1 .venv/bin/python -m pytest tests/integration/test_strategist_v2_smoke.py -v`
 Expected: PASS — strategist returns parseable stances for both tickers.
 
 If the smoke is too brittle for CI, leave it as a manual smoke and document in the docstring.
@@ -2771,17 +2771,17 @@ git commit -m "test(strategist): add v2 LLM-touching smoke (gated by RUN_LLM_TES
 
 - [ ] **Step 1: Run all unit tests**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/ -v`
+Run: `.venv/bin/python -m pytest tests/unit/ -v`
 Expected: All passing.
 
 - [ ] **Step 2: Run ruff**
 
-Run: `.venv/Scripts/python -m ruff check src/ tests/`
+Run: `.venv/bin/python -m ruff check src/ tests/`
 Expected: zero new violations introduced by Plan C.
 
 - [ ] **Step 3: Run the local smoke script (if you have RUN_LLM_TESTS=1 + Gemini creds)**
 
-Run: `RUN_LLM_TESTS=1 .venv/Scripts/python scripts/smoke_run.py --ticks 3`
+Run: `RUN_LLM_TESTS=1 .venv/bin/python scripts/smoke_run.py --ticks 3`
 Expected: 3 ticks complete cleanly; `TickerStanceRow` rows appear in the dev SQLite.
 If you can't run this (no creds, no Gemini access), skip — the smoke is gated.
 

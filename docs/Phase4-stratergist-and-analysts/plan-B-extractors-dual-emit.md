@@ -27,7 +27,7 @@ The `AnalystEvidence` envelope gains `tick_id` (from `state["tick_id"]`) and `re
 
 **Project conventions:**
 - PYTHONPATH root = `src/`. Import as `from contract.extractors.technical import extract_technical_features`.
-- Run pytest as `.venv/Scripts/python -m pytest`.
+- Run pytest as `.venv/bin/python -m pytest` on Linux/macOS, or `.venv\Scripts\python -m pytest` on Windows.
 - One commit per task. Conventional Commits prefixes.
 
 **Pre-requisites:** Plan A merged.
@@ -240,7 +240,7 @@ def test_dual_emit_isolates_ticker_data_to_extractor():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/agents/analysts/test_dual_emit.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/agents/analysts/test_dual_emit.py -v`
 Expected: FAIL with `ImportError: cannot import name 'make_dual_emit_callback'`.
 
 - [ ] **Step 3: Add `make_dual_emit_callback` to `_common.py`**
@@ -343,7 +343,7 @@ If `tests/unit/agents/analysts/__init__.py` does not exist, create it empty.
 
 - [ ] **Step 4: Run tests**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/agents/analysts/test_dual_emit.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/agents/analysts/test_dual_emit.py -v`
 Expected: PASS (7 tests).
 
 - [ ] **Step 5: Commit**
@@ -481,7 +481,7 @@ def test_handles_short_history_gracefully():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/contract/extractors/test_technical.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/contract/extractors/test_technical.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'contract.extractors.technical'`.
 
 - [ ] **Step 3: Write the extractor**
@@ -589,7 +589,7 @@ def extract_technical_features(raw: Mapping[str, Any], ticker: str) -> dict[str,
 
 - [ ] **Step 4: Run tests**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/contract/extractors/test_technical.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/contract/extractors/test_technical.py -v`
 Expected: PASS (7 tests).
 
 If a test fails because the `StockStats` model your codebase actually uses has different field names (e.g. `bars` instead of `price_history`), update both the fixture and the extractor's lookups. Keep the locked output keys unchanged.
@@ -694,7 +694,7 @@ def test_handles_zero_market_cap_in_fcf_yield():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/contract/extractors/test_fundamental.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/contract/extractors/test_fundamental.py -v`
 Expected: FAIL with `ModuleNotFoundError`.
 
 - [ ] **Step 3: Write the extractor**
@@ -756,7 +756,7 @@ def extract_fundamental_features(raw: Mapping[str, Any], ticker: str) -> dict[st
 
 - [ ] **Step 4: Run tests**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/contract/extractors/test_fundamental.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/contract/extractors/test_fundamental.py -v`
 Expected: PASS (6 tests).
 
 - [ ] **Step 5: Commit**
@@ -866,7 +866,7 @@ def test_handles_missing_social_volume():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/contract/extractors/test_sentiment.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/contract/extractors/test_sentiment.py -v`
 Expected: FAIL with `ModuleNotFoundError`.
 
 - [ ] **Step 3: Write the extractor**
@@ -937,7 +937,7 @@ def extract_sentiment_features(raw: Mapping[str, Any], ticker: str) -> dict[str,
 
 - [ ] **Step 4: Run tests**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/contract/extractors/test_sentiment.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/contract/extractors/test_sentiment.py -v`
 Expected: PASS (8 tests).
 
 - [ ] **Step 5: Commit**
@@ -1063,7 +1063,7 @@ def test_is_no_data_one_when_empty_dict():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/contract/extractors/test_smart_money.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/contract/extractors/test_smart_money.py -v`
 Expected: FAIL with `ModuleNotFoundError`.
 
 - [ ] **Step 3: Write the extractor**
@@ -1153,7 +1153,7 @@ def extract_smart_money_features(raw: Mapping[str, Any], ticker: str) -> dict[st
 
 - [ ] **Step 4: Run tests**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/contract/extractors/test_smart_money.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/contract/extractors/test_smart_money.py -v`
 Expected: PASS (8 tests).
 
 - [ ] **Step 5: Commit**
@@ -1220,7 +1220,7 @@ def _build_technical_analyst() -> LlmAgent:
 
 - [ ] **Step 2: Run analyst tests for regression**
 
-Run: `.venv/Scripts/python -m pytest tests/ -v -k "technical"`
+Run: `.venv/bin/python -m pytest tests/ -v -k "technical"`
 Expected: All passing. The exhaustiveness behaviour is preserved by `make_dual_emit_callback` (it wraps the existing validator).
 
 - [ ] **Step 3: Commit**
@@ -1289,7 +1289,7 @@ If the existing module's import names differ (e.g. `fundamental_fetch` instead o
 
 - [ ] **Step 2: Run analyst tests**
 
-Run: `.venv/Scripts/python -m pytest tests/ -v -k "fundamental"`
+Run: `.venv/bin/python -m pytest tests/ -v -k "fundamental"`
 Expected: PASS.
 
 - [ ] **Step 3: Commit**
@@ -1358,7 +1358,7 @@ Match existing import names if they differ.
 
 - [ ] **Step 2: Run analyst tests**
 
-Run: `.venv/Scripts/python -m pytest tests/ -v -k "sentiment"`
+Run: `.venv/bin/python -m pytest tests/ -v -k "sentiment"`
 Expected: PASS.
 
 - [ ] **Step 3: Commit**
@@ -1428,7 +1428,7 @@ Match existing import names if they differ.
 
 - [ ] **Step 2: Run analyst tests**
 
-Run: `.venv/Scripts/python -m pytest tests/ -v -k "smart_money"`
+Run: `.venv/bin/python -m pytest tests/ -v -k "smart_money"`
 Expected: PASS.
 
 - [ ] **Step 3: Commit**
@@ -1444,17 +1444,17 @@ git commit -m "feat(analyst-smart_money): dual-emit AnalystEvidence to state[sma
 
 - [ ] **Step 1: Run all unit tests**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/ -v`
+Run: `.venv/bin/python -m pytest tests/unit/ -v`
 Expected: All passing.
 
 - [ ] **Step 2: Run ruff**
 
-Run: `.venv/Scripts/python -m ruff check src/ tests/`
+Run: `.venv/bin/python -m ruff check src/ tests/`
 Expected: zero new violations introduced by Plan B.
 
 - [ ] **Step 3: Verify all four extractors import cleanly**
 
-Run: `.venv/Scripts/python -c "from contract.extractors.technical import extract_technical_features; from contract.extractors.fundamental import extract_fundamental_features; from contract.extractors.sentiment import extract_sentiment_features; from contract.extractors.smart_money import extract_smart_money_features; from agents.analysts._common import make_dual_emit_callback; print('OK')"`
+Run: `.venv/bin/python -c "from contract.extractors.technical import extract_technical_features; from contract.extractors.fundamental import extract_fundamental_features; from contract.extractors.sentiment import extract_sentiment_features; from contract.extractors.smart_money import extract_smart_money_features; from agents.analysts._common import make_dual_emit_callback; print('OK')"`
 Expected: `OK`.
 
 - [ ] **Step 4: Append graphify delta entry**

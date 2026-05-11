@@ -25,8 +25,8 @@
 
 **Project conventions:**
 - PYTHONPATH root = `src/`. Import as `from contract.evidence import AnalystEvidence`, **not** `from src.contract.evidence import ...`.
-- Run pytest as `.venv/Scripts/python -m pytest`.
-- Run ruff as `.venv/Scripts/python -m ruff check src/ tests/`.
+- Run pytest as `.venv/bin/python -m pytest` on Linux/macOS, or `.venv\Scripts\python -m pytest` on Windows.
+- Run ruff as `.venv/bin/python -m ruff check src/ tests/` on Linux/macOS, or `.venv\Scripts\python -m ruff check src/ tests/` on Windows.
 - One commit per task. Use Conventional Commits prefixes (`feat`, `test`, `chore`, `docs`).
 
 ---
@@ -170,7 +170,7 @@ def test_evidence_round_trip():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/contract/test_evidence.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/contract/test_evidence.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'contract'`.
 
 - [ ] **Step 3: Write the implementation**
@@ -239,7 +239,7 @@ Also create `tests/unit/contract/__init__.py` empty.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/contract/test_evidence.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/contract/test_evidence.py -v`
 Expected: PASS (11 tests).
 
 - [ ] **Step 5: Commit**
@@ -363,7 +363,7 @@ def test_ticker_evidence_round_trip():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/contract/test_ticker_evidence.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/contract/test_ticker_evidence.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'contract.ticker_evidence'`.
 
 - [ ] **Step 3: Write the implementation**
@@ -427,7 +427,7 @@ class TickerEvidence(BaseModel):
 
 - [ ] **Step 4: Run tests**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/contract/test_ticker_evidence.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/contract/test_ticker_evidence.py -v`
 Expected: PASS (8 tests).
 
 - [ ] **Step 5: Commit**
@@ -476,7 +476,7 @@ def test_dead_zone_is_a_positive_float_under_one():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/contract/test_digest_defaults.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/contract/test_digest_defaults.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'contract.digest_defaults'`.
 
 - [ ] **Step 3: Write the defaults module**
@@ -505,7 +505,7 @@ DIRECTION_DEAD_ZONE: float = 0.15
 
 - [ ] **Step 4: Run tests**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/contract/test_digest_defaults.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/contract/test_digest_defaults.py -v`
 Expected: PASS (3 tests).
 
 - [ ] **Step 5: Commit**
@@ -773,7 +773,7 @@ def test_metadata_propagated():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/contract/test_digest.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/contract/test_digest.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'contract.digest'`.
 
 - [ ] **Step 3: Write the aggregator**
@@ -948,7 +948,7 @@ def build_ticker_evidence(
 
 - [ ] **Step 4: Run tests**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/contract/test_digest.py -v`
+Run: `.venv/bin/python -m pytest tests/unit/contract/test_digest.py -v`
 Expected: PASS (13 tests).
 
 - [ ] **Step 5: Commit**
@@ -973,12 +973,12 @@ If adding, add the line in alphabetical order with the other deps (or at the end
 
 - [ ] **Step 2: Verify install resolves**
 
-Run: `.venv/Scripts/python -m pip install -r requirements.txt`
+Run: `.venv/bin/python -m pip install -r requirements.txt`
 Expected: clean install, no resolver errors.
 
 - [ ] **Step 3: Verify pandas-ta imports cleanly**
 
-Run: `.venv/Scripts/python -c "import pandas_ta as ta; print(ta.__name__)"`
+Run: `.venv/bin/python -c "import pandas_ta as ta; print(ta.__name__)"`
 Expected: `pandas_ta`
 
 - [ ] **Step 4: Commit**
@@ -994,17 +994,17 @@ git commit -m "chore(deps): add pandas-ta for the technical analyst feature extr
 
 - [ ] **Step 1: Run all unit tests**
 
-Run: `.venv/Scripts/python -m pytest tests/unit/ -v`
+Run: `.venv/bin/python -m pytest tests/unit/ -v`
 Expected: All passing (existing tests + new contract tests).
 
 - [ ] **Step 2: Run ruff**
 
-Run: `.venv/Scripts/python -m ruff check src/ tests/`
+Run: `.venv/bin/python -m ruff check src/ tests/`
 Expected: zero new violations introduced by Plan A. Pre-existing violations elsewhere in the codebase are out of scope for this plan.
 
 - [ ] **Step 3: Verify the new modules import cleanly**
 
-Run: `.venv/Scripts/python -c "from contract.digest import build_ticker_evidence; from contract.evidence import AnalystEvidence, AnalystVerdict; from contract.ticker_evidence import TickerEvidence, AggregateVerdict; from contract.digest_defaults import DEFAULT_ANALYST_WEIGHTS, DIRECTION_DEAD_ZONE; print('OK')"`
+Run: `.venv/bin/python -c "from contract.digest import build_ticker_evidence; from contract.evidence import AnalystEvidence, AnalystVerdict; from contract.ticker_evidence import TickerEvidence, AggregateVerdict; from contract.digest_defaults import DEFAULT_ANALYST_WEIGHTS, DIRECTION_DEAD_ZONE; print('OK')"`
 Expected: `OK`.
 
 - [ ] **Step 4: Append graphify delta entry**
