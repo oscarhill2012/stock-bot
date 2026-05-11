@@ -19,7 +19,7 @@ exactly where the previous session stopped.
 | Chunk | Tasks | Branch | Status |
 |---|---|---|---|
 | **Chunk 1 — Strategist-internal foundation** | C1–C6 | `phase4/planC-foundation` | ✅ approved by final Opus audit; staged for stacked merge |
-| Chunk 2 — Strategist rewrite | C7–C9 | `phase4/planC-strategist-rewrite` (off Chunk 1 tip) | in flight |
+| Chunk 2 — Strategist rewrite | C7–C9 | `phase4/planC-strategist-rewrite` (off Chunk 1 tip) | ✅ audited; ready for Chunk 3 stack |
 | Chunk 3 — Persistence + wiring | C10–C14 | (not started — branches off Chunk 2 tip) | — |
 | Chunk 4 — Verify | C15–C16 | (not started — branches off Chunk 3 tip) | — |
 
@@ -84,7 +84,7 @@ rendering into the ADK pipeline.
 - [x] C7 — Extend `StrategistDecision` with `stances` + `trim_reasons`. Plan §C7. — `4de5c74` (+`814a64c` polish)
 - [x] C8 — Rewrite the strategist prompt template. Plan §C8. — `8fe0d66` (+`208270e` polish)
 - [x] C9 — Rewrite the strategist agent (callbacks + wiring). Plan §C9. — `e6b395a` (+`8f03bc4` legacy-test cleanup, `033dd40` polish)
-- [ ] **Final review** — Opus audit of all three tasks together.
+- [x] **Final review** — Opus cross-task audit of C7-C9. ✅ approved with 5 non-blocking follow-ups (see session log).
 
 ---
 
@@ -147,6 +147,49 @@ entry; do not rewrite history.
   - Removed the misleading `TickerStance` re-export from `agent.py` (the noqa comment claimed it was re-exported for callers, but no caller imported it from `agent`).
 - Authorised legacy-test cleanup: deleted `tests/unit/test_strategist_validators.py` (`8f03bc4`) — its 3 tests probed the legacy `target_weights`-only contract that `test_strategist_callbacks_v2.py` now covers via stances. Same pattern as the earlier deletion of `tests/unit/test_strategist_prompt_template.py`.
 - Full project suite: **313 passed**, all previously expected regressions resolved. Strategist suite at 70/70. Ruff clean.
+
+### 2026-05-11 — Chunk 2 final Opus audit ✅ approved
+
+Cross-task audit of C7-C9 together (Opus model). Empirical baseline: 70/70 strategist tests
+green; 313/313 full project suite green; ruff clean; all three replaced modules parse.
+
+**No Critical, no Important findings.** Five follow-ups for later chunks / backlog — none
+blocking the chunk-2 merge into the stack:
+
+1. **C14 must seed `state["portfolio"]` before the strategist runs.** The new before-callbacks
+   read it but nothing in `src/orchestrator/tick.py` populates it today, and no upstream agent
+   writes it either. Without seeding, `_held_view_before_callback` will see `None` and render
+   the flat-portfolio sentinel even when positions exist, and the prompt's `{portfolio}` slot
+   would interpolate from a missing key. Likely fix: seed `state["portfolio"]` in
+   `orchestrator/tick.py` after `broker.get_portfolio()`, or add a tiny `PortfolioRefresh`
+   stage at the head of the pipeline. **Track as a C14 prerequisite.**
+
+2. **`validate_lifecycle_contract` is now orphaned in `src/agents/risk_gate/lifecycle.py`.**
+   Imported by `src/agents/risk_gate/agent.py:11` but never invoked — the call site at lines
+   72-79 does its own inline check using only the `StrategistContractViolation` exception
+   class. Out of scope for chunk 2 (strict boundary), and tests still cover the helper directly.
+   Worth a cleanup commit on whichever future chunk next touches `risk_gate/`.
+
+3. **`tick_id` fallback to `recorded_at`** (agent.py — `_strategist_validation_callback`)
+   silently sets `PositionThesis.opened_tick_id` to a timestamp string if `tick_id` is missing.
+   In current production flow `tick_id` is always seeded by `orchestrator/tick.py`, so the
+   fallback is defensive-only — but it masks misconfiguration rather than surfacing it.
+   Consider tightening to a direct `state["tick_id"]` access (KeyError-loud) or asserting
+   `"unknown" not in opened_tick_id`. Defer to a future polish pass.
+
+4. **Duplicate-ticker stances silently dedupe.** The "no extras" check in
+   `_strategist_validation_callback` uses a `set` comprehension over `decision.stances`, so
+   two stances for `AAPL` would not be flagged. Not a realistic LLM-output failure mode, but
+   a low-cost defensive re-prompt would harden the contract. Backlog candidate.
+
+5. **Module-level `strategist_agent` singleton** in `agent.py` is currently re-exported by
+   `__init__.py` but not used by the pipeline (which builds the `LlmAgent` inline). Once C14
+   wires the new callbacks into the pipeline, decide whether the singleton stays as a public
+   convenience handle or gets removed to avoid drift between two definitions of the same agent.
+
+**Chunk 2 is now feature-complete and audit-approved.** Stays on its own branch
+(`phase4/planC-strategist-rewrite`, tip `b431ad8`) per the stacked-branch policy. Chunk 3 will
+branch off this tip when started; no merge to main yet.
 
 ### 2026-05-11 — C7 landed (`4de5c74` + `814a64c`)
 - First task of Chunk 2 (strategist rewrite).
