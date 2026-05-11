@@ -18,7 +18,7 @@ exactly where the previous session stopped.
 
 | Chunk | Tasks | Branch | Status |
 |---|---|---|---|
-| **Chunk 1 — Strategist-internal foundation** | C1–C6 | `phase4/planC-foundation` | awaiting final Opus review |
+| **Chunk 1 — Strategist-internal foundation** | C1–C6 | `phase4/planC-foundation` | ✅ approved by final Opus audit; awaiting merge to main |
 | Chunk 2 — Strategist rewrite | C7–C9 | (not started) | — |
 | Chunk 3 — Persistence + wiring | C10–C14 | (not started) | — |
 | Chunk 4 — Verify | C15–C16 | (not started) | — |
@@ -54,7 +54,7 @@ proposed for merge into main.
 - [x] **C4** — Add `derivation.py` (`derive_legacy_fields`). Plan §C4. — `ef319b3` (+`cd84aa9` docstring clarification)
 - [x] **C5** — Add `held_view.py` (`render_held_positions_view`). Plan §C5. — `4d427ba` (+`f82f26d` polish)
 - [x] **C6** — Add `evidence_view.py` (render `TickerEvidence`). Plan §C6. — `0c8cc68` (+`de2dd22` polish)
-- [ ] **Final review** — Opus audit of all six tasks together.
+- [x] **Final review** — Opus audit of all six tasks together. ✅ **Approved.** No Critical or Important issues; six Minor (none blocking) and six seam-notes for Chunk 2 recorded in the session log below.
 
 Each task is committed individually with a Conventional-Commits message; this file is
 updated to mark `[x] Cn — <sha>` before the next task is dispatched.
@@ -105,6 +105,49 @@ entry; do not rewrite history.
 - Spec compliance: ✅ — one-line additive field on `PositionThesis` with `str = ""` default; 2 tests assert default and JSON round-trip. Strategist test suite at 24 green.
 - Code quality: ✅ approved (no issues). Field placement, inline comment scope, and `datetime.UTC`/UP017 usage all clean.
 - Authorised deviation noted: implementer used `datetime.UTC` (Python 3.11+ shortcut) instead of the plan's `timezone.utc` for ruff UP017 compliance. Functionally identical.
+
+### 2026-05-11 — Chunk 1 final Opus audit ✅ approved
+
+Cross-task audit of the six new modules + the `opened_tick_id` schema field.
+Empirical baseline: 48/48 strategist tests green; 298/298 full suite green;
+ruff clean; main repo working tree clean (no stray graphify writes anywhere).
+
+**No Critical, no Important findings.** Six Minor items — none blocking:
+
+1. **Docstring style is split** between Google `Args:`/`Returns:` (C1, C5) and NumPy
+   `Parameters\n----------` (C2, C4, C6). Pick one in a follow-up; both work.
+2. `held_view.py:154` silently swallows corrupt-thesis exceptions. Add a
+   `logging.warning` when central logging lands in C9.
+3. `derivation.py:136` defaults `horizon` to a magic literal `"swing"`. Promote
+   to a shared `DEFAULT_HORIZON: Final` when C9 introduces one.
+4. `stance_schema.py:32` docstring mentions a "risk-gate clamp" alongside the
+   pydantic `[0.0, 1.0]` bound — readers in isolation may think there are two
+   clamps; clarify wording when next opening the file.
+5. `evidence_view.py:57` hard-codes the four-analyst tuple. Replace with
+   `typing.get_args(AnalystName)` when the catalogue next grows.
+6. British/US spelling check passed cleanly — no regressions.
+
+**Six seam-notes for Chunk 2 (C7-C9) wiring:**
+
+- `derive_legacy_fields(stances, ctx)` requires `ctx.current_weights` from
+  `portfolio.current_weights()`, NOT from `state["positions"].keys()` (the
+  pre-Plan-C strategist agent uses stubs).
+- The C9 after-callback MUST reject `open` stances with `horizon is None`
+  *before* calling `derive_legacy_fields`, or the `"swing"` fallback silently
+  applies. Add a callback test.
+- `held_view.py:99` price-unavailable check looks for `pos is None` or
+  `pos.last_price <= 0`. Confirm the executor (C13) never emits a sentinel
+  like `-1` for missing-tick prices.
+- No test currently covers the `derivation → held_view` seam (open a position
+  on tick N, see it render on tick N+1). Add one integration test in C9.
+- `_format_features` uses `:.3g`, which renders `5.0` as `5`. Confirm
+  acceptable to the spec author; likely fine.
+- `PositionThesis.opened_tick_id` has two writers in the plan: `derivation.py:142`
+  (C9 path) and the C13 executor (`schema.py:25` comment). Reconcile when C13
+  is written — one writer, not both.
+
+**Verdict:** merge `phase4/planC-foundation` to `main`; start Chunk 2 from the
+post-merge tip.
 
 ### 2026-05-11 — C6 landed (`0c8cc68` + `de2dd22`)
 - Spec compliance: ✅ — `render_ticker_evidence` + two private helpers exactly as specified; the six required tests all present and pass. Strategist regression at 48/48 green. Three pre-authorised ruff deviations applied (UP035 `from collections.abc import Iterable`, UP017 `from datetime import UTC`, F401 dropped unused `import pytest`). Spec reviewer noted that the implementer replaced the plan's filter-comprehension idiom for the optional summary line with a clean `if agg.summary: block.append(...)` — semantically identical and arguably more readable; not flagged as a deviation.
