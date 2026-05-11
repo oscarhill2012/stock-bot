@@ -1,7 +1,7 @@
 """AnalystVerdict + AnalystEvidence schema tests — Tier 1, no LLM."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from pydantic import ValidationError
@@ -23,7 +23,7 @@ def _verdict(**overrides) -> AnalystVerdict:
 
 
 def _now() -> datetime:
-    return datetime(2026, 5, 8, 14, 0, tzinfo=timezone.utc)
+    return datetime(2026, 5, 8, 14, 0, tzinfo=UTC)
 
 
 def test_verdict_valid():
