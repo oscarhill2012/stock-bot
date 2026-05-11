@@ -3,8 +3,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-import pytest  # noqa: F401  # imported for future parametrize use; keeps the test file aligned with sibling v2 tests
-
 from agents.strategist.agent import (
     _evidence_view_before_callback,
     _held_view_before_callback,
@@ -14,7 +12,6 @@ from agents.strategist.schema import PositionThesis, StrategistDecision
 from agents.strategist.stance_schema import TickerStance
 from broker.portfolio import Portfolio, Position
 from contract.evidence import AnalystEvidence, AnalystVerdict
-from contract.ticker_evidence import AggregateVerdict, TickerEvidence
 
 
 class _State(dict):
@@ -27,6 +24,7 @@ class _Ctx:
 
 
 def _portfolio(holdings: dict | None = None, cash: float = 1000.0) -> Portfolio:
+    """Build a Portfolio with optional ``{ticker: (qty, avg_cost, last_price)}`` holdings."""
     return Portfolio(
         cash=cash,
         positions={t: Position(quantity=q, avg_cost=ac, last_price=lp)
@@ -36,6 +34,7 @@ def _portfolio(holdings: dict | None = None, cash: float = 1000.0) -> Portfolio:
 
 def _ev(analyst: str, lean: str = "neutral", conf: float = 0.0,
         ticker: str = "AAPL") -> AnalystEvidence:
+    """Build a single AnalystEvidence row for the given analyst slot."""
     return AnalystEvidence(
         ticker=ticker, analyst=analyst,
         tick_id="t",
@@ -45,20 +44,6 @@ def _ev(analyst: str, lean: str = "neutral", conf: float = 0.0,
             lean=lean, magnitude=conf, confidence=conf,
             rationale="x", key_factors=[],
         ),
-    )
-
-
-def _te(ticker: str = "AAPL") -> TickerEvidence:
-    return TickerEvidence(
-        ticker=ticker, tick_id="t",
-        recorded_at=datetime(2026, 5, 8, 14, 0, tzinfo=UTC),
-        per_analyst={a: _ev(a, "neutral", 0.0, ticker) for a in
-                      ("technical", "fundamental", "sentiment", "smart_money")},
-        aggregate=AggregateVerdict(
-            lean="neutral", magnitude=0.0, confidence=0.0,
-            disagreement=0.0, summary="all neutral",
-        ),
-        weights={"technical": 1.0, "fundamental": 1.0, "sentiment": 1.0, "smart_money": 1.0},
     )
 
 

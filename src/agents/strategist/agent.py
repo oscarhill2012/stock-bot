@@ -13,9 +13,6 @@ from agents.strategist.held_view import render_held_positions_view
 from agents.strategist.lifecycle import derive_lifecycle_action
 from agents.strategist.prompts import STRATEGIST_INSTRUCTION
 from agents.strategist.schema import StrategistDecision
-from agents.strategist.stance_schema import (
-    TickerStance,  # noqa: F401  # re-exported for callers/tests of v2 contract
-)
 from broker.portfolio import Portfolio
 from contract.digest import build_ticker_evidence
 from contract.digest_defaults import DEFAULT_ANALYST_WEIGHTS
@@ -23,7 +20,7 @@ from contract.evidence import AnalystEvidence
 from contract.ticker_evidence import TickerEvidence
 
 
-def _coerce_portfolio(value) -> Portfolio:
+def _coerce_portfolio(value: Portfolio | dict | None) -> Portfolio:
     """Return a Portfolio regardless of whether state stores it as an object or a serialised dump.
 
     Args:
@@ -87,9 +84,10 @@ def _evidence_view_before_callback(
 
     # recorded_at may arrive as an ISO string (most common when state is round-tripped
     # through JSON), as a datetime already (in-process path), or be absent entirely.
+    # On Python 3.11+ ``datetime.fromisoformat`` accepts the trailing ``Z`` natively.
     recorded_at_raw = state.get("recorded_at")
     recorded_at = (
-        datetime.fromisoformat(recorded_at_raw.replace("Z", "+00:00"))
+        datetime.fromisoformat(recorded_at_raw)
         if isinstance(recorded_at_raw, str)
         else (recorded_at_raw or datetime.now(tz=UTC))
     )
