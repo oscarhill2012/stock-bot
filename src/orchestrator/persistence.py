@@ -100,7 +100,6 @@ def save_trade_log_entry(session: Session, entry: dict) -> None:
 
 # ── TickerStanceRow ──────────────────────────────────────────────────
 
-
 class TickerStanceRow(Base):
     """One row per ticker per tick — strategist's per-ticker decision substrate."""
 
