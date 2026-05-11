@@ -51,7 +51,7 @@ proposed for merge into main.
 - [x] **C1** — Add `stance_schema.py` (`TickerStance` model). Plan §C1. — `a09d614`
 - [x] **C2** — Add `lifecycle.py` (`derive_lifecycle_action`). Plan §C2. — `55966c8` (+`e6ac789` docstring fix)
 - [x] **C3** — Add `PositionThesis.opened_tick_id` field. Plan §C3. — `79a15ac`
-- [ ] **C4** — Add `derivation.py` (`derive_legacy_fields`). Plan §C4.
+- [x] **C4** — Add `derivation.py` (`derive_legacy_fields`). Plan §C4. — `ef319b3` (+`cd84aa9` docstring clarification)
 - [ ] **C5** — Add `held_view.py` (`render_held_positions_view`). Plan §C5.
 - [ ] **C6** — Add `evidence_view.py` (render `TickerEvidence`). Plan §C6.
 - [ ] **Final review** — Opus audit of all six tasks together.
@@ -105,3 +105,8 @@ entry; do not rewrite history.
 - Spec compliance: ✅ — one-line additive field on `PositionThesis` with `str = ""` default; 2 tests assert default and JSON round-trip. Strategist test suite at 24 green.
 - Code quality: ✅ approved (no issues). Field placement, inline comment scope, and `datetime.UTC`/UP017 usage all clean.
 - Authorised deviation noted: implementer used `datetime.UTC` (Python 3.11+ shortcut) instead of the plan's `timezone.utc` for ruff UP017 compliance. Functionally identical.
+
+### 2026-05-11 — C4 landed (`ef319b3` + `cd84aa9`)
+- Spec compliance: ✅ — `TickContext`/`DerivedFields` frozen dataclasses + pure `derive_legacy_fields` function exactly as specified. All six required tests present, plus one implementer-added test for the `add` lifecycle branch (test count = 7, within ≤8 cap). Strategist regression at 31/31 green.
+- Code quality: ⚠️ approved with two Minor issues. One actioned (`cd84aa9` adds a Note to `DerivedFields` docstring explaining that `frozen=True` doesn't deep-freeze dict contents — read-by-convention). One declined (multi-stance test could assert PositionThesis fields, not just membership — covered elsewhere; opportunistic).
+- Authorised deviations: `from collections.abc import Iterable` (UP035), `datetime.UTC` (UP017), removed unused `DerivedFields` import from test file (F401).
