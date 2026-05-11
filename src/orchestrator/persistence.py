@@ -203,7 +203,7 @@ def save_portfolio_snapshot(session: Session, snap: dict) -> None:
     import json as json_mod
     row = PortfolioSnapshotRow(
         tick_id=snap["tick_id"],
-        recorded_at=snap.get("recorded_at", __import__("datetime").datetime.now(__import__("datetime").timezone.utc)),
+        recorded_at=snap.get("recorded_at", datetime.now(tz=UTC)),
         bot_total_value=snap["bot_total_value"],
         bot_cash=snap["bot_cash"],
         bot_positions_value=snap["bot_positions_value"],
