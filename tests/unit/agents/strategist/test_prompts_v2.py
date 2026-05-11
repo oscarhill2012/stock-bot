@@ -13,6 +13,15 @@ def test_template_has_ticker_evidence_slot():
 
 
 def test_template_has_state_slots():
+    """Every state slot the C9 callback must populate is present in the template.
+
+    Note that ``{tickers}`` deliberately appears twice in the template — once
+    in the "Your Job" section and once on the final "Watchlist" line — and
+    ``str.format`` fills both occurrences in a single call. Substring checks
+    cannot distinguish one occurrence from two; the runtime guard is the
+    ``.format(...)`` call in ``test_template_renders_with_all_required_slots``
+    which raises ``KeyError`` if a slot is missing.
+    """
     assert "{portfolio}" in STRATEGIST_INSTRUCTION
     assert "{memory_buffer}" in STRATEGIST_INSTRUCTION
     assert "{day_digest}" in STRATEGIST_INSTRUCTION
@@ -49,6 +58,14 @@ def test_template_documents_lifecycle_hint_rules():
 
 
 def test_template_renders_with_all_required_slots():
+    """Smoke test — ``str.format`` raises ``KeyError`` if any slot is missing.
+
+    The ``.format(...)`` call itself is the primary guard: if a future edit
+    introduces an unfilled ``{slot}`` the test fails with a ``KeyError``
+    before the assertions ever run. The two ``assert`` lines below are a
+    lightweight sanity check that the rendered output is non-empty and
+    contains the values we passed in.
+    """
     rendered = STRATEGIST_INSTRUCTION.format(
         portfolio="cash=100, positions={}",
         memory_buffer="[]",
