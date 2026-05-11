@@ -22,7 +22,7 @@ def _thesis(
         ticker=ticker,
         opened_at=datetime(2026, 4, 22, 14, 0, tzinfo=UTC),
         opened_price=opened_price,
-        opened_tag="open_aapl",
+        opened_tag=f"open_{ticker.lower()}",
         rationale=rationale,
         horizon=horizon,
         target_price=target_price,

@@ -61,7 +61,11 @@ def _format_one(thesis: PositionThesis, portfolio: Portfolio) -> str:
 
     lines: list[str] = [ticker]
 
-    # Header line — when the position was opened and at what price.
+    # Header line — when the position was opened and at what price.  We surface
+    # the *current* portfolio weight on this line (not the weight at open) so
+    # the LLM can see entry-price alongside present portfolio weight in a
+    # single glance; the same weight reappears on the "Now:" line for symmetry
+    # with the live-price block.
     opened_str = thesis.opened_at.strftime("%Y-%m-%d %H:%M")
     lines.append(
         f"  Opened:    {opened_str} at ${thesis.opened_price:.2f}, "
