@@ -1,5 +1,6 @@
 """Pipeline structural tests — no LLM calls."""
 from google.adk.agents import SequentialAgent
+
 from broker.fake import FakeBroker
 from orchestrator.pipeline import build_pipeline
 
