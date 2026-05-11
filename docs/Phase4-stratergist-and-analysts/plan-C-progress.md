@@ -21,7 +21,7 @@ exactly where the previous session stopped.
 | **Chunk 1 — Strategist-internal foundation** | C1–C6 | `phase4/planC-foundation` | ✅ approved by final Opus audit; staged for stacked merge |
 | Chunk 2 — Strategist rewrite | C7–C9 | `phase4/planC-strategist-rewrite` (off Chunk 1 tip) | ✅ audited; ready for Chunk 3 stack |
 | Chunk 3 — Persistence + wiring | C10–C14 | `phase4/planC-persistence-and-wiring` (off Chunk 2 tip `c0136f7`) | ✅ audited; ready for Chunk 4 stack |
-| Chunk 4 — Verify | C15–C16 | `phase4/planC-verify` (off Chunk 3 tip `54bbb65`) | in flight |
+| Chunk 4 — Verify | C15–C16 | `phase4/planC-verify` (off Chunk 3 tip `54bbb65`) | ✅ audited; stack ready for one-PR merge to main |
 
 **Stacked-branch policy:** Plan C is one coherent rewrite — Chunk 1 alone is dead
 code until C9 wires it in. The four chunk branches form a stack (each branches off
@@ -129,11 +129,61 @@ chunk-1 → chunk-2 → chunk-3 → chunk-4 stack merges to `main` as one PR.
 
 - [x] C15 — Tier 2 LLM-touching smoke (gated by `RUN_LLM_TESTS=1`). Plan §C15. **Commits:** `7e4dce9` (initial) + `80b4cb1` (spec fix: add `@pytest.mark.integration`).
 - [x] C16 — Final regression pass + ruff cleanup + graphify delta. Plan §C16. **Commits:** `4da2cbc` (ruff ×3 on `persistence.py`) + `b625c95` (graphify delta) + `b79f223` (`__import__` polish).
-- [ ] **Final review** — Opus cross-task audit of C15-C16 (smoke gating + regression cleanliness).
+- [x] **Final review** — Opus cross-task audit of C15-C16 (smoke gating + regression cleanliness). ✅ APPROVED with 2 non-blocking follow-ups.
 
 ---
 
 ## Session log
+
+### 2026-05-11 — Chunk 4 final Opus audit ✅ approved
+
+Cross-task audit of C15 + C16 together (Opus model). Empirical baseline:
+**329 passed, 1 skipped (the C15 LLM smoke under its `RUN_LLM_TESTS` gate)**
+on `.venv/bin/python -m pytest tests/ -q` in 242s. Ruff on the four Plan C
+chunk-4 paths (`src/orchestrator/persistence.py` and
+`tests/integration/test_strategist_v2_smoke.py`, plus the broader sweep of
+chunk-4-touched src files): **All checks passed.** Diff footprint:
+4 files, +481 / −10 — surgical for a verify-only chunk.
+
+**No Critical, no Important findings.** The auditor confirmed end-to-end:
+
+- The C15 smoke asserts all four Plan C contracts (decision non-null,
+  Pydantic round-trip, exhaustive per-ticker stances, derived target-weight
+  coverage) and exercises the held-position path by seeding an AAPL
+  PositionThesis with `opened_tick_id="tick_OPEN"`.
+- The skip gate is module-scope (collection-time imports of Gemini are
+  deferred behind it); `pytest --collect-only` works without
+  `RUN_LLM_TESTS=1`.
+- The C16 persistence cleanup resolved exactly the three Chunk 3 audit
+  follow-up #1 violations (F401×2 + UP017). The polish commit (`b79f223`)
+  additionally cleared a pre-existing `__import__("datetime").timezone.utc`
+  default expression — readability win, not gold-plating.
+- `strategist_agent` module-level singleton preserved at `agent.py:302`
+  (the smoke imports it). Chunk 3 audit follow-up #5 was to *consider*
+  removing it; the C15 dependency settles the call for now.
+- `graphify-out/` IS gitignored (`.gitignore:56`); force-add is the
+  established pattern (precedent: commit `05eb354`). Auditor's judgement:
+  keeping the delta in-tree is correct — CLAUDE.md mandates reading it
+  before exploring code, so version-controlling the curated entries is
+  necessary.
+
+**Non-blocking follow-ups (backlog, not merge-blocking):**
+
+1. **Test-file ruff debt from chunks 1-3** — four test files added during
+   Plan C carry I001/F401/UP017 violations:
+   `tests/unit/test_strategist_schema.py`, `test_attribution_persistence.py`,
+   `test_buffer_persistence.py`, `test_snapshot_persistence.py`. All
+   auto-fixable with `ruff check tests/unit/ --fix`. Worth a one-line
+   cleanup commit after merge or a tracked backlog item; CI doesn't yet
+   gate on test-file lint.
+2. **Tracked `data/stockbot.db`** — gets dirtied on every test run,
+   creating noisy working-tree state. Out of scope for Plan C, but worth a
+   separate ticket to either gitignore it or make tests use a tempfile DB.
+   Pre-existing.
+
+**Verdict:** `CHUNK 4 AUDIT: ✅ APPROVED with follow-ups — ready for
+stack-merge to main`. The full chunk-1 → chunk-2 → chunk-3 → chunk-4 stack
+is now ready to merge to `main` as one PR per the stacked-branch policy.
 
 ### 2026-05-11 — C16 complete (final regression + ruff cleanup + graphify delta)
 
