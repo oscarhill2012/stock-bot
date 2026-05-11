@@ -20,7 +20,7 @@ exactly where the previous session stopped.
 |---|---|---|---|
 | **Chunk 1 — Strategist-internal foundation** | C1–C6 | `phase4/planC-foundation` | ✅ approved by final Opus audit; staged for stacked merge |
 | Chunk 2 — Strategist rewrite | C7–C9 | `phase4/planC-strategist-rewrite` (off Chunk 1 tip) | ✅ audited; ready for Chunk 3 stack |
-| Chunk 3 — Persistence + wiring | C10–C14 | (not started — branches off Chunk 2 tip) | — |
+| Chunk 3 — Persistence + wiring | C10–C14 | `phase4/planC-persistence-and-wiring` (off Chunk 2 tip `c0136f7`) | in flight |
 | Chunk 4 — Verify | C15–C16 | (not started — branches off Chunk 3 tip) | — |
 
 **Stacked-branch policy:** Plan C is one coherent rewrite — Chunk 1 alone is dead
@@ -88,14 +88,29 @@ rendering into the ADK pipeline.
 
 ---
 
-## Future chunks (placeholders — do not start until chunk 2 ships)
+## Chunk 3 — `phase4/planC-persistence-and-wiring`
 
-### Chunk 3 — `phase4/planC-persistence-and-wiring`
+**Branch:** off Chunk 2 tip (`c0136f7`).
+**Worktree:** `.claude/worktrees/phase4-planC-chunk3`
+**Venv:** symlinked from main repo's `.venv`
+
+**Scope:** Persists strategist v2 output and wires it into the pipeline. C10 adds a per-stance
+ORM row + save helper; C11 adds tick FKs on the trade log; C12 adds a
+`StrategistDecisionWriter` agent that uses C10/C11; C13 updates the executor to write
+`PositionThesis` on BUY and populate the FKs; C14 wires the new writer into the pipeline
+and addresses the Chunk 2 audit follow-up by seeding `state["portfolio"]` before the
+strategist runs.
+
+**Tasks:**
+
 - [ ] C10 — Add `TickerStanceRow` ORM + `save_ticker_stance`. Plan §C10.
 - [ ] C11 — Add `TradeLogRow.opening_tick_id` / `closing_tick_id`. Plan §C11.
 - [ ] C12 — Add `StrategistDecisionWriter` agent. Plan §C12.
 - [ ] C13 — Update executor (thesis on BUY, FKs on SELL). Plan §C13.
-- [ ] C14 — Wire `StrategistDecisionWriter` into the pipeline. Plan §C14.
+- [ ] C14 — Wire `StrategistDecisionWriter` into the pipeline + seed `state["portfolio"]`. Plan §C14.
+- [ ] **Final review** — Opus audit of all five tasks together.
+
+---
 
 ### Chunk 4 — `phase4/planC-verify`
 - [ ] C15 — Tier 2 LLM-touching smoke (gated by `RUN_LLM_TESTS=1`). Plan §C15.
