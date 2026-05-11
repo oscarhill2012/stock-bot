@@ -64,3 +64,10 @@ logs/
 # Data caches (raw market data shouldn't be committed)
 data/cache/
 data/raw/
+
+# Local dev SQLite — persistence tests write into it on every run; should
+# not be tracked. Schema is owned by SQLAlchemy ORM in orchestrator/persistence.py.
+data/stockbot.db
+data/stockbot.db-journal
+data/stockbot.db-wal
+data/stockbot.db-shm
