@@ -1,0 +1,187 @@
+"""Unit tests for executor BUY-thesis write and SELL tick-id FK population.
+
+Covers:
+- BUY: executor writes thesis dict into state["positions"][ticker].
+- SELL: executor removes ticker from state["positions"].
+- SELL + DB: executor populates opening_tick_id / closing_tick_id on TradeLogRow.
+"""
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from unittest.mock import MagicMock
+
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from agents.executor.agent import ExecutorAgent
+from broker.fake import FakeBroker
+from orchestrator.persistence import Base, TradeLogRow
+from orchestrator.state import Order
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+class _StubCtx:
+    """Minimal ADK InvocationContext stand-in wrapping a plain dict as session state."""
+
+    def __init__(self, state: dict) -> None:
+        session = MagicMock()
+        session.state = state
+        self.session = session
+
+
+async def _run(agent: ExecutorAgent, state: dict) -> None:
+    """Drive the executor's async generator to completion against the given state dict."""
+    ctx = _StubCtx(state)
+    async for _ in agent._run_async_impl(ctx):
+        pass
+
+
+# ── Session fixture ───────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def session(tmp_path):
+    """Yield a freshly-created SQLite session backed by a tmp file; close on teardown."""
+    engine = create_engine(f"sqlite:///{tmp_path}/test.db")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    s = Session()
+    yield s
+    s.close()
+
+
+# ── Tests ─────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_buy_writes_thesis_to_state_positions():
+    """After a BUY executes, the thesis dict from new_positions lands in state["positions"].
+
+    The executor must copy the thesis wholesale so downstream SELL logic
+    can recover opened_price, opened_at, opened_tick_id, etc.
+    """
+    broker = FakeBroker(starting_cash=10_000.0, prices={"AAPL": 200.0})
+    executor = ExecutorAgent(broker=broker)
+
+    thesis = {
+        "opened_tick_id": "tick_X",
+        "target_price": 220.0,
+        "opened_at": datetime(2026, 4, 1, 14, tzinfo=UTC).isoformat(),
+        "opened_price": 200.0,
+        "horizon": "swing",
+        "opened_tag": "open_aapl",
+        "rationale": "strong momentum",
+    }
+
+    state = {
+        "tick_id": "tick_X",
+        "final_orders": [
+            Order(ticker="AAPL", action="BUY", quantity=5.0, est_price=200.0),
+        ],
+        "positions": {},
+        "strategist_decision": {
+            "decision_tag": "open_aapl",
+            "close_reasons": {},
+            # new_positions carries the thesis dict keyed by ticker
+            "new_positions": {"AAPL": thesis},
+        },
+    }
+
+    await _run(executor, state)
+
+    # The thesis dict must now be stored under state["positions"]["AAPL"].
+    assert "AAPL" in state["positions"], "BUY did not write AAPL into state['positions']"
+    assert state["positions"]["AAPL"] == thesis
+
+
+@pytest.mark.asyncio
+async def test_sell_removes_ticker_from_state_positions():
+    """After a SELL executes, the ticker is removed from state["positions"].
+
+    We pre-seed state["positions"] directly (simulating an earlier BUY tick),
+    then drive a SELL and confirm the key is gone.
+    """
+    # Seed the broker so the SELL can succeed — need the position in the broker too.
+    broker = FakeBroker(starting_cash=1_000.0, prices={"AAPL": 200.0})
+    # Submit a BUY to the broker so it has an AAPL position to sell.
+    await broker.submit_market("AAPL", "BUY", 5.0)
+
+    executor = ExecutorAgent(broker=broker)
+
+    # Pre-seed the position thesis in state (as the BUY would have left it).
+    existing_thesis = {
+        "opened_tick_id": "tick_OPEN",
+        "opened_at": datetime(2026, 4, 1, 14, tzinfo=UTC).isoformat(),
+        "opened_price": 200.0,
+        "horizon": "swing",
+        "opened_tag": "open_aapl",
+        "rationale": "strong momentum",
+    }
+
+    state = {
+        "tick_id": "tick_CLOSE",
+        "final_orders": [
+            Order(ticker="AAPL", action="SELL", quantity=5.0, est_price=200.0),
+        ],
+        "positions": {"AAPL": existing_thesis},
+        "strategist_decision": {
+            "decision_tag": "close_aapl",
+            "close_reasons": {"AAPL": "target reached"},
+        },
+    }
+
+    await _run(executor, state)
+
+    assert "AAPL" not in state["positions"], "SELL did not remove AAPL from state['positions']"
+
+
+@pytest.mark.asyncio
+async def test_sell_writes_tick_id_fks_to_trade_log(session):
+    """SELL must populate opening_tick_id (from thesis) and closing_tick_id (from state).
+
+    The opening_tick_id comes from thesis["opened_tick_id"]; closing_tick_id
+    from state["tick_id"] at the time of sale. Both must round-trip through
+    save_trade_log_entry into the TradeLogRow.
+    """
+    # Seed the broker so it has AAPL to sell.
+    broker = FakeBroker(starting_cash=1_000.0, prices={"AAPL": 200.0})
+    await broker.submit_market("AAPL", "BUY", 5.0)
+
+    executor = ExecutorAgent(broker=broker, db_session=session)
+
+    # Thesis carries the FK from the deliberation tick that opened the position.
+    existing_thesis = {
+        "opened_tick_id": "tick_OPEN",
+        "opened_at": datetime(2026, 4, 1, 14, tzinfo=UTC).isoformat(),
+        "opened_price": 200.0,
+        "horizon": "swing",
+        "opened_tag": "open_aapl",
+        "rationale": "strong momentum",
+    }
+
+    state = {
+        # tick_id here is the deliberation tick that is closing the position.
+        "tick_id": "tick_CLOSE",
+        "final_orders": [
+            Order(ticker="AAPL", action="SELL", quantity=5.0, est_price=200.0),
+        ],
+        "positions": {"AAPL": existing_thesis},
+        "strategist_decision": {
+            "decision_tag": "close_aapl",
+            "close_reasons": {"AAPL": "target reached"},
+        },
+    }
+
+    await _run(executor, state)
+
+    # Verify the TradeLogRow was written with the correct FK values.
+    row = session.query(TradeLogRow).first()
+    assert row is not None, "No TradeLogRow was written on SELL"
+    assert row.opening_tick_id == "tick_OPEN", (
+        f"Expected opening_tick_id='tick_OPEN', got {row.opening_tick_id!r}"
+    )
+    assert row.closing_tick_id == "tick_CLOSE", (
+        f"Expected closing_tick_id='tick_CLOSE', got {row.closing_tick_id!r}"
+    )

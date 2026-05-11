@@ -1,8 +1,9 @@
 """Executor BaseAgent — submits orders via Broker, manages position book."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any, AsyncGenerator
+from collections.abc import AsyncGenerator
+from datetime import UTC, datetime
+from typing import Any
 
 from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
@@ -66,8 +67,15 @@ class ExecutorAgent(BaseAgent):
                     ),
                 )
 
-                # If this is a SELL and we have a thesis recorded, write the trade log.
-                if order.action == "SELL" and order.ticker in positions:
+                # BUY: record the thesis in the position book so SELL can later recover it.
+                if order.action == "BUY":
+                    decision = state.get("strategist_decision") or {}
+                    thesis_dict = (decision.get("new_positions") or {}).get(order.ticker)
+                    if thesis_dict is not None:
+                        positions[order.ticker] = thesis_dict
+
+                # SELL: write the closing trade-log entry and remove from the position book.
+                elif order.action == "SELL" and order.ticker in positions:
                     thesis = positions.get(order.ticker)
                     if thesis and self.db_session:
                         from orchestrator.persistence import save_trade_log_entry
@@ -76,23 +84,25 @@ class ExecutorAgent(BaseAgent):
                             thesis.get("opened_price") if isinstance(thesis, dict)
                             else thesis.opened_price
                         )
-                        opened_at = (
+                        opened_at_raw = (
                             thesis.get("opened_at") if isinstance(thesis, dict)
                             else thesis.opened_at
                         )
-                        closed_at = datetime.now(tz=timezone.utc)
+                        # Normalise opened_at to a datetime object for SQLAlchemy.
+                        opened_at_dt = (
+                            datetime.fromisoformat(opened_at_raw)
+                            if isinstance(opened_at_raw, str)
+                            else opened_at_raw
+                        )
+                        closed_at = datetime.now(tz=UTC)
                         holding_hours = int(
-                            (closed_at - (
-                                datetime.fromisoformat(opened_at)
-                                if isinstance(opened_at, str)
-                                else opened_at
-                            )).total_seconds() / 3600
+                            (closed_at - opened_at_dt).total_seconds() / 3600
                         )
                         pnl_pct = (fill.price - opened_price) / opened_price * 100
 
                         save_trade_log_entry(self.db_session, {
                             "ticker":              order.ticker,
-                            "opened_at":           opened_at,
+                            "opened_at":           opened_at_dt,
                             "closed_at":           closed_at,
                             "opened_price":        opened_price,
                             "closed_price":        fill.price,
@@ -105,6 +115,13 @@ class ExecutorAgent(BaseAgent):
                             "opened_rationale":    thesis.get("rationale") if isinstance(thesis, dict) else thesis.rationale,
                             "close_reason":        state.get("strategist_decision", {}).get("close_reasons", {}).get(order.ticker, ""),
                             "catalyst_realised":   False,
+                            # FK columns linking this trade back to the deliberation ticks
+                            # that opened and closed the position (added in Plan C, task C11).
+                            "opening_tick_id": (
+                                thesis.get("opened_tick_id") if isinstance(thesis, dict)
+                                else getattr(thesis, "opened_tick_id", None)
+                            ) or None,
+                            "closing_tick_id": state.get("tick_id"),
                         })
 
                     # Remove from the live position book.
