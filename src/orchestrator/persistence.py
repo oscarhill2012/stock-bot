@@ -90,6 +90,11 @@ class TradeLogRow(Base):
     close_reason: Mapped[str] = mapped_column(String)
     catalyst_realised: Mapped[bool] = mapped_column(Boolean)
 
+    # Nullable FK-style references linking a trade back to the originating tick.
+    # Populated by the executor when opening/closing a position; NULL for pre-Plan-C rows.
+    opening_tick_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
+    closing_tick_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
+
 
 def save_trade_log_entry(session: Session, entry: dict) -> None:
     """Persist one closed-trade record. Caller is responsible for committing."""
