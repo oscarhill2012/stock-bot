@@ -16,7 +16,9 @@
 
 > **Note (2026-05-08):** The original draft of this plan put the digest constants in `src/config/digest.py`. The project has since moved JSON-only config to `config/` at the project root and dropped `src/config/` entirely. `DEFAULT_ANALYST_WEIGHTS` and `DIRECTION_DEAD_ZONE` are *behavioural defaults* (dict + float consumed by `build_ticker_evidence`), not runtime-tunable JSON, so they live next to the aggregator in `src/contract/digest_defaults.py`. If a future spec needs them tunable without code changes, promote them to `config/digest.json` then with a small loader.
 
-**Tech Stack:** Python 3.11+, Pydantic v2, pytest. `pandas-ta` is added to `requirements.txt` here for Plan B to use later.
+**Tech Stack:** Python 3.11+, Pydantic v2, pytest. `TA-Lib` is added to `requirements.txt` here for Plan B to use later.
+
+> **Note (2026-05-11):** The original draft pinned `pandas-ta>=0.3.14b,<0.4`. On Python 3.14 this fails: only `pandas-ta>=0.4.x` ships on PyPI now, and its hard `numba` dep has no Py3.14 wheel and won't build from source. We switched to `TA-Lib` (canonical TA-Lib bindings). The PyPI package `TA-Lib>=0.6.8` ships manylinux wheels (no `libta-lib` system library needed) and exposes the same indicators Plan B uses. Plan B's import + call sites in `src/contract/extractors/technical.py` have been updated accordingly — see Plan B § Task B2.
 
 **Reference reading before starting:**
 - `docs/Phase4-stratergist-and-analysts/spec.md` — design rationale, math, feature catalogue
@@ -960,32 +962,32 @@ git commit -m "feat(contract): implement build_ticker_evidence (deterministic ag
 
 ---
 
-## Task A5: Add `pandas-ta` to requirements
+## Task A5: Add `TA-Lib` to requirements
+
+> **Substitution note (2026-05-11):** This task originally pinned `pandas-ta>=0.3.14b,<0.4`. On Python 3.14 that fails — `pandas-ta`'s `numba` dep has no Py3.14 wheel and won't build from source. We use `TA-Lib` (canonical TA-Lib bindings) instead. The PyPI package `TA-Lib>=0.6.8` ships a `cp314` manylinux wheel that doesn't require the `libta-lib` system library to be installed separately. Plan B § Task B2 uses the `talib` module for `RSI` and `ATR`.
 
 **Files:**
 - Modify: `requirements.txt`
 
-- [ ] **Step 1: Add pandas-ta**
+- [ ] **Step 1: Add TA-Lib**
 
-Read `requirements.txt`, then add a new line for `pandas-ta`. Pin to a recent stable version (`pandas-ta>=0.3.14b,<0.4`). If the file already contains `pandas-ta`, this task is a no-op — record that and skip to commit.
-
-If adding, add the line in alphabetical order with the other deps (or at the end if order isn't strictly maintained — match the file's existing convention).
+Read `requirements.txt`, then add a new line: `TA-Lib>=0.6.8                   # canonical TA-Lib bindings for Phase 4 technical analyst feature extractor`. Place it adjacent to the existing `ta>=0.11.0` line so both technical-indicator libraries sit together. If the file already contains `TA-Lib`, this task is a no-op — record that and skip to commit.
 
 - [ ] **Step 2: Verify install resolves**
 
 Run: `.venv/bin/python -m pip install -r requirements.txt`
-Expected: clean install, no resolver errors.
+Expected: clean install, no resolver errors. The wheel is pulled from PyPI — no `dnf install ta-lib-devel` step needed.
 
-- [ ] **Step 3: Verify pandas-ta imports cleanly**
+- [ ] **Step 3: Verify TA-Lib imports cleanly**
 
-Run: `.venv/bin/python -c "import pandas_ta as ta; print(ta.__name__)"`
-Expected: `pandas_ta`
+Run: `.venv/bin/python -c "import talib; print(talib.__version__)"`
+Expected: a version string like `0.6.8`.
 
 - [ ] **Step 4: Commit**
 
 ```bash
 git add requirements.txt
-git commit -m "chore(deps): add pandas-ta for the technical analyst feature extractor"
+git commit -m "chore(deps): add TA-Lib for the technical analyst feature extractor"
 ```
 
 ---

@@ -16,7 +16,7 @@
 
 The `AnalystEvidence` envelope gains `tick_id` (from `state["tick_id"]`) and `recorded_at` (now), plus `feature_warnings` (empty list during dual-emit — the legacy fetch callbacks don't surface warnings; Plan D's per-extractor warnings get plumbed through there).
 
-**Tech Stack:** Python 3.11+, Pydantic v2, pandas + pandas-ta (added in Plan A), pytest.
+**Tech Stack:** Python 3.11+, Pydantic v2, pandas + TA-Lib (added in Plan A — substituted for the originally planned `pandas-ta`; see Plan A § Task A5 for the rationale), pytest.
 
 **Reference reading before starting:**
 - `docs/Phase4-stratergist-and-analysts/spec.md` — feature catalogue table (locked per analyst)
@@ -502,7 +502,7 @@ from typing import Any, Mapping
 
 import numpy as np
 import pandas as pd
-import pandas_ta as ta
+import talib  # canonical TA-Lib bindings — see Plan A § Task A5 for the pandas-ta substitution rationale
 
 
 _KEYS = (
@@ -553,19 +553,24 @@ def extract_technical_features(raw: Mapping[str, Any], ticker: str) -> dict[str,
     if len(close) > 20:
         out["pct_change_20d"] = float((close.iloc[-1] / close.iloc[-21]) - 1.0)
 
-    # RSI 14
+    # RSI 14 — TA-Lib takes a numpy array and returns one; the leading 14 entries are NaN.
     if len(close) >= 15:
-        rsi = ta.rsi(close, length=14)
-        if rsi is not None and not rsi.empty and not np.isnan(rsi.iloc[-1]):
-            out["rsi_14"] = float(rsi.iloc[-1])
+        rsi_arr = talib.RSI(close.to_numpy(dtype=float), timeperiod=14)
+        if rsi_arr is not None and len(rsi_arr) > 0 and not np.isnan(rsi_arr[-1]):
+            out["rsi_14"] = float(rsi_arr[-1])
 
-    # ATR 14 as % of last close
+    # ATR 14 as % of last close — TA-Lib's ATR takes (high, low, close) numpy arrays.
     if len(df) >= 15:
-        atr = ta.atr(df["high"], df["low"], df["close"], length=14)
-        if atr is not None and not atr.empty and not np.isnan(atr.iloc[-1]):
+        atr_arr = talib.ATR(
+            df["high"].to_numpy(dtype=float),
+            df["low"].to_numpy(dtype=float),
+            df["close"].to_numpy(dtype=float),
+            timeperiod=14,
+        )
+        if atr_arr is not None and len(atr_arr) > 0 and not np.isnan(atr_arr[-1]):
             last_close = float(close.iloc[-1])
             if last_close > 0:
-                out["atr_pct_14"] = float(atr.iloc[-1] / last_close * 100.0)
+                out["atr_pct_14"] = float(atr_arr[-1] / last_close * 100.0)
 
     # Volume ratio: avg vol over last 20d / avg vol over last 50d
     if len(df) >= 50:

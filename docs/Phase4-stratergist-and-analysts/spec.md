@@ -24,7 +24,7 @@ The two follow-on goals — Goal 1 (single-strategist v2 with per-ticker stance)
 
 **Risk:** zero. Pure new code, nothing imports it yet, nothing changes.
 
-**Adds:** `src/contract/{evidence,ticker_evidence,digest,digest_defaults}.py`, fixtures under `tests/fixtures/contract/`, the `pandas-ta` dependency.
+**Adds:** `src/contract/{evidence,ticker_evidence,digest,digest_defaults}.py`, fixtures under `tests/fixtures/contract/`, the `TA-Lib` dependency (substituted for the originally planned `pandas-ta` — `pandas-ta`'s `numba` dep does not yet build on Python 3.14; see Plan A § Task A5 for the rationale and the import-translation table).
 
 **Defines:**
 - `AnalystVerdict` — `lean: Literal["bullish","bearish","neutral"]`, `magnitude: float [0,1]`, `confidence: float [0,1]`, `rationale: str (≤160)`, `key_factors: list[str] (≤8)`, `is_no_data: bool`. `magnitude` and `confidence` are independent: magnitude = "how strong is the signal," confidence = "how sure am I about it." Both are required by the future learning loop (see *Schema affordances for Goal 3* below).
