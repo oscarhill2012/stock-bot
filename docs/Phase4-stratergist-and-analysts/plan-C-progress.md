@@ -48,7 +48,7 @@ proposed for merge into main.
 
 **Tasks:**
 
-- [ ] **C1** — Add `stance_schema.py` (`TickerStance` model). Plan §C1.
+- [x] **C1** — Add `stance_schema.py` (`TickerStance` model). Plan §C1. — `a09d614`
 - [ ] **C2** — Add `lifecycle.py` (`derive_lifecycle_action`). Plan §C2.
 - [ ] **C3** — Add `PositionThesis.opened_tick_id` field. Plan §C3.
 - [ ] **C4** — Add `derivation.py` (`derive_legacy_fields`). Plan §C4.
@@ -90,3 +90,8 @@ entry; do not rewrite history.
 - Created branch `phase4/planC-foundation` off `main @ 19a12b7`.
 - Created this progress file as the first commit on the branch.
 - Dispatching C1 implementer (Sonnet).
+
+### 2026-05-11 — C1 landed (`a09d614`)
+- Spec compliance: ✅ — schema fields, constraints, and 9 required tests match spec exactly. Test path `tests/unit/agents/strategist/` chosen over the plan's `tests/unit/strategist/` to match the repo's existing `tests/unit/agents/analysts/` convention; authorised deviation.
+- Code quality: ⚠️ approved with minor issues. One Important finding (ticker field unvalidated — accepts `""` or whitespace) **deferred**: the plan and Plan A's `AnalystEvidence`/`TickerEvidence` schemas all spec `ticker: str` bare. Tightening it here without doing so across the family creates a one-off inconsistency. **Backlog candidate**: introduce a shared `Ticker` type alias (e.g. `Annotated[str, Field(min_length=1, pattern=...)]`) and apply across `contract/` and `strategist/` in one pass — out of scope for chunk 1.
+- Three Minor cosmetic findings noted and not actioned (test assertion completeness, unrealistic `catalyst="Q3"` value, module-docstring brevity). All would be trivial follow-ups if the file ever opens for another reason.
