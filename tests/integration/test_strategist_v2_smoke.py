@@ -78,6 +78,7 @@ def _ev(analyst: str, lean: str, conf: float, ticker: str) -> dict:
 
 # ── Test ──────────────────────────────────────────────────────────────────────
 
+@pytest.mark.integration
 async def test_strategist_v2_emits_per_ticker_stances_with_held_position():
     """Verify Strategist v2 writes a valid decision to state when run via ADK Runner.
 
