@@ -128,12 +128,49 @@ chunk-1 → chunk-2 → chunk-3 → chunk-4 stack merges to `main` as one PR.
 **Tasks:**
 
 - [x] C15 — Tier 2 LLM-touching smoke (gated by `RUN_LLM_TESTS=1`). Plan §C15. **Commits:** `7e4dce9` (initial) + `80b4cb1` (spec fix: add `@pytest.mark.integration`).
-- [ ] C16 — Final regression pass + ruff cleanup + graphify delta. Plan §C16.
+- [x] C16 — Final regression pass + ruff cleanup + graphify delta. Plan §C16. **Commits:** `4da2cbc` (ruff ×3 on `persistence.py`) + `b625c95` (graphify delta) + `b79f223` (`__import__` polish).
 - [ ] **Final review** — Opus cross-task audit of C15-C16 (smoke gating + regression cleanliness).
 
 ---
 
 ## Session log
+
+### 2026-05-11 — C16 complete (final regression + ruff cleanup + graphify delta)
+
+Chunk 4's final implementer pass. Three commits, all narrowly scoped:
+
+- **`4da2cbc chore(persistence): clean up 3 pre-existing ruff violations`** —
+  resolves the Chunk 3 audit follow-up #1 carry-overs on
+  `src/orchestrator/persistence.py`: dropped unused `JSON` import (F401 line 8),
+  dropped unused top-level `BufferEntry` import (F401 line 50 — the function-local
+  re-import inside `load_recent_buffer` is the real usage and remains), and
+  replaced the local `from datetime import timezone` + `timezone.utc` inside
+  `save_attribution_signal` with the module-level `UTC` alias (UP017).
+- **`b625c95 docs(graph): record Plan C strategist v2 architectural delta`** —
+  appended the dated section to `graphify-out/graph_delta.md` covering
+  TickerStance / TickerEvidence / decision-writer / 8-stage pipeline /
+  executor BUY+SELL changes. `graphify-out/` is gitignored so `git add -f`
+  was required; this matches the precedent set by `05eb354` (provider-shell
+  refactor delta). Total file size after append: 166 lines (under the
+  200-line rebuild threshold from CLAUDE.md).
+- **`b79f223 polish(persistence): replace stale __import__ pattern`** —
+  raised by the code-quality reviewer: `save_portfolio_snapshot` had
+  `__import__("datetime").datetime.now(__import__("datetime").timezone.utc)`
+  as a default-factory expression. Pre-existing (predates Plan C) but
+  inconsistent with the cleaned-up imports; replaced with plain
+  `datetime.now(tz=UTC)`. Not a ruff violation either before or after — pure
+  legibility fix while the file was open.
+
+**Regression baseline:** `.venv/bin/python -m pytest tests/ -q` →
+**329 passed, 1 skipped, 4 warnings in 228s** (skip is the C15 LLM smoke).
+Identical to the pre-C16 baseline; no regressions introduced. Ruff on
+`src/orchestrator/persistence.py` and the four chunk-4-touched paths: clean.
+
+**Reviews:**
+- **Spec compliance (Sonnet):** ✅ APPROVED. All five spec steps satisfied;
+  test/ruff/delta/commit-hygiene all match.
+- **Code quality (Sonnet):** ❌ initially — flagged the `__import__` pattern.
+  Fixed in `b79f223`. No further issues raised.
 
 ### 2026-05-11 — C15 complete (LLM-touching smoke; gated by `RUN_LLM_TESTS`)
 
