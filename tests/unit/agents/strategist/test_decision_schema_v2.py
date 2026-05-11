@@ -52,3 +52,24 @@ def test_legacy_fields_preserved():
     assert d.target_weights == {"AAPL": 0.08}
     assert d.new_positions == {}
     assert d.close_reasons == {}
+
+
+def test_legacy_json_without_stances_parses():
+    """JSON emitted before C7 (no 'stances' key) still parses cleanly.
+
+    Any persisted ADK state blob from before this task — fixtures, replayed
+    integration logs, snapshot tests — predates the new `stances` field and so
+    will have no `"stances"` key in its serialised form. The
+    `default_factory=list` makes this safe at the Pydantic level; this test
+    pins down that safety so a future careless validator rule cannot quietly
+    break replay.
+    """
+    payload = {
+        "target_weights": {"AAPL": 0.08},
+        "decision_tag": "legacy",
+        "reasoning": "x",
+        "updated_thesis": "y",
+        "confidence": 0.6,
+    }
+    d = StrategistDecision.model_validate(payload)
+    assert d.stances == []

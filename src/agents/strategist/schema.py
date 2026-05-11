@@ -30,8 +30,8 @@ class PositionThesis(BaseModel):
 class StrategistDecision(BaseModel):
     """Output from one Strategist LLM call.
 
-    The LLM emits ``stances`` (per-ticker). The after-callback fills in
-    ``target_weights`` / ``new_positions`` / ``close_reasons`` / ``trim_reasons``
+    The LLM emits `stances` (per-ticker). The after-callback fills in
+    `target_weights` / `new_positions` / `close_reasons` / `trim_reasons`
     by deriving them from the stances, so downstream consumers see the same
     shape they always saw.
     """
