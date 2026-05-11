@@ -104,7 +104,7 @@ strategist runs.
 **Tasks:**
 
 - [x] C10 — Add `TickerStanceRow` ORM + `save_ticker_stance`. Plan §C10. — `eb2d53a` (+`1993e4b` polish)
-- [ ] C11 — Add `TradeLogRow.opening_tick_id` / `closing_tick_id`. Plan §C11.
+- [x] C11 — Add `TradeLogRow.opening_tick_id` / `closing_tick_id`. Plan §C11. — `da006fc`
 - [ ] C12 — Add `StrategistDecisionWriter` agent. Plan §C12.
 - [ ] C13 — Update executor (thesis on BUY, FKs on SELL). Plan §C13.
 - [ ] C14 — Wire `StrategistDecisionWriter` into the pipeline + seed `state["portfolio"]`. Plan §C14.
@@ -119,6 +119,16 @@ strategist runs.
 ---
 
 ## Session log
+
+### 2026-05-11 — C11 landed (`da006fc`)
+- Two nullable+indexed columns added to `TradeLogRow`: `opening_tick_id` / `closing_tick_id` (both `Mapped[str | None]`, `String`, `index=True`, `nullable=True`) — with an inline comment explaining they're FK-style links back to the originating tick (NULL for pre-Plan-C rows).
+- Spec compliance: ✅ — diff is exactly the 2 columns at the bottom of `TradeLogRow`; commit touches only `src/orchestrator/persistence.py` + the new test file; commit message matches the spec verbatim.
+- Tests: 3 new in `tests/unit/orchestrator/test_trade_log_tick_id_fks.py` — `test_trade_log_accepts_tick_id_fks` (round-trip), `test_trade_log_join_to_ticker_stance` (SQL JOIN trade↔stance via `tick_id`), `test_tick_id_columns_nullable`. All pass; full suite at 318/318 (+3).
+- Authorised deviations applied cleanly: `UTC` alias instead of `timezone.utc`, fixture named `session` with `s.close()` teardown (codebase precedent), and the extra `assert r.closing_tick_id is None` row. No fixture leak this time — C10's lesson was baked into the implementer prompt.
+- Code quality: ✅ approved with 2 nits, both **not actioned**:
+  - **Nit — `sessionmaker(bind=engine)`** uses the deprecated `bind=` keyword. Left as-is to stay consistent with the sibling persistence-test fixtures (`test_persistence_ticker_stance.py`, `test_attribution_persistence.py`). Cross-file rename is a separate change.
+  - **Nit — `assert trade.ticker == "AAPL"` in the join test** is technically redundant given only one AAPL row exists; reviewer suggested `assert trade.opening_tick_id == stance.tick_id` instead. The current assertion is still true and reads as "the joined trade is the AAPL trade we inserted," which is acceptable. Left as-is.
+- No new ruff findings; the 3 pre-existing violations on `persistence.py` (`F401` × 2, `UP017` × 1) are unchanged.
 
 ### 2026-05-11 — C10 landed (`eb2d53a` + `1993e4b` polish)
 - First task of Chunk 3 (persistence + wiring).
