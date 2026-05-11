@@ -20,7 +20,7 @@ exactly where the previous session stopped.
 |---|---|---|---|
 | **Chunk 1 — Strategist-internal foundation** | C1–C6 | `phase4/planC-foundation` | ✅ approved by final Opus audit; staged for stacked merge |
 | Chunk 2 — Strategist rewrite | C7–C9 | `phase4/planC-strategist-rewrite` (off Chunk 1 tip) | ✅ audited; ready for Chunk 3 stack |
-| Chunk 3 — Persistence + wiring | C10–C14 | `phase4/planC-persistence-and-wiring` (off Chunk 2 tip `c0136f7`) | in flight |
+| Chunk 3 — Persistence + wiring | C10–C14 | `phase4/planC-persistence-and-wiring` (off Chunk 2 tip `c0136f7`) | ✅ audited; ready for Chunk 4 stack |
 | Chunk 4 — Verify | C15–C16 | (not started — branches off Chunk 3 tip) | — |
 
 **Stacked-branch policy:** Plan C is one coherent rewrite — Chunk 1 alone is dead
@@ -108,7 +108,7 @@ strategist runs.
 - [x] C12 — Add `StrategistDecisionWriter` agent. Plan §C12. — `ca1c283`
 - [x] C13 — Update executor (thesis on BUY, FKs on SELL). Plan §C13. — `1c2fffb`
 - [x] C14 — Wire `StrategistDecisionWriter` into the pipeline + seed `state["portfolio"]`. Plan §C14. — `9c482d6` (+`5bd6567` polish)
-- [ ] **Final review** — Opus audit of all five tasks together.
+- [x] **Final review** — Opus cross-task audit of C10-C14. ✅ approved with 8 non-blocking follow-ups (see session log).
 
 ---
 
@@ -119,6 +119,66 @@ strategist runs.
 ---
 
 ## Session log
+
+### 2026-05-11 — Chunk 3 final Opus audit ✅ approved
+
+Cross-task audit of C10-C14 together (Opus model). Empirical baseline:
+**329/329 full project suite green**; ruff on the eight chunk-3-touched paths
+(`src/agents/strategist/decision_writer.py`, `src/agents/executor/agent.py`,
+`src/orchestrator/pipeline.py`, `src/orchestrator/tick.py`, plus four test
+trees) **All checks passed**; the three known carry-over violations on
+`src/orchestrator/persistence.py` (F401 line 8, F401 line 50, UP017 line 261)
+remain unchanged. Diff footprint: **15 files, +871/-40**.
+
+**No Critical, no Important findings.** The end-to-end story holds:
+
+- Tick → `_build_initial_state` seeds `state["portfolio"]` via
+  `broker.get_portfolio().model_dump(mode="json")` (`tick.py:36`).
+- Strategist's `_composite_before_callback` calls `_coerce_portfolio`
+  (`agent.py:23-38`), which round-trips the dict via
+  `Portfolio.model_validate(value)`. `cash` (float) and `positions`
+  (dict[str, Position]) are both natively round-trippable — verified.
+- Strategist's `_strategist_validation_callback` (`agent.py:268-275`)
+  derives `new_positions` via `derive_legacy_fields(decision.stances, ctx)`
+  with `ctx.tick_id=state["tick_id"]`, populating
+  `PositionThesis.opened_tick_id` (`derivation.py:142`); the validated
+  decision is then re-dumped to `state["strategist_decision"]`.
+- `StrategistDecisionWriter` (`decision_writer.py:87-97`) iterates
+  `decision.stances`, calls `derive_lifecycle_action(curr, preferred_weight)`,
+  and persists each via `save_ticker_stance(stance=stance.model_dump(mode="json"), ...)`.
+  Dict-shape contract verified: `TickerStance` exposes `ticker`/`preferred_weight`/`conviction`/`rationale` (required) and `horizon`/`target_price`/`stop_price`/`catalyst`/`close_reason`/`trim_reason` (optional) — exactly what
+  `save_ticker_stance` reads via `[...]` / `.get(...)`.
+- Executor BUY (`agent.py:71-75`) copies `state["strategist_decision"]["new_positions"][ticker]` (a `PositionThesis` JSON dump that includes `opened_tick_id`) into `state["positions"][ticker]`.
+- Executor SELL (`agent.py:78-128`) reads `thesis.get("opened_tick_id")` and
+  passes `state["tick_id"]` as `closing_tick_id`. The 15-key dict matches
+  `TradeLogRow` exactly, including the two new C11 columns. The
+  `opened_at` string→`datetime` coercion at `agent.py:92-96` correctly
+  guards the JSON-state path.
+- Stage ordering at `pipeline.py:67-76`: `StrategistDecisionWriter` sits at
+  index 3, between `Strategist` (index 2) and `RiskGate` (index 4). Intent
+  is therefore persisted even if `RiskGate` raises a `StrategistContractViolation` — the desired audit-trail invariant.
+
+**Cross-task contract sanity-checks all passed.** The chain from a real
+`StrategistDecisionWriter`-persisted stance to a downstream `TradeLogRow` is
+exercised piecewise — unit tests cover each seam — but no single
+integration-level test stitches the full BUY→SELL round-trip across multiple
+ticks with `opened_tick_id` flowing from the writer through the executor.
+Acceptable for Chunk 3; flagged for Chunk 4.
+
+**Non-blocking follow-ups for Chunk 4 / backlog:**
+
+1. **Persistence.py ruff debt** (3 known carry-overs: `JSON` F401, `BufferEntry` F401, `UP017` on `timezone.utc`). All pre-Chunk-3; tidy in a standalone `chore(persistence)` commit before merge or fold into C16 regression pass.
+2. **`validate_lifecycle_contract` orphan** in `src/agents/risk_gate/lifecycle.py` — still unused; carries forward from Chunk 2 audit follow-up #2.
+3. **`tick_id` fallback to `recorded_at`** at `agent.py:200` — Chunk 2 follow-up #3, still present.
+4. **Duplicate-ticker silent dedupe** in the "no extras" check — Chunk 2 follow-up #4, still present.
+5. **Module-level `strategist_agent` singleton** in `agent.py:299-310` is now provably unused by the pipeline (C14 builds the `LlmAgent` inline). Decide in Chunk 4 whether to remove or keep as a public convenience.
+6. **No full BUY→SELL integration round-trip test** that exercises the chain `StrategistDecisionWriter → executor.BUY → next tick → executor.SELL → TradeLogRow with opening_tick_id from a real prior write`. The seams are individually covered (`test_decision_writer.py`, `test_open_positions_state.py`, `test_trade_log_tick_id_fks.py`) but never stitched. Good candidate for C16.
+7. **Generator-gate style drift:** `decision_writer.py:48,56,101` use `return; yield` for the no-event generator-protocol gate, whereas sibling writers under `attribution/` use `if False: yield`. Functionally identical; harmonise alongside the C12-noted UP035 sweep.
+8. **Stale comment in `persistence.py:94`** mentions "executor when opening/closing" — accurate, but the FK is now also set by the strategist callback path (via `opened_tick_id` on `PositionThesis`). Minor wording polish.
+
+**Chunk 3 is feature-complete and audit-approved.** Stays on its own branch
+(`phase4/planC-persistence-and-wiring`, tip `eb1a94b`) per the stacked-branch
+policy. Chunk 4 (C15-C16) will branch off this tip; no merge to main yet.
 
 ### 2026-05-11 — C14 landed (`9c482d6` + `5bd6567` polish) — Chunk 3 feature-complete
 - **Pipeline wiring (Part 1):** `build_strategist_decision_writer(db_session)` inserted between `_build_strategist()` and `RiskGateAgent(broker=broker)` in `src/orchestrator/pipeline.py`. Pipeline is now 8 stages. `_build_strategist()` engages the v2 callbacks — adds `before_agent_callback=_composite_before_callback` alongside the pre-existing `after_agent_callback=_strategist_validation_callback`. **Model preserved at `gemini-2.5-pro`** (NOT plan's `gemini-2.0-pro-001` — C9 audit decision).
