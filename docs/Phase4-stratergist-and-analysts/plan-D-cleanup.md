@@ -12,6 +12,8 @@
 
 **Predecessor plans:** Plan A (`plan-A-contract-scaffolding.md`) and Plan B (`plan-B-extractors-dual-emit.md`) and Plan C (`plan-C-strategist-v2.md`) MUST all be merged before starting Plan D. After Plan C, the strategist consumes `state["ticker_evidence"]` (rendered string) and `state["ticker_evidence_objects"]` (list[TickerEvidence dump]); the four analysts still dual-emit (legacy `*_signals` + new `*_evidence`); `AttributionWriter` still persists the legacy `*_signals`. Plan D removes the dual-emit and rewires persistence.
 
+**Absorbed hygiene items:** Plan D also picks up six follow-ups carried over from the Phase 4 chunk audits, because the files they touch overlap with Plan D's existing scope. These land in a consolidated `Task D9` at the end of the plan rather than being woven through D1–D8 (which keeps the existing TDD flow of those tasks intact). The full Phase-4 follow-up inventory lives in `post-phase4-backlog.md`; the items deferred *out* of Plan D are tracked there and in `plan-E-strategist-hardening.md`.
+
 ---
 
 ## File Structure
@@ -1131,6 +1133,123 @@ git commit -m "docs(phase4): retire superseded specs/plans, update backlog + gra
 
 ---
 
+## Task D9: Absorbed hygiene sweep (6 follow-ups from Phase 4 backlog)
+
+This task lands six follow-ups flagged by the Phase 4 chunk audits whose target files already overlap with Plan D's scope. Doing them here avoids touching the same files twice and keeps the `post-phase4-backlog.md` inventory shrinking as Plan D progresses.
+
+**Files (all already touched by earlier Plan D tasks; this task adds focused edits):**
+- Modify: `src/orchestrator/persistence.py`
+- Modify: `src/agents/strategist/__init__.py`
+- Modify: `src/agents/strategist/decision_writer.py`
+- Modify: `src/agents/memory/writer.py`
+- Modify: `src/agents/contract/evidence_writer.py` *(created in D2)*
+- Modify: `tests/unit/orchestrator/test_persistence_ticker_stance.py`
+- Modify: `tests/unit/test_attribution_persistence.py` *(if it still exists post-D6; otherwise skip)*
+- Modify: `tests/unit/test_trade_log_tick_id_fks.py`
+- Modify: `tests/unit/test_buffer_persistence.py`
+- Modify: `tests/unit/test_snapshot_persistence.py`
+
+- [ ] **Step 1: FU-06 — composite UNIQUE on `TickerStanceRow`**
+
+`TickerStanceRow` enforces "one stance per ticker per tick" by caller convention only. Promote that invariant to the database layer.
+
+In `src/orchestrator/persistence.py`, add a `__table_args__` declaration to `TickerStanceRow`:
+
+```python
+from sqlalchemy import UniqueConstraint
+
+class TickerStanceRow(Base):
+    __tablename__ = "ticker_stance"
+    __table_args__ = (
+        UniqueConstraint("tick_id", "ticker", name="uq_ticker_stance_tick_ticker"),
+    )
+    # ... existing columns unchanged ...
+```
+
+Add a regression test in `tests/unit/orchestrator/test_persistence_ticker_stance.py` (or a new sibling file) that asserts `IntegrityError` is raised when two rows with the same `(tick_id, ticker)` are flushed.
+
+- [ ] **Step 2: FU-08 — `sessionmaker(bind=engine)` → `Session(bind=engine)` sweep**
+
+The Plan-C-era persistence test fixtures still use the SQLAlchemy 1.x `sessionmaker(bind=engine)()` pattern. SQLAlchemy 2 prefers the direct `Session(bind=engine)` form. Sweep these five files:
+
+- `tests/unit/orchestrator/test_persistence_ticker_stance.py`
+- `tests/unit/test_attribution_persistence.py` *(only if it survived D6; otherwise this entry is moot)*
+- `tests/unit/test_trade_log_tick_id_fks.py`
+- `tests/unit/test_buffer_persistence.py`
+- `tests/unit/test_snapshot_persistence.py`
+
+Replace each occurrence:
+
+```python
+# Before
+from sqlalchemy.orm import sessionmaker
+Session = sessionmaker(bind=engine)
+with Session() as session:
+    ...
+
+# After
+from sqlalchemy.orm import Session
+with Session(bind=engine) as session:
+    ...
+```
+
+Also rename any `db` fixture to `session` while you're in the file (FU-20) so naming matches the rest of the test tree.
+
+- [ ] **Step 3: FU-09 — `src/agents/strategist/__init__.py` re-export audit**
+
+Open `src/agents/strategist/__init__.py`. List every name it re-exports. For each, run:
+
+```bash
+grep -rn "from agents.strategist import <name>" src/ tests/
+```
+
+Remove any re-export with zero callers outside `agents.strategist.*`. In particular: confirm whether the module-level `strategist_agent` singleton (currently kept alive only by `tests/integration/test_strategist_v2_smoke.py`) is the right public handle, or whether the smoke test should import the agent from a more specific path. Document the decision in the `__init__.py` module docstring.
+
+- [ ] **Step 4: FU-15 + FU-17 — async-generator gate idiom + `AsyncGenerator` import sweep**
+
+Pick **one** idiom for the no-op async generator gate used in `BaseAgent` subclasses and apply it consistently:
+
+- Plan C's `decision_writer.py` uses `return; yield` (lines 48, 56, 101 in the post-merge file).
+- Older writers under `src/agents/attribution/` use `if False: yield`.
+
+The recommended idiom is **`return; yield`** (one line, intent obvious to readers familiar with PEP 525). Sweep:
+
+- `src/agents/contract/evidence_writer.py` (the new D2 writer)
+- `src/agents/memory/writer.py`
+- Any surviving writers Plan D didn't delete
+
+In the same sweep, replace any `from typing import AsyncGenerator` with `from collections.abc import AsyncGenerator` (UP035). `decision_writer.py` is already on the `collections.abc` form — match it.
+
+- [ ] **Step 5: FU-16 — stale comment in `persistence.py`**
+
+`src/orchestrator/persistence.py` has a comment near `TradeLogRow.opening_tick_id` / `closing_tick_id` that says these are "set by the executor when opening / closing." Since Plan C, the *opening* FK is actually populated by the strategist callback path via `PositionThesis.opened_tick_id` flowing through `executor.BUY`. Update the comment to reflect the real flow:
+
+```python
+# opening_tick_id: copied from PositionThesis.opened_tick_id when executor.BUY
+#   writes the position. closing_tick_id: stamped by executor.SELL with the
+#   tick that triggered the close.
+```
+
+- [ ] **Step 6: Verification**
+
+```
+.venv/bin/python -m pytest tests/ -q
+.venv/bin/python -m ruff check src/ tests/
+```
+
+Expected: all green, ruff clean. The new UNIQUE constraint test (Step 1) should appear in the pass count.
+
+- [ ] **Step 7: Commit**
+
+Single commit for the whole sweep:
+
+```bash
+git add -u src/ tests/
+git commit -m "chore(phase4): absorbed hygiene sweep — TickerStance UNIQUE, Session(bind=), async-gen idiom, UP035, stale comment"
+```
+
+---
+
 ## End-state checklist
 
 After Plan D merges, the repo should match all of:
@@ -1145,3 +1264,7 @@ After Plan D merges, the repo should match all of:
 - [ ] `docs/Phase4-stratergist-and-analysts/` contains: `spec.md`, `plan-A-contract-scaffolding.md`, `plan-B-extractors-dual-emit.md`, `plan-C-strategist-v2.md`, `plan-D-cleanup.md`
 - [ ] `graphify-out/graph_delta.md` ends with the Phase 4 reorganisation entry
 - [ ] `pytest tests/` and `ruff check src/ tests/` both pass
+- [ ] `TickerStanceRow` declares a `UniqueConstraint("tick_id", "ticker", ...)` (D9 / FU-06)
+- [ ] No test fixture uses `sessionmaker(bind=engine)` — only `Session(bind=engine)` (D9 / FU-08)
+- [ ] All `BaseAgent._run_async_impl` no-op generators use the `return; yield` idiom (D9 / FU-15)
+- [ ] No file under `src/` imports `AsyncGenerator` from `typing` — only from `collections.abc` (D9 / FU-17)
