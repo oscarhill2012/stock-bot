@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
+from datetime import UTC, datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, Integer, String, create_engine
+from sqlalchemy import Boolean, DateTime, Float, Integer, String, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 
@@ -47,7 +47,6 @@ def save_buffer_entry(session: Session, entry_data: dict, tick_id: str) -> None:
 
 def load_recent_buffer(session: Session, tick_id: str, limit: int = 24) -> list[dict]:
     """Return the `limit` most-recent buffer entries for `tick_id`, oldest first."""
-    from agents.memory.schema import BufferEntry
     rows = (
         session.query(BufferEntryRow)
         .filter(BufferEntryRow.tick_id == tick_id)
@@ -257,8 +256,7 @@ def save_attribution_signal(
     signal: dict,
 ) -> None:
     """Persist one analyst signal. `analyst` must be technical|fundamental|sentiment|smart_money."""
-    from datetime import timezone
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     common = dict(
         tick_id=tick_id,
         recorded_at=now,
