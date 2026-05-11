@@ -1040,7 +1040,7 @@ git commit -m "refactor(analysts): delete legacy <Analyst>Signal Pydantic classe
 
 ---
 
-## Task D8: Final regression pass + retire superseded docs + graphify delta
+## Task D8: Final regression pass + retire superseded docs
 
 **Files:**
 - Delete: `docs/superpowers/specs/strategist-council-design.md`
@@ -1052,7 +1052,8 @@ git commit -m "refactor(analysts): delete legacy <Analyst>Signal Pydantic classe
 - Delete: `docs/superpowers/plans/strategist-v2.md`
 - Delete: `docs/superpowers/plans/analyst-strategist-contract.md`
 - Modify: `docs/superpowers/backlog.md` — point Goal-1 / Goal-2 references at `docs/Phase4-stratergist-and-analysts/spec.md`
-- Modify: `graphify-out/graph_delta.md` — append a final dated entry covering the doc reorg
+
+> **Note on graphify:** `graphify-out/` is gitignored and never committed (see `.claude/CLAUDE.md`). Do not add a `graph_delta.md` entry as part of this task and do not include `graphify-out/` paths in the commit. The next `/graphify . --update` run on the developer's machine will pick up the doc reorg from the working tree directly.
 
 - [ ] **Step 1: Full test sweep**
 
@@ -1094,42 +1095,26 @@ Open `docs/superpowers/backlog.md`. Find any entries that link to the eight dele
 
 Leave the Tier 1 / Tier 2 / Tier 3 idea entries (B1–B8) in place — they describe future work, not the now-completed Phase 4. If any of them said "see analyst-strategist-contract-design.md," update the cross-link to `docs/Phase4-stratergist-and-analysts/spec.md`.
 
-- [ ] **Step 4: Append a dated graphify delta entry**
-
-Open `graphify-out/graph_delta.md`. Append (do NOT replace) a new dated section at the end of the file. Use today's date in `YYYY-MM-DD` format:
-
-```markdown
-## YYYY-MM-DD — Phase 4 docs reorganisation + legacy retirement
-
-Strategist v2 + Analyst→Strategist contract specs/plans replaced by `docs/Phase4-stratergist-and-analysts/`. Legacy `<Analyst>Signal` schemas, `AttributionWriter`, and `AttributionSignalsRow` retired. New persistence rows `AnalystEvidenceRow` + `TickerEvidenceRow` plus the `EvidenceWriter` agent now own the contract write path.
-
-- New nodes: `src/agents/contract/evidence_writer.py` (EvidenceWriter), `AnalystEvidenceRow`, `TickerEvidenceRow`, `save_analyst_evidence`, `save_ticker_evidence`
-- New edges: `HourlyTick` pipeline now sequences `AnalystPool → EvidenceWriter → Strategist → StrategistDecisionWriter → RiskGate → Executor → MemoryWriter → Snapshotter`
-- Removed nodes: `src/agents/attribution/writer.py` (AttributionWriter, build_attribution_writer), `AttributionSignalsRow`, `save_attribution_signal`, `TechnicalSignal`, `FundamentalSignal`, `SentimentSignal`, `SmartMoneySignal`, `AnalystSignal`, `make_dual_emit_callback`, `make_exhaustive_validator`
-- Removed docs: `docs/superpowers/specs/{strategist-council-design,exit-rules-and-telemetry-design,strategist-v2-design,analyst-strategist-contract-design}.md`, `docs/superpowers/plans/{strategist-council,exit-rules-and-telemetry,strategist-v2,analyst-strategist-contract}.md`
-- `MemoryWriter.smart_money_seen` now derives from `state["smart_money_evidence"]` instead of the deleted `smart_money_signals` key
-```
-
-(If `graph_delta.md` is already long enough that the file's existing rebuild trigger applies, mention to the user that `/graphify . --update` is due.)
-
-- [ ] **Step 5: Final sweep**
+- [ ] **Step 4: Final sweep**
 
 ```bash
 grep -rn "strategist-council\|exit-rules-and-telemetry\|strategist-v2\|analyst-strategist-contract" docs/
 ```
-Expected: only references inside `docs/Phase4-stratergist-and-analysts/` (which legitimately mention the predecessor names) and inside the new `graph_delta.md` entry.
+Expected: only references inside `docs/Phase4-stratergist-and-analysts/` (which legitimately mention the predecessor names).
 
 ```
 .venv/bin/python -m pytest tests/ -v
 ```
 Expected: all green.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add -u docs/superpowers graphify-out/graph_delta.md docs/Phase4-stratergist-and-analysts
-git commit -m "docs(phase4): retire superseded specs/plans, update backlog + graph delta"
+git add -u docs/superpowers docs/Phase4-stratergist-and-analysts
+git commit -m "docs(phase4): retire superseded specs/plans, update backlog"
 ```
+
+(Do **not** stage anything under `graphify-out/` — that directory is gitignored and only updated locally for the developer's own navigation.)
 
 ---
 
@@ -1262,7 +1247,6 @@ After Plan D merges, the repo should match all of:
 - [ ] `MemoryWriter.smart_money_seen` is computed from `smart_money_evidence`
 - [ ] `docs/superpowers/specs/` and `docs/superpowers/plans/` contain only the `data-provider-shell-*` pair and the `backlog.md` index
 - [ ] `docs/Phase4-stratergist-and-analysts/` contains: `spec.md`, `plan-A-contract-scaffolding.md`, `plan-B-extractors-dual-emit.md`, `plan-C-strategist-v2.md`, `plan-D-cleanup.md`
-- [ ] `graphify-out/graph_delta.md` ends with the Phase 4 reorganisation entry
 - [ ] `pytest tests/` and `ruff check src/ tests/` both pass
 - [ ] `TickerStanceRow` declares a `UniqueConstraint("tick_id", "ticker", ...)` (D9 / FU-06)
 - [ ] No test fixture uses `sessionmaker(bind=engine)` — only `Session(bind=engine)` (D9 / FU-08)
