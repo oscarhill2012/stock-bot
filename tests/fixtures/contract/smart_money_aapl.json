@@ -1,0 +1,9 @@
+{
+  "ticker": "AAPL",
+  "filings": [
+    {"filer_id": "P_PELOSI", "side": "BUY", "amount": 250000, "filed": "2026-04-30"},
+    {"filer_id": "P_PELOSI", "side": "BUY", "amount": 100000, "filed": "2026-05-02"},
+    {"filer_id": "P_TUBERVILLE", "side": "SELL", "amount": 50000, "filed": "2026-05-05"},
+    {"filer_id": "P_CRENSHAW", "side": "BUY", "amount": 75000, "filed": "2026-05-06"}
+  ]
+}
