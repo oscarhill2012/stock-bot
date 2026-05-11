@@ -16,20 +16,24 @@ def test_pipeline_name():
     assert pipeline.name == "HourlyTick"
 
 
-def test_pipeline_has_seven_stages():
+def test_pipeline_has_eight_stages():
+    """Plan C adds StrategistDecisionWriter between Strategist and RiskGate → 8 stages."""
     broker = FakeBroker(starting_cash=10_000.0, prices={})
     pipeline = build_pipeline(broker)
-    assert len(pipeline.sub_agents) == 7
+    assert len(pipeline.sub_agents) == 8
 
 
 def test_pipeline_stage_names():
+    """Stage order: analyst pool → attribution → strategist → decision writer →
+    risk gate → executor → memory writer → snapshotter."""
     broker = FakeBroker(starting_cash=10_000.0, prices={})
     pipeline = build_pipeline(broker)
     names = [a.name for a in pipeline.sub_agents]
     assert names[0] == "AnalystPool"
     assert names[1] == "AttributionWriter"
     assert names[2] == "Strategist"
-    assert names[3] == "RiskGate"
-    assert names[4] == "Executor"
-    assert names[5] == "MemoryWriter"
-    assert names[6] == "Snapshotter"
+    assert names[3] == "StrategistDecisionWriter"
+    assert names[4] == "RiskGate"
+    assert names[5] == "Executor"
+    assert names[6] == "MemoryWriter"
+    assert names[7] == "Snapshotter"

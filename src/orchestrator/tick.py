@@ -4,9 +4,37 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 logger = logging.getLogger(__name__)
+
+
+async def _build_initial_state(broker, tick_id: str, tickers: list[str]) -> dict:
+    """Build the initial pipeline state for one tick.
+
+    Reads the live portfolio from the broker and dumps it under
+    ``state["portfolio"]`` so the strategist's held-view callback can render
+    real holdings rather than the empty-portfolio sentinel.
+
+    Args:
+        broker: Any broker implementing ``get_portfolio() -> Portfolio``.
+        tick_id: The unique identifier string for this tick.
+        tickers: The list of watchlist ticker symbols for this tick.
+
+    Returns:
+        A dict containing all keys the pipeline expects at startup, including
+        a JSON-serialisable portfolio snapshot under ``"portfolio"``.
+    """
+    portfolio = await broker.get_portfolio()
+    return {
+        "tick_id": tick_id,
+        "tickers": tickers,
+        "memory_buffer": [],
+        "day_digest": "",
+        "thesis": "",
+        "positions": {},
+        "portfolio": portfolio.model_dump(mode="json"),
+    }
 
 
 async def run_once(broker, session=None) -> dict:
@@ -23,7 +51,7 @@ async def run_once(broker, session=None) -> dict:
     from orchestrator.stock_picker import get_watchlist
 
     tick_id = (
-        f"tick-{datetime.now(tz=timezone.utc).strftime('%Y%m%dT%H%M%S')}"
+        f"tick-{datetime.now(tz=UTC).strftime('%Y%m%dT%H%M%S')}"
         f"-{uuid.uuid4().hex[:8]}"
     )
     tickers = get_watchlist()
@@ -37,17 +65,13 @@ async def run_once(broker, session=None) -> dict:
     )
 
     # Create a fresh session with the minimal state every tick needs.
+    # Portfolio is seeded from the broker so the strategist's held-view
+    # callback renders real holdings on the very first tick.
+    initial_state = await _build_initial_state(broker, tick_id, tickers)
     adk_session = await session_service.create_session(
         app_name="StockBot",
         user_id="stockbot",
-        state={
-            "tick_id": tick_id,
-            "tickers": tickers,
-            "memory_buffer": [],
-            "day_digest": "",
-            "thesis": "",
-            "positions": {},
-        },
+        state=initial_state,
     )
 
     events = runner.run_async(
