@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
+from datetime import UTC, datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, Integer, String, create_engine
+from sqlalchemy import Boolean, DateTime, Float, Integer, String, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 
@@ -47,7 +47,6 @@ def save_buffer_entry(session: Session, entry_data: dict, tick_id: str) -> None:
 
 def load_recent_buffer(session: Session, tick_id: str, limit: int = 24) -> list[dict]:
     """Return the `limit` most-recent buffer entries for `tick_id`, oldest first."""
-    from agents.memory.schema import BufferEntry
     rows = (
         session.query(BufferEntryRow)
         .filter(BufferEntryRow.tick_id == tick_id)
@@ -90,10 +89,91 @@ class TradeLogRow(Base):
     close_reason: Mapped[str] = mapped_column(String)
     catalyst_realised: Mapped[bool] = mapped_column(Boolean)
 
+    # Nullable FK-style references linking a trade back to the originating tick.
+    # Populated by the executor when opening/closing a position; NULL for pre-Plan-C rows.
+    opening_tick_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
+    closing_tick_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
+
 
 def save_trade_log_entry(session: Session, entry: dict) -> None:
     """Persist one closed-trade record. Caller is responsible for committing."""
     row = TradeLogRow(**entry)
+    session.add(row)
+    session.flush()
+
+
+# ── TickerStanceRow ──────────────────────────────────────────────────
+
+class TickerStanceRow(Base):
+    """One row per ticker per tick — strategist's per-ticker decision substrate."""
+
+    __tablename__ = "ticker_stances"
+
+    id: Mapped[int]                    = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tick_id: Mapped[str]               = mapped_column(String, index=True)
+    recorded_at: Mapped[datetime]      = mapped_column(DateTime)
+    ticker: Mapped[str]                = mapped_column(String, index=True)
+    preferred_weight: Mapped[float]    = mapped_column(Float)
+    conviction: Mapped[float]          = mapped_column(Float)
+    rationale: Mapped[str]             = mapped_column(String)
+    horizon: Mapped[str | None]        = mapped_column(String, nullable=True)
+    target_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    stop_price: Mapped[float | None]   = mapped_column(Float, nullable=True)
+    catalyst: Mapped[str | None]       = mapped_column(String, nullable=True)
+    close_reason: Mapped[str | None]   = mapped_column(String, nullable=True)
+    trim_reason: Mapped[str | None]    = mapped_column(String, nullable=True)
+    lifecycle_action: Mapped[str]      = mapped_column(String, index=True)
+    decision_tag: Mapped[str]          = mapped_column(String, index=True)
+
+
+def save_ticker_stance(
+    session: Session,
+    *,
+    tick_id: str,
+    decision_tag: str,
+    recorded_at: datetime,
+    stance: dict,
+    lifecycle_action: str,
+) -> None:
+    """Persist one ticker stance row. The caller is responsible for committing.
+
+    Args:
+        session: SQLAlchemy session used for the insert.
+        tick_id: Identifier of the tick that produced this stance.
+        decision_tag: Snake_case label for the tick (mirrors
+            ``StrategistDecision.decision_tag``).
+        recorded_at: Wall-clock time the strategist produced the decision
+            (timezone-aware).
+        stance: Dump of a ``TickerStance`` (a dict produced by
+            ``TickerStance.model_dump(mode="json")``). Must contain ``ticker``,
+            ``preferred_weight``, ``conviction`` and ``rationale``; remaining
+            lifecycle fields may be missing or ``None``.
+        lifecycle_action: One of ``"open" | "close" | "trim" | "add" | "hold"``
+            — the derived action this stance represents, computed by
+            ``derive_lifecycle_action`` and saved alongside the stance so that
+            downstream analytics can filter without recomputing.
+
+    Returns:
+        None. The new row is added and flushed but **not** committed; the caller
+        controls commit ordering so that the stance write can be batched with
+        other writes for the same tick.
+    """
+    row = TickerStanceRow(
+        tick_id=tick_id,
+        recorded_at=recorded_at,
+        ticker=stance["ticker"],
+        preferred_weight=stance["preferred_weight"],
+        conviction=stance["conviction"],
+        rationale=stance["rationale"],
+        horizon=stance.get("horizon"),
+        target_price=stance.get("target_price"),
+        stop_price=stance.get("stop_price"),
+        catalyst=stance.get("catalyst"),
+        close_reason=stance.get("close_reason"),
+        trim_reason=stance.get("trim_reason"),
+        lifecycle_action=lifecycle_action,
+        decision_tag=decision_tag,
+    )
     session.add(row)
     session.flush()
 
@@ -123,7 +203,7 @@ def save_portfolio_snapshot(session: Session, snap: dict) -> None:
     import json as json_mod
     row = PortfolioSnapshotRow(
         tick_id=snap["tick_id"],
-        recorded_at=snap.get("recorded_at", __import__("datetime").datetime.now(__import__("datetime").timezone.utc)),
+        recorded_at=snap.get("recorded_at", datetime.now(tz=UTC)),
         bot_total_value=snap["bot_total_value"],
         bot_cash=snap["bot_cash"],
         bot_positions_value=snap["bot_positions_value"],
@@ -176,8 +256,7 @@ def save_attribution_signal(
     signal: dict,
 ) -> None:
     """Persist one analyst signal. `analyst` must be technical|fundamental|sentiment|smart_money."""
-    from datetime import timezone
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     common = dict(
         tick_id=tick_id,
         recorded_at=now,

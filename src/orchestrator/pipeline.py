@@ -7,10 +7,11 @@ from google.adk.agents import SequentialAgent
 def _build_analyst_pool():
     """Build a fresh AnalystPool each time to avoid single-parent constraint."""
     from google.adk.agents import ParallelAgent
-    from agents.analysts.technical.agent import _build_technical_analyst
+
     from agents.analysts.fundamental.agent import _build_fundamental_analyst
     from agents.analysts.sentiment.agent import _build_sentiment_analyst
     from agents.analysts.smart_money.agent import _build_smart_money_analyst
+    from agents.analysts.technical.agent import _build_technical_analyst
     return ParallelAgent(
         name="AnalystPool",
         sub_agents=[
@@ -23,9 +24,18 @@ def _build_analyst_pool():
 
 
 def _build_strategist():
-    """Build a fresh Strategist LlmAgent each time."""
+    """Build a fresh Strategist LlmAgent each time.
+
+    Wires both the v2 before-callback (held-view + evidence-view) and the
+    validation after-callback so the prompt template receives real holdings
+    and per-ticker evidence before the LLM runs.
+    """
     from google.adk.agents import LlmAgent
-    from agents.strategist.agent import _strategist_validation_callback
+
+    from agents.strategist.agent import (
+        _composite_before_callback,
+        _strategist_validation_callback,
+    )
     from agents.strategist.prompts import STRATEGIST_INSTRUCTION
     from agents.strategist.schema import StrategistDecision
     return LlmAgent(
@@ -34,6 +44,7 @@ def _build_strategist():
         instruction=STRATEGIST_INSTRUCTION,
         output_schema=StrategistDecision,
         output_key="strategist_decision",
+        before_agent_callback=_composite_before_callback,
         after_agent_callback=_strategist_validation_callback,
     )
 
@@ -46,16 +57,18 @@ def _build_memory_writer():
 
 def build_pipeline(broker, db_session=None) -> SequentialAgent:
     """Compose the full hourly tick pipeline."""
+    from agents.attribution.writer import build_attribution_writer
     from agents.executor.agent import build_executor
     from agents.risk_gate.agent import RiskGateAgent
     from agents.snapshot.agent import build_snapshotter
-    from agents.attribution.writer import build_attribution_writer
+    from agents.strategist.decision_writer import build_strategist_decision_writer
     return SequentialAgent(
         name="HourlyTick",
         sub_agents=[
             _build_analyst_pool(),
             build_attribution_writer(db_session),
             _build_strategist(),
+            build_strategist_decision_writer(db_session),
             RiskGateAgent(broker=broker),
             build_executor(broker, db_session),
             _build_memory_writer(),

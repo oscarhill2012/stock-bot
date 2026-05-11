@@ -6,6 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from agents.strategist.stance_schema import TickerStance
+
 
 class PositionThesis(BaseModel):
     """Structured rationale for an open position, created when a position is opened
@@ -22,13 +24,25 @@ class PositionThesis(BaseModel):
     catalyst: str | None = Field(default=None, max_length=100)
     last_reviewed_at: datetime
     last_review_note: str = Field(default="", max_length=200)
+    opened_tick_id: str = ""                           # tick_id that opened this position; populated by the executor on BUY (C13); empty for legacy/pre-tick positions
 
 
 class StrategistDecision(BaseModel):
-    """Full output from one Strategist LLM call."""
+    """Output from one Strategist LLM call.
+
+    The LLM emits `stances` (per-ticker). The after-callback fills in
+    `target_weights` / `new_positions` / `close_reasons` / `trim_reasons`
+    by deriving them from the stances, so downstream consumers see the same
+    shape they always saw.
+    """
+
+    # Per-ticker stances emitted directly by the LLM; the primary substrate.
+    stances: list[TickerStance] = Field(default_factory=list)
 
     # Weight for every watchlist ticker; must be exhaustive (0 = no position).
-    target_weights: dict[str, float]
+    # Derived from stances by the after-callback (C9); defaulted here so that
+    # the model can be constructed without them during testing / migration.
+    target_weights: dict[str, float] = Field(default_factory=dict)
 
     decision_tag: str                                  # snake_case label for this tick
     reasoning: str = Field(max_length=300)             # ≤300 char reasoning summary
@@ -39,3 +53,5 @@ class StrategistDecision(BaseModel):
     new_positions: dict[str, PositionThesis] = Field(default_factory=dict)
     # Required when closing an existing position (weight >0 → 0).
     close_reasons: dict[str, str] = Field(default_factory=dict)
+    # Required when reducing (not zeroing) an existing position.
+    trim_reasons: dict[str, str] = Field(default_factory=dict)
