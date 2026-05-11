@@ -1,10 +1,9 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from agents.memory.schema import BufferEntry
-from orchestrator.persistence import BufferEntryRow, Base, save_buffer_entry, load_recent_buffer
+from orchestrator.persistence import Base, load_recent_buffer, save_buffer_entry
 
 
 def _make_session():
@@ -15,7 +14,7 @@ def _make_session():
 
 def _entry_dict(tag: str = "hold") -> dict:
     return {
-        "timestamp": datetime.now(tz=timezone.utc),
+        "timestamp": datetime.now(tz=UTC),
         "decision_tag": tag,
         "reasoning_summary": "test reasoning",
         "smart_money_seen": False,

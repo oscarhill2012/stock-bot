@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -16,7 +16,7 @@ def test_round_trip_portfolio_snapshot():
     session = _make_session()
     snap = {
         "tick_id": "tick-001",
-        "recorded_at": datetime.now(tz=timezone.utc),
+        "recorded_at": datetime.now(tz=UTC),
         "bot_total_value": 10_500.0,
         "bot_cash": 1_000.0,
         "bot_positions_value": 9_500.0,

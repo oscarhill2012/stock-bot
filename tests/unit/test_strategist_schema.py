@@ -1,4 +1,5 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 import pytest
 from pydantic import ValidationError
 
@@ -6,7 +7,7 @@ from agents.strategist.schema import PositionThesis, StrategistDecision
 
 
 def _now():
-    return datetime.now(tz=timezone.utc)
+    return datetime.now(tz=UTC)
 
 
 def test_strategist_decision_rejects_long_reasoning():
