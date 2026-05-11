@@ -18,7 +18,7 @@ exactly where the previous session stopped.
 
 | Chunk | Tasks | Branch | Status |
 |---|---|---|---|
-| **Chunk 1 — Strategist-internal foundation** | C1–C6 | `phase4/planC-foundation` | in flight |
+| **Chunk 1 — Strategist-internal foundation** | C1–C6 | `phase4/planC-foundation` | awaiting final Opus review |
 | Chunk 2 — Strategist rewrite | C7–C9 | (not started) | — |
 | Chunk 3 — Persistence + wiring | C10–C14 | (not started) | — |
 | Chunk 4 — Verify | C15–C16 | (not started) | — |
@@ -53,7 +53,7 @@ proposed for merge into main.
 - [x] **C3** — Add `PositionThesis.opened_tick_id` field. Plan §C3. — `79a15ac`
 - [x] **C4** — Add `derivation.py` (`derive_legacy_fields`). Plan §C4. — `ef319b3` (+`cd84aa9` docstring clarification)
 - [x] **C5** — Add `held_view.py` (`render_held_positions_view`). Plan §C5. — `4d427ba` (+`f82f26d` polish)
-- [ ] **C6** — Add `evidence_view.py` (render `TickerEvidence`). Plan §C6.
+- [x] **C6** — Add `evidence_view.py` (render `TickerEvidence`). Plan §C6. — `0c8cc68` (+`de2dd22` polish)
 - [ ] **Final review** — Opus audit of all six tasks together.
 
 Each task is committed individually with a Conventional-Commits message; this file is
@@ -105,6 +105,15 @@ entry; do not rewrite history.
 - Spec compliance: ✅ — one-line additive field on `PositionThesis` with `str = ""` default; 2 tests assert default and JSON round-trip. Strategist test suite at 24 green.
 - Code quality: ✅ approved (no issues). Field placement, inline comment scope, and `datetime.UTC`/UP017 usage all clean.
 - Authorised deviation noted: implementer used `datetime.UTC` (Python 3.11+ shortcut) instead of the plan's `timezone.utc` for ruff UP017 compliance. Functionally identical.
+
+### 2026-05-11 — C6 landed (`0c8cc68` + `de2dd22`)
+- Spec compliance: ✅ — `render_ticker_evidence` + two private helpers exactly as specified; the six required tests all present and pass. Strategist regression at 48/48 green. Three pre-authorised ruff deviations applied (UP035 `from collections.abc import Iterable`, UP017 `from datetime import UTC`, F401 dropped unused `import pytest`). Spec reviewer noted that the implementer replaced the plan's filter-comprehension idiom for the optional summary line with a clean `if agg.summary: block.append(...)` — semantically identical and arguably more readable; not flagged as a deviation.
+- Code quality: ⚠️ approved with issues; two Important and two Minor actioned via controller Edit (`de2dd22`):
+  - Important #1 — silent rationale truncation: `rationale[:60]` quietly dropped up to 100 chars; the renderer now appends `…` whenever it shortens the text so neither the LLM nor a human reader is fooled into treating a clipped sentence as complete. Plan said `[:60]` literally; this is a fourth authorised deviation (compactness intent preserved; only the cut signal is new).
+  - Important #2 — `(missing)` branch had no test coverage; added `test_missing_analyst_renders_placeholder`. Also added `test_long_rationale_is_truncated_with_ellipsis` to cover the new ellipsis behaviour. Test count now 8 (still ≤8 cap).
+  - Minor — tightened `test_empty_evidence_renders_placeholder` to assert exact equality on the stable sentinel string, and tightened `test_disagreement_rendered` to assert on the numeric value rather than the always-present `disagreement` label (the latter was tautological as written).
+  - Two Minor findings declined: `__all__` declaration (not a convention used elsewhere in `src/agents/strategist/*.py`) and a fixture-docstring wording tweak (taste).
+- Implementer report was clean this time — no spurious `graphify-out/` writes mentioned. The hallucination pattern from C2–C5 did not recur.
 
 ### 2026-05-11 — C5 landed (`4d427ba` + `f82f26d`)
 - Spec compliance: ✅ — `render_held_positions_view(positions, portfolio)` accepts both `PositionThesis` instances and `model_dump(mode="json")` dicts; renders the multi-line Ticker / Opened / Why / Aim / Horizon / Catalyst / Now block specified in §C5; total (never raises); empty/flat → sentinel string; corrupt entries silently skipped. All 9 required tests present; strategist regression at 40/40 green.
