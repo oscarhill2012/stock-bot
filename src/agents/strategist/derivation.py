@@ -53,6 +53,11 @@ class DerivedFields:
             Only populated when the stance supplies a ``close_reason``.
         trim_reasons: Human-readable reason for each partial size reduction,
             keyed by ticker. Only populated when the stance supplies a ``trim_reason``.
+
+    Note:
+        ``frozen=True`` prevents field reassignment but does not deep-freeze the
+        dict contents; callers should treat the four dicts as read-only by
+        convention.
     """
 
     target_weights: dict[str, float]
