@@ -22,6 +22,7 @@ class PositionThesis(BaseModel):
     catalyst: str | None = Field(default=None, max_length=100)
     last_reviewed_at: datetime
     last_review_note: str = Field(default="", max_length=200)
+    opened_tick_id: str = ""                           # tick_id that opened this position; populated by the executor on BUY (C13); empty for legacy/pre-tick positions
 
 
 class StrategistDecision(BaseModel):
