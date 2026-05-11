@@ -106,7 +106,7 @@ strategist runs.
 - [x] C10 — Add `TickerStanceRow` ORM + `save_ticker_stance`. Plan §C10. — `eb2d53a` (+`1993e4b` polish)
 - [x] C11 — Add `TradeLogRow.opening_tick_id` / `closing_tick_id`. Plan §C11. — `da006fc`
 - [x] C12 — Add `StrategistDecisionWriter` agent. Plan §C12. — `ca1c283`
-- [ ] C13 — Update executor (thesis on BUY, FKs on SELL). Plan §C13.
+- [x] C13 — Update executor (thesis on BUY, FKs on SELL). Plan §C13. — `1c2fffb`
 - [ ] C14 — Wire `StrategistDecisionWriter` into the pipeline + seed `state["portfolio"]`. Plan §C14.
 - [ ] **Final review** — Opus audit of all five tasks together.
 
@@ -119,6 +119,14 @@ strategist runs.
 ---
 
 ## Session log
+
+### 2026-05-11 — C13 landed (`1c2fffb`)
+- Executor now writes the per-position thesis to `state["positions"][ticker]` on BUY (reading from `state["strategist_decision"]["new_positions"]`) and passes the new `opening_tick_id` / `closing_tick_id` FKs into `save_trade_log_entry` on SELL. Three new tests under `tests/unit/executor/`.
+- Spec compliance: ✅ — exactly 3 paths in the commit (`src/agents/executor/agent.py`, `tests/unit/executor/__init__.py`, `tests/unit/executor/test_open_positions_state.py`); BUY-branch addition reads from the right state source with a `None` guard; SELL-side 13 existing trade-log keys preserved + 2 new keys added with correct source/coercion. All 3 new tests pass; existing executor tests unaffected; full suite at 325/325 (+3).
+- Authorised deviations applied: `UTC` alias instead of `timezone.utc`; `AsyncGenerator` from `collections.abc`; test path `tests/unit/executor/` (matches repo per-package layout); FakeBroker constructor used as-is (real signature `starting_cash=`/`prices=`) — SELL tests pre-run a setup BUY to seed the position rather than introducing a non-existent `seed_positions=` kwarg, keeping `src/broker/fake.py` untouched.
+- **Side-fix taken inline (intentional, not scope creep):** the previous executor passed `opened_at` as an ISO-string into `TradeLogRow(**entry)` — SQLAlchemy's `DateTime` column needs a Python `datetime`, so this was a latent bug that would have surfaced the first time a SELL closed a position whose thesis came via JSON state. The implementer normalised `opened_at_raw` → `opened_at_dt` once at the top of the SELL branch and reuses it for both `holding_hours` and the dict. Worth noting; no follow-up needed.
+- File-level ruff sweep on the executor: `timezone` import dropped, `UTC` used throughout — eliminates one UP017 violation in the executor (separate from the 3 pre-existing on `persistence.py`, which remain).
+- Code quality: ✅ approved. One purely-cosmetic nit (suggest a `# pre-seed broker so SELL has a position` comment in the test setup) — **not actioned**; the test reads fine without it.
 
 ### 2026-05-11 — C12 landed (`ca1c283`)
 - `StrategistDecisionWriter` (BaseAgent subclass) + `build_strategist_decision_writer` factory in `src/agents/strategist/decision_writer.py`. Persists one `TickerStanceRow` per stance per tick using C10's `save_ticker_stance`; runs between strategist and risk_gate so intent is captured even when risk_gate later raises a contract violation.
