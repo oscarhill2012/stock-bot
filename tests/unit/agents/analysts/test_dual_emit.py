@@ -3,8 +3,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
-
 from agents.analysts._common import AnalystSignal, make_dual_emit_callback
 from contract.evidence import AnalystEvidence
 

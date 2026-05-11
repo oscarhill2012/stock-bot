@@ -1,13 +1,13 @@
 """Shared analyst base and callback utilities."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import Any
 
-from pydantic import BaseModel, Field
-
-from google.genai import types as genai_types
 from google.adk.agents.callback_context import CallbackContext
+from google.genai import types as genai_types
+from pydantic import BaseModel, Field
 
 from contract.evidence import AnalystEvidence, AnalystName, AnalystVerdict
 
@@ -25,7 +25,7 @@ def make_exhaustive_validator(
 ):
     """Return an after_agent_callback that re-prompts if any watchlist tickers are missing."""
 
-    def _validator(callback_context: CallbackContext) -> Optional[genai_types.Content]:
+    def _validator(callback_context: CallbackContext) -> genai_types.Content | None:
         state = callback_context.state
         signals = state.get(signals_key, [])
         tickers = state.get(tickers_key, [])
@@ -101,7 +101,7 @@ def make_dual_emit_callback(
     # Reuse the existing exhaustiveness check — no duplication needed.
     exhaustive = make_exhaustive_validator(signals_key)
 
-    def _callback(callback_context: CallbackContext) -> Optional[genai_types.Content]:
+    def _callback(callback_context: CallbackContext) -> genai_types.Content | None:
         # 1) Exhaustiveness check first — bail early if the LLM missed tickers.
         out = exhaustive(callback_context)
         if out is not None:
@@ -115,7 +115,7 @@ def make_dual_emit_callback(
 
         # Capture a single timestamp for the whole batch so all evidence records
         # for this tick are aligned (avoids microsecond skew from per-record calls).
-        recorded_at = datetime.now(tz=timezone.utc)
+        recorded_at = datetime.now(tz=UTC)
 
         evidence_list: list[dict] = []
 
