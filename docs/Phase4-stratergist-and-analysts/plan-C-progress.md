@@ -49,7 +49,7 @@ proposed for merge into main.
 **Tasks:**
 
 - [x] **C1** — Add `stance_schema.py` (`TickerStance` model). Plan §C1. — `a09d614`
-- [ ] **C2** — Add `lifecycle.py` (`derive_lifecycle_action`). Plan §C2.
+- [x] **C2** — Add `lifecycle.py` (`derive_lifecycle_action`). Plan §C2. — `55966c8` (+`e6ac789` docstring fix)
 - [ ] **C3** — Add `PositionThesis.opened_tick_id` field. Plan §C3.
 - [ ] **C4** — Add `derivation.py` (`derive_legacy_fields`). Plan §C4.
 - [ ] **C5** — Add `held_view.py` (`render_held_positions_view`). Plan §C5.
@@ -95,3 +95,8 @@ entry; do not rewrite history.
 - Spec compliance: ✅ — schema fields, constraints, and 9 required tests match spec exactly. Test path `tests/unit/agents/strategist/` chosen over the plan's `tests/unit/strategist/` to match the repo's existing `tests/unit/agents/analysts/` convention; authorised deviation.
 - Code quality: ⚠️ approved with minor issues. One Important finding (ticker field unvalidated — accepts `""` or whitespace) **deferred**: the plan and Plan A's `AnalystEvidence`/`TickerEvidence` schemas all spec `ticker: str` bare. Tightening it here without doing so across the family creates a one-off inconsistency. **Backlog candidate**: introduce a shared `Ticker` type alias (e.g. `Annotated[str, Field(min_length=1, pattern=...)]`) and apply across `contract/` and `strategist/` in one pass — out of scope for chunk 1.
 - Three Minor cosmetic findings noted and not actioned (test assertion completeness, unrealistic `catalyst="Q3"` value, module-docstring brevity). All would be trivial follow-ups if the file ever opens for another reason.
+
+### 2026-05-11 — C2 landed (`55966c8` + `e6ac789`)
+- Spec compliance: ✅ — five-branch lifecycle math implemented exactly as specified; all 10 required tests present and passing.
+- Code quality: ⚠️ approved with one Important docstring defect (test_close_at_exact_epsilon_boundary docstring described the case as "close" while asserting "hold"). The wording came from the plan's literal Python snippet — a plan-level wording defect rather than an implementation oversight. Controller applied the reviewer's verbatim suggested fix directly (`e6ac789`) rather than spinning up another implementer + 2 reviewers for a 1-line docstring edit. Tests still pass (22/22 across C1+C2).
+- One Minor style note noted, not actioned: the inner `if held and wants_held:` guard is technically redundant given the preceding early returns, but the inline comment explains it and the structure aids readability. Leaving as-is.
