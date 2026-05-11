@@ -18,10 +18,15 @@ exactly where the previous session stopped.
 
 | Chunk | Tasks | Branch | Status |
 |---|---|---|---|
-| **Chunk 1 — Strategist-internal foundation** | C1–C6 | `phase4/planC-foundation` | ✅ approved by final Opus audit; awaiting merge to main |
-| Chunk 2 — Strategist rewrite | C7–C9 | (not started) | — |
-| Chunk 3 — Persistence + wiring | C10–C14 | (not started) | — |
-| Chunk 4 — Verify | C15–C16 | (not started) | — |
+| **Chunk 1 — Strategist-internal foundation** | C1–C6 | `phase4/planC-foundation` | ✅ approved by final Opus audit; staged for stacked merge |
+| Chunk 2 — Strategist rewrite | C7–C9 | `phase4/planC-strategist-rewrite` (off Chunk 1 tip) | in flight |
+| Chunk 3 — Persistence + wiring | C10–C14 | (not started — branches off Chunk 2 tip) | — |
+| Chunk 4 — Verify | C15–C16 | (not started — branches off Chunk 3 tip) | — |
+
+**Stacked-branch policy:** Plan C is one coherent rewrite — Chunk 1 alone is dead
+code until C9 wires it in. The four chunk branches form a stack (each branches off
+the previous chunk's tip, not off main), so `main` never carries unused modules
+mid-rewrite. The whole stack merges to `main` as one PR at the end of Chunk 4.
 
 Rationale for the split is in the session notes / conversation; in short, Plan C is
 described in the spec as "high risk" because it touches the strategist prompt + agent
@@ -146,8 +151,10 @@ ruff clean; main repo working tree clean (no stray graphify writes anywhere).
   (C9 path) and the C13 executor (`schema.py:25` comment). Reconcile when C13
   is written — one writer, not both.
 
-**Verdict:** merge `phase4/planC-foundation` to `main`; start Chunk 2 from the
-post-merge tip.
+**Verdict:** Chunk 1 is ready. Plan C is one integrated rewrite, so the four
+chunk branches stack rather than merging to `main` independently — Chunk 2
+branches off the tip of `phase4/planC-foundation`. The cumulative stack merges
+to `main` as one PR after Chunk 4 verifies the whole thing.
 
 ### 2026-05-11 — C6 landed (`0c8cc68` + `de2dd22`)
 - Spec compliance: ✅ — `render_ticker_evidence` + two private helpers exactly as specified; the six required tests all present and pass. Strategist regression at 48/48 green. Three pre-authorised ruff deviations applied (UP035 `from collections.abc import Iterable`, UP017 `from datetime import UTC`, F401 dropped unused `import pytest`). Spec reviewer noted that the implementer replaced the plan's filter-comprehension idiom for the optional summary line with a clean `if agg.summary: block.append(...)` — semantically identical and arguably more readable; not flagged as a deviation.
