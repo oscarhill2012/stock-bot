@@ -50,7 +50,7 @@ proposed for merge into main.
 
 - [x] **C1** — Add `stance_schema.py` (`TickerStance` model). Plan §C1. — `a09d614`
 - [x] **C2** — Add `lifecycle.py` (`derive_lifecycle_action`). Plan §C2. — `55966c8` (+`e6ac789` docstring fix)
-- [ ] **C3** — Add `PositionThesis.opened_tick_id` field. Plan §C3.
+- [x] **C3** — Add `PositionThesis.opened_tick_id` field. Plan §C3. — `79a15ac`
 - [ ] **C4** — Add `derivation.py` (`derive_legacy_fields`). Plan §C4.
 - [ ] **C5** — Add `held_view.py` (`render_held_positions_view`). Plan §C5.
 - [ ] **C6** — Add `evidence_view.py` (render `TickerEvidence`). Plan §C6.
@@ -100,3 +100,8 @@ entry; do not rewrite history.
 - Spec compliance: ✅ — five-branch lifecycle math implemented exactly as specified; all 10 required tests present and passing.
 - Code quality: ⚠️ approved with one Important docstring defect (test_close_at_exact_epsilon_boundary docstring described the case as "close" while asserting "hold"). The wording came from the plan's literal Python snippet — a plan-level wording defect rather than an implementation oversight. Controller applied the reviewer's verbatim suggested fix directly (`e6ac789`) rather than spinning up another implementer + 2 reviewers for a 1-line docstring edit. Tests still pass (22/22 across C1+C2).
 - One Minor style note noted, not actioned: the inner `if held and wants_held:` guard is technically redundant given the preceding early returns, but the inline comment explains it and the structure aids readability. Leaving as-is.
+
+### 2026-05-11 — C3 landed (`79a15ac`)
+- Spec compliance: ✅ — one-line additive field on `PositionThesis` with `str = ""` default; 2 tests assert default and JSON round-trip. Strategist test suite at 24 green.
+- Code quality: ✅ approved (no issues). Field placement, inline comment scope, and `datetime.UTC`/UP017 usage all clean.
+- Authorised deviation noted: implementer used `datetime.UTC` (Python 3.11+ shortcut) instead of the plan's `timezone.utc` for ruff UP017 compliance. Functionally identical.
