@@ -127,13 +127,46 @@ chunk-1 → chunk-2 → chunk-3 → chunk-4 stack merges to `main` as one PR.
 
 **Tasks:**
 
-- [ ] C15 — Tier 2 LLM-touching smoke (gated by `RUN_LLM_TESTS=1`). Plan §C15.
+- [x] C15 — Tier 2 LLM-touching smoke (gated by `RUN_LLM_TESTS=1`). Plan §C15. **Commits:** `7e4dce9` (initial) + `80b4cb1` (spec fix: add `@pytest.mark.integration`).
 - [ ] C16 — Final regression pass + ruff cleanup + graphify delta. Plan §C16.
 - [ ] **Final review** — Opus cross-task audit of C15-C16 (smoke gating + regression cleanliness).
 
 ---
 
 ## Session log
+
+### 2026-05-11 — C15 complete (LLM-touching smoke; gated by `RUN_LLM_TESTS`)
+
+Added `tests/integration/test_strategist_v2_smoke.py` (222 lines) — one
+`async def` test that seeds a two-ticker watchlist (AAPL held + MSFT new),
+constructs per-analyst `AnalystEvidence` for both tickers across all four
+dimensions, runs the real strategist via `Runner.run_async` over
+`InMemorySessionService`, and validates the round-tripped
+`strategist_decision` against `StrategistDecision` — asserting exhaustive
+stances and target-weight coverage.
+
+**Authorised deviations from plan reference code:**
+- Async-rewritten Runner usage (`runner.run_async` + `await
+  session_service.create_session(...)`) mirroring `tick.py`'s ADK 1.32 pattern.
+- `from datetime import UTC` alias (project UP017 convention).
+
+**Skip-behaviour proven:** `1 skipped` without `RUN_LLM_TESTS=1`. With the
+env var set the test runs to assertion stage but the local environment has
+no Gemini creds wired in, so it surfaces `AttributeError: 'BaseApiClient'
+object has no attribute '_async_httpx_client'` — a credentials issue, not a
+code defect. Documented in the module docstring.
+
+**Reviews:**
+- **Spec compliance (Sonnet):** flagged missing `@pytest.mark.integration`
+  decorator (plan §C15 line 2691). Controller-applied one-line fix as
+  `80b4cb1`. Re-verified: skip behaviour intact, ruff clean.
+- **Code quality (Sonnet):** ✅ APPROVED. Three advisory observations
+  (vacuous `except (AttributeError, BaseException)` tuple at line 186;
+  cosmetic column-alignment in `initial_state` dict; missing param doc on
+  inner helper) — all non-actionable.
+
+**Regression check:** 314 unit tests pass; one integration test skipped.
+No regressions.
 
 ### 2026-05-11 — Chunk 3 final Opus audit ✅ approved
 
