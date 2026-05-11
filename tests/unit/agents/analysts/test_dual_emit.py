@@ -144,7 +144,10 @@ def test_dual_emit_handles_empty_features_gracefully():
 
 def test_dual_emit_smart_money_no_data_flag_propagates():
     """smart_money extractor's `is_no_data` feature must set the verdict's
-    is_no_data flag so the digest aggregator drops the verdict from voting."""
+    is_no_data flag so the digest aggregator drops the verdict from voting.
+
+    Wires ``sparse=True`` to match the production smart_money configuration.
+    """
     state = _State(
         tick_id="t",
         tickers=["AAPL"],
@@ -159,10 +162,86 @@ def test_dual_emit_smart_money_no_data_flag_propagates():
         data_key="smart_money_data",
         evidence_key="smart_money_evidence",
         extractor=lambda raw, ticker: {"is_no_data": 1.0},
+        sparse=True,
     )
     cb(_Ctx(state))
     ev = AnalystEvidence.model_validate(state["smart_money_evidence"][0])
     assert ev.verdict.is_no_data is True
+
+
+def test_dual_emit_sparse_skips_exhaustive_on_empty_signals():
+    """When ``sparse=True`` and the LLM was short-circuited (empty signals list
+    with a non-empty watchlist), the callback must NOT return a re-prompt
+    Content. It writes an empty evidence list and returns ``None``.
+
+    This is the smart_money gate-skip path: the before_agent_callback decided
+    there was no material activity, wrote an empty ``smart_money_signals``,
+    and returned a model-side Content. The after-callback then needs to
+    accept that empty state gracefully — re-prompting a skipped LLM would
+    be incorrect and potentially infinite.
+    """
+    state = _State(
+        tick_id="t",
+        tickers=["AAPL", "MSFT", "TSLA"],
+        smart_money_signals=[],          # gate skipped, no signals emitted
+        smart_money_data={},
+    )
+    cb = make_dual_emit_callback(
+        analyst="smart_money",
+        signals_key="smart_money_signals",
+        data_key="smart_money_data",
+        evidence_key="smart_money_evidence",
+        extractor=lambda raw, ticker: {"is_no_data": 1.0},
+        sparse=True,
+    )
+
+    out = cb(_Ctx(state))
+
+    # No re-prompt — sparse analysts are allowed to emit zero records.
+    assert out is None
+    # Evidence list is present but empty.
+    assert state["smart_money_evidence"] == []
+
+
+def test_dual_emit_sparse_accepts_partial_signal_set():
+    """``sparse=True`` must also accept partial signal sets (e.g. LLM only
+    emitted for the tickers with activity). No re-prompt, evidence written
+    for the emitted tickers only.
+
+    Contrast with the dense path which would re-prompt on missing tickers
+    (see ``test_dual_emit_reprompts_on_missing_tickers``).
+    """
+    state = _State(
+        tick_id="t",
+        tickers=["AAPL", "MSFT", "TSLA"],
+        smart_money_signals=[
+            # Only AAPL emitted — MSFT and TSLA are intentionally absent.
+            AnalystSignal(ticker="AAPL", direction="bullish", confidence=0.8,
+                          key_factors=["insider buy 250k"]).model_dump(),
+        ],
+        smart_money_data={"AAPL": {"insiders": [{"transaction_value": 250_000}]}},
+    )
+    cb = make_dual_emit_callback(
+        analyst="smart_money",
+        signals_key="smart_money_signals",
+        data_key="smart_money_data",
+        evidence_key="smart_money_evidence",
+        extractor=lambda raw, ticker: {"is_no_data": 0.0},
+        sparse=True,
+    )
+
+    out = cb(_Ctx(state))
+
+    # No re-prompt even though MSFT and TSLA are missing — sparse analysts
+    # are not held to exhaustiveness.
+    assert out is None
+    # Evidence is written only for the emitted ticker.
+    evidence_list = state["smart_money_evidence"]
+    assert len(evidence_list) == 1
+    ev = AnalystEvidence.model_validate(evidence_list[0])
+    assert ev.ticker == "AAPL"
+    assert ev.verdict.lean == "bullish"
+    assert ev.verdict.is_no_data is False
 
 
 def test_dual_emit_isolates_ticker_data_to_extractor():
