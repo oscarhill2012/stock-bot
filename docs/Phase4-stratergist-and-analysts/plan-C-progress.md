@@ -105,7 +105,7 @@ strategist runs.
 
 - [x] C10 — Add `TickerStanceRow` ORM + `save_ticker_stance`. Plan §C10. — `eb2d53a` (+`1993e4b` polish)
 - [x] C11 — Add `TradeLogRow.opening_tick_id` / `closing_tick_id`. Plan §C11. — `da006fc`
-- [ ] C12 — Add `StrategistDecisionWriter` agent. Plan §C12.
+- [x] C12 — Add `StrategistDecisionWriter` agent. Plan §C12. — `ca1c283`
 - [ ] C13 — Update executor (thesis on BUY, FKs on SELL). Plan §C13.
 - [ ] C14 — Wire `StrategistDecisionWriter` into the pipeline + seed `state["portfolio"]`. Plan §C14.
 - [ ] **Final review** — Opus audit of all five tasks together.
@@ -119,6 +119,13 @@ strategist runs.
 ---
 
 ## Session log
+
+### 2026-05-11 — C12 landed (`ca1c283`)
+- `StrategistDecisionWriter` (BaseAgent subclass) + `build_strategist_decision_writer` factory in `src/agents/strategist/decision_writer.py`. Persists one `TickerStanceRow` per stance per tick using C10's `save_ticker_stance`; runs between strategist and risk_gate so intent is captured even when risk_gate later raises a contract violation.
+- Spec compliance: ✅ — class invariants (BaseAgent, `name`, `db_session: Any = None`, `model_config={"arbitrary_types_allowed": True}`), all 3 short-circuits (no db_session / no decision / lifecycle derive per stance), portfolio coercion (Portfolio / None / dict), `derive_lifecycle_action` + `save_ticker_stance` call shape — all match plan. All 4 required tests pass; full suite at 322/322 (+4).
+- Authorised deviations baked in (no rework): test path `tests/unit/agents/strategist/`, `UTC` alias instead of `timezone.utc`, fixture `session` with `s.close()`, `AsyncGenerator` from `collections.abc` (UP035), `class _S: pass` expanded for E701. All ruff-clean on the new files.
+- Implementer also adopted a `yield`-after-`return` generator-gate pattern instead of the plan's `if False: yield`; functionally identical and arguably clearer at each exit. Sibling writers under `src/agents/attribution/` and `src/agents/memory/` still use `typing.AsyncGenerator` — backlog candidate to harmonise via UP035 sweep, out of C12 scope.
+- Code quality: ✅ approved. 3 nits, **none actioned**: one is just an observation of sibling-file divergence; one notes the factory's docstring is *better* than the precedent (no fix); one claimed a redundant `session.commit()` in `test_writes_one_row_per_stance`, **incorrect** — `save_ticker_stance` only flushes (per C10), so the test's explicit commit is required. Left as-is.
 
 ### 2026-05-11 — C11 landed (`da006fc`)
 - Two nullable+indexed columns added to `TradeLogRow`: `opening_tick_id` / `closing_tick_id` (both `Mapped[str | None]`, `String`, `index=True`, `nullable=True`) — with an inline comment explaining they're FK-style links back to the originating tick (NULL for pre-Plan-C rows).
