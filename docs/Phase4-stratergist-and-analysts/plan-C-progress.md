@@ -83,7 +83,7 @@ rendering into the ADK pipeline.
 
 - [x] C7 — Extend `StrategistDecision` with `stances` + `trim_reasons`. Plan §C7. — `4de5c74` (+`814a64c` polish)
 - [x] C8 — Rewrite the strategist prompt template. Plan §C8. — `8fe0d66` (+`208270e` polish)
-- [ ] C9 — Rewrite the strategist agent (callbacks + wiring). Plan §C9.
+- [x] C9 — Rewrite the strategist agent (callbacks + wiring). Plan §C9. — `e6b395a` (+`8f03bc4` legacy-test cleanup, `033dd40` polish)
 - [ ] **Final review** — Opus audit of all three tasks together.
 
 ---
@@ -136,6 +136,17 @@ entry; do not rewrite history.
 - Three Minor findings declined: (a) "test path deviation" — already authorised across the chunk; (b) "British English check" — no issues found; (c) "loose substring matches" — reviewer concluded they were acceptable for a literal-text contract; no change needed.
 - **Expected regressions:** 3 tests in `tests/unit/test_strategist_prompt_template.py` (legacy v1 prompt-contract tests) now fail. These are authorised — C9 owns replacing/deleting that test file as part of the agent rewrite. Full project suite: 308 passed / 3 failed (the three above).
 - Verified that no non-test `src/` code calls `STRATEGIST_INSTRUCTION.format(...)`. Both `agent.py` and `pipeline.py` pass the template verbatim to ADK's `LlmAgent`, which does its own interpolation — so no production callsite was silently broken.
+
+### 2026-05-11 — C9 landed (`e6b395a` + `8f03bc4` + `033dd40`)
+- Spec compliance: ✅ — full `src/agents/strategist/agent.py` replacement matches plan template; all 9 callback tests present and passing; the four-pass validation (exhaustive → no-extras → lifecycle → derivation) is wired correctly; `_composite_before_callback` short-circuits on held-view non-None as specified.
+- Authorised deviations correctly applied: test path under `tests/unit/agents/strategist/`; `datetime.UTC` instead of `timezone.utc` (UP017); **model preserved as `gemini-2.5-pro`** (NOT downgraded to the plan's `gemini-2.0-pro-001` — the plan was drafted before the upgrade); pytest noqa F401 with justifying comment; one-line ruff I001 fix to `src/agents/strategist/__init__.py` was required for clean lint.
+- Code quality: ✅ approved with 4 Nits, all actioned in `033dd40` polish:
+  - Typed `_coerce_portfolio` parameter as `Portfolio | dict | None`.
+  - Dropped redundant `.replace("Z", "+00:00")` before `datetime.fromisoformat` — Python 3.11+ accepts trailing `Z` natively; updated the explanatory comment.
+  - Removed the dead `_te` test helper plus its now-unused `AggregateVerdict` / `TickerEvidence` imports, and the unused `import pytest` noqa.
+  - Removed the misleading `TickerStance` re-export from `agent.py` (the noqa comment claimed it was re-exported for callers, but no caller imported it from `agent`).
+- Authorised legacy-test cleanup: deleted `tests/unit/test_strategist_validators.py` (`8f03bc4`) — its 3 tests probed the legacy `target_weights`-only contract that `test_strategist_callbacks_v2.py` now covers via stances. Same pattern as the earlier deletion of `tests/unit/test_strategist_prompt_template.py`.
+- Full project suite: **313 passed**, all previously expected regressions resolved. Strategist suite at 70/70. Ruff clean.
 
 ### 2026-05-11 — C7 landed (`4de5c74` + `814a64c`)
 - First task of Chunk 2 (strategist rewrite).
