@@ -54,8 +54,9 @@ def _te(ticker: str = "AAPL", lean: str = "bullish", magnitude: float = 0.5,
 
 
 def test_empty_evidence_renders_placeholder():
+    """An empty iterable must produce the stable flat-evidence sentinel string."""
     out = render_ticker_evidence([])
-    assert "no evidence" in out.lower() or "(no" in out.lower()
+    assert out == "(no evidence this tick)"
 
 
 def test_single_ticker_block_contains_all_sections():
@@ -71,8 +72,14 @@ def test_single_ticker_block_contains_all_sections():
 
 
 def test_disagreement_rendered():
+    """The aggregate disagreement value must appear verbatim, not just its label.
+
+    The label ``disagreement`` is always present in the rendered output, so
+    asserting only on the label would pass even if the numeric value were
+    silently dropped — hence the strict equality check on ``"0.42"``.
+    """
     out = render_ticker_evidence([_te(disagreement=0.42)])
-    assert "0.42" in out or "disagreement" in out.lower()
+    assert "0.42" in out
 
 
 def test_no_data_smart_money_marked_clearly():
@@ -90,6 +97,53 @@ def test_multiple_tickers_in_output():
 
 
 def test_features_visible_in_output():
+    """The locked feature catalogue values must be embedded in the rendered output."""
     out = render_ticker_evidence([_te()])
     # At least some feature values should be visible to the LLM
     assert "rsi_14" in out or "60" in out
+
+
+def test_missing_analyst_renders_placeholder():
+    """Analysts absent from ``per_analyst`` are rendered as ``(missing)``.
+
+    The canonical four-slot order must still appear so the LLM can see *which*
+    analyst was unavailable, not just that something was missing.
+    """
+    te = _te()
+    # Drop one analyst to exercise the missing-slot branch.
+    te_partial = te.model_copy(update={"per_analyst": {
+        k: v for k, v in te.per_analyst.items() if k != "fundamental"
+    }})
+    out = render_ticker_evidence([te_partial])
+    assert "(missing)" in out
+    # The slot label must still appear so the LLM can identify which analyst is absent.
+    assert "fundamental" in out
+
+
+def test_long_rationale_is_truncated_with_ellipsis():
+    """Rationales longer than 60 characters must be cut and marked with ``…``.
+
+    Silent truncation would let a clipped sentence look complete to the LLM,
+    so the renderer appends ``…`` whenever it shortens the text.
+    """
+    long_text = "A" * 100  # 100 'A's — well over the 60-char cap.
+    te = _te()
+    te_long = te.model_copy(update={"per_analyst": {
+        **te.per_analyst,
+        "technical": _ev(
+            "technical",
+            "bullish",
+            0.7,
+            {"rsi_14": 60.0},
+        ).model_copy(update={"verdict": AnalystVerdict(
+            lean="bullish",
+            magnitude=0.7,
+            confidence=0.7,
+            rationale=long_text,
+            key_factors=[],
+        )}),
+    }})
+    out = render_ticker_evidence([te_long])
+    assert "…" in out
+    # The displayed slice is the first 57 chars (then "…") — never the full string.
+    assert long_text not in out

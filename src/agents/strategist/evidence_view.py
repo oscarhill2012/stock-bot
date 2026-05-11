@@ -67,10 +67,18 @@ def _format_per_analyst(te: TickerEvidence) -> list[str]:
             lines.append(f"  - {analyst:<12} no_data")
             continue
 
+        # Truncate rationale to keep the per-analyst line compact, but emit a
+        # trailing ellipsis when we actually cut so neither the LLM nor a human
+        # reader is fooled into treating a clipped sentence as complete.
+        rationale = ev.verdict.rationale
+        rationale_display = (
+            rationale if len(rationale) <= 60 else rationale[:57] + "…"
+        )
+
         lines.append(
             f"  - {analyst:<12} {ev.verdict.lean:<7} mag={ev.verdict.magnitude:.2f} "
             f"conf={ev.verdict.confidence:.2f}  "
-            f"[{_format_features(ev.features)}]  — {ev.verdict.rationale[:60]}"
+            f"[{_format_features(ev.features)}]  — {rationale_display}"
         )
 
     return lines
