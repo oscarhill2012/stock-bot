@@ -51,7 +51,7 @@ def test_open_at_exact_epsilon_boundary():
 
 
 def test_close_at_exact_epsilon_boundary():
-    """current ≤ OPEN_EPSILON, preferred = 0 → close (current was held, preferred isn't)."""
+    """current = OPEN_EPSILON exactly → not 'close'; strictly-greater means it is treated as flat."""
     assert derive_lifecycle_action(OPEN_EPSILON, 0.0) == "hold"  # neither was meaningfully held
-    # …but if current strictly above OPEN_EPSILON, close fires:
+    # …but if current is strictly above OPEN_EPSILON, close fires:
     assert derive_lifecycle_action(OPEN_EPSILON + 0.0001, 0.0) == "close"
