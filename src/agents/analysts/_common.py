@@ -57,6 +57,7 @@ def make_dual_emit_callback(
     data_key: str,
     evidence_key: str,
     extractor: Callable[[Any, str], dict[str, float]],
+    sparse: bool = False,
 ):
     """Return an ``after_agent_callback`` that writes both legacy signals and new evidence.
 
@@ -64,10 +65,18 @@ def make_dual_emit_callback(
 
     1. Validates exhaustiveness — re-prompts the LLM if any watchlist ticker is
        missing from ``state[signals_key]``. No evidence is written on re-prompt.
+       Skipped entirely when ``sparse=True`` (see below).
     2. For each legacy ``AnalystSignal`` in ``state[signals_key]``, calls
        ``extractor(state[data_key][ticker], ticker)`` to obtain the deterministic
        feature vector, then constructs a full ``AnalystEvidence`` record.
     3. Writes the evidence list to ``state[evidence_key]``.
+
+    ``sparse=True`` is used for analysts whose ``before_agent_callback`` can short-
+    circuit the LLM entirely (e.g. ``smart_money`` skips when no insider /
+    politician / 13D/G activity is detected). In that case the signals list is
+    legitimately empty and the exhaustive validator would otherwise re-prompt a
+    skipped LLM. With ``sparse=True`` the callback writes an empty evidence list
+    on the skip path and does not enforce exhaustiveness on the non-skip path.
 
     The legacy ``state[signals_key]`` is left untouched so that existing downstream
     consumers (``attribution_writer``, ``memory_writer``) continue to work without
@@ -99,13 +108,17 @@ def make_dual_emit_callback(
     """
 
     # Reuse the existing exhaustiveness check — no duplication needed.
-    exhaustive = make_exhaustive_validator(signals_key)
+    # For sparse analysts (smart_money), exhaustiveness is intentionally skipped
+    # because the before_agent_callback may short-circuit the LLM altogether.
+    exhaustive = None if sparse else make_exhaustive_validator(signals_key)
 
     def _callback(callback_context: CallbackContext) -> genai_types.Content | None:
         # 1) Exhaustiveness check first — bail early if the LLM missed tickers.
-        out = exhaustive(callback_context)
-        if out is not None:
-            return out
+        #    Skipped entirely for sparse analysts.
+        if exhaustive is not None:
+            out = exhaustive(callback_context)
+            if out is not None:
+                return out
 
         # 2) Build the evidence list from the validated signal set.
         state = callback_context.state
