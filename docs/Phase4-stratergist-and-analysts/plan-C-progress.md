@@ -107,7 +107,7 @@ strategist runs.
 - [x] C11 — Add `TradeLogRow.opening_tick_id` / `closing_tick_id`. Plan §C11. — `da006fc`
 - [x] C12 — Add `StrategistDecisionWriter` agent. Plan §C12. — `ca1c283`
 - [x] C13 — Update executor (thesis on BUY, FKs on SELL). Plan §C13. — `1c2fffb`
-- [ ] C14 — Wire `StrategistDecisionWriter` into the pipeline + seed `state["portfolio"]`. Plan §C14.
+- [x] C14 — Wire `StrategistDecisionWriter` into the pipeline + seed `state["portfolio"]`. Plan §C14. — `9c482d6` (+`5bd6567` polish)
 - [ ] **Final review** — Opus audit of all five tasks together.
 
 ---
@@ -119,6 +119,15 @@ strategist runs.
 ---
 
 ## Session log
+
+### 2026-05-11 — C14 landed (`9c482d6` + `5bd6567` polish) — Chunk 3 feature-complete
+- **Pipeline wiring (Part 1):** `build_strategist_decision_writer(db_session)` inserted between `_build_strategist()` and `RiskGateAgent(broker=broker)` in `src/orchestrator/pipeline.py`. Pipeline is now 8 stages. `_build_strategist()` engages the v2 callbacks — adds `before_agent_callback=_composite_before_callback` alongside the pre-existing `after_agent_callback=_strategist_validation_callback`. **Model preserved at `gemini-2.5-pro`** (NOT plan's `gemini-2.0-pro-001` — C9 audit decision).
+- **Portfolio seeding (Part 2 — Chunk 2 audit follow-up resolved):** `src/orchestrator/tick.py` extracted a module-scope async `_build_initial_state(broker, tick_id, tickers)` helper that reads `await broker.get_portfolio()` and dumps it under `state["portfolio"]`. `run_once` now uses this helper instead of the inline state literal. The strategist's `_held_view_before_callback` now sees real holdings on every tick — the Chunk 2 audit's most important follow-up is closed.
+- Spec compliance: ✅ — 8 stages in the right order; both strategist callbacks wired; `gemini-2.5-pro` preserved; helper signature + body match the brief; 4 new tests pass (2 pipeline + 2 tick).
+- **Authorised scope expansion to 5 paths:** the pre-existing integration tests `test_pipeline_has_seven_stages` / `test_pipeline_stage_names` in `tests/integration/test_pipeline_composition.py` were asserting the old 7-stage shape and would have regressed. Implementer updated them narrowly (count 7→8; renamed `test_pipeline_has_seven_stages` → `test_pipeline_has_eight_stages`; shifted index assertions to include `StrategistDecisionWriter` at position 3). No logic, no imports, no unrelated changes.
+- Authorised deviations applied: `UTC` alias in tick.py (ruff UP017 auto-fixed); `FakeBroker(starting_cash=, prices={})` real signature in both new tests; test_tick_initial_state uses `broker._positions[...] = Position(...)` to seed test holdings (test-only convention, mirrors C13 precedent).
+- Code quality: ⚠️ approved with one Important + 2 Nits. **Important — ruff I001 in `tests/integration/test_pipeline_composition.py`** (pre-existing import-block ordering issue in that file at chunk-2 tip `c0136f7`; not introduced by C14, but the file is now in C14's commit so worth tidying). Fixed in polish commit `5bd6567` — one blank line between `google.adk` and the first-party imports. **Nit — defensive `RiskGateAgent` fallback** in `test_pipeline_wiring_v2.py:16` is dead code (the agent's `name` is hard-coded to `"RiskGate"`). Left as-is; harmless defensive guard mirrors the plan's literal pattern. **Nit — long assertion-tuple line** in `test_tick_initial_state.py:27`; cosmetic, left as-is.
+- Full suite at **329 passed** (325 from C13 + 4 from C14).
 
 ### 2026-05-11 — C13 landed (`1c2fffb`)
 - Executor now writes the per-position thesis to `state["positions"][ticker]` on BUY (reading from `state["strategist_decision"]["new_positions"]`) and passes the new `opening_tick_id` / `closing_tick_id` FKs into `save_trade_log_entry` on SELL. Three new tests under `tests/unit/executor/`.
