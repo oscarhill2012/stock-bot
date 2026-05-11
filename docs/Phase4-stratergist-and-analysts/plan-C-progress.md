@@ -52,7 +52,7 @@ proposed for merge into main.
 - [x] **C2** — Add `lifecycle.py` (`derive_lifecycle_action`). Plan §C2. — `55966c8` (+`e6ac789` docstring fix)
 - [x] **C3** — Add `PositionThesis.opened_tick_id` field. Plan §C3. — `79a15ac`
 - [x] **C4** — Add `derivation.py` (`derive_legacy_fields`). Plan §C4. — `ef319b3` (+`cd84aa9` docstring clarification)
-- [ ] **C5** — Add `held_view.py` (`render_held_positions_view`). Plan §C5.
+- [x] **C5** — Add `held_view.py` (`render_held_positions_view`). Plan §C5. — `4d427ba` (+`f82f26d` polish)
 - [ ] **C6** — Add `evidence_view.py` (render `TickerEvidence`). Plan §C6.
 - [ ] **Final review** — Opus audit of all six tasks together.
 
@@ -105,6 +105,11 @@ entry; do not rewrite history.
 - Spec compliance: ✅ — one-line additive field on `PositionThesis` with `str = ""` default; 2 tests assert default and JSON round-trip. Strategist test suite at 24 green.
 - Code quality: ✅ approved (no issues). Field placement, inline comment scope, and `datetime.UTC`/UP017 usage all clean.
 - Authorised deviation noted: implementer used `datetime.UTC` (Python 3.11+ shortcut) instead of the plan's `timezone.utc` for ruff UP017 compliance. Functionally identical.
+
+### 2026-05-11 — C5 landed (`4d427ba` + `f82f26d`)
+- Spec compliance: ✅ — `render_held_positions_view(positions, portfolio)` accepts both `PositionThesis` instances and `model_dump(mode="json")` dicts; renders the multi-line Ticker / Opened / Why / Aim / Horizon / Catalyst / Now block specified in §C5; total (never raises); empty/flat → sentinel string; corrupt entries silently skipped. All 9 required tests present; strategist regression at 40/40 green.
+- Code quality: ⚠️ approved with three Minor issues. Two actioned via controller Edit (`f82f26d`): (1) added a clarifying comment on the `Opened:` line explaining why `curr_weight` is also rendered there; (2) the `_thesis()` test fixture's `opened_tag` now derives from the ticker parameter (`f"open_{ticker.lower()}"`) so the MSFT case no longer carries `"open_aapl"`. Third Minor declined (`"+5" in out` → `"+5.00"`) — matter of taste.
+- Pattern recurrence: implementer's status report again claimed to write to `graphify-out/graph_delta.md` in the main repo; verified main repo working tree clean, no actual writes. Same hallucinated side effect as C2/C3/C4 — committed work remains clean.
 
 ### 2026-05-11 — C4 landed (`ef319b3` + `cd84aa9`)
 - Spec compliance: ✅ — `TickContext`/`DerivedFields` frozen dataclasses + pure `derive_legacy_fields` function exactly as specified. All six required tests present, plus one implementer-added test for the `add` lifecycle branch (test count = 7, within ≤8 cap). Strategist regression at 31/31 green.
