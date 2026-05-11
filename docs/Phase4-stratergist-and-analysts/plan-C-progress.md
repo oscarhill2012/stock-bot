@@ -103,7 +103,7 @@ strategist runs.
 
 **Tasks:**
 
-- [ ] C10 — Add `TickerStanceRow` ORM + `save_ticker_stance`. Plan §C10.
+- [x] C10 — Add `TickerStanceRow` ORM + `save_ticker_stance`. Plan §C10. — `eb2d53a` (+`1993e4b` polish)
 - [ ] C11 — Add `TradeLogRow.opening_tick_id` / `closing_tick_id`. Plan §C11.
 - [ ] C12 — Add `StrategistDecisionWriter` agent. Plan §C12.
 - [ ] C13 — Update executor (thesis on BUY, FKs on SELL). Plan §C13.
@@ -119,6 +119,19 @@ strategist runs.
 ---
 
 ## Session log
+
+### 2026-05-11 — C10 landed (`eb2d53a` + `1993e4b` polish)
+- First task of Chunk 3 (persistence + wiring).
+- Spec compliance: ✅ — `TickerStanceRow` (15 columns + `id` PK) and `save_ticker_stance` helper added between `save_trade_log_entry` and `PortfolioSnapshotRow`; both required tests pass; full suite at 315/315 (+2 from C10).
+- Authorised deviations applied: `datetime.UTC` instead of `timezone.utc` (UP017); new `tests/unit/orchestrator/__init__.py` to make the subdirectory a pytest package; `session: Session` type hint on the helper; expanded Args/Returns docstring on `save_ticker_stance` (project comment-the-code convention).
+- Code quality: ⚠️ approved with 2 Important + 1 Nit, all actioned via controller Edit (`1993e4b`):
+  - **Important — session leak in fixture:** the new `db` fixture `yield`ed the session but never called `.close()`; existing persistence tests (`test_attribution_persistence.py`, `test_attribution_writer.py`) always close. Fixed.
+  - **Important — fixture name:** renamed `db` → `session` to match the precedent in `test_attribution_persistence.py`. Also tightened `test_nullable_lifecycle_fields` to assert *all six* claimed-null columns (was only asserting 3 — `horizon`, `target_price`, `lifecycle_action`).
+  - **Nit — divider whitespace:** removed the extra blank line between the `# ── TickerStanceRow ──` divider and the class header to match the existing house style (`TradeLog`, `PortfolioSnapshot`, `AttributionSignals` dividers all use a single blank line).
+- Two design observations from the review, not actioned (deliberate):
+  - No `(tick_id, ticker)` UNIQUE constraint on `ticker_stances`. Acceptable — C12 controls the caller invariant (one stance per ticker per tick) and a DB constraint would be redundant noise.
+  - The `=` column alignment in `TickerStanceRow` diverges from the unpadded style elsewhere in the file. Reviewer rated it readable; left as-is rather than reformatting.
+- **Pre-existing ruff debt noted (out of C10 scope):** `src/orchestrator/persistence.py` carries 3 violations at chunk-2 tip `c0136f7` — `F401` on `JSON` (line 8) and `BufferEntry` (line 50), and `UP017` on `timezone.utc` in `save_attribution_signal` (line 257). All pre-date C10 (verified by `ruff check` on the file extracted at `c0136f7`). Backlog candidate: tidy in a standalone `chore(persistence)` commit before this branch lands, or carry it into Chunk 4's regression pass.
 
 A short, append-only log of what happened in each session. New sessions append a dated
 entry; do not rewrite history.
