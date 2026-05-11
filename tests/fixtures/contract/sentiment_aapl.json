@@ -1,0 +1,13 @@
+{
+  "ticker": "AAPL",
+  "news_items": [
+    {"published": "2026-05-08T12:00:00Z", "headline": "AAPL beats earnings", "polarity": 0.8},
+    {"published": "2026-05-07T09:00:00Z", "headline": "AAPL launches new product", "polarity": 0.6},
+    {"published": "2026-05-06T15:00:00Z", "headline": "Analyst raises target", "polarity": 0.5},
+    {"published": "2026-05-05T11:00:00Z", "headline": "AAPL faces lawsuit", "polarity": -0.4},
+    {"published": "2026-05-04T10:00:00Z", "headline": "Steady quarter ahead", "polarity": 0.1},
+    {"published": "2026-05-03T08:00:00Z", "headline": "Supply chain stable", "polarity": 0.2},
+    {"published": "2026-05-02T14:00:00Z", "headline": "Mixed analyst day", "polarity": 0.0}
+  ],
+  "social_volume_z": 1.4
+}

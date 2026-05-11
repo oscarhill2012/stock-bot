@@ -17,6 +17,7 @@ pydantic-settings>=2.2.0        # load .env into typed config
 torch>=2.2.0                    # MLP baseline network
 scikit-learn>=1.4.0             # scalers, metrics, train/test split
 ta>=0.11.0                      # technical indicators (RSI, MACD, etc.) for MLP features
+TA-Lib>=0.6.8                   # canonical TA-Lib bindings for Phase 4 technical analyst feature extractor
 
 # === Backtesting + reporting ===
 matplotlib>=3.8.0

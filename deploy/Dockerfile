@@ -8,6 +8,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
+# TA-Lib (Phase 4 technical analyst) installs from the manylinux wheel published on
+# PyPI — no `libta-lib` system library is required. `build-essential` above stays as
+# a safety net for any source-builds of other deps; do not strip it without retesting.
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY src/ ./src/
