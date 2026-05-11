@@ -82,7 +82,7 @@ rendering into the ADK pipeline.
 **Tasks:**
 
 - [x] C7 — Extend `StrategistDecision` with `stances` + `trim_reasons`. Plan §C7. — `4de5c74` (+`814a64c` polish)
-- [ ] C8 — Rewrite the strategist prompt template. Plan §C8.
+- [x] C8 — Rewrite the strategist prompt template. Plan §C8. — `8fe0d66` (+`208270e` polish)
 - [ ] C9 — Rewrite the strategist agent (callbacks + wiring). Plan §C9.
 - [ ] **Final review** — Opus audit of all three tasks together.
 
@@ -127,6 +127,15 @@ entry; do not rewrite history.
 - Spec compliance: ✅ — one-line additive field on `PositionThesis` with `str = ""` default; 2 tests assert default and JSON round-trip. Strategist test suite at 24 green.
 - Code quality: ✅ approved (no issues). Field placement, inline comment scope, and `datetime.UTC`/UP017 usage all clean.
 - Authorised deviation noted: implementer used `datetime.UTC` (Python 3.11+ shortcut) instead of the plan's `timezone.utc` for ruff UP017 compliance. Functionally identical.
+
+### 2026-05-11 — C8 landed (`8fe0d66` + `208270e`)
+- Spec compliance: ✅ — prompt text byte-identical to plan snippet; all 8 required tests present and passing; only the two specified files changed; commit message matches plan literal.
+- Code quality: ⚠️ approved with one Important + minor polish, both actioned via controller Edit (`208270e`):
+  - Important — clarified `test_template_renders_with_all_required_slots` docstring to make explicit that the `.format(...)` call is the primary guard against missing slots (raises `KeyError`), and the two `assert` lines below are a lightweight sanity check.
+  - Minor — added docstring to `test_template_has_state_slots` noting that `{tickers}` deliberately appears twice in the template (substring checks cannot distinguish one occurrence from two; the format-call test is the real guard).
+- Three Minor findings declined: (a) "test path deviation" — already authorised across the chunk; (b) "British English check" — no issues found; (c) "loose substring matches" — reviewer concluded they were acceptable for a literal-text contract; no change needed.
+- **Expected regressions:** 3 tests in `tests/unit/test_strategist_prompt_template.py` (legacy v1 prompt-contract tests) now fail. These are authorised — C9 owns replacing/deleting that test file as part of the agent rewrite. Full project suite: 308 passed / 3 failed (the three above).
+- Verified that no non-test `src/` code calls `STRATEGIST_INSTRUCTION.format(...)`. Both `agent.py` and `pipeline.py` pass the template verbatim to ADK's `LlmAgent`, which does its own interpolation — so no production callsite was silently broken.
 
 ### 2026-05-11 — C7 landed (`4de5c74` + `814a64c`)
 - First task of Chunk 2 (strategist rewrite).
