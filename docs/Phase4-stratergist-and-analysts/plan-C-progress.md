@@ -66,12 +66,29 @@ updated to mark `[x] Cn — <sha>` before the next task is dispatched.
 
 ---
 
-## Future chunks (placeholders — do not start until chunk 1 is merged)
+## Chunk 2 — `phase4/planC-strategist-rewrite`
 
-### Chunk 2 — `phase4/planC-strategist-rewrite`
-- [ ] C7 — Extend `StrategistDecision` with `stances` + `trim_reasons`. Plan §C7.
+Chunk 2 is the strategist rewrite that *uses* the Chunk 1 substrate (stance
+schema, lifecycle helper, derivation, held-view, evidence-view). C7 extends
+`StrategistDecision`; C8 rewrites the prompt template to consume the new
+slots; C9 rewrites the agent and its callbacks to wire derivation +
+rendering into the ADK pipeline.
+
+**Pre-flight (Chunk 2):**
+- Worktree: `.claude/worktrees/phase4-planC-chunk2`
+- Branch: `phase4/planC-strategist-rewrite` off `phase4/planC-foundation @ ba4680a` (Chunk 1 tip)
+- Venv: symlinked from main repo's `.venv`
+
+**Tasks:**
+
+- [x] C7 — Extend `StrategistDecision` with `stances` + `trim_reasons`. Plan §C7. — `4de5c74` (+`814a64c` polish)
 - [ ] C8 — Rewrite the strategist prompt template. Plan §C8.
 - [ ] C9 — Rewrite the strategist agent (callbacks + wiring). Plan §C9.
+- [ ] **Final review** — Opus audit of all three tasks together.
+
+---
+
+## Future chunks (placeholders — do not start until chunk 2 ships)
 
 ### Chunk 3 — `phase4/planC-persistence-and-wiring`
 - [ ] C10 — Add `TickerStanceRow` ORM + `save_ticker_stance`. Plan §C10.
@@ -110,6 +127,15 @@ entry; do not rewrite history.
 - Spec compliance: ✅ — one-line additive field on `PositionThesis` with `str = ""` default; 2 tests assert default and JSON round-trip. Strategist test suite at 24 green.
 - Code quality: ✅ approved (no issues). Field placement, inline comment scope, and `datetime.UTC`/UP017 usage all clean.
 - Authorised deviation noted: implementer used `datetime.UTC` (Python 3.11+ shortcut) instead of the plan's `timezone.utc` for ruff UP017 compliance. Functionally identical.
+
+### 2026-05-11 — C7 landed (`4de5c74` + `814a64c`)
+- First task of Chunk 2 (strategist rewrite).
+- Spec compliance: ✅ — `stances: list[TickerStance]` and `trim_reasons: dict[str, str]` added with `default_factory`; `target_weights` relaxed from required to defaulted; `StrategistDecision` docstring updated; `PositionThesis` byte-identical (every inline comment + C3 `opened_tick_id` preserved). All four required tests present. Strategist regression at 52/52 green; full project suite at 302/302 green.
+- Code quality: ⚠️ approved with two Important issues, both actioned via controller Edit (`814a64c`):
+  - **rST double-backticks** in the `StrategistDecision` docstring (` ``stances`` `) were inconsistent with every other docstring in the module — replaced with single backticks.
+  - **Missing legacy-JSON test:** no case confirmed that `model_validate({...without "stances"...})` works. The `default_factory=list` makes this safe at the Pydantic level, but the safety was untested. Added `test_legacy_json_without_stances_parses`; test count now 5 (still ≤8 cap).
+- Two Minor findings noted, not actioned: (a) the new file's per-test docstrings are denser than its Chunk-1 siblings — *better*, not worse, kept as-is; (b) no duplicate-ticker validator on `stances` — defer to C9, the after-callback is where business rules belong.
+- `grep -rn "StrategistDecision(" src/` confirmed no non-test callsite constructs the model directly — all production code uses `model_validate(...)` on ADK state, so the `target_weights` relaxation cannot silently produce a broken instance in production.
 
 ### 2026-05-11 — Chunk 1 final Opus audit ✅ approved
 
