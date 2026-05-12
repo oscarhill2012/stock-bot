@@ -95,12 +95,16 @@ async def test_evidence_writer_persists_both_row_types(db_session):
 
 @pytest.mark.asyncio
 async def test_evidence_writer_no_db_is_noop():
-    """Writer with db_session=None must complete without error and yield nothing."""
+    """Writer with db_session=None must short-circuit before touching state and yield nothing."""
     writer = EvidenceWriter(db_session=None)
     ctx = MagicMock()
-    ctx.session.state = {}
-    async for _ in writer._run_async_impl(ctx):
-        pass
+    # Provide a state object so we can prove the short-circuit fires *before* it is touched.
+    ctx.session.state = MagicMock()
+    events = [e async for e in writer._run_async_impl(ctx)]
+    assert events == []
+    # The early `if self.db_session is None: return` must fire before any state read.
+    ctx.session.state.__getitem__.assert_not_called()
+    ctx.session.state.get.assert_not_called()
 
 
 def test_factory_returns_named_agent():

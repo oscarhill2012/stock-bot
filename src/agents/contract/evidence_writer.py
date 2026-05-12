@@ -52,9 +52,6 @@ class EvidenceWriter(BaseAgent):
 
         Args:
             ctx: The ADK invocation context providing access to session state.
-
-        Returns:
-            An async generator that yields no events.
         """
         # No-op short-circuit: no database session available.
         if self.db_session is None:
@@ -103,6 +100,10 @@ class EvidenceWriter(BaseAgent):
                 analyst_count=len(te_dict.get("per_analyst", {})),
             )
 
+        # NOTE: no try/except wrapping the saver loop — a mid-loop failure leaves the
+        # session dirty with flushed but uncommitted rows. The caller must catch the
+        # exception and rollback. Acceptable pre-deployment; revisit when the
+        # orchestrator gains error recovery.
         self.db_session.commit()
         return
         yield  # required to make this a generator function
