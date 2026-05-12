@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session
 
 from agents.executor.agent import ExecutorAgent
 from broker.fake import FakeBroker
@@ -46,8 +46,7 @@ def session(tmp_path):
     """Yield a freshly-created SQLite session backed by a tmp file; close on teardown."""
     engine = create_engine(f"sqlite:///{tmp_path}/test.db")
     Base.metadata.create_all(engine)
-    Session = sessionmaker(bind=engine)
-    s = Session()
+    s = Session(bind=engine)
     yield s
     s.close()
 

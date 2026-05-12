@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session
 
 from orchestrator.persistence import Base, TradeLogRow, save_trade_log_entry
 
@@ -9,7 +9,7 @@ from orchestrator.persistence import Base, TradeLogRow, save_trade_log_entry
 def _make_session():
     engine = create_engine("sqlite://")
     Base.metadata.create_all(engine)
-    return sessionmaker(bind=engine)()
+    return Session(bind=engine)
 
 
 def test_round_trip_trade_log_entry():

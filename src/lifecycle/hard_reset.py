@@ -14,7 +14,7 @@ from orchestrator.persistence import make_engine, make_session_factory
 
 from . import scheduler
 
-_STOCKBOT_TABLES = ("buffer_entries", "trade_log", "portfolio_snapshots", "attribution_signals")
+_STOCKBOT_TABLES = ("buffer_entries", "trade_log", "portfolio_snapshots")
 
 
 @dataclass(frozen=True)
