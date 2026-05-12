@@ -1,5 +1,6 @@
+from datetime import UTC, datetime
+
 import pytest
-from datetime import datetime, timezone
 
 from agents.memory.dedup import detect_repeat
 from agents.memory.schema import BufferEntry
@@ -7,7 +8,7 @@ from agents.memory.schema import BufferEntry
 
 def _entry(tag: str, summary: str, embedding: list[float] | None = None) -> BufferEntry:
     return BufferEntry(
-        timestamp=datetime.now(tz=timezone.utc),
+        timestamp=datetime.now(tz=UTC),
         decision_tag=tag,
         reasoning_summary=summary[:120],
         smart_money_seen=False,

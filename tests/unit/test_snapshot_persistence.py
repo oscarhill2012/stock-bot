@@ -1,15 +1,16 @@
 from datetime import UTC, datetime
 
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session
 
 from orchestrator.persistence import Base, PortfolioSnapshotRow, save_portfolio_snapshot
 
 
 def _make_session():
+    """Return an open SQLAlchemy Session backed by a fresh in-memory SQLite database."""
     engine = create_engine("sqlite://")
     Base.metadata.create_all(engine)
-    return sessionmaker(bind=engine)()
+    return Session(bind=engine)
 
 
 def test_round_trip_portfolio_snapshot():

@@ -11,7 +11,6 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field, model_validator
 
-
 # Mirrors data.registry.DOMAINS. Defined here too to avoid a circular
 # import (config validates without needing the registry to exist yet).
 _DOMAINS: frozenset[str] = frozenset({
@@ -43,7 +42,7 @@ class DataConfig(BaseModel):
     http_timeout_seconds: float = 15.0
 
     @model_validator(mode="after")
-    def _check_domains(self) -> "DataConfig":
+    def _check_domains(self) -> DataConfig:
         unknown = set(self.providers) - _DOMAINS
         if unknown:
             raise ValueError(f"unknown domain(s) in providers: {sorted(unknown)}")

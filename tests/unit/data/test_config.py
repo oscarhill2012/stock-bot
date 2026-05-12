@@ -9,7 +9,6 @@ from pydantic import ValidationError
 
 from data.config import DataConfig, FetchDefaults, load_config_from
 
-
 VALID_PAYLOAD: dict = {
     "providers": {
         "stats": "yfinance",

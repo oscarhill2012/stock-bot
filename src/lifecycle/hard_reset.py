@@ -2,17 +2,15 @@
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
-import subprocess
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy import inspect, text
 
-from orchestrator.persistence import Base, make_engine, make_session_factory
+from orchestrator.persistence import make_engine, make_session_factory
 
 from . import scheduler
 
@@ -26,7 +24,7 @@ class ResetResult:
 
 
 def _timestamp() -> str:
-    return datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H-%M-%S")
+    return datetime.now(tz=UTC).strftime("%Y-%m-%dT%H-%M-%S")
 
 
 def _row_counts(db_url: str) -> dict[str, int]:
@@ -116,7 +114,7 @@ def hard_reset(
     # 5. Write meta
     meta_path = archive_path.with_suffix(".meta.json")
     meta = {
-        "archived_at": datetime.now(tz=timezone.utc).isoformat(),
+        "archived_at": datetime.now(tz=UTC).isoformat(),
         "db_url_kind": "sqlite" if is_sqlite else "postgres",
         "row_counts": counts,
         "scheduler_job": scheduler_job,

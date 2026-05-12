@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import inspect, text
@@ -92,7 +92,7 @@ def _write_anchor(db_url: str, *, starting_capital: float, spy_price: float) -> 
     try:
         save_portfolio_snapshot(s, {
             "tick_id": "init",
-            "recorded_at": datetime.now(tz=timezone.utc),
+            "recorded_at": datetime.now(tz=UTC),
             "bot_total_value": starting_capital,
             "bot_cash": starting_capital,
             "bot_positions_value": 0.0,

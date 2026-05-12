@@ -1,13 +1,14 @@
-import pytest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from agents.memory.writer import BUFFER_EVICT_AT, append_with_eviction
+import pytest
+
 from agents.memory.schema import BufferEntry
+from agents.memory.writer import BUFFER_EVICT_AT, append_with_eviction
 
 
 def _entry(tag: str = "hold") -> BufferEntry:
     return BufferEntry(
-        timestamp=datetime.now(tz=timezone.utc),
+        timestamp=datetime.now(tz=UTC),
         decision_tag=tag,
         reasoning_summary="some reasoning",
         smart_money_seen=False,

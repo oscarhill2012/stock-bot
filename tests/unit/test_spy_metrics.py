@@ -2,12 +2,10 @@
 """SPY baseline metrics from a hand-crafted price series."""
 from __future__ import annotations
 
-from datetime import date
-
 import pandas as pd
 import pytest
 
-from baselines.spy import SPYMetrics, _metrics_from_series
+from baselines.spy import _metrics_from_series
 
 
 def test_metrics_from_flat_series_zero_return():

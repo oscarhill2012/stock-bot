@@ -1,6 +1,7 @@
 """RiskGate BaseAgent integration test."""
+from unittest.mock import MagicMock
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock
 
 from agents.risk_gate.agent import RiskGateAgent
 from broker.fake import FakeBroker

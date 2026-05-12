@@ -31,7 +31,7 @@ class MemoryProjection(BaseModel):
         buffer: list[BufferEntry],
         n_recent: int = 8,
         min_freq: int = 3,
-    ) -> "MemoryProjection":
+    ) -> MemoryProjection:
         recent = buffer[-n_recent:]
         counts = Counter(e.decision_tag for e in buffer)
         tag_frequency = {tag: count for tag, count in counts.items() if count >= min_freq}

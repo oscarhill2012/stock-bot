@@ -1,7 +1,7 @@
 """Integration test: MemoryWriter reads/writes session state dict."""
-import pytest
-from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from agents.memory.writer import MemoryWriter
 

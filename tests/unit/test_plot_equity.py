@@ -2,12 +2,14 @@
 """plot_equity renders a non-empty PNG and exits 0 with a normal DB."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import UTC, datetime
 
-import pytest
-
-from orchestrator.persistence import create_all, make_engine, make_session_factory, save_portfolio_snapshot
+from orchestrator.persistence import (
+    create_all,
+    make_engine,
+    make_session_factory,
+    save_portfolio_snapshot,
+)
 from scripts.plot_equity import render
 
 
@@ -17,7 +19,7 @@ def _seed(db_url: str):
     S = make_session_factory(engine)
     s = S()
     save_portfolio_snapshot(s, {
-        "tick_id": "init", "recorded_at": datetime.now(tz=timezone.utc),
+        "tick_id": "init", "recorded_at": datetime.now(tz=UTC),
         "bot_total_value": 10000.0, "bot_cash": 10000.0,
         "bot_positions_value": 0.0, "bot_position_count": 0,
         "spy_price": 500.0, "spy_value_if_held": 10000.0,
@@ -25,7 +27,7 @@ def _seed(db_url: str):
         "holdings_breakdown": {},
     })
     save_portfolio_snapshot(s, {
-        "tick_id": "tick-1", "recorded_at": datetime.now(tz=timezone.utc),
+        "tick_id": "tick-1", "recorded_at": datetime.now(tz=UTC),
         "bot_total_value": 10500.0, "bot_cash": 10500.0,
         "bot_positions_value": 0.0, "bot_position_count": 0,
         "spy_price": 510.0, "spy_value_if_held": 10200.0,

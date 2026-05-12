@@ -1,7 +1,7 @@
 """Strategist contract checks for position open/close transitions."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from orchestrator.state import MIN_HELD_WEIGHT
@@ -47,6 +47,6 @@ def _stub_position_thesis(ticker: str):
 
     return _PositionThesisStub(
         ticker=ticker,
-        opened_at=datetime.now(tz=timezone.utc),
-        last_reviewed_at=datetime.now(tz=timezone.utc),
+        opened_at=datetime.now(tz=UTC),
+        last_reviewed_at=datetime.now(tz=UTC),
     )

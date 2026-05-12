@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import json
-import sqlite3
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import UTC, datetime
 
 import pytest
 
-from lifecycle.hard_reset import hard_reset, ResetResult
+from lifecycle.hard_reset import hard_reset
 from orchestrator.persistence import (
-    BufferEntryRow,
     PortfolioSnapshotRow,
     create_all,
     make_engine,
@@ -26,7 +23,7 @@ def _seed_live_db(db_url: str):
     S = make_session_factory(engine)
     s = S()
     save_portfolio_snapshot(s, {
-        "tick_id": "init", "recorded_at": datetime.now(tz=timezone.utc),
+        "tick_id": "init", "recorded_at": datetime.now(tz=UTC),
         "bot_total_value": 10000.0, "bot_cash": 10000.0,
         "bot_positions_value": 0.0, "bot_position_count": 0,
         "spy_price": 500.0, "spy_value_if_held": 10000.0,

@@ -1,9 +1,9 @@
 """Snapshotter — records equity curve after every tick."""
 from __future__ import annotations
 
-import json
-from datetime import datetime, timezone
-from typing import Any, AsyncGenerator
+from collections.abc import AsyncGenerator
+from datetime import UTC, datetime
+from typing import Any
 
 from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
@@ -66,7 +66,7 @@ class SnapshotterAgent(BaseAgent):
 
         snap = {
             "tick_id":              tick_id,
-            "recorded_at":          datetime.now(tz=timezone.utc),
+            "recorded_at":          datetime.now(tz=UTC),
             "bot_total_value":      bot_total,
             "bot_cash":             bot_cash,
             "bot_positions_value":  bot_positions_value,

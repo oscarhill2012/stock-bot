@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session
 
 from orchestrator.persistence import Base, TickerStanceRow, TradeLogRow
 
@@ -15,10 +15,8 @@ def session(tmp_path):
     """Yield a freshly-created SQLite session backed by a tmp file; close on teardown."""
     engine = create_engine(f"sqlite:///{tmp_path}/test.db")
     Base.metadata.create_all(engine)
-    Session = sessionmaker(bind=engine)
-    s = Session()
-    yield s
-    s.close()
+    with Session(bind=engine) as s:
+        yield s
 
 
 def test_trade_log_accepts_tick_id_fks(session):

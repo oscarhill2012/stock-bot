@@ -15,12 +15,12 @@ def test_async_rate_limiter_capacity_defaults_to_rounded_rate() -> None:
     assert lim.capacity == 60
 
 
-import asyncio
+import asyncio  # noqa: E402
 
-import pytest
+import pytest  # noqa: E402
 
-from data import registry
-from data.registry import (
+from data import registry  # noqa: E402
+from data.registry import (  # noqa: E402
     DOMAINS,
     _ensure_limiter,
     active_upstreams,
@@ -31,7 +31,7 @@ from data.registry import (
 
 
 def test_domains_set_has_seven_known_slots() -> None:
-    assert DOMAINS == frozenset({
+    assert frozenset({
         "stats",
         "news",
         "social_sentiment",
@@ -39,7 +39,7 @@ def test_domains_set_has_seven_known_slots() -> None:
         "politician_trades",
         "notable_holders",
         "filings",
-    })
+    }) == DOMAINS
 
 
 def test_register_populates_registry(registry_isolation: None) -> None:

@@ -1,10 +1,10 @@
 """Executor integration tests with FakeBroker."""
-import pytest
 from unittest.mock import MagicMock
 
-from broker.fake import FakeBroker
+import pytest
+
 from agents.executor.agent import build_executor
-from orchestrator.state import Order
+from broker.fake import FakeBroker
 
 
 def _make_ctx(state: dict) -> MagicMock:

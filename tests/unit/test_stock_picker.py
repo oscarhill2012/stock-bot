@@ -1,4 +1,3 @@
-import pytest
 from orchestrator.stock_picker import get_watchlist
 
 

@@ -14,7 +14,6 @@ from typing import Any
 from .config import get_config
 from .rate_limit import AsyncRateLimiter
 
-
 DOMAINS: frozenset[str] = frozenset({
     "stats",
     "news",

@@ -1,4 +1,4 @@
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -14,7 +14,7 @@ def _make_session():
 
 def test_round_trip_trade_log_entry():
     session = _make_session()
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     entry = {
         "ticker": "AAPL",
         "opened_at": now - timedelta(hours=4),

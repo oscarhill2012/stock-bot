@@ -2,13 +2,10 @@
 """init_db creates all StockBot tables, idempotent."""
 from __future__ import annotations
 
-import sqlite3
-
 from sqlalchemy import inspect
 
 from orchestrator.persistence import make_engine
 from scripts.init_db import init_db
-
 
 EXPECTED_TABLES = {"buffer_entries", "trade_log", "portfolio_snapshots"}
 

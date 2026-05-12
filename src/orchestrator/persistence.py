@@ -5,7 +5,7 @@ import json
 import os
 from datetime import UTC, datetime
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, String, create_engine
+from sqlalchemy import Boolean, DateTime, Float, Integer, String, UniqueConstraint, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 
@@ -90,7 +90,9 @@ class TradeLogRow(Base):
     catalyst_realised: Mapped[bool] = mapped_column(Boolean)
 
     # Nullable FK-style references linking a trade back to the originating tick.
-    # Populated by the executor when opening/closing a position; NULL for pre-Plan-C rows.
+    # opening_tick_id: copied from PositionThesis.opened_tick_id when executor.BUY
+    #   writes the position. closing_tick_id: stamped by executor.SELL with the
+    #   tick that triggered the close.
     opening_tick_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
     closing_tick_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
 
@@ -108,6 +110,9 @@ class TickerStanceRow(Base):
     """One row per ticker per tick — strategist's per-ticker decision substrate."""
 
     __tablename__ = "ticker_stances"
+    # Enforce one stance row per ticker per tick so analytics joins never
+    # encounter ambiguous duplicates (FU-06).
+    __table_args__ = (UniqueConstraint("tick_id", "ticker", name="uq_ticker_stance_tick_ticker"),)
 
     id: Mapped[int]                    = mapped_column(Integer, primary_key=True, autoincrement=True)
     tick_id: Mapped[str]               = mapped_column(String, index=True)
