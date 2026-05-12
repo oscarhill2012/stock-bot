@@ -2,15 +2,14 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from orchestrator.persistence import (
-    Base,
     AnalystEvidenceRow,
+    Base,
     TickerEvidenceRow,
     save_analyst_evidence,
     save_ticker_evidence,

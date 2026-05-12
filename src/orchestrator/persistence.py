@@ -343,10 +343,9 @@ def save_analyst_evidence(
         None. The new row is flushed but **not** committed; the caller controls
         commit ordering so it can batch writes for the same tick.
     """
-    from datetime import timezone
     row = AnalystEvidenceRow(
         tick_id=tick_id,
-        recorded_at=datetime.now(tz=timezone.utc),
+        recorded_at=datetime.now(tz=UTC),
         analyst=analyst,
         ticker=ticker,
         lean=verdict["lean"],
@@ -410,10 +409,9 @@ def save_ticker_evidence(
         None. The new row is flushed but **not** committed; the caller controls
         commit ordering so it can batch writes for the same tick.
     """
-    from datetime import timezone
     row = TickerEvidenceRow(
         tick_id=tick_id,
-        recorded_at=datetime.now(tz=timezone.utc),
+        recorded_at=datetime.now(tz=UTC),
         ticker=ticker,
         lean=aggregate["lean"],
         magnitude=float(aggregate["magnitude"]),
