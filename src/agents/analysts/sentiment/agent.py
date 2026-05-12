@@ -3,8 +3,7 @@
 The LLM is instructed to emit ``AnalystVerdict``-shaped dicts keyed as
 ``sentiment_verdicts`` in session state.  The ``make_evidence_callback`` after-
 callback then converts those verdicts into ``AnalystEvidence`` records and writes
-them to ``state["sentiment_evidence"]``.  No legacy ``sentiment_signals`` key is
-written after D3.
+them to ``state["sentiment_evidence"]``.
 """
 from __future__ import annotations
 

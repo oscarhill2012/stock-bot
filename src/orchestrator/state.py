@@ -67,12 +67,6 @@ class TickState(BaseModel):
     sentiment_data: dict[str, Any]      = Field(default_factory=dict)
     smart_money_data: dict[str, Any] | None = None
 
-    # Written by analyst LLMs (structured signal objects).
-    technical_signals: list[Any]    = Field(default_factory=list)
-    fundamental_signals: list[Any]  = Field(default_factory=list)
-    sentiment_signals: list[Any]    = Field(default_factory=list)
-    smart_money_signals: list[Any]  = Field(default_factory=list)
-
     # Persistent across ticks (loaded from and saved to the ADK session store).
     memory_buffer: list[Any]  = Field(default_factory=list)
     day_digest: str           = ""

@@ -23,7 +23,6 @@ async def test_memory_writer_appends_buffer_entry():
         "memory_buffer": [],
         "day_digest": "",
         "executions": [],
-        "smart_money_signals": [],
     }
 
     session_mock = MagicMock()

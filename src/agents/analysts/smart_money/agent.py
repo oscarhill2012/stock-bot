@@ -6,8 +6,6 @@ watchlist (see ``fetch.py``).  In that case ``state["smart_money_verdicts"]``
 is pre-seeded to ``[]`` by the fetch gate; the ``make_evidence_callback``
 after-callback then synthesises a no-data ``AnalystEvidence`` record for every
 watchlist ticker so downstream consumers always receive a complete set.
-
-No legacy ``smart_money_signals`` key is written after D3.
 """
 from __future__ import annotations
 
