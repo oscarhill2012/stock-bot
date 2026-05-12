@@ -292,6 +292,141 @@ def save_attribution_signal(
     session.flush()
 
 
+# ── AnalystEvidence ───────────────────────────────────────────────────
+
+class AnalystEvidenceRow(Base):
+    """One row per analyst per ticker per tick. Mirrors `AnalystEvidence` Pydantic shape."""
+
+    __tablename__ = "analyst_evidence"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tick_id: Mapped[str] = mapped_column(String, index=True)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime)
+    analyst: Mapped[str] = mapped_column(String, index=True)
+    ticker: Mapped[str] = mapped_column(String, index=True)
+
+    lean: Mapped[str] = mapped_column(String)
+    magnitude: Mapped[float] = mapped_column(Float)
+    confidence: Mapped[float] = mapped_column(Float)
+    rationale: Mapped[str] = mapped_column(String, default="")
+    key_factors_json: Mapped[str] = mapped_column(String, default="[]")
+    is_no_data: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    features_json: Mapped[str] = mapped_column(String, default="{}")
+    feature_warnings_json: Mapped[str] = mapped_column(String, default="[]")
+
+
+def save_analyst_evidence(
+    session: Session,
+    *,
+    tick_id: str,
+    analyst: str,
+    ticker: str,
+    verdict: dict,
+    features: dict,
+    feature_warnings: list[str],
+) -> None:
+    """Persist one AnalystEvidence row.
+
+    Args:
+        session: SQLAlchemy session used for the insert.
+        tick_id: Identifier of the tick that produced this evidence.
+        analyst: One of ``technical|fundamental|sentiment|smart_money``.
+        ticker: Stock ticker symbol (e.g. ``"AAPL"``).
+        verdict: Dict matching the ``AnalystVerdict`` shape — must contain
+            ``lean``, ``magnitude``, ``confidence``; optionally ``rationale``,
+            ``key_factors``, ``is_no_data``.
+        features: Raw feature dict fed to the analyst (e.g. RSI, ATR values).
+        feature_warnings: Any warnings raised during feature extraction.
+
+    Returns:
+        None. The new row is flushed but **not** committed; the caller controls
+        commit ordering so it can batch writes for the same tick.
+    """
+    from datetime import timezone
+    row = AnalystEvidenceRow(
+        tick_id=tick_id,
+        recorded_at=datetime.now(tz=timezone.utc),
+        analyst=analyst,
+        ticker=ticker,
+        lean=verdict["lean"],
+        magnitude=float(verdict["magnitude"]),
+        confidence=float(verdict["confidence"]),
+        rationale=verdict.get("rationale", ""),
+        key_factors_json=json.dumps(verdict.get("key_factors", [])),
+        is_no_data=bool(verdict.get("is_no_data", False)),
+        features_json=json.dumps(features),
+        feature_warnings_json=json.dumps(feature_warnings),
+    )
+    session.add(row)
+    session.flush()
+
+
+# ── TickerEvidence ────────────────────────────────────────────────────
+
+class TickerEvidenceRow(Base):
+    """One row per ticker per tick — aggregated cross-analyst stance."""
+
+    __tablename__ = "ticker_evidence"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tick_id: Mapped[str] = mapped_column(String, index=True)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime)
+    ticker: Mapped[str] = mapped_column(String, index=True)
+
+    lean: Mapped[str] = mapped_column(String)
+    magnitude: Mapped[float] = mapped_column(Float)
+    confidence: Mapped[float] = mapped_column(Float)
+    disagreement: Mapped[float] = mapped_column(Float)
+    summary: Mapped[str] = mapped_column(String, default="")
+
+    weights_json: Mapped[str] = mapped_column(String, default="{}")
+    analyst_count: Mapped[int] = mapped_column(Integer, default=0)
+
+
+def save_ticker_evidence(
+    session: Session,
+    *,
+    tick_id: str,
+    ticker: str,
+    aggregate: dict,
+    weights: dict,
+    analyst_count: int,
+) -> None:
+    """Persist one TickerEvidence row.
+
+    Args:
+        session: SQLAlchemy session used for the insert.
+        tick_id: Identifier of the tick that produced this evidence.
+        ticker: Stock ticker symbol (e.g. ``"AAPL"``).
+        aggregate: Dict matching the ``TickerAggregate`` shape — must contain
+            ``lean``, ``magnitude``, ``confidence``, ``disagreement``; optionally
+            ``summary``.
+        weights: Mapping of analyst name to numeric weight used during
+            aggregation (e.g. ``{"technical": 1.0, ...}``).
+        analyst_count: Total number of analysts whose evidence was aggregated.
+
+    Returns:
+        None. The new row is flushed but **not** committed; the caller controls
+        commit ordering so it can batch writes for the same tick.
+    """
+    from datetime import timezone
+    row = TickerEvidenceRow(
+        tick_id=tick_id,
+        recorded_at=datetime.now(tz=timezone.utc),
+        ticker=ticker,
+        lean=aggregate["lean"],
+        magnitude=float(aggregate["magnitude"]),
+        confidence=float(aggregate["confidence"]),
+        disagreement=float(aggregate["disagreement"]),
+        summary=aggregate.get("summary", ""),
+        weights_json=json.dumps(weights),
+        analyst_count=int(analyst_count),
+    )
+    session.add(row)
+    session.flush()
+
+
 def make_engine(db_url: str = "sqlite://"):
     """Create a SQLAlchemy engine for the given URL. Default is an in-memory SQLite."""
     return create_engine(db_url)
