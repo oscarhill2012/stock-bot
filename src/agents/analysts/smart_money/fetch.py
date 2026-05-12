@@ -71,7 +71,10 @@ async def smart_money_fetch_callback(
     state["smart_money_data"] = smart_money_data
 
     if not has_signal:
-        state["smart_money_signals"] = []
+        # Pre-seed an empty verdicts list so the after-callback (make_evidence_callback)
+        # short-circuits cleanly and synthesises no-data evidence for every ticker
+        # rather than seeing an absent key and potentially raising KeyError.
+        state["smart_money_verdicts"] = []
         return genai_types.Content(
             parts=[genai_types.Part(text="no smart money signal — skipping")],
             role="model",

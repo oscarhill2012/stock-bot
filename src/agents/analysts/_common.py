@@ -1,183 +1,129 @@
-"""Shared analyst base and callback utilities."""
+"""Shared analyst base and callback utilities.
+
+D3 removes the dual-emit pattern (``make_dual_emit_callback``) and the
+exhaustive-validator helper in favour of the simpler ``make_evidence_callback``
+that reads LLM-emitted verdicts directly from state and writes fully-formed
+``AnalystEvidence`` records.  The legacy ``AnalystSignal`` Pydantic class is
+also removed — the four per-analyst ``schema.py`` subclasses are deleted
+alongside it (see D3 option-a).
+"""
 from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from google.adk.agents.callback_context import CallbackContext
-from google.genai import types as genai_types
-from pydantic import BaseModel, Field
-
 from contract.evidence import AnalystEvidence, AnalystName, AnalystVerdict
 
 
-class AnalystSignal(BaseModel):
-    ticker: str
-    direction: str  # "bullish" | "bearish" | "neutral"
-    confidence: float = Field(ge=0.0, le=1.0)
-    key_factors: list[str] = Field(default_factory=list, max_length=3)
-
-
-def make_exhaustive_validator(
-    signals_key: str,
-    tickers_key: str = "tickers",
-):
-    """Return an after_agent_callback that re-prompts if any watchlist tickers are missing."""
-
-    def _validator(callback_context: CallbackContext) -> genai_types.Content | None:
-        state = callback_context.state
-        signals = state.get(signals_key, [])
-        tickers = state.get(tickers_key, [])
-        if not tickers:
-            return None
-        emitted = {
-            (s["ticker"] if isinstance(s, dict) else s.ticker)
-            for s in signals
-        }
-        missing = [t for t in tickers if t not in emitted]
-        if missing:
-            return genai_types.Content(
-                parts=[genai_types.Part(
-                    text=f"You missed these tickers: {missing}. "
-                         f"Please emit a signal for every watchlist ticker."
-                )],
-                role="user",
-            )
-        return None
-
-    return _validator
-
-
-# ── Dual-emit (legacy AnalystSignal + new AnalystEvidence) ────────────────────
-
-def make_dual_emit_callback(
+def make_evidence_callback(
+    *,
     analyst: AnalystName,
-    signals_key: str,
-    data_key: str,
-    evidence_key: str,
     extractor: Callable[[Any, str], dict[str, float]],
-    sparse: bool = False,
+    verdicts_state_key: str,
 ):
-    """Return an ``after_agent_callback`` that writes both legacy signals and new evidence.
+    """Build an ``after_agent_callback`` that converts LLM verdicts to ``AnalystEvidence``.
 
-    The callback does three things in order:
+    The new evidence-only callback introduced in D3 does three things:
 
-    1. Validates exhaustiveness — re-prompts the LLM if any watchlist ticker is
-       missing from ``state[signals_key]``. No evidence is written on re-prompt.
-       Skipped entirely when ``sparse=True`` (see below).
-    2. For each legacy ``AnalystSignal`` in ``state[signals_key]``, calls
-       ``extractor(state[data_key][ticker], ticker)`` to obtain the deterministic
-       feature vector, then constructs a full ``AnalystEvidence`` record.
-    3. Writes the evidence list to ``state[evidence_key]``.
+    1. Reads the per-ticker verdict list from ``state[verdicts_state_key]``.
+       Each element is a dict matching the ``AnalystVerdict`` schema (``lean``,
+       ``magnitude``, ``confidence``, ``rationale``, ``key_factors``,
+       ``is_no_data``).
+    2. For every ticker in the watchlist, calls
+       ``extractor(state["{analyst}_data"][ticker], ticker)`` to obtain the
+       deterministic feature vector.  If the LLM omitted a verdict for a
+       ticker, a no-data ``AnalystVerdict`` is synthesised so downstream
+       consumers always receive one record per ticker.
+    3. Writes the resulting ``AnalystEvidence`` list (as JSON-serialisable
+       dicts) to ``state["{analyst}_evidence"]``.
 
-    ``sparse=True`` is used for analysts whose ``before_agent_callback`` can short-
-    circuit the LLM entirely (e.g. ``smart_money`` skips when no insider /
-    politician / 13D/G activity is detected). In that case the signals list is
-    legitimately empty and the exhaustive validator would otherwise re-prompt a
-    skipped LLM. With ``sparse=True`` the callback writes an empty evidence list
-    on the skip path and does not enforce exhaustiveness on the non-skip path.
+    Note: ``feature_warnings`` is set to ``[]`` for now — extractors do not
+    yet expose a warnings channel.  That plumbing is out of scope for D3.
 
-    The legacy ``state[signals_key]`` is left untouched so that existing downstream
-    consumers (``attribution_writer``, ``memory_writer``) continue to work without
-    modification. Plan C will start reading ``state[evidence_key]`` in the strategist;
-    Plan D will drop the legacy path entirely.
+    Parameters
+    ----------
+    analyst:
+        The ``AnalystName`` literal identifying this analyst
+        (``"technical"``, ``"fundamental"``, ``"sentiment"``, or
+        ``"smart_money"``).
+    extractor:
+        Callable ``(raw_ticker_data, ticker) -> {feature: value}`` that
+        computes the deterministic feature vector for one ticker.  Signature
+        matches all four real extractors: args are ``(raw, ticker)``.
+    verdicts_state_key:
+        The state key that holds the list of verdict dicts emitted by the LLM
+        (e.g. ``"technical_verdicts"``).
 
-    Translation rules (``AnalystSignal`` → ``AnalystVerdict``):
-      - ``direction``    → ``lean``         (1:1)
-      - ``confidence``   → ``confidence``   (1:1)
-      - ``confidence``   → ``magnitude``    (placeholder — Plan D will re-prompt for a
-                                             real magnitude value)
-      - ``key_factors``  → ``key_factors``  (kept as a structured list for the future
-                                             knowledge-base lookup primitive)
-      - ``key_factors``  → ``rationale``    (joined into a string for prompt readability,
-                                             truncated to 160 chars)
-      - extractor's ``is_no_data`` feature  → ``verdict.is_no_data`` (signals the
-                                              digest aggregator to drop this verdict)
-
-    Args:
-        analyst:      The ``AnalystName`` literal identifying which analyst this is.
-        signals_key:  State key holding the list of ``AnalystSignal`` dicts.
-        data_key:     State key holding the per-ticker raw data dict.
-        evidence_key: State key to write the resulting ``AnalystEvidence`` list to.
-        extractor:    Callable ``(raw_ticker_data, ticker) -> {feature: value}`` that
-                      computes the deterministic feature vector for one ticker.
-
-    Returns:
-        A callback function compatible with ADK's ``after_agent_callback`` protocol.
+    Returns
+    -------
+    Callable
+        A callback function compatible with ADK's ``after_agent_callback``
+        protocol.  The callback returns ``None`` (no re-prompt) in all paths.
     """
 
-    # Reuse the existing exhaustiveness check — no duplication needed.
-    # For sparse analysts (smart_money), exhaustiveness is intentionally skipped
-    # because the before_agent_callback may short-circuit the LLM altogether.
-    exhaustive = None if sparse else make_exhaustive_validator(signals_key)
+    def _callback(ctx) -> None:
+        """Execute the evidence-build loop for one analyst tick.
 
-    def _callback(callback_context: CallbackContext) -> genai_types.Content | None:
-        # 1) Exhaustiveness check first — bail early if the LLM missed tickers.
-        #    Skipped entirely for sparse analysts.
-        if exhaustive is not None:
-            out = exhaustive(callback_context)
-            if out is not None:
-                return out
+        Reads verdicts, runs extractors, and writes a complete evidence list
+        to state.  Always returns ``None`` — the LLM is never re-prompted by
+        this callback (the exhaustive-validator behaviour from dual-emit is
+        retired in D3).
+        """
+        state = ctx.state
+        tickers: list[str] = state.get("tickers", []) or []
+        tick_id: str = state.get("tick_id", "unknown")
 
-        # 2) Build the evidence list from the validated signal set.
-        state = callback_context.state
-        signals_raw = state.get(signals_key, []) or []
-        per_ticker_data = state.get(data_key, {}) or {}
-        tick_id = state.get("tick_id", "unknown")
-
-        # Capture a single timestamp for the whole batch so all evidence records
-        # for this tick are aligned (avoids microsecond skew from per-record calls).
+        # Single timestamp for the whole batch — avoids microsecond skew
+        # between records that belong to the same tick.
         recorded_at = datetime.now(tz=UTC)
+
+        # Per-ticker raw data dict keyed by ticker symbol.
+        data: dict = state.get(f"{analyst}_data", {}) or {}
+
+        # Build a lookup from ticker → verdict dict for fast access below.
+        raw_verdicts: list[dict] = state.get(verdicts_state_key, []) or []
+        verdicts_by_ticker: dict[str, dict] = {
+            v["ticker"]: v for v in raw_verdicts
+        }
 
         evidence_list: list[dict] = []
 
-        for sig in signals_raw:
-            # Accept either a plain dict (typical after JSON round-trip through ADK
-            # session state) or a live Pydantic model instance.
-            sig_dict = sig if isinstance(sig, dict) else sig.model_dump()
-            ticker = sig_dict["ticker"]
+        for ticker in tickers:
+            # Run the deterministic feature extractor for this ticker.
+            # The extractor receives the per-ticker slice, not the full dict.
+            features: dict[str, float] = extractor(data.get(ticker, {}), ticker)
 
-            # Pass only the per-ticker slice to the extractor — not the full dict.
-            features = extractor(per_ticker_data.get(ticker, {}), ticker)
+            raw_v = verdicts_by_ticker.get(ticker)
 
-            key_factors = list(sig_dict.get("key_factors", []) or [])
+            if raw_v is None:
+                # LLM omitted this ticker — synthesise a safe no-data record
+                # so downstream consumers always receive one record per ticker.
+                verdict = AnalystVerdict(
+                    lean="neutral",
+                    magnitude=0.0,
+                    confidence=0.0,
+                    rationale="no verdict from LLM",
+                    key_factors=[],
+                    is_no_data=True,
+                )
+            else:
+                # Validate the LLM's output dict against the strict schema.
+                verdict = AnalystVerdict.model_validate(raw_v)
 
-            # Build a human-readable rationale string from the structured factor list.
-            # Truncate to the 160-char field limit enforced by AnalystVerdict.
-            rationale = " | ".join(key_factors)
-            if not rationale:
-                # Fall back to a minimal description when the LLM emitted no factors.
-                rationale = f"{analyst} {sig_dict['direction']}"
-            rationale = rationale[:160]
-
-            confidence = float(sig_dict["confidence"])
-
-            # Map the extractor's boolean `is_no_data` feature (encoded as 1.0) to the
-            # verdict flag so the digest aggregator can exclude this verdict from voting.
-            is_no_data = bool(features.get("is_no_data", 0.0) >= 1.0)
-
-            evidence = AnalystEvidence(
-                ticker=ticker,
+            ev = AnalystEvidence(
                 analyst=analyst,
+                ticker=ticker,
                 tick_id=tick_id,
                 recorded_at=recorded_at,
+                verdict=verdict,
                 features=features,
-                feature_warnings=[],
-                verdict=AnalystVerdict(
-                    lean=sig_dict["direction"],
-                    magnitude=confidence,
-                    confidence=confidence,
-                    rationale=rationale,
-                    # Slice to the 8-item max defined on AnalystVerdict.
-                    key_factors=key_factors[:8],
-                    is_no_data=is_no_data,
-                ),
+                feature_warnings=[],  # extractors do not yet expose warnings
             )
-            evidence_list.append(evidence.model_dump(mode="json"))
+            evidence_list.append(ev.model_dump(mode="json"))
 
-        # 3) Write the evidence alongside the existing legacy signals.
-        state[evidence_key] = evidence_list
+        # Write the evidence list; no legacy *_signals key is touched.
+        state[f"{analyst}_evidence"] = evidence_list
         return None
 
     return _callback

@@ -1,4 +1,5 @@
 from google.adk.agents import LlmAgent
+
 from agents.analysts.fundamental.agent import fundamental_analyst
 
 
@@ -11,4 +12,4 @@ def test_fundamental_analyst_name():
 
 
 def test_fundamental_analyst_output_key():
-    assert fundamental_analyst.output_key == "fundamental_signals"
+    assert fundamental_analyst.output_key == "fundamental_verdicts"

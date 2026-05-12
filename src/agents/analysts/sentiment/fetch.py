@@ -2,19 +2,18 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from google.adk.agents.callback_context import CallbackContext
 from google.genai import types as genai_types
 
-from data import get_stock_news, get_social_sentiment
+from data import get_social_sentiment, get_stock_news
 
 logger = logging.getLogger(__name__)
 
 
 async def sentiment_fetch_callback(
     callback_context: CallbackContext,
-) -> Optional[genai_types.Content]:
+) -> genai_types.Content | None:
     """Fetch news headlines and social sentiment for every watchlist ticker before the LLM runs."""
     state = callback_context.state
     tickers: list[str] = state.get("tickers", [])

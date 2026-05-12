@@ -23,7 +23,7 @@ async def test_gate_fires_when_no_activity():
         result = await smart_money_fetch_callback(ctx)
     assert result is not None
     assert "skipping" in result.parts[0].text
-    assert ctx.state["smart_money_signals"] == []
+    assert ctx.state["smart_money_verdicts"] == []
 
 
 @pytest.mark.asyncio
