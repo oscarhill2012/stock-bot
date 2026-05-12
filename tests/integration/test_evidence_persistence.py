@@ -57,6 +57,9 @@ def test_save_analyst_evidence_round_trip(db_session):
     assert r.is_no_data is False
     assert json.loads(r.features_json) == {"rsi_14": 62.0, "atr_pct_14": 0.018}
     assert json.loads(r.key_factors_json) == ["rsi_14: 62"]
+    assert r.rationale == "uptrend with low volatility"
+    assert json.loads(r.feature_warnings_json) == []
+    assert r.id is not None
 
 
 def test_save_ticker_evidence_round_trip(db_session):
@@ -81,8 +84,13 @@ def test_save_ticker_evidence_round_trip(db_session):
     r = rows[0]
     assert r.ticker == "AAPL"
     assert r.lean == "bullish"
+    assert r.tick_id == "2026-05-08T14:00:00Z"
+    assert r.magnitude == pytest.approx(0.45)
+    assert r.confidence == pytest.approx(0.6)
     assert r.disagreement == pytest.approx(0.12)
     assert r.analyst_count == 4
+    assert r.summary == "3/4 analysts bullish with low disagreement"
+    assert r.id is not None
     assert json.loads(r.weights_json) == {
         "technical": 1.0,
         "fundamental": 1.0,

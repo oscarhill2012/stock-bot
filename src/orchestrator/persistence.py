@@ -333,9 +333,11 @@ def save_analyst_evidence(
         tick_id: Identifier of the tick that produced this evidence.
         analyst: One of ``technical|fundamental|sentiment|smart_money``.
         ticker: Stock ticker symbol (e.g. ``"AAPL"``).
-        verdict: Dict matching the ``AnalystVerdict`` shape — must contain
-            ``lean``, ``magnitude``, ``confidence``; optionally ``rationale``,
-            ``key_factors``, ``is_no_data``.
+        verdict: The dict produced by ``AnalystVerdict.model_dump()`` from
+            ``src/contract/evidence.py``; all fields including ``rationale``
+            are expected to be present.  The ``.get`` fallbacks below only
+            protect against an out-of-contract partial dict — they are not
+            licence to construct one.
         features: Raw feature dict fed to the analyst (e.g. RSI, ATR values).
         feature_warnings: Any warnings raised during feature extraction.
 
@@ -398,9 +400,11 @@ def save_ticker_evidence(
         session: SQLAlchemy session used for the insert.
         tick_id: Identifier of the tick that produced this evidence.
         ticker: Stock ticker symbol (e.g. ``"AAPL"``).
-        aggregate: Dict matching the ``TickerAggregate`` shape — must contain
-            ``lean``, ``magnitude``, ``confidence``, ``disagreement``; optionally
-            ``summary``.
+        aggregate: The dict produced by ``TickerEvidence.model_dump()`` from
+            ``src/contract/evidence.py``; all fields including ``summary``
+            are expected to be present.  The ``.get`` fallback below only
+            protects against an out-of-contract partial dict — it is not
+            licence to construct one.
         weights: Mapping of analyst name to numeric weight used during
             aggregation (e.g. ``{"technical": 1.0, ...}``).
         analyst_count: Total number of analysts whose evidence was aggregated.
