@@ -1,34 +1,30 @@
-"""Smart-money analyst LlmAgent with dual-emit (legacy signal + new evidence).
+"""Smart-money analyst LlmAgent — evidence-only output (D3).
 
-Smart-money is the only analyst flagged as ``sparse`` in the dual-emit helper:
-its ``before_agent_callback`` can short-circuit the LLM entirely when no
-material activity is detected across the watchlist. The exhaustive-validator
-behaviour used by the other three analysts would re-prompt a skipped LLM, so
-the sparse flag swaps that out for an empty-evidence write on the skip path
-(and a tolerant non-exhaustive write when the LLM does run).
+Smart-money is the only analyst whose ``before_agent_callback`` can short-
+circuit the LLM entirely when no material activity is detected across the
+watchlist (see ``fetch.py``).  In that case ``state["smart_money_verdicts"]``
+is pre-seeded to ``[]`` by the fetch gate; the ``make_evidence_callback``
+after-callback then synthesises a no-data ``AnalystEvidence`` record for every
+watchlist ticker so downstream consumers always receive a complete set.
 """
 from __future__ import annotations
 
 from google.adk.agents import LlmAgent
 
-from agents.analysts._common import make_dual_emit_callback
+from agents.analysts._common import make_evidence_callback
 from contract.extractors.smart_money import extract_smart_money_features
 
 from .fetch import smart_money_fetch_callback
 from .prompts import SMART_MONEY_INSTRUCTION
-from .schema import SmartMoneySignal
 
-# Dual-emit callback: writes legacy state["smart_money_signals"] alongside the
-# new state["smart_money_evidence"]. ``sparse=True`` disables the exhaustive
-# re-prompt because the smart-money gate is allowed to short-circuit with an
-# empty signal list when nothing material was filed.
-_after = make_dual_emit_callback(
+# Evidence-only after-callback: reads verdicts from state["smart_money_verdicts"],
+# runs the smart-money feature extractor, and writes state["smart_money_evidence"].
+# Missing verdicts (LLM skipped or gate short-circuited) produce no-data records
+# via the callback's built-in fallback path — no special ``sparse`` flag needed.
+_after = make_evidence_callback(
     analyst="smart_money",
-    signals_key="smart_money_signals",
-    data_key="smart_money_data",
-    evidence_key="smart_money_evidence",
     extractor=extract_smart_money_features,
-    sparse=True,
+    verdicts_state_key="smart_money_verdicts",
 )
 
 
@@ -37,8 +33,7 @@ smart_money_analyst = LlmAgent(
     name="SmartMoneyAnalyst",
     model="gemini-2.5-flash-lite",
     instruction=SMART_MONEY_INSTRUCTION,
-    output_schema=list[SmartMoneySignal],
-    output_key="smart_money_signals",
+    output_key="smart_money_verdicts",
     before_agent_callback=smart_money_fetch_callback,
     after_agent_callback=_after,
 )
@@ -47,15 +42,14 @@ smart_money_analyst = LlmAgent(
 def _build_smart_money_analyst() -> LlmAgent:
     """Construct a fresh ``SmartMoneyAnalyst`` instance (orchestrator factory).
 
-    Returns a brand-new ``LlmAgent`` wired with the same dual-emit callback,
-    fetch gate, prompt, and output schema as the module-level singleton.
+    Returns a brand-new ``LlmAgent`` wired with the same evidence-only
+    callback, fetch gate, and prompt as the module-level singleton.
     """
     return LlmAgent(
         name="SmartMoneyAnalyst",
         model="gemini-2.5-flash-lite",
         instruction=SMART_MONEY_INSTRUCTION,
-        output_schema=list[SmartMoneySignal],
-        output_key="smart_money_signals",
+        output_key="smart_money_verdicts",
         before_agent_callback=smart_money_fetch_callback,
         after_agent_callback=_after,
     )

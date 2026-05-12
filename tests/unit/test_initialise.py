@@ -2,11 +2,17 @@
 """initialise: pre-flight checks, anchor snapshot, scheduler resume."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
-from lifecycle.initialise import initialise, InitResult, NonEmptyTablesError, EnvVarMissingError, BrokerCashMismatch
+from lifecycle.initialise import (
+    BrokerCashMismatch,
+    EnvVarMissingError,
+    InitResult,
+    NonEmptyTablesError,
+    initialise,
+)
 from orchestrator.persistence import (
     PortfolioSnapshotRow,
     create_all,
@@ -69,7 +75,7 @@ async def test_refuses_on_non_empty_tables(tmp_path, monkeypatch):
     S = make_session_factory(make_engine(db_url))
     s = S()
     save_portfolio_snapshot(s, {
-        "tick_id": "old", "recorded_at": datetime.now(tz=timezone.utc),
+        "tick_id": "old", "recorded_at": datetime.now(tz=UTC),
         "bot_total_value": 1.0, "bot_cash": 1.0,
         "bot_positions_value": 0.0, "bot_position_count": 0,
         "spy_price": 1.0, "spy_value_if_held": 1.0,

@@ -1,7 +1,14 @@
 """Tier 1 unit tests for each risk-gate clamp, in algorithm order."""
 import pytest
 
-from agents.risk_gate.constraints import _clamp_negatives, _clamp_max_position, _clamp_cash_floor, _clamp_max_delta, _clamp_max_turnover, apply_constraints
+from agents.risk_gate.constraints import (
+    _clamp_cash_floor,
+    _clamp_max_delta,
+    _clamp_max_position,
+    _clamp_max_turnover,
+    _clamp_negatives,
+    apply_constraints,
+)
 from orchestrator.state import ClampRecord
 
 

@@ -24,8 +24,8 @@ def test_pipeline_includes_strategist_decision_writer():
 def test_pipeline_stage_count_increased_by_one():
     """The decision writer adds one stage.
 
-    Pre-Plan-C count was 7 (analyst_pool, attribution_writer, strategist, risk_gate,
-    executor, memory_writer, snapshotter). Plan C adds StrategistDecisionWriter → 8.
+    Post-D5 pipeline has 8 sub_agents: AnalystPool, EvidenceWriter, Strategist,
+    StrategistDecisionWriter, RiskGate, Executor, MemoryWriter, Snapshotter.
     """
     pipe = build_pipeline(broker=FakeBroker(starting_cash=1000.0, prices={}), db_session=None)
     assert len(pipe.sub_agents) == 8

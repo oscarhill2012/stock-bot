@@ -13,12 +13,11 @@ def test_smart_money_analyst_name():
     assert smart_money_analyst.name == "SmartMoneyAnalyst"
 
 
-def test_smart_money_analyst_has_dual_emit_callback():
-    """Plan B wires a dual-emit after_agent_callback (legacy signal + evidence).
+def test_smart_money_analyst_output_key():
+    """D3 migrated the output key from signals to verdicts."""
+    assert smart_money_analyst.output_key == "smart_money_verdicts"
 
-    Prior behaviour was an absent after_agent_callback because the analyst was
-    treated as sparse-by-design. Plan B keeps the sparse short-circuit on the
-    fetch side but adds a dual-emit aggregator afterwards (with ``sparse=True``
-    so the exhaustive re-prompt is disabled).
-    """
+
+def test_smart_money_analyst_has_evidence_callback():
+    """D3 wires the evidence-only after_agent_callback (replaces dual-emit)."""
     assert smart_money_analyst.after_agent_callback is not None

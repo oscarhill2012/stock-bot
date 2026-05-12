@@ -4,7 +4,6 @@ from agents.risk_gate.lifecycle import (
     StrategistContractViolation,
     validate_lifecycle_contract,
 )
-from orchestrator.state import MIN_HELD_WEIGHT
 
 
 def test_opening_without_thesis_raises():

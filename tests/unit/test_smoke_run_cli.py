@@ -2,8 +2,6 @@
 """smoke_run script: --help works, dry mode validates wiring without LLM calls."""
 from __future__ import annotations
 
-import pytest
-
 from scripts.smoke_run import build_runner_args
 
 

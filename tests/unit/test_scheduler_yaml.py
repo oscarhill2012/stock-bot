@@ -5,7 +5,6 @@ from pathlib import Path
 
 import yaml
 
-
 SCHED = Path(__file__).resolve().parents[2] / "deploy" / "scheduler.yaml"
 
 

@@ -1,8 +1,8 @@
 """MemoryWriter — rolling buffer append + eviction, ADK BaseAgent wrapper."""
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
+from datetime import UTC, datetime
 
 from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
@@ -15,6 +15,44 @@ from .schema import BufferEntry
 
 BUFFER_MAX   = 24
 BUFFER_EVICT_AT = 25  # evict the oldest entry when buffer reaches this size
+
+
+def _has_real_smart_money(state: dict) -> bool:
+    """Return True iff at least one smart-money evidence row has is_no_data == False.
+
+    Handles both dict-shaped evidence (from JSON state) and Pydantic-object-shaped
+    evidence (from in-process ADK pipelines), so the check is robust regardless
+    of serialisation depth.
+
+    Parameters
+    ----------
+    state:
+        The ADK session state dict; reads ``state["smart_money_evidence"]``.
+
+    Returns
+    -------
+    bool
+        True if at least one evidence row reports real (non-absent) smart-money
+        data; False if the list is missing, empty, or every row is no-data.
+    """
+    for ev in state.get("smart_money_evidence", []) or []:
+        # Evidence rows may be raw dicts or Pydantic model instances.
+        verdict = (
+            ev.get("verdict") if isinstance(ev, dict) else getattr(ev, "verdict", None)
+        )
+        if verdict is None:
+            continue
+
+        # Verdict itself may be a dict or a Pydantic object.
+        is_no_data = (
+            verdict.get("is_no_data")
+            if isinstance(verdict, dict)
+            else getattr(verdict, "is_no_data", False)
+        )
+        if not is_no_data:
+            return True
+
+    return False
 
 
 async def append_with_eviction(
@@ -65,9 +103,7 @@ class MemoryWriter(BaseAgent):
         executions = state.get("executions", [])
 
         new_entry = BufferEntry(
-            timestamp=__import__("datetime").datetime.now(
-                tz=__import__("datetime").timezone.utc
-            ),
+            timestamp=datetime.now(tz=UTC),
             decision_tag=(
                 decision.get("decision_tag", "unknown")
                 if isinstance(decision, dict)
@@ -78,7 +114,7 @@ class MemoryWriter(BaseAgent):
                 if isinstance(decision, dict)
                 else decision.reasoning[:120]
             ),
-            smart_money_seen=bool(state.get("smart_money_signals")),
+            smart_money_seen=_has_real_smart_money(state),
             executions_count=len(executions),
         )
 

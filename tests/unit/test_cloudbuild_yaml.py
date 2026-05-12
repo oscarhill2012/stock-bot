@@ -6,7 +6,6 @@ from pathlib import Path
 
 import yaml
 
-
 CLOUDBUILD = Path(__file__).resolve().parents[2] / "deploy" / "cloudbuild.yaml"
 
 

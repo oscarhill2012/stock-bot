@@ -1,5 +1,6 @@
 """Tier 1 structural test — no LLM calls."""
 from google.adk.agents import ParallelAgent
+
 from agents.analysts import analyst_pool
 
 

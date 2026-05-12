@@ -1,16 +1,17 @@
 """RiskGate BaseAgent — deterministic constraints + order generation."""
 from __future__ import annotations
 
-from typing import Any, AsyncGenerator
+from collections.abc import AsyncGenerator
+from typing import Any
 
 from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event
 
-from .constraints import apply_constraints
-from .lifecycle import StrategistContractViolation, validate_lifecycle_contract
-from .orders import weights_to_orders
 from orchestrator.state import MIN_HELD_WEIGHT
+
+from .constraints import apply_constraints
+from .orders import weights_to_orders
 
 
 class RiskGateAgent(BaseAgent):
@@ -78,10 +79,7 @@ class RiskGateAgent(BaseAgent):
                     f"Closing {t} ({current_weights.get(t)} -> {new_w}) without close_reason"
                 )
 
-        if self.broker:
-            orders = weights_to_orders(proposed, portfolio, prices)
-        else:
-            orders = []
+        orders = weights_to_orders(proposed, portfolio, prices) if self.broker else []
 
         state["final_orders"] = [o.model_dump() for o in orders]
         state["risk_clamps_applied"] = [c.model_dump() for c in clamps]

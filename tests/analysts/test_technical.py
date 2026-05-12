@@ -1,5 +1,6 @@
 """Technical analyst unit tests (Tier 1 — no LLM)."""
 from google.adk.agents import LlmAgent
+
 from agents.analysts.technical.agent import technical_analyst
 
 
@@ -12,4 +13,4 @@ def test_technical_analyst_name():
 
 
 def test_technical_analyst_output_key():
-    assert technical_analyst.output_key == "technical_signals"
+    assert technical_analyst.output_key == "technical_verdicts"

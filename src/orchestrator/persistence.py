@@ -5,7 +5,7 @@ import json
 import os
 from datetime import UTC, datetime
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, String, create_engine
+from sqlalchemy import Boolean, DateTime, Float, Integer, String, UniqueConstraint, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 
@@ -90,7 +90,9 @@ class TradeLogRow(Base):
     catalyst_realised: Mapped[bool] = mapped_column(Boolean)
 
     # Nullable FK-style references linking a trade back to the originating tick.
-    # Populated by the executor when opening/closing a position; NULL for pre-Plan-C rows.
+    # opening_tick_id: copied from PositionThesis.opened_tick_id when executor.BUY
+    #   writes the position. closing_tick_id: stamped by executor.SELL with the
+    #   tick that triggered the close.
     opening_tick_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
     closing_tick_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
 
@@ -108,6 +110,9 @@ class TickerStanceRow(Base):
     """One row per ticker per tick — strategist's per-ticker decision substrate."""
 
     __tablename__ = "ticker_stances"
+    # Enforce one stance row per ticker per tick so analytics joins never
+    # encounter ambiguous duplicates (FU-06).
+    __table_args__ = (UniqueConstraint("tick_id", "ticker", name="uq_ticker_stance_tick_ticker"),)
 
     id: Mapped[int]                    = mapped_column(Integer, primary_key=True, autoincrement=True)
     tick_id: Mapped[str]               = mapped_column(String, index=True)
@@ -219,75 +224,139 @@ def save_portfolio_snapshot(session: Session, snap: dict) -> None:
     session.flush()
 
 
-# ── AttributionSignals ────────────────────────────────────────────────
+# ── AnalystEvidence ───────────────────────────────────────────────────
 
-class AttributionSignalsRow(Base):
-    """One row per analyst signal per tick. `analyst` discriminates type-specific columns."""
+class AnalystEvidenceRow(Base):
+    """One row per analyst per ticker per tick. Mirrors `AnalystEvidence` Pydantic shape."""
 
-    __tablename__ = "attribution_signals"
+    __tablename__ = "analyst_evidence"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     tick_id: Mapped[str] = mapped_column(String, index=True)
     recorded_at: Mapped[datetime] = mapped_column(DateTime)
     analyst: Mapped[str] = mapped_column(String, index=True)
     ticker: Mapped[str] = mapped_column(String, index=True)
-    direction: Mapped[str] = mapped_column(String)
 
-    # Dense-analyst fields (NULL for smart_money rows)
-    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    lean: Mapped[str] = mapped_column(String)
+    magnitude: Mapped[float] = mapped_column(Float)
+    confidence: Mapped[float] = mapped_column(Float)
+    rationale: Mapped[str] = mapped_column(String, default="")
     key_factors_json: Mapped[str] = mapped_column(String, default="[]")
+    is_no_data: Mapped[bool] = mapped_column(Boolean, default=False)
 
-    # Sentiment-only
-    top_headlines_json: Mapped[str | None] = mapped_column(String, nullable=True)
-    social_score_delta: Mapped[float | None] = mapped_column(Float, nullable=True)
-
-    # Smart-money-only
-    conviction: Mapped[str | None] = mapped_column(String, nullable=True)
-    insiders_json: Mapped[str | None] = mapped_column(String, nullable=True)
-    politicians_json: Mapped[str | None] = mapped_column(String, nullable=True)
-    total_dollar_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    features_json: Mapped[str] = mapped_column(String, default="{}")
+    feature_warnings_json: Mapped[str] = mapped_column(String, default="[]")
 
 
-def save_attribution_signal(
+def save_analyst_evidence(
     session: Session,
     *,
     tick_id: str,
     analyst: str,
-    signal: dict,
+    ticker: str,
+    verdict: dict,
+    features: dict,
+    feature_warnings: list[str],
 ) -> None:
-    """Persist one analyst signal. `analyst` must be technical|fundamental|sentiment|smart_money."""
-    now = datetime.now(tz=UTC)
-    common = dict(
+    """Persist one AnalystEvidence row.
+
+    Args:
+        session: SQLAlchemy session used for the insert.
+        tick_id: Identifier of the tick that produced this evidence.
+        analyst: One of ``technical|fundamental|sentiment|smart_money``.
+        ticker: Stock ticker symbol (e.g. ``"AAPL"``).
+        verdict: The dict produced by ``AnalystVerdict.model_dump()`` from
+            ``src/contract/evidence.py``; all fields including ``rationale``
+            are expected to be present.  The ``.get`` fallbacks below only
+            protect against an out-of-contract partial dict — they are not
+            licence to construct one.
+        features: Raw feature dict fed to the analyst (e.g. RSI, ATR values).
+        feature_warnings: Any warnings raised during feature extraction.
+
+    Returns:
+        None. The new row is flushed but **not** committed; the caller controls
+        commit ordering so it can batch writes for the same tick.
+    """
+    row = AnalystEvidenceRow(
         tick_id=tick_id,
-        recorded_at=now,
+        recorded_at=datetime.now(tz=UTC),
         analyst=analyst,
-        ticker=signal["ticker"],
-        direction=signal["direction"],
+        ticker=ticker,
+        lean=verdict["lean"],
+        magnitude=float(verdict["magnitude"]),
+        confidence=float(verdict["confidence"]),
+        rationale=verdict.get("rationale", ""),
+        key_factors_json=json.dumps(verdict.get("key_factors", [])),
+        is_no_data=bool(verdict.get("is_no_data", False)),
+        features_json=json.dumps(features),
+        feature_warnings_json=json.dumps(feature_warnings),
     )
-    if analyst == "smart_money":
-        row = AttributionSignalsRow(
-            **common,
-            confidence=None,
-            key_factors_json="[]",
-            conviction=signal.get("conviction"),
-            insiders_json=json.dumps(signal.get("insiders", [])),
-            politicians_json=json.dumps(signal.get("politicians", [])),
-            total_dollar_value=signal.get("total_dollar_value"),
-        )
-    else:
-        row = AttributionSignalsRow(
-            **common,
-            confidence=signal.get("confidence"),
-            key_factors_json=json.dumps(signal.get("key_factors", [])),
-            top_headlines_json=(
-                json.dumps(signal["top_headlines"])
-                if analyst == "sentiment" and "top_headlines" in signal
-                else None
-            ),
-            social_score_delta=(
-                signal.get("social_score_delta") if analyst == "sentiment" else None
-            ),
-        )
+    session.add(row)
+    session.flush()
+
+
+# ── TickerEvidence ────────────────────────────────────────────────────
+
+class TickerEvidenceRow(Base):
+    """One row per ticker per tick — aggregated cross-analyst stance."""
+
+    __tablename__ = "ticker_evidence"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tick_id: Mapped[str] = mapped_column(String, index=True)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime)
+    ticker: Mapped[str] = mapped_column(String, index=True)
+
+    lean: Mapped[str] = mapped_column(String)
+    magnitude: Mapped[float] = mapped_column(Float)
+    confidence: Mapped[float] = mapped_column(Float)
+    disagreement: Mapped[float] = mapped_column(Float)
+    summary: Mapped[str] = mapped_column(String, default="")
+
+    weights_json: Mapped[str] = mapped_column(String, default="{}")
+    analyst_count: Mapped[int] = mapped_column(Integer, default=0)
+
+
+def save_ticker_evidence(
+    session: Session,
+    *,
+    tick_id: str,
+    ticker: str,
+    aggregate: dict,
+    weights: dict,
+    analyst_count: int,
+) -> None:
+    """Persist one TickerEvidence row.
+
+    Args:
+        session: SQLAlchemy session used for the insert.
+        tick_id: Identifier of the tick that produced this evidence.
+        ticker: Stock ticker symbol (e.g. ``"AAPL"``).
+        aggregate: The dict produced by ``TickerEvidence.model_dump()`` from
+            ``src/contract/evidence.py``; all fields including ``summary``
+            are expected to be present.  The ``.get`` fallback below only
+            protects against an out-of-contract partial dict — it is not
+            licence to construct one.
+        weights: Mapping of analyst name to numeric weight used during
+            aggregation (e.g. ``{"technical": 1.0, ...}``).
+        analyst_count: Total number of analysts whose evidence was aggregated.
+
+    Returns:
+        None. The new row is flushed but **not** committed; the caller controls
+        commit ordering so it can batch writes for the same tick.
+    """
+    row = TickerEvidenceRow(
+        tick_id=tick_id,
+        recorded_at=datetime.now(tz=UTC),
+        ticker=ticker,
+        lean=aggregate["lean"],
+        magnitude=float(aggregate["magnitude"]),
+        confidence=float(aggregate["confidence"]),
+        disagreement=float(aggregate["disagreement"]),
+        summary=aggregate.get("summary", ""),
+        weights_json=json.dumps(weights),
+        analyst_count=int(analyst_count),
+    )
     session.add(row)
     session.flush()
 

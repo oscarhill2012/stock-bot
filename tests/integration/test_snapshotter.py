@@ -1,8 +1,9 @@
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
-from broker.fake import FakeBroker
+import pytest
+
 from agents.snapshot.agent import build_snapshotter
+from broker.fake import FakeBroker
 
 
 def _make_ctx(state: dict) -> MagicMock:

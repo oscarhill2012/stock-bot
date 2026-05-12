@@ -57,7 +57,7 @@ def _build_memory_writer():
 
 def build_pipeline(broker, db_session=None) -> SequentialAgent:
     """Compose the full hourly tick pipeline."""
-    from agents.attribution.writer import build_attribution_writer
+    from agents.contract.evidence_writer import build_evidence_writer
     from agents.executor.agent import build_executor
     from agents.risk_gate.agent import RiskGateAgent
     from agents.snapshot.agent import build_snapshotter
@@ -66,7 +66,7 @@ def build_pipeline(broker, db_session=None) -> SequentialAgent:
         name="HourlyTick",
         sub_agents=[
             _build_analyst_pool(),
-            build_attribution_writer(db_session),
+            build_evidence_writer(db_session),
             _build_strategist(),
             build_strategist_decision_writer(db_session),
             RiskGateAgent(broker=broker),

@@ -1,7 +1,6 @@
 """Shared state schemas — TickState built incrementally across pipeline phases."""
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -66,12 +65,6 @@ class TickState(BaseModel):
     fundamental_data: dict[str, Any]    = Field(default_factory=dict)
     sentiment_data: dict[str, Any]      = Field(default_factory=dict)
     smart_money_data: dict[str, Any] | None = None
-
-    # Written by analyst LLMs (structured signal objects).
-    technical_signals: list[Any]    = Field(default_factory=list)
-    fundamental_signals: list[Any]  = Field(default_factory=list)
-    sentiment_signals: list[Any]    = Field(default_factory=list)
-    smart_money_signals: list[Any]  = Field(default_factory=list)
 
     # Persistent across ticks (loaded from and saved to the ADK session store).
     memory_buffer: list[Any]  = Field(default_factory=list)

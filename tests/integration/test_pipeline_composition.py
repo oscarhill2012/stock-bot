@@ -25,13 +25,13 @@ def test_pipeline_has_eight_stages():
 
 
 def test_pipeline_stage_names():
-    """Stage order: analyst pool → attribution → strategist → decision writer →
+    """Stage order: analyst pool → evidence writer → strategist → decision writer →
     risk gate → executor → memory writer → snapshotter."""
     broker = FakeBroker(starting_cash=10_000.0, prices={})
     pipeline = build_pipeline(broker)
     names = [a.name for a in pipeline.sub_agents]
     assert names[0] == "AnalystPool"
-    assert names[1] == "AttributionWriter"
+    assert names[1] == "EvidenceWriter"
     assert names[2] == "Strategist"
     assert names[3] == "StrategistDecisionWriter"
     assert names[4] == "RiskGate"

@@ -2,11 +2,11 @@
 """compute_equity_curve reads portfolio_snapshots and anchors at first row."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
-from baselines.equity_curve import EquityCurve, compute_equity_curve
+from baselines.equity_curve import compute_equity_curve
 from orchestrator.persistence import (
     create_all,
     make_engine,
@@ -29,7 +29,7 @@ def _seed(db_url: str, rows: list[dict]) -> None:
 def _row(tick_id: str, bot_value: float, spy_price: float, recorded_at=None):
     return {
         "tick_id": tick_id,
-        "recorded_at": recorded_at or datetime.now(tz=timezone.utc),
+        "recorded_at": recorded_at or datetime.now(tz=UTC),
         "bot_total_value": bot_value,
         "bot_cash": bot_value,
         "bot_positions_value": 0.0,

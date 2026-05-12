@@ -2,8 +2,6 @@
 """SessionService factory: dev → SQLite, prod → Postgres URL respected."""
 from __future__ import annotations
 
-import os
-
 import pytest
 
 from orchestrator.persistence import make_session_service
