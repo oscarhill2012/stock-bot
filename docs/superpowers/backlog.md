@@ -54,6 +54,40 @@ A few items previously in this backlog (council debate, persona memory, persona 
 
 ---
 
+### B11. RAG / retrieval substrate over filings, news, and transcripts  *(prose-corpus knowledge base)*
+
+**Origin:** Surfaced during the analyst-LLM narrowing brainstorm (`docs/superpowers/specs/analyst-llm-narrowing-design.md`). The user explicitly framed this as "the next big step" — the narrowing refactor was scoped to leave room for retrieval *without designing it*. The narrowed fundamental and sentiment LLMs are the natural seats: they already read prose, they emit closed-vocabulary tags that index the underlying source documents, and a retrieval layer would augment their prompts ("here is what this company said last quarter", "here is a similar past headline cluster") without changing the analyst topology.
+
+**Distinction from B2 (Goal 3 — knowledge base):**
+
+- **B2** is *outcome-attribution* learning: "save the signal, not the trade" — pattern-recall over historical analyst-evidence + outcome pairs. Stock-agnostic. Lookup primitive: a feature-vector shape.
+- **B11** is *document retrieval*: given the current ticker and analyst, fetch relevant past prose to inject into the prompt. Ticker-keyed. Lookup primitive: a document chunk.
+
+Both are "knowledge bases" in the loose sense; they answer different questions and likely use different storage. They may share infrastructure later, but the brainstorms are separate.
+
+**Substrate already in place after the analyst-LLM narrowing refactor:**
+- `risk_factors_excerpt` and `mda_excerpt` present per filing via `edgartools` (no scraping).
+- News headlines + summaries per Finnhub `company-news`.
+- `AnalystEvidenceRow.key_factors` shaped as queryable closed-vocabulary tags (e.g. `risk:cybersecurity_added`) — usable as retrieval *facets* alongside semantic search.
+- Composite index `(analyst, ticker, recorded_at)` on `AnalystEvidenceRow` for per-ticker history scans.
+- Surface-tracing harness for measuring before/after retrieval impact.
+
+**Key questions to brainstorm:**
+- Corpus scope for v1: filings only, or filings + news? Earnings call transcripts are a third corpus with their own provider story (not currently fetched).
+- Storage backend: SQLite + FTS5 for text search? SQLite + sidecar vector store (sqlite-vec, Chroma, LanceDB)? Postgres + pgvector? The choice intersects with deployment.
+- Embedding model: cheap (text-embedding-3-small) vs richer; cached vs re-computed on retrieval.
+- Retrieval keying: per-ticker history only (cheaper, more focused) vs cross-ticker semantic ("show me other companies that flagged supply_chain risk this quarter")?
+- Wiring: a new `before_model_callback` on fundamental/sentiment that augments their prompt? A separate `RetrievalAgent` step that writes a state key the strategist also sees?
+- Interaction with the closed-vocabulary `key_factors` shape: does retrieval refine the tag set, or co-exist as a separate prompt block?
+- Sparse execution (overlap with B9): does retrieval run every tick, or only when the analyst is being prompted (and B9's gate said yes)?
+- Cold-start: until enough filings + news accumulate, retrieval returns thin context. Behaviour during that window?
+
+**Dependencies:** Analyst-LLM narrowing refactor shipped. Independent of B2 in design, though both may benefit from shared embedding infrastructure.
+
+**Likely outcome of the brainstorm:** decompose into sub-specs (e.g. "filings corpus + retrieval", "news corpus + retrieval", "earnings transcript ingestion", "prompt-side retrieval wiring"). Each becomes its own spec under `docs/superpowers/specs/`.
+
+---
+
 ## Tier 2 — Medium enhancements
 
 ### B3. Real-time / sub-tick exit evaluation
@@ -100,6 +134,45 @@ A few items previously in this backlog (council debate, persona memory, persona 
 - Snapshotting: `weights_used` on `TickerEvidence.aggregate` is currently a flat `dict[str, float]`. Does it become nested too, or do we add a sibling `feature_weights_used`?
 
 **Dependencies:** Phase 4 (Plans A + D) shipped. Strongly coupled to Goal 3 (knowledge base) — this is one of the things that loop should learn rather than have hand-tuned.
+
+**Related extension:** the same machinery could replace the *entire* deterministic verdict function for `technical` / `smart_money` (see `docs/superpowers/specs/analyst-llm-narrowing-design.md` § Deterministic verdict heuristics) — not just the analyst-level weight. Worth surfacing as a sub-question when this brainstorm runs: are we learning *weights over rules* or *replacing rules with a learned function*? Both are continuous with B5's substrate.
+
+---
+
+### B9. Sparse-execution gate for surviving analyst LLMs
+
+**Origin:** Surfaced during the analyst-LLM narrowing brainstorm (`docs/superpowers/specs/analyst-llm-narrowing-design.md`). After narrowing, the fundamental and sentiment LLMs run every tick — but their inputs are *prose*, and prose changes slowly (10-K filings are current for ~90 days; headlines for hours-to-days). Re-prompting on unchanged prose is wasted spend.
+
+**The goal:** only re-prompt fundamental and sentiment LLMs when their underlying prose has *changed* since the last successful prompt. Cache the prior verdict per ticker and reuse it otherwise.
+
+**Key questions:**
+- What is the change-detection primitive per analyst? Filing-recency check for fundamental (any filing in the dump newer than the cached `latest_filed_at`)? Headline URL-set diff for sentiment?
+- Where does the cache live — a new `LlmVerdictCacheRow`, or a `cached_from_tick_id` pointer on the existing `AnalystEvidenceRow`?
+- Cache-eviction policy: TTL-based, manual-invalidation on watchlist changes, both?
+- Invalidate-on-prompt-change: when the prompt template is edited, all cached verdicts are stale. How does the cache key encode prompt version?
+- Does the deterministic feature extractor still run every tick? (Probably yes — extractors are cheap and the features feed the digest aggregate every tick regardless.)
+- Telemetry: surface-trace needs to distinguish "cached verdict reused" from "fresh LLM call" so debug passes can tell which path fired.
+- Cost vs accuracy trade: do we want a force-refresh-every-N-ticks ceiling so we never sit on a stale verdict for unbounded time?
+
+**Dependencies:** Analyst-LLM narrowing refactor shipped. Cleaner once a filings KB exists (B11) since the KB already does the "what's new since last tick?" bookkeeping; before that, the gate logic lives inside each analyst.
+
+---
+
+### B10. Narrative analyst — 13D letters and Form-4 footnotes
+
+**Origin:** Surfaced during the analyst-LLM narrowing brainstorm. The smart_money analyst was switched to deterministic because today's prompt only classifies counts — not because there is no prose to read. SC 13D filings often carry multi-page intent letters ("we plan to nominate two directors", "we believe management should be replaced") and SEC Form 4 footnotes carry context like "shares acquired pursuant to 10b5-1 trading plan adopted 2024-03-15" (i.e. *not* a discretionary buy). The deterministic analyst cannot read these.
+
+**The goal:** add a *new* sibling LLM analyst that reads the prose layer of smart-money filings and emits structured findings in the standard `AnalystEvidence` shape. Runs alongside the deterministic smart_money analyst rather than replacing it.
+
+**Key questions:**
+- Naming: `smart_money_narrative`? `activist_intent`? Something covering both 13D letters and Form-4 footnotes?
+- Where do we get the prose? `edgartools` returns 13D filings but the letter may be an exhibit — verify the extraction path. Form-4 footnote text is in the XML.
+- Verdict surface: bullish/bearish/neutral like the others, or a separate axis (e.g. `intent: activist | passive | strategic | none`)?
+- Aggregation: if both `smart_money` (deterministic) and `smart_money_narrative` (LLM) emit verdicts, does the digest treat them as two analysts in the weighted vote, or fold them into one smart-money slot with sub-weighting?
+- Strong sparseness overlap with B9: 13D filings are rare per ticker; this analyst would emit `is_no_data=true` on most ticks. Likely lands together with the sparse-execution gate.
+- Closed vocabulary for `key_factors`: `intent:activist`, `intent:passive`, `plan:director_nomination`, `plan:replace_management`, `form4:10b5-1_plan`, `form4:open_market`, etc. Where does the vocabulary live — extend `config/analyst_heuristics.json`?
+
+**Dependencies:** Analyst-LLM narrowing refactor shipped. Independent of B9 in principle, but likely co-developed.
 
 ---
 
@@ -154,6 +227,12 @@ A few items previously in this backlog (council debate, persona memory, persona 
 ```
 Phase 4 (Goals 1 + 2 — strategist v2 + analyst contract, plans A→B→C→D)
    │
+   ├── Analyst-LLM narrowing (specced: docs/superpowers/specs/analyst-llm-narrowing-design.md)
+   │     │
+   │     ├── B9  (sparse-execution gate)        ─┐
+   │     ├── B10 (narrative analyst — 13D/Form4) ─┤── often co-developed
+   │     └── B11 (RAG / retrieval substrate)    ─┘
+   │
    ├── B5 (per-evidence weighting) ─┐
    │                                 │
    ├── Goal 3 = B2 (knowledge base, long arc) ─┼── (B5 is one of B2's outputs)
@@ -166,6 +245,6 @@ Phase 4 (Goals 1 + 2 — strategist v2 + analyst contract, plans A→B→C→D)
    └── B7 (cost observability)   — independent, low priority but feeds B2
 ```
 
-**Rough order if doing them in series:** Phase 4 plans A → B → C → D → B6 → B7 → B2 (long arc) → B5 → B4 → B3 → B8.
+**Rough order if doing them in series:** Phase 4 plans A → B → C → D → analyst-LLM narrowing → B6 → B7 → B9 → B11 → B10 → B2 (long arc) → B5 → B4 → B3 → B8.
 
-Most are independent enough to reorder by what hurts most in operation. The one strict ordering is **Phase 4 before B2**: the knowledge base needs a clean signal contract and decision telemetry to reason over.
+Most are independent enough to reorder by what hurts most in operation. Two strict orderings hold: **Phase 4 before B2** (the knowledge base needs a clean signal contract and decision telemetry to reason over) and **analyst-LLM narrowing before B9/B10/B11** (sparse execution, the narrative sibling, and retrieval all assume the narrowed-LLM topology).
