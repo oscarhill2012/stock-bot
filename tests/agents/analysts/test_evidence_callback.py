@@ -206,3 +206,37 @@ def test_empty_tickers_produces_empty_evidence():
 
     assert result is None
     assert state["technical_evidence"] == []
+
+
+# ---------------------------------------------------------------------------
+# Malformed verdict — fail-fast contract
+# ---------------------------------------------------------------------------
+
+def test_malformed_verdict_raises_validation_error():
+    """A verdict that violates AnalystVerdict's range constraints must raise,
+    not be silently coerced or wrapped in a no-data evidence row."""
+    from pydantic import ValidationError
+
+    state = {
+        "tick_id": "2026-05-08T14:00:00Z",
+        "tickers": ["AAPL"],
+        "technical_data": {"AAPL": {}},
+        "technical_verdicts": [
+            {
+                "ticker": "AAPL",
+                "lean": "bullish",
+                "magnitude": 1.5,  # out of [0, 1] range
+                "confidence": 0.6,
+                "rationale": "x",
+                "key_factors": [],
+                "is_no_data": False,
+            }
+        ],
+    }
+    cb = make_evidence_callback(
+        analyst="technical",
+        extractor=extract_technical_features,
+        verdicts_state_key="technical_verdicts",
+    )
+    with pytest.raises(ValidationError):
+        cb(SimpleNamespace(state=state))

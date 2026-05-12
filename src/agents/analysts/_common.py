@@ -13,6 +13,9 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
+from google.adk.agents.callback_context import CallbackContext
+from google.genai import types as genai_types
+
 from contract.evidence import AnalystEvidence, AnalystName, AnalystVerdict
 
 
@@ -21,7 +24,7 @@ def make_evidence_callback(
     analyst: AnalystName,
     extractor: Callable[[Any, str], dict[str, float]],
     verdicts_state_key: str,
-):
+) -> Callable[[CallbackContext], genai_types.Content | None]:
     """Build an ``after_agent_callback`` that converts LLM verdicts to ``AnalystEvidence``.
 
     The new evidence-only callback introduced in D3 does three things:
@@ -62,7 +65,7 @@ def make_evidence_callback(
         protocol.  The callback returns ``None`` (no re-prompt) in all paths.
     """
 
-    def _callback(ctx) -> None:
+    def _callback(ctx: CallbackContext) -> genai_types.Content | None:
         """Execute the evidence-build loop for one analyst tick.
 
         Reads verdicts, runs extractors, and writes a complete evidence list
