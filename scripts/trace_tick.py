@@ -76,10 +76,10 @@ async def main_async(argv: list[str] | None = None) -> int:
 
     # ── Lazy imports after env var is set so LLM agents see STOCKBOT_TRACE ──
     from google.adk import Runner
+    from google.adk.sessions import InMemorySessionService
     from google.genai import types as genai_types
 
     from observability.trace import TraceWriter
-    from orchestrator.persistence import make_session_service
     from orchestrator.pipeline import build_pipeline
 
     # ── Broker selection ──────────────────────────────────────────────────────
@@ -113,7 +113,11 @@ async def main_async(argv: list[str] | None = None) -> int:
     )
 
     pipeline = build_pipeline(broker)
-    session_service = make_session_service()
+    # In-memory session — the trace harness is a single-shot local debug run,
+    # so we deliberately avoid the DB-backed session service. That matters
+    # because the production DatabaseSessionService JSON-serialises state on
+    # every flush, and ``state["_trace"]`` holds a TraceWriter (not JSON-safe).
+    session_service = InMemorySessionService()
     runner = Runner(
         agent=pipeline,
         app_name="StockBot",
@@ -166,6 +170,15 @@ async def main_async(argv: list[str] | None = None) -> int:
             f"✗ trace tick failed; partial written to {path}",
             file=sys.stderr,
         )
+        import traceback as _tb
+        _tb.print_exc()
+        # Drill into ExceptionGroup sub-exceptions — TaskGroup-wrapped errors
+        # in parallel agents would otherwise be hidden behind a generic
+        # "unhandled errors in a TaskGroup" message.
+        if hasattr(exc, "exceptions"):
+            for i, sub in enumerate(exc.exceptions):
+                print(f"  sub-exception [{i}]: {type(sub).__name__}: {sub}", file=sys.stderr)
+                _tb.print_exception(sub)
         print(
             f"  cause: {type(exc).__name__}: {exc}",
             file=sys.stderr,

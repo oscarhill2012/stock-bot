@@ -31,6 +31,7 @@ from google.genai import types as genai_types
 
 from agents.analysts._common import make_evidence_callback
 from agents.analysts.heuristics import NewsVocabulary, load_heuristics
+from contract.evidence import VerdictBatch
 from contract.extractors.news import extract_news_features
 from observability.trace import TraceWriter
 
@@ -177,6 +178,7 @@ def _build_news_analyst(vocab: NewsVocabulary) -> LlmAgent:
         name="NewsAnalyst",
         model=model,
         instruction=instruction,
+        output_schema=VerdictBatch,
         output_key="news_verdicts",
         before_agent_callback=news_fetch_callback,
         after_agent_callback=make_evidence_callback(

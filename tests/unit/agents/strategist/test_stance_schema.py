@@ -46,9 +46,9 @@ def test_rejects_conviction_out_of_range():
         TickerStance(ticker="AAPL", preferred_weight=0.5, conviction=1.5, rationale="x")
 
 
-def test_rejects_rationale_over_140_chars():
+def test_rejects_rationale_over_200_chars():
     with pytest.raises(ValidationError):
-        TickerStance(ticker="AAPL", preferred_weight=0.5, conviction=0.5, rationale="x" * 141)
+        TickerStance(ticker="AAPL", preferred_weight=0.5, conviction=0.5, rationale="x" * 201)
 
 
 def test_rejects_unknown_horizon():

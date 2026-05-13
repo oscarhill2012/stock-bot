@@ -34,6 +34,29 @@ class AnalystVerdict(BaseModel):
     is_no_data: bool = False
 
 
+class TickerVerdict(AnalystVerdict):
+    """An ``AnalystVerdict`` carrying the ticker it applies to.
+
+    LLM analysts (Fundamental, News) emit one of these per watchlist ticker.
+    The ``ticker`` field lets the after-callback associate each verdict back
+    to its ticker without relying on list ordering.
+    """
+
+    ticker: str
+
+
+class VerdictBatch(BaseModel):
+    """Top-level container for an LLM analyst's per-tick output.
+
+    ADK's ``output_schema`` must be a single ``BaseModel`` (not a bare list),
+    so per-ticker verdicts are wrapped in this batch object. The agent's
+    ``after_agent_callback`` is responsible for unwrapping the ``verdicts``
+    list before feature extraction.
+    """
+
+    verdicts: list[TickerVerdict] = Field(default_factory=list)
+
+
 class AnalystEvidence(BaseModel):
     """One analyst's structured output for one ticker on one tick.
 

@@ -131,9 +131,14 @@ def _trace_maybe(
     state_keys:
         Optional list of state keys to record alongside the payload.
     """
-    # Guard: only operate on genuine dicts to avoid AttributeError on ADK
-    # state proxies or other dict-like subclasses that override __getitem__.
-    tw = state.get("_trace") if isinstance(state, dict) else None
+    # Duck-typed lookup: ADK's ``Session.state`` is a ``State`` object that
+    # is NOT a ``dict`` subclass but does expose a dict-like ``.get`` API.
+    # A previous isinstance(state, dict) guard silently no-op'd every hook
+    # because ``State`` fails that check.
+    try:
+        tw = state.get("_trace")
+    except (AttributeError, TypeError):
+        return
     if tw is None:
         return
 

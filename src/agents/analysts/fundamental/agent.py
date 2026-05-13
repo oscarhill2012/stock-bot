@@ -28,6 +28,7 @@ from google.genai import types as genai_types
 
 from agents.analysts._common import make_evidence_callback
 from agents.analysts.heuristics import FundamentalVocabulary, load_heuristics
+from contract.evidence import VerdictBatch
 from contract.extractors.fundamental import extract_fundamental_features
 from observability.trace import TraceWriter
 
@@ -175,6 +176,7 @@ def _build_fundamental_analyst(vocab: FundamentalVocabulary) -> LlmAgent:
         name="FundamentalAnalyst",
         model=model,
         instruction=instruction,
+        output_schema=VerdictBatch,
         output_key="fundamental_verdicts",
         before_agent_callback=fundamental_fetch_callback,
         after_agent_callback=_after,
