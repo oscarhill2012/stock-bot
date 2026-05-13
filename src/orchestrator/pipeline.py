@@ -7,10 +7,10 @@ from google.adk.agents import SequentialAgent
 def _build_analyst_pool():
     """Build a fresh AnalystPool each time to avoid single-parent constraint.
 
-    Five children: Technical, Fundamental, News, SmartMoney (all LlmAgent),
-    and Social (a deterministic BaseAgent).  Social's before-callback fetches
-    raw data, _run_async_impl derives verdicts via heuristics, and the
-    after-callback persists AnalystEvidence records — no LLM is ever invoked.
+    Five children: Fundamental, News, SmartMoney (LlmAgent) plus Technical
+    and Social (deterministic BaseAgent).  Both BaseAgent analysts run their
+    fetch callback, derive verdicts via heuristics in ``_run_async_impl``,
+    and persist AnalystEvidence in their after-callback — no LLM is invoked.
     """
     from google.adk.agents import ParallelAgent
 
@@ -29,10 +29,10 @@ def _build_analyst_pool():
     return ParallelAgent(
         name="AnalystPool",
         sub_agents=[
-            _build_technical_analyst(),
+            _build_technical_analyst(h.technical),  # deterministic BaseAgent
             _build_fundamental_analyst(),
             _build_news_analyst(),
-            _build_social_analyst(h.social),   # deterministic BaseAgent
+            _build_social_analyst(h.social),         # deterministic BaseAgent
             _build_smart_money_analyst(),
         ],
     )

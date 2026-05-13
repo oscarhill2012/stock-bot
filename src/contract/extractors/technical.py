@@ -1,17 +1,36 @@
-"""Technical analyst deterministic feature extractor.
+"""Technical analyst deterministic feature extractor and verdict derivation.
 
-Input: the dict that lives under ``state["technical_data"][ticker]`` — typically
-a dump of the project's ``StockStats`` model. The function is forgiving about
-field shape: missing keys default to no-data (0.0 features) rather than raising.
+Two public entry points:
+
+- ``extract_technical_features`` — converts raw OHLCV history into the locked
+  feature catalogue (``_KEYS``).  Forgiving: missing keys default to 0.0.
+
+- ``derive_technical_verdict`` — maps the feature catalogue to an
+  ``AnalystVerdict`` using the Phase-5 heuristic rules.  Pure function; safe
+  for table-driven unit tests (no I/O, no globals).
+
+Input for the extractor: the dict that lives under
+``state["technical_data"][ticker]`` — typically a dump of the project's
+``StockStats`` model.
 """
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from math import copysign
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
 import talib  # canonical TA-Lib bindings — pandas-ta was rejected in Plan A § Task A5
+
+# TYPE_CHECKING guard prevents a circular import at module load time:
+# contract.extractors.technical ← agents.analysts.heuristics ←
+#   agents.analysts.__init__ ← technical.agent ← contract.extractors.technical.
+# Both imports are done lazily inside derive_technical_verdict at runtime,
+# by which point the module graph is fully initialised.
+if TYPE_CHECKING:
+    from agents.analysts.heuristics import TechnicalHeuristics
+    from contract.evidence import AnalystVerdict
 
 # The complete, locked set of feature keys this extractor always returns.
 _KEYS = (
@@ -151,3 +170,165 @@ def extract_technical_features(raw: Mapping[str, Any], ticker: str) -> dict[str,
         out["dist_from_low_52w_pct"] = float((last_close / low_52w - 1.0) * 100.0)
 
     return out
+
+
+def derive_technical_verdict(
+    features: dict[str, float],
+    h: TechnicalHeuristics,
+) -> AnalystVerdict:
+    """Map the technical feature vector to an ``AnalystVerdict`` via Phase-5 heuristics.
+
+    Pure function — no I/O, no globals.  Safe for table-driven unit tests.
+
+    Lean logic (in order of precedence):
+    1. Base lean = sign of ``pct_change_20d``.
+    2. RSI exhaustion / capitulation flips override the trend lean.
+
+    Confidence modifiers (additive, clamped to ``[0, 1]``):
+    - ``+h.confidence_boost_step`` when 5d and 20d momentum agree (same sign).
+    - ``+h.confidence_boost_step`` when within ``h.near_52w_extreme_pct`` of
+      either the 52-week high *or* low.
+    - ``-h.confidence_penalty_step`` when ``atr_pct_14 > h.atr_high_volatility_pct``.
+
+    Note on 52-week distance keys:
+    - ``dist_from_high_52w_pct`` is **negative** (e.g. -3.0 = 3 % below high).
+      "Near" is tested as ``abs(value) <= h.near_52w_extreme_pct``.
+    - ``dist_from_low_52w_pct`` is **positive** (e.g. 5.0 = 5 % above low).
+      "Near" is tested as ``value <= h.near_52w_extreme_pct``.
+
+    Parameters
+    ----------
+    features:
+        Output of ``extract_technical_features`` — all keys from ``_KEYS``
+        present as ``float``.
+    h:
+        Validated ``TechnicalHeuristics`` config section.
+
+    Returns
+    -------
+    AnalystVerdict
+        Fully populated verdict including ``lean``, ``magnitude``,
+        ``confidence``, ``rationale``, ``key_factors``, and ``is_no_data``.
+    """
+    # Deferred runtime imports — avoids the circular import that arises when
+    # loading this module triggers agents.analysts.__init__ (which re-imports
+    # this module before it has finished initialising).
+    from contract.evidence import AnalystVerdict  # noqa: PLC0415
+
+    # --- No-data fingerprint --------------------------------------------------
+    # The extractor emits all-zero features when price history is missing.
+    # Detect this state via the three core indicators that would otherwise be
+    # non-zero for any real ticker.
+    if (
+        features["rsi_14"] == 0
+        and features["pct_change_20d"] == 0
+        and features["atr_pct_14"] == 0
+    ):
+        return AnalystVerdict(
+            lean="neutral",
+            magnitude=0.0,
+            confidence=0.0,
+            rationale="no price data",
+            key_factors=[],
+            is_no_data=True,
+        )
+
+    factors: list[str] = []
+
+    # --- Base lean from 20-day momentum ---------------------------------------
+    pct20 = features["pct_change_20d"]
+    pct5  = features["pct_change_5d"]
+
+    sign20 = copysign(1.0, pct20) if pct20 != 0 else 0.0
+    sign5  = copysign(1.0, pct5)  if pct5  != 0 else 0.0
+
+    if sign20 > 0:
+        lean = "bullish"
+        factors.append("trend_up_20d")
+    elif sign20 < 0:
+        lean = "bearish"
+        factors.append("trend_down_20d")
+    else:
+        lean = "neutral"
+
+    # --- 5d / 20d momentum agreement -----------------------------------------
+    if sign5 == sign20 and sign20 != 0:
+        factors.append("momentum_agree")
+    elif sign5 != 0 and sign20 != 0:
+        # Both have data but point in opposite directions.
+        factors.append("momentum_disagree")
+
+    # --- RSI overbought / oversold flips -------------------------------------
+    rsi = features["rsi_14"]
+
+    if rsi > h.rsi_overbought:
+        factors.append("rsi_overbought")
+        # Exhaustion: strong recent rally at extreme RSI suggests reversal.
+        if pct5 > 0:
+            lean = "bearish"
+
+    if rsi < h.rsi_oversold:
+        factors.append("rsi_oversold")
+        # Capitulation: sharp recent sell-off at extreme RSI suggests bounce.
+        if pct5 < 0:
+            lean = "bullish"
+
+    # --- Volume context -------------------------------------------------------
+    vol_ratio = features["vol_ratio_20d"]
+
+    if vol_ratio > h.vol_ratio_breakout:
+        factors.append("vol_breakout")
+    elif vol_ratio < h.vol_ratio_dry_up:
+        factors.append("vol_dry_up")
+
+    # --- 52-week proximity ---------------------------------------------------
+    # dist_from_high_52w_pct is negative — negate to get a positive "distance".
+    dist_high = features.get("dist_from_high_52w_pct", -100.0)
+    dist_low  = features.get("dist_from_low_52w_pct",   100.0)
+
+    if abs(dist_high) <= h.near_52w_extreme_pct:
+        factors.append("near_52w_high")
+
+    if dist_low <= h.near_52w_extreme_pct:
+        factors.append("near_52w_low")
+
+    # --- High volatility flag ------------------------------------------------
+    if features["atr_pct_14"] > h.atr_high_volatility_pct:
+        factors.append("high_volatility")
+
+    # --- Magnitude -----------------------------------------------------------
+    # Base: scale the 20d momentum, then apply volume adjustments.
+    magnitude = min(abs(pct20) * h.pct_change_momentum_scale, h.magnitude_cap)
+
+    if "vol_breakout" in factors:
+        magnitude = min(magnitude + 0.15, h.magnitude_cap)
+
+    if "vol_dry_up" in factors:
+        magnitude = max(magnitude - 0.10, 0.0)
+
+    # --- Confidence ----------------------------------------------------------
+    confidence = h.confidence_base
+
+    if "momentum_agree" in factors:
+        confidence += h.confidence_boost_step
+
+    # Either 52w extreme proximity boosts conviction.
+    if "near_52w_high" in factors or "near_52w_low" in factors:
+        confidence += h.confidence_boost_step
+
+    if "high_volatility" in factors:
+        confidence -= h.confidence_penalty_step
+
+    confidence = max(0.0, min(1.0, confidence))
+
+    # --- Rationale -----------------------------------------------------------
+    rationale = (", ".join(factors) or "neutral")[:160]
+
+    return AnalystVerdict(
+        lean=lean,
+        magnitude=magnitude,
+        confidence=confidence,
+        rationale=rationale,
+        key_factors=factors,
+        is_no_data=False,
+    )
