@@ -45,22 +45,41 @@ def _build_strategist():
     validation after-callback so the prompt template receives real holdings
     and per-ticker evidence before the LLM runs.
     """
+    import os
+
     from google.adk.agents import LlmAgent
 
     from agents.strategist.agent import (
         _composite_before_callback,
+        _make_strategist_trace_after,
+        _make_strategist_trace_before,
         _strategist_validation_callback,
     )
     from agents.strategist.prompts import STRATEGIST_INSTRUCTION
     from agents.strategist.schema import StrategistDecision
+
+    # Wire the LLM-trace callbacks only when STOCKBOT_TRACE=1.  On production
+    # runs both callbacks are ``None`` and ADK skips the hooks entirely.
+    model_name = "gemini-2.5-pro"
+    before_model = (
+        _make_strategist_trace_before(model_name)
+        if os.environ.get("STOCKBOT_TRACE") == "1" else None
+    )
+    after_model = (
+        _make_strategist_trace_after(model_name)
+        if os.environ.get("STOCKBOT_TRACE") == "1" else None
+    )
+
     return LlmAgent(
         name="Strategist",
-        model="gemini-2.5-pro",
+        model=model_name,
         instruction=STRATEGIST_INSTRUCTION,
         output_schema=StrategistDecision,
         output_key="strategist_decision",
         before_agent_callback=_composite_before_callback,
         after_agent_callback=_strategist_validation_callback,
+        before_model_callback=before_model,
+        after_model_callback=after_model,
     )
 
 

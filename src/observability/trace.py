@@ -31,6 +31,21 @@ class TraceWriter:
         # Python 3.7+ dicts are insertion-ordered; no need for OrderedDict.
         self._sections: dict[str, Any] = {}
 
+    # ── deepcopy / copy passthrough ──────────────────────────────────────────
+    # ADK's InMemorySessionService deep-copies session state on every
+    # ``create_session`` and ``get_session``.  If we let the writer be cloned,
+    # each agent would mutate a different copy and the harness would flush an
+    # empty one at the end.  Returning ``self`` from ``__deepcopy__`` /
+    # ``__copy__`` makes the writer a shared singleton across all copies of
+    # the session state for one tick, which is exactly what we want.
+    def __deepcopy__(self, memo: dict) -> TraceWriter:
+        """Identity passthrough so all session-state copies share one writer."""
+        return self
+
+    def __copy__(self) -> TraceWriter:
+        """Identity passthrough — see ``__deepcopy__``."""
+        return self
+
     def snapshot(
         self,
         label: str,

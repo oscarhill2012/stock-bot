@@ -147,6 +147,14 @@ async def main_async(argv: list[str] | None = None) -> int:
         state=initial_state,
     )
 
+    # InMemorySessionService deep-copies ``state`` on ``create_session``,
+    # so the TraceWriter stored inside the session is a *different* object
+    # from the local ``tw`` we just constructed.  Re-bind ``tw`` to the
+    # in-session instance so the finalise() at the end flushes the writer
+    # the pipeline callbacks actually wrote into (otherwise we'd flush an
+    # empty TraceWriter and produce a {} JSON file).
+    tw = adk_session.state["_trace"]
+
     # ── Run one tick ──────────────────────────────────────────────────────────
     try:
         events = runner.run_async(

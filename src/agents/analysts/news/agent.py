@@ -70,8 +70,12 @@ def _make_llm_trace_before(model: str) -> object:
         """Capture the outgoing prompt into the TraceWriter, if active."""
         state = callback_context.state
 
-        # Single dict lookup — no-op on production paths.
-        tw = state.get("_trace") if isinstance(state, dict) else None
+        # Duck-typed lookup — ADK's ``State`` is dict-like but not a dict subclass,
+        # so an ``isinstance(state, dict)`` guard would silently no-op every hook.
+        try:
+            tw = state.get("_trace")
+        except (AttributeError, TypeError):
+            return None
         if not isinstance(tw, TraceWriter):
             return None
 
@@ -117,7 +121,11 @@ def _make_llm_trace_after(model: str) -> object:
         """Update the TraceWriter with the model's response text."""
         state = callback_context.state
 
-        tw = state.get("_trace") if isinstance(state, dict) else None
+        # Duck-typed lookup — see _make_llm_trace_before for why isinstance fails.
+        try:
+            tw = state.get("_trace")
+        except (AttributeError, TypeError):
+            return None
         if not isinstance(tw, TraceWriter):
             return None
 

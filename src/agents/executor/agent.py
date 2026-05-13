@@ -40,7 +40,7 @@ class ExecutorAgent(BaseAgent):
         # Guard against re-running the same tick (e.g. on ADK retry).
         if state.get("last_executed_tick_id") == tick_id:
             return
-        yield  # required by the ADK generator protocol
+            yield  # pragma: no cover — keeps this function an async generator
 
         orders_raw = state.get("final_orders", [])
         orders = [

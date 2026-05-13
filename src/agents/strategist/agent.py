@@ -332,7 +332,12 @@ def _make_strategist_trace_before(model: str) -> object:
     ) -> _types.Content | None:
         """Capture the outgoing Strategist prompt into the TraceWriter, if active."""
         state = callback_context.state
-        tw = state.get("_trace") if isinstance(state, dict) else None
+        # Duck-typed lookup — ADK's ``State`` is dict-like but not a dict
+        # subclass, so isinstance(state, dict) would silently no-op every hook.
+        try:
+            tw = state.get("_trace")
+        except (AttributeError, TypeError):
+            return None
         if not isinstance(tw, _TW):
             return None
 
@@ -380,7 +385,12 @@ def _make_strategist_trace_after(model: str) -> object:
     ) -> _types.Content | None:
         """Update the TraceWriter with the Strategist's response text."""
         state = callback_context.state
-        tw = state.get("_trace") if isinstance(state, dict) else None
+        # Duck-typed lookup — ADK's ``State`` is dict-like but not a dict
+        # subclass, so isinstance(state, dict) would silently no-op every hook.
+        try:
+            tw = state.get("_trace")
+        except (AttributeError, TypeError):
+            return None
         if not isinstance(tw, _TW):
             return None
 
