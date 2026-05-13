@@ -11,7 +11,7 @@ from __future__ import annotations
 DEFAULT_ANALYST_WEIGHTS: dict[str, float] = {
     "technical": 1.0,
     "fundamental": 1.0,
-    "sentiment": 1.0,
+    "news": 1.0,
     "smart_money": 1.0,
 }
 

@@ -263,7 +263,7 @@ def save_analyst_evidence(
     Args:
         session: SQLAlchemy session used for the insert.
         tick_id: Identifier of the tick that produced this evidence.
-        analyst: One of ``technical|fundamental|sentiment|smart_money``.
+        analyst: One of ``technical|fundamental|news|social|smart_money``.
         ticker: Stock ticker symbol (e.g. ``"AAPL"``).
         verdict: The dict produced by ``AnalystVerdict.model_dump()`` from
             ``src/contract/evidence.py``; all fields including ``rationale``

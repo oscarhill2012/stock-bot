@@ -5,9 +5,10 @@ from contract.digest_defaults import DEFAULT_ANALYST_WEIGHTS, DIRECTION_DEAD_ZON
 from contract.evidence import AnalystName  # noqa: F401  (used in type-checks)
 
 
-def test_default_weights_cover_all_four_analysts():
+def test_default_weights_cover_expected_analysts():
+    # Phase 5: 'sentiment' is replaced by 'news'; 'social' will be added in Task 7.
     assert set(DEFAULT_ANALYST_WEIGHTS.keys()) == {
-        "technical", "fundamental", "sentiment", "smart_money"
+        "technical", "fundamental", "news", "smart_money"
     }
 
 

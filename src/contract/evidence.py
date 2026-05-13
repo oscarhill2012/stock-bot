@@ -20,7 +20,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-AnalystName = Literal["technical", "fundamental", "sentiment", "smart_money"]
+AnalystName = Literal["technical", "fundamental", "news", "social", "smart_money"]
 
 
 class AnalystVerdict(BaseModel):
