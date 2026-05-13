@@ -1,9 +1,34 @@
 """Smart-money analyst deterministic feature extractor.
 
+Phase 5 scope: smart_money consumes **external-observer flows only** —
+congressional / public-figure trades (Quiver) and notable 13F holders.
+Insider trades (Form 4) are now part of the Fundamental analyst's domain.
+
 Sparseness is the rule, not the exception — most tickers will have zero filings.
-The `is_no_data` feature is the signal to the aggregator that this analyst's
-verdict should be ignored for this ticker (`fill_missing` semantics in
-`contract.digest`).
+The ``is_no_data`` feature is the signal to the aggregator that this analyst's
+verdict should be ignored for this ticker (``fill_missing`` semantics in
+``contract.digest``).
+
+Closed vocabulary
+-----------------
+The ``key_factors`` tags emitted by the downstream verdict function
+(``derive_smart_money_verdict``, Task 9) are drawn exclusively from this set:
+
+``net_buying``
+    Net dollar flow across politicians + 13F holders is positive.
+``net_selling``
+    Net dollar flow is negative.
+``multi_filer_consensus``
+    Three or more distinct filers on the same side.
+``lone_filer``
+    Only one filer present across all sources.
+``high_volume_flow``
+    Total trades (buys + sells) meet or exceed the high-activity threshold.
+``mixed_activity``
+    Buys and sells are both present with no dominant side.
+
+No insider-derived tags (e.g. ``cluster_buying``, ``planned_sale_dominant``)
+appear here; those live in the Fundamental analyst's vocabulary.
 """
 from __future__ import annotations
 
