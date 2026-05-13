@@ -31,7 +31,7 @@ def _build_analyst_pool():
         sub_agents=[
             _build_technical_analyst(h.technical),         # deterministic BaseAgent
             _build_fundamental_analyst(h.fundamental_vocabulary),  # narrowed LlmAgent
-            _build_news_analyst(),
+            _build_news_analyst(h.news_vocabulary),
             _build_social_analyst(h.social),            # deterministic BaseAgent
             _build_smart_money_analyst(h.smart_money),  # deterministic BaseAgent
         ],
