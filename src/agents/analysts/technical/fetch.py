@@ -7,6 +7,7 @@ from google.adk.agents.callback_context import CallbackContext
 from google.genai import types as genai_types
 
 from data import get_stock_stats
+from observability.trace import _trace_maybe
 
 logger = logging.getLogger(__name__)
 
@@ -28,4 +29,8 @@ async def technical_fetch_callback(
         technical_data[ticker] = stats.model_dump() if hasattr(stats, "model_dump") else stats
 
     state["technical_data"] = technical_data
+
+    # Surface trace — no-op unless state["_trace"] is set by trace_tick.py.
+    _trace_maybe(state, "01_fetch_technical", technical_data)
+
     return None

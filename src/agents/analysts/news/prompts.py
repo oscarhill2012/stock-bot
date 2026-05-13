@@ -1,0 +1,96 @@
+"""News analyst prompt — Phase 5 (closed-vocab, prose-only mandate).
+
+The narrowed News LLM reads headlines and article summaries only.  Polarity
+statistics (positive_score, negative_score, mention_count) that previously
+lived in the prompt are removed; those numeric features flow through the
+extractor channel instead.
+
+Runtime context is delivered via two ADK session-state keys that the
+``news_fetch_callback`` populates before this agent runs:
+
+- ``news_context`` — a formatted multi-ticker block containing each ticker's
+  headline list and article summaries.
+- ``tickers`` — the watchlist (standard pipeline state key).
+
+These appear as ``{news_context}`` and ``{tickers}`` in the rendered
+instruction string so ADK's ``inject_session_state`` substitutes them at
+agent-run time.
+"""
+from __future__ import annotations
+
+from agents.analysts.heuristics import NewsVocabulary
+
+# ---------------------------------------------------------------------------
+# Prompt template
+# ---------------------------------------------------------------------------
+# Vocabulary tokens (single-brace) are substituted at agent-construction time
+# by ``build_news_instruction``.  Runtime state tokens ``{news_context}`` and
+# ``{tickers}`` are left intact as single-brace so ADK's state injector fills
+# them each tick.
+# ---------------------------------------------------------------------------
+
+_TEMPLATE = """You are the News analyst.
+
+For each ticker in the batch, read the supplied headlines and article
+summaries. Output a structured verdict per ticker using ONLY the closed
+vocabulary below.
+
+Closed vocabulary (use these tags ONLY in key_factors):
+
+  catalyst:<type>     ∈ {catalyst_options}
+  novelty:<level>     ∈ {novelty_options}
+  direction:<value>   ∈ {direction_options}
+  material:<bool>     when material to a long-only fund
+
+For each ticker output a JSON object with fields:
+  ticker       string (must be one of the watchlist tickers)
+  lean         ∈ {{bullish, bearish, neutral}}
+  magnitude    ∈ [0, 1]
+  confidence   ∈ [0, 1]
+  rationale    string ≤160 chars naming the dominant catalyst
+  key_factors  list of closed-vocabulary tags (≤8)
+  is_no_data   true if no headlines in the window
+
+Decision rule:
+- Lean ← direction: positive → bullish; negative → bearish; mixed/none → neutral.
+- Magnitude ← novelty × material weight: high novelty + material → higher magnitude.
+- Confidence scales with headline count; fewer than 3 articles caps confidence low.
+- Conflicting direction signals across articles → mixed → neutral with low confidence.
+
+MUST cover ALL tickers: {tickers}
+
+--- HEADLINES & SUMMARIES ---
+{news_context}
+"""
+
+
+def build_news_instruction(vocab: NewsVocabulary) -> str:
+    """Render the News LLM instruction with the closed vocabulary baked in.
+
+    Substitutes the three vocab placeholder tokens (``{catalyst_options}``,
+    ``{novelty_options}``, ``{direction_options}``) using ``str.format``.
+    The two runtime state tokens — ``{news_context}`` and ``{tickers}`` — are
+    left intact in the returned string; ADK's ``inject_session_state`` fills
+    them each tick from session state written by ``news_fetch_callback``.
+
+    Parameters
+    ----------
+    vocab:
+        Validated ``NewsVocabulary`` instance holding the three closed-
+        vocabulary lists.
+
+    Returns
+    -------
+    str
+        The rendered instruction string.  Contains exactly two remaining
+        single-brace tokens: ``{news_context}`` and ``{tickers}``.
+    """
+    return _TEMPLATE.format(
+        catalyst_options ="{" + " | ".join(vocab.catalysts) + "}",
+        novelty_options  ="{" + " | ".join(vocab.novelty)   + "}",
+        direction_options="{" + " | ".join(vocab.direction)  + "}",
+        # Protect the two ADK runtime placeholders from str.format substitution
+        # by passing them back as themselves.
+        news_context="{news_context}",
+        tickers     ="{tickers}",
+    )

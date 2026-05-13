@@ -1,4 +1,5 @@
 """build_ticker_evidence aggregator tests — Tier 1, no LLM."""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -14,8 +15,9 @@ def _now():
     return datetime(2026, 5, 8, 14, 0, tzinfo=UTC)
 
 
-def _ev(analyst: str, lean: str, conf: float, ticker: str = "AAPL",
-        magnitude: float | None = None) -> AnalystEvidence:
+def _ev(
+    analyst: str, lean: str, conf: float, ticker: str = "AAPL", magnitude: float | None = None
+) -> AnalystEvidence:
     """Build an AnalystEvidence. By default magnitude == confidence (the LLM is
     instructed to keep them aligned unless it has a reason not to). Tests that
     care about the magnitude/confidence split pass `magnitude=` explicitly."""
@@ -44,11 +46,12 @@ def test_all_bullish_high_confidence_aggregates_bullish():
     per_analyst = {
         "technical": _ev("technical", "bullish", 0.8),
         "fundamental": _ev("fundamental", "bullish", 0.7),
-        "sentiment": _ev("sentiment", "bullish", 0.6),
+        "news": _ev("news", "bullish", 0.6),
         "smart_money": _ev("smart_money", "bullish", 0.9),
     }
-    te = build_ticker_evidence(per_analyst, ticker="AAPL", tick_id="t",
-                                recorded_at=_now(), weights=DEFAULT_ANALYST_WEIGHTS)
+    te = build_ticker_evidence(
+        per_analyst, ticker="AAPL", tick_id="t", recorded_at=_now(), weights=DEFAULT_ANALYST_WEIGHTS
+    )
     assert te.aggregate.lean == "bullish"
     assert te.aggregate.magnitude > 0.5
 
@@ -63,7 +66,7 @@ def test_split_low_confidence_falls_into_dead_zone_neutral():
     per_analyst = {
         "technical": _ev("technical", "bullish", 0.1),
         "fundamental": _ev("fundamental", "bullish", 0.1),
-        "sentiment": _ev("sentiment", "bearish", 0.1),
+        "news": _ev("news", "bearish", 0.1),
         "smart_money": _ev("smart_money", "bearish", 0.1),
     }
     te = build_ticker_evidence(per_analyst, "AAPL", "t", _now(), DEFAULT_ANALYST_WEIGHTS)
@@ -74,7 +77,7 @@ def test_one_strong_bullish_beats_three_weak_neutrals_outside_dead_zone():
     per_analyst = {
         "technical": _ev("technical", "bullish", 0.95),
         "fundamental": _ev("fundamental", "neutral", 0.0),
-        "sentiment": _ev("sentiment", "neutral", 0.0),
+        "news": _ev("news", "neutral", 0.0),
         "smart_money": _ev("smart_money", "neutral", 0.0),
     }
     te = build_ticker_evidence(per_analyst, "AAPL", "t", _now(), DEFAULT_ANALYST_WEIGHTS)
@@ -85,7 +88,7 @@ def test_dead_zone_collapses_marginally_positive_to_neutral():
     per_analyst = {
         "technical": _ev("technical", "bullish", 0.5),
         "fundamental": _ev("fundamental", "neutral", 0.0),
-        "sentiment": _ev("sentiment", "neutral", 0.0),
+        "news": _ev("news", "neutral", 0.0),
         "smart_money": _ev("smart_money", "neutral", 0.0),
     }
     te = build_ticker_evidence(per_analyst, "AAPL", "t", _now(), DEFAULT_ANALYST_WEIGHTS)
@@ -99,7 +102,7 @@ def test_aggregate_confidence_is_mean_of_contributing_analysts():
     per_analyst = {
         "technical": _ev("technical", "bullish", 0.4),
         "fundamental": _ev("fundamental", "bullish", 0.6),
-        "sentiment": _ev("sentiment", "bullish", 0.8),
+        "news": _ev("news", "bullish", 0.8),
         "smart_money": _ev("smart_money", "bullish", 0.6),
     }
     te = build_ticker_evidence(per_analyst, "AAPL", "t", _now(), DEFAULT_ANALYST_WEIGHTS)
@@ -110,7 +113,7 @@ def test_aggregate_confidence_excludes_no_data_analysts():
     per_analyst = {
         "technical": _ev("technical", "bullish", 0.9),
         "fundamental": _ev("fundamental", "bullish", 0.9),
-        "sentiment": _ev("sentiment", "bullish", 0.9),
+        "news": _ev("news", "bullish", 0.9),
     }
     te = build_ticker_evidence(per_analyst, "AAPL", "t", _now(), DEFAULT_ANALYST_WEIGHTS)
     assert te.aggregate.confidence == pytest.approx(0.9, rel=0.01)
@@ -123,7 +126,7 @@ def test_aggregate_summary_describes_lean_breakdown():
     per_analyst = {
         "technical": _ev("technical", "bullish", 0.6),
         "fundamental": _ev("fundamental", "bullish", 0.6),
-        "sentiment": _ev("sentiment", "bullish", 0.6),
+        "news": _ev("news", "bullish", 0.6),
         "smart_money": _ev("smart_money", "bearish", 0.6),
     }
     te = build_ticker_evidence(per_analyst, "AAPL", "t", _now(), DEFAULT_ANALYST_WEIGHTS)
@@ -144,7 +147,7 @@ def test_max_split_disagreement_high():
     per_analyst = {
         "technical": _ev("technical", "bullish", 1.0),
         "fundamental": _ev("fundamental", "bullish", 1.0),
-        "sentiment": _ev("sentiment", "bearish", 1.0),
+        "news": _ev("news", "bearish", 1.0),
         "smart_money": _ev("smart_money", "bearish", 1.0),
     }
     te = build_ticker_evidence(per_analyst, "AAPL", "t", _now(), DEFAULT_ANALYST_WEIGHTS)
@@ -160,7 +163,8 @@ def test_missing_analysts_neutral_filled():
     }
     te = build_ticker_evidence(per_analyst, "AAPL", "t", _now(), DEFAULT_ANALYST_WEIGHTS)
     assert set(te.per_analyst.keys()) == set(DEFAULT_ANALYST_WEIGHTS.keys())
-    for missing in ("fundamental", "sentiment", "smart_money"):
+    # Task 7 adds social; all four non-provided analysts should be neutral-filled.
+    for missing in ("fundamental", "news", "social", "smart_money"):
         assert te.per_analyst[missing].verdict.lean == "neutral"
         assert te.per_analyst[missing].verdict.magnitude == 0.0
         assert te.per_analyst[missing].verdict.confidence == 0.0
@@ -171,7 +175,7 @@ def test_smart_money_no_data_flag_treated_as_neutral():
     per_analyst = {
         "technical": _ev("technical", "bullish", 0.6),
         "fundamental": _ev("fundamental", "bullish", 0.6),
-        "sentiment": _ev("sentiment", "bullish", 0.6),
+        "news": _ev("news", "bullish", 0.6),
         "smart_money": AnalystEvidence(
             ticker="AAPL",
             analyst="smart_money",
@@ -191,7 +195,9 @@ def test_smart_money_no_data_flag_treated_as_neutral():
     }
     te = build_ticker_evidence(per_analyst, "AAPL", "t", _now(), DEFAULT_ANALYST_WEIGHTS)
     assert te.aggregate.lean == "bullish"
-    assert te.aggregate.magnitude == pytest.approx(0.45, rel=0.01)
+    # Task 7 adds social as a 5th analyst (is_no_data → 0.0 contribution).
+    # Magnitude = (0.6 + 0.6 + 0.6) / 5 = 0.36.
+    assert te.aggregate.magnitude == pytest.approx(0.36, rel=0.01)
 
 
 # ── weights snapshotting (top-level on TickerEvidence) ────────────────────────
@@ -199,7 +205,7 @@ def test_smart_money_no_data_flag_treated_as_neutral():
 
 def test_weights_snapshotted_at_top_level():
     per_analyst = {a: _ev(a, "bullish", 0.5) for a in DEFAULT_ANALYST_WEIGHTS}
-    custom = {"technical": 2.0, "fundamental": 1.0, "sentiment": 0.5, "smart_money": 1.0}
+    custom = {"technical": 2.0, "fundamental": 1.0, "news": 0.5, "smart_money": 1.0}
     te = build_ticker_evidence(per_analyst, "AAPL", "t", _now(), custom)
     assert te.weights == custom
 
@@ -213,7 +219,7 @@ def test_per_analyst_magnitude_preserved_in_dump():
     per_analyst = {
         "technical": _ev("technical", "bullish", 0.7, magnitude=0.9),
         "fundamental": _ev("fundamental", "neutral", 0.0),
-        "sentiment": _ev("sentiment", "neutral", 0.0),
+        "news": _ev("news", "neutral", 0.0),
         "smart_money": _ev("smart_money", "neutral", 0.0),
     }
     te = build_ticker_evidence(per_analyst, "AAPL", "t", _now(), DEFAULT_ANALYST_WEIGHTS)

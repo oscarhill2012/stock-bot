@@ -1,0 +1,148 @@
+"""Append-only JSON snapshot collector for one tick.
+
+Production runs do not instantiate this; the ``trace_tick.py`` entrypoint
+sets ``state["_trace"]`` to a TraceWriter, and every callback opportunistically
+routes through ``_trace_maybe(state, ...)``.  Production tick state has no
+``"_trace"`` key, so the helper is a single dict lookup no-op.
+"""
+from __future__ import annotations
+
+import contextlib
+import json
+from pathlib import Path
+from typing import Any
+
+
+class TraceWriter:
+    """Collect labelled JSON sections for one tick; flush to disk on demand.
+
+    Each section is stored under an ordered label key.  Sections are written
+    in insertion order (Python 3.7+ dicts preserve insertion order).
+
+    Usage::
+
+        tw = TraceWriter()
+        tw.snapshot("01_fetch_news", {"AAPL": {"headlines": []}})
+        tw.finalise(Path("docs/surface-traces/trace-20260513.json"))
+    """
+
+    def __init__(self) -> None:
+        """Initialise an empty section store."""
+        # Python 3.7+ dicts are insertion-ordered; no need for OrderedDict.
+        self._sections: dict[str, Any] = {}
+
+    def snapshot(
+        self,
+        label: str,
+        payload: Any,
+        *,
+        state_keys: list[str] | None = None,
+    ) -> None:
+        """Append one labelled JSON section to the trace.
+
+        Parameters
+        ----------
+        label:
+            Short identifier for this boundary (e.g. ``"01_fetch_news"``).
+        payload:
+            Arbitrary JSON-serialisable data produced at this boundary.
+        state_keys:
+            Optional list of session-state keys included in this snapshot,
+            recorded alongside the payload for debugging purposes.
+        """
+        record: dict[str, Any] = {"data": payload}
+
+        if state_keys is not None:
+            # Record which state keys were sampled so the reader can cross-
+            # reference the raw session state if needed.
+            record["state_keys"] = state_keys
+
+        self._sections[label] = record
+
+    def llm_pair(
+        self,
+        label_base: str,
+        prompt: str,
+        response: str,
+        *,
+        model: str,
+    ) -> None:
+        """Append a paired LLM in/out section under ``{label_base}_in`` and ``{label_base}_out``.
+
+        Parameters
+        ----------
+        label_base:
+            Base label for the pair (e.g. ``"03_fundamental_llm"``).
+        prompt:
+            The exact text sent to the model this tick.
+        response:
+            The raw model response text.
+        model:
+            Model identifier string (e.g. ``"gemini-2.5-flash-lite"``).
+        """
+        self._sections[f"{label_base}_in"]  = {"model": model, "prompt": prompt}
+        self._sections[f"{label_base}_out"] = {"model": model, "response": response}
+
+    def finalise(self, out_path: Path) -> None:
+        """Flush the trace to disk as a single JSON document.
+
+        Creates parent directories as needed.  The output is one JSON object
+        keyed by label; section order matches insertion order.
+
+        Parameters
+        ----------
+        out_path:
+            Destination file path.  Will be created (or overwritten) atomically
+            via a direct ``write_text`` call.
+        """
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(self._sections, indent=2, default=str))
+
+
+def _trace_maybe(
+    state: Any,
+    label: str,
+    payload: Any,
+    *,
+    state_keys: list[str] | None = None,
+) -> None:
+    """No-op trace hook — calls ``TraceWriter.snapshot`` iff ``state["_trace"]`` is set.
+
+    Designed to be sprinkled at every pipeline boundary with zero overhead on
+    production paths.  When ``state`` is a plain dict with no ``"_trace"`` key
+    the function performs a single dict lookup and returns immediately — no
+    allocations, no exceptions.
+
+    When ``state["_trace"]`` is a ``TraceWriter`` instance, the payload is
+    appended as a new section under ``label``.
+
+    An ``isinstance(state, dict)`` guard prevents ``AttributeError`` if a non-
+    dict state subclass (e.g. an ADK ``Session.state`` proxy) is passed; in
+    that case the hook silently does nothing.
+
+    Parameters
+    ----------
+    state:
+        The pipeline session state dict (or dict-like object).
+    label:
+        Section label to pass to ``TraceWriter.snapshot``.
+    payload:
+        Data to record.
+    state_keys:
+        Optional list of state keys to record alongside the payload.
+    """
+    # Duck-typed lookup: ADK's ``Session.state`` is a ``State`` object that
+    # is NOT a ``dict`` subclass but does expose a dict-like ``.get`` API.
+    # A previous isinstance(state, dict) guard silently no-op'd every hook
+    # because ``State`` fails that check.
+    try:
+        tw = state.get("_trace")
+    except (AttributeError, TypeError):
+        return
+    if tw is None:
+        return
+
+    # Route to the writer; any serialisation errors are silently swallowed so
+    # the no-op *production* path is never affected by trace-side failures.
+    with contextlib.suppress(Exception):
+        tw.snapshot(label, payload, state_keys=state_keys)

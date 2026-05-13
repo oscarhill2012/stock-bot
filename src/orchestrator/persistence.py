@@ -5,7 +5,16 @@ import json
 import os
 from datetime import UTC, datetime
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, String, UniqueConstraint, create_engine
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Float,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+    create_engine,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 
@@ -231,6 +240,15 @@ class AnalystEvidenceRow(Base):
 
     __tablename__ = "analyst_evidence"
 
+    # Composite lookup index for KB-readiness — Phase 5 (Task 12).
+    # Speeds up queries that filter by (analyst, ticker) and order by recorded_at,
+    # which is the dominant access pattern for evidence retrieval (e.g. "give me the
+    # last N technical verdicts for AAPL"). No data migration required; SQLite/Postgres
+    # build the index lazily when the schema is created.
+    __table_args__ = (
+        Index("ix_analyst_evidence_lookup", "analyst", "ticker", "recorded_at"),
+    )
+
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     tick_id: Mapped[str] = mapped_column(String, index=True)
     recorded_at: Mapped[datetime] = mapped_column(DateTime)
@@ -263,7 +281,7 @@ def save_analyst_evidence(
     Args:
         session: SQLAlchemy session used for the insert.
         tick_id: Identifier of the tick that produced this evidence.
-        analyst: One of ``technical|fundamental|sentiment|smart_money``.
+        analyst: One of ``technical|fundamental|news|social|smart_money``.
         ticker: Stock ticker symbol (e.g. ``"AAPL"``).
         verdict: The dict produced by ``AnalystVerdict.model_dump()`` from
             ``src/contract/evidence.py``; all fields including ``rationale``

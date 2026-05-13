@@ -1,11 +1,22 @@
-from google.adk.agents import LlmAgent
+"""Smoke-tests for the SmartMoneyAnalyst module-level singleton.
 
-from agents.analysts.smart_money.agent import smart_money_analyst
+These tests verify the Phase-5 BaseAgent shape: the analyst is no longer
+an LlmAgent — it is a deterministic BaseAgent subclass wired with
+heuristics-driven verdict logic.
+"""
+from google.adk.agents import BaseAgent
+
+from agents.analysts.smart_money.agent import SmartMoneyAnalyst, smart_money_analyst
 
 
-def test_smart_money_analyst_is_llm_agent():
-    """SmartMoneyAnalyst is constructed as an ADK LlmAgent singleton."""
-    assert isinstance(smart_money_analyst, LlmAgent)
+def test_smart_money_analyst_is_base_agent():
+    """SmartMoneyAnalyst is a BaseAgent subclass (LlmAgent retired in Phase 5)."""
+    assert isinstance(smart_money_analyst, BaseAgent)
+
+
+def test_smart_money_analyst_is_smart_money_analyst_instance():
+    """The singleton is an instance of the concrete SmartMoneyAnalyst class."""
+    assert isinstance(smart_money_analyst, SmartMoneyAnalyst)
 
 
 def test_smart_money_analyst_name():
@@ -13,11 +24,13 @@ def test_smart_money_analyst_name():
     assert smart_money_analyst.name == "SmartMoneyAnalyst"
 
 
-def test_smart_money_analyst_output_key():
-    """D3 migrated the output key from signals to verdicts."""
-    assert smart_money_analyst.output_key == "smart_money_verdicts"
-
-
 def test_smart_money_analyst_has_evidence_callback():
-    """D3 wires the evidence-only after_agent_callback (replaces dual-emit)."""
+    """Phase 5 wires the evidence-only after_agent_callback."""
     assert smart_money_analyst.after_agent_callback is not None
+
+
+def test_smart_money_analyst_has_heuristics():
+    """The singleton carries a SmartMoneyHeuristics instance as a Pydantic field."""
+    from agents.analysts.heuristics import SmartMoneyHeuristics
+
+    assert isinstance(smart_money_analyst.heuristics, SmartMoneyHeuristics)

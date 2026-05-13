@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -24,28 +26,46 @@ async def test_technical_fetch_writes_state():
 
 @pytest.mark.asyncio
 async def test_fundamental_fetch_writes_state():
+    """Phase 5: fundamental fetch produces a triad payload (stats, filings, insider)."""
     from agents.analysts.fundamental.fetch import fundamental_fetch_callback
+    from data.models import Form4Bundle
+
     filing_mock = MagicMock()
     filing_mock.model_dump.return_value = {"form_type": "10-K"}
+    bundle = Form4Bundle(trades=[], derivatives=[])
+
     ctx = _make_ctx(["AAPL"])
-    with patch("agents.analysts.fundamental.fetch.get_company_filings", new=AsyncMock(return_value=[filing_mock])):
+    with (
+        patch("agents.analysts.fundamental.fetch.get_stock_stats", new=AsyncMock(return_value=None)),
+        patch("agents.analysts.fundamental.fetch.get_company_filings", new=AsyncMock(return_value=[filing_mock])),
+        patch("agents.analysts.fundamental.fetch.get_insider_trades", new=AsyncMock(return_value=bundle)),
+    ):
         result = await fundamental_fetch_callback(ctx)
+
     assert result is None
-    assert ctx.state["fundamental_data"]["AAPL"][0]["form_type"] == "10-K"
+    payload = ctx.state["fundamental_data"]["AAPL"]
+    # New triad structure — filings are nested under "filings" key.
+    assert payload["filings"][0]["form_type"] == "10-K"
+    assert isinstance(payload["insider"], Form4Bundle)
+    assert "stats" in payload
 
 
 @pytest.mark.asyncio
-async def test_sentiment_fetch_writes_state():
-    from agents.analysts.sentiment.fetch import sentiment_fetch_callback
+async def test_news_fetch_writes_state():
+    """Task 6: news fetch callback writes news_data (renamed from sentiment_data).
+
+    The social_sentiment branch is removed — only news/ is fetched here.
+    """
+    from agents.analysts.news.fetch import news_fetch_callback
+
     news_mock = MagicMock()
     news_mock.model_dump.return_value = {"headline": "Good news"}
-    social_mock = MagicMock()
-    social_mock.model_dump.return_value = {"score": 0.5}
+
     ctx = _make_ctx(["AAPL"])
-    with (
-        patch("agents.analysts.sentiment.fetch.get_stock_news", new=AsyncMock(return_value=[news_mock])),
-        patch("agents.analysts.sentiment.fetch.get_social_sentiment", new=AsyncMock(return_value=social_mock)),
-    ):
-        result = await sentiment_fetch_callback(ctx)
+    with patch("agents.analysts.news.fetch.get_stock_news", new=AsyncMock(return_value=[news_mock])):
+        result = await news_fetch_callback(ctx)
+
     assert result is None
-    assert "AAPL" in ctx.state["sentiment_data"]
+    assert "AAPL" in ctx.state["news_data"]
+    # Social sentinel no longer present in the news payload.
+    assert "social" not in ctx.state["news_data"]["AAPL"]

@@ -62,7 +62,7 @@ def _ticker_evidence(ticker):
             "disagreement": 0.1,
             "summary": "2/2 bullish",
         },
-        "weights": {"technical": 1.0, "fundamental": 1.0, "sentiment": 1.0, "smart_money": 1.0},
+        "weights": {"technical": 1.0, "fundamental": 1.0, "news": 1.0, "smart_money": 1.0},
     }
 
 
@@ -74,7 +74,7 @@ async def test_evidence_writer_persists_both_row_types(db_session):
         "tick_id": "2026-05-08T14:00:00Z",
         "technical_evidence": [_evidence("technical", "AAPL")],
         "fundamental_evidence": [_evidence("fundamental", "AAPL")],
-        "sentiment_evidence": [],
+        "news_evidence": [],
         "smart_money_evidence": [],
         "ticker_evidence_objects": [_ticker_evidence("AAPL")],
     }

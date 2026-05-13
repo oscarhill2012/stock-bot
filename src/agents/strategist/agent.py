@@ -1,6 +1,7 @@
 """Strategist v2 LlmAgent — emits per-ticker TickerStance, derives legacy fields server-side."""
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime
 
 from google.adk.agents import LlmAgent
@@ -18,6 +19,7 @@ from contract.digest import build_ticker_evidence
 from contract.digest_defaults import DEFAULT_ANALYST_WEIGHTS
 from contract.evidence import AnalystEvidence
 from contract.ticker_evidence import TickerEvidence
+from observability.trace import _trace_maybe
 
 
 def _coerce_portfolio(value: Portfolio | dict | None) -> Portfolio:
@@ -114,7 +116,7 @@ def _evidence_view_before_callback(
     # Collect evidence for each analyst dimension, indexed by ticker.
     tech = _index("technical_evidence")
     fund = _index("fundamental_evidence")
-    sent = _index("sentiment_evidence")
+    news = _index("news_evidence")  # renamed from sentiment_evidence in Task 6
     sm = _index("smart_money_evidence")
 
     # Build one TickerEvidence per watchlist ticker by assembling the available
@@ -127,8 +129,8 @@ def _evidence_view_before_callback(
             per_analyst["technical"] = tech[t]
         if t in fund:
             per_analyst["fundamental"] = fund[t]
-        if t in sent:
-            per_analyst["sentiment"] = sent[t]
+        if t in news:
+            per_analyst["news"] = news[t]
         if t in sm:
             per_analyst["smart_money"] = sm[t]
 
@@ -145,6 +147,10 @@ def _evidence_view_before_callback(
     # the JSON-serialised objects for any downstream code that wants structured data.
     state["ticker_evidence_objects"] = [te.model_dump(mode="json") for te in ticker_evidence]
     state["ticker_evidence"] = render_ticker_evidence(ticker_evidence)
+
+    # Surface trace — no-op unless state["_trace"] is set by trace_tick.py.
+    _trace_maybe(state, "04_digest", state["ticker_evidence_objects"])
+
     return None
 
 
@@ -297,14 +303,125 @@ def _composite_before_callback(
     return _evidence_view_before_callback(callback_context)
 
 
+# ── LLM trace callbacks (attached only when STOCKBOT_TRACE=1) ─────────────────
+
+def _make_strategist_trace_before(model: str) -> object:
+    """Build a before_model_callback that captures the Strategist prompt.
+
+    The callback is a no-op if ``state["_trace"]`` is not set.
+
+    Parameters
+    ----------
+    model:
+        Model identifier recorded alongside the prompt text.
+
+    Returns
+    -------
+    Callable
+        A before_model_callback compatible with ADK's ``LlmAgent``.
+    """
+    from google.adk.agents.callback_context import CallbackContext as _CC
+    from google.adk.models.llm_request import LlmRequest as _Req
+    from google.genai import types as _types
+
+    from observability.trace import TraceWriter as _TW
+
+    def _before(
+        callback_context: _CC,
+        llm_request: _Req,
+    ) -> _types.Content | None:
+        """Capture the outgoing Strategist prompt into the TraceWriter, if active."""
+        state = callback_context.state
+        tw = state.get("_trace") if isinstance(state, dict) else None
+        if not isinstance(tw, _TW):
+            return None
+
+        prompt_parts: list[str] = []
+        for content in (llm_request.contents or []):
+            for part in (content.parts or []):
+                if hasattr(part, "text") and part.text:
+                    prompt_parts.append(part.text)
+
+        tw.llm_pair(
+            "05_strategist_llm",
+            prompt="\n---\n".join(prompt_parts) or "(no text parts)",
+            response="(pending)",
+            model=model,
+        )
+        return None
+
+    return _before
+
+
+def _make_strategist_trace_after(model: str) -> object:
+    """Build an after_model_callback that updates the Strategist response in the trace.
+
+    Overwrites the ``"(pending)"`` placeholder written by the before-callback.
+
+    Parameters
+    ----------
+    model:
+        Model identifier (for consistency in the ``_out`` record).
+
+    Returns
+    -------
+    Callable
+        An after_model_callback compatible with ADK's ``LlmAgent``.
+    """
+    from google.adk.agents.callback_context import CallbackContext as _CC
+    from google.adk.models.llm_response import LlmResponse as _Resp
+    from google.genai import types as _types
+
+    from observability.trace import TraceWriter as _TW
+
+    def _after(
+        callback_context: _CC,
+        llm_response: _Resp,
+    ) -> _types.Content | None:
+        """Update the TraceWriter with the Strategist's response text."""
+        state = callback_context.state
+        tw = state.get("_trace") if isinstance(state, dict) else None
+        if not isinstance(tw, _TW):
+            return None
+
+        response_parts: list[str] = []
+        if llm_response.content:
+            for part in (llm_response.content.parts or []):
+                if hasattr(part, "text") and part.text:
+                    response_parts.append(part.text)
+
+        response_text = "\n---\n".join(response_parts) or "(no text parts)"
+
+        # Overwrite the _out placeholder set by llm_pair during the before-callback.
+        tw._sections["05_strategist_llm_out"] = {
+            "model": model,
+            "response": response_text,
+        }
+        return None
+
+    return _after
+
+
 # ── Agent definition ──────────────────────────────────────────────────────────
+
+# Attach LLM trace callbacks only when STOCKBOT_TRACE=1 is set at import time.
+# The module-level singleton is built once; trace callbacks gate on state["_trace"]
+# at call time so they are fully inert on production runs where _trace is absent.
+_STRATEGIST_MODEL = "gemini-2.5-pro"
+_strategist_before_model: object = None
+_strategist_after_model: object = None
+if os.environ.get("STOCKBOT_TRACE") == "1":
+    _strategist_before_model = _make_strategist_trace_before(_STRATEGIST_MODEL)
+    _strategist_after_model  = _make_strategist_trace_after(_STRATEGIST_MODEL)
 
 strategist_agent = LlmAgent(
     name="Strategist",
-    model="gemini-2.5-pro",  # preserved from prior agent.py — do not downgrade
+    model=_STRATEGIST_MODEL,  # preserved from prior agent.py — do not downgrade
     instruction=STRATEGIST_INSTRUCTION,
     output_schema=StrategistDecision,
     output_key="strategist_decision",
     before_agent_callback=_composite_before_callback,
     after_agent_callback=_strategist_validation_callback,
+    before_model_callback=_strategist_before_model,
+    after_model_callback=_strategist_after_model,
 )

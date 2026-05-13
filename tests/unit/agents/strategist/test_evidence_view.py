@@ -33,7 +33,7 @@ def _te(ticker: str = "AAPL", lean: str = "bullish", magnitude: float = 0.5,
         per_analyst={
             "technical": _ev("technical", lean, 0.7, {"rsi_14": 60.0}, ticker),
             "fundamental": _ev("fundamental", lean, 0.6, {"pe_trailing": 28.5}, ticker),
-            "sentiment": _ev("sentiment", lean, 0.5, {"news_count_7d": 5.0}, ticker),
+            "news": _ev("news", lean, 0.5, {"news_count_7d": 5.0}, ticker),
             "smart_money": AnalystEvidence(
                 ticker=ticker, analyst="smart_money",
                 tick_id="tick_X",
@@ -49,7 +49,7 @@ def _te(ticker: str = "AAPL", lean: str = "bullish", magnitude: float = 0.5,
             lean=lean, magnitude=magnitude, confidence=0.6,
             disagreement=disagreement, summary=f"3 {lean} / 1 no_data",
         ),
-        weights={"technical": 1.0, "fundamental": 1.0, "sentiment": 1.0, "smart_money": 1.0},
+        weights={"technical": 1.0, "fundamental": 1.0, "news": 1.0, "smart_money": 1.0},
     )
 
 
@@ -67,7 +67,7 @@ def test_single_ticker_block_contains_all_sections():
     # Per-analyst verdicts visible
     assert "technical" in out.lower()
     assert "fundamental" in out.lower()
-    assert "sentiment" in out.lower()
+    assert "news" in out.lower()       # Task 6: slot renamed from "sentiment" → "news"
     assert "smart_money" in out.lower()
 
 

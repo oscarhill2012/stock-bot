@@ -10,6 +10,7 @@ from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event
 
 from broker.protocol import Broker, BrokerRejection
+from observability.trace import _trace_maybe
 from orchestrator.state import Execution, Order
 
 
@@ -139,6 +140,9 @@ class ExecutorAgent(BaseAgent):
         state["executions"] = executions
         state["positions"] = positions
         state["last_executed_tick_id"] = tick_id
+
+        # Surface trace — no-op unless state["_trace"] is set by trace_tick.py.
+        _trace_maybe(state, "07_broker_calls", executions)
 
 
 def build_executor(broker: Broker, db_session=None) -> ExecutorAgent:

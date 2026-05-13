@@ -28,7 +28,7 @@ Emit a TickerStance for EVERY watchlist ticker: {tickers}.
 Per stance:
 - preferred_weight ∈ [0,1]: your ideal portfolio weight next tick.
 - conviction ∈ [0,1]: how strongly you hold this view.
-- rationale: ≤140 chars, why.
+- rationale: ≤200 chars, why.
 - If proposing to OPEN (current ≈ 0 → preferred > 0): include horizon,
   target_price, stop_price; catalyst optional.
 - If proposing to CLOSE (current > 0 → preferred ≈ 0): include close_reason.

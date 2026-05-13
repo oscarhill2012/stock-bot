@@ -72,3 +72,6 @@ data/stockbot.db
 data/stockbot.db-journal
 data/stockbot.db-wal
 data/stockbot.db-shm
+
+# Surface trace outputs — written by scripts/trace_tick.py; never commit.
+docs/surface-traces/

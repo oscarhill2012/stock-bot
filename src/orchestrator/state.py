@@ -63,7 +63,8 @@ class TickState(BaseModel):
     # Written by analyst before_callbacks (raw data fetched from providers).
     technical_data: dict[str, Any]      = Field(default_factory=dict)
     fundamental_data: dict[str, Any]    = Field(default_factory=dict)
-    sentiment_data: dict[str, Any]      = Field(default_factory=dict)
+    news_data: dict[str, Any]           = Field(default_factory=dict)  # renamed from sentiment_data (Task 6)
+    social_data: dict[str, Any]         = Field(default_factory=dict)  # added Task 7
     smart_money_data: dict[str, Any] | None = None
 
     # Persistent across ticks (loaded from and saved to the ADK session store).

@@ -1,55 +1,155 @@
-"""Smart-money analyst LlmAgent — evidence-only output (D3).
+"""Deterministic SmartMoney analyst — Phase 5 BaseAgent implementation.
 
-Smart-money is the only analyst whose ``before_agent_callback`` can short-
-circuit the LLM entirely when no material activity is detected across the
-watchlist (see ``fetch.py``).  In that case ``state["smart_money_verdicts"]``
-is pre-seeded to ``[]`` by the fetch gate; the ``make_evidence_callback``
-after-callback then synthesises a no-data ``AnalystEvidence`` record for every
-watchlist ticker so downstream consumers always receive a complete set.
+``SmartMoneyAnalyst`` is a ``BaseAgent`` subclass (not ``LlmAgent``).  The
+run-loop is split cleanly across three hooks:
+
+1. ``smart_money_fetch_callback`` (``before_agent_callback``) — fetches
+   congressional-filing data for each ticker and writes
+   ``state["smart_money_data"]``.  Returns ``None`` so the agent body runs
+   normally.
+
+2. ``_run_async_impl`` — reads ``state["smart_money_data"]``, runs
+   ``extract_smart_money_features`` + ``derive_smart_money_verdict``
+   deterministically for every ticker, and writes
+   ``state["smart_money_verdicts"]`` directly to session state (same pattern
+   as ``TechnicalAnalyst``, ``SocialAnalyst``, ``RiskGateAgent``, and
+   ``MemoryWriter``).
+
+3. ``make_evidence_callback`` (``after_agent_callback``) — converts the
+   pre-seeded ``smart_money_verdicts`` into ``AnalystEvidence`` records and
+   writes them to ``state["smart_money_evidence"]``.
+
+This design removes the LLM dependency entirely.  The old
+``SMART_MONEY_INSTRUCTION`` prompt module is no longer used.
 """
 from __future__ import annotations
 
-from google.adk.agents import LlmAgent
+from collections.abc import AsyncGenerator
+from typing import Any
+
+from google.adk.agents import BaseAgent
+from google.adk.agents.invocation_context import InvocationContext
+from google.adk.events import Event
 
 from agents.analysts._common import make_evidence_callback
-from contract.extractors.smart_money import extract_smart_money_features
+from agents.analysts.heuristics import SmartMoneyHeuristics, load_heuristics
+from contract.extractors.smart_money import (
+    derive_smart_money_verdict,
+    extract_smart_money_features,
+)
+from observability.trace import _trace_maybe
 
 from .fetch import smart_money_fetch_callback
-from .prompts import SMART_MONEY_INSTRUCTION
-
-# Evidence-only after-callback: reads verdicts from state["smart_money_verdicts"],
-# runs the smart-money feature extractor, and writes state["smart_money_evidence"].
-# Missing verdicts (LLM skipped or gate short-circuited) produce no-data records
-# via the callback's built-in fallback path — no special ``sparse`` flag needed.
-_after = make_evidence_callback(
-    analyst="smart_money",
-    extractor=extract_smart_money_features,
-    verdicts_state_key="smart_money_verdicts",
-)
 
 
-# Module-level singleton used by unit tests that construct the agent directly.
-smart_money_analyst = LlmAgent(
-    name="SmartMoneyAnalyst",
-    model="gemini-2.5-flash-lite",
-    instruction=SMART_MONEY_INSTRUCTION,
-    output_key="smart_money_verdicts",
-    before_agent_callback=smart_money_fetch_callback,
-    after_agent_callback=_after,
-)
+class SmartMoneyAnalyst(BaseAgent):
+    """Deterministic SmartMoney analyst — no LLM calls; all verdicts from heuristics.
 
-
-def _build_smart_money_analyst() -> LlmAgent:
-    """Construct a fresh ``SmartMoneyAnalyst`` instance (orchestrator factory).
-
-    Returns a brand-new ``LlmAgent`` wired with the same evidence-only
-    callback, fetch gate, and prompt as the module-level singleton.
+    Reads ``state["smart_money_data"]`` (populated by the fetch callback),
+    runs ``extract_smart_money_features`` + ``derive_smart_money_verdict``
+    for each ticker, and writes ``state["smart_money_verdicts"]``.  The
+    registered ``after_agent_callback`` (``make_evidence_callback``) then
+    converts those verdicts into ``AnalystEvidence`` records under
+    ``state["smart_money_evidence"]``.
     """
-    return LlmAgent(
-        name="SmartMoneyAnalyst",
-        model="gemini-2.5-flash-lite",
-        instruction=SMART_MONEY_INSTRUCTION,
-        output_key="smart_money_verdicts",
-        before_agent_callback=smart_money_fetch_callback,
-        after_agent_callback=_after,
-    )
+
+    # Pydantic field — SmartMoneyHeuristics is itself a frozen Pydantic model,
+    # so it survives the arbitrary_types_allowed guard below.
+    heuristics: SmartMoneyHeuristics
+
+    # Required so Pydantic accepts SmartMoneyHeuristics (a frozen Pydantic model)
+    # as a field value without raising "arbitrary types not allowed".
+    model_config = {"arbitrary_types_allowed": True}
+
+    def __init__(self, heuristics: SmartMoneyHeuristics, **kwargs: Any) -> None:
+        """Initialise the SmartMoneyAnalyst and wire the fetch + evidence callbacks.
+
+        Args:
+            heuristics: Frozen ``SmartMoneyHeuristics`` config section loaded
+                        from ``config/analyst_heuristics.json``.
+            **kwargs:   Forwarded to ``BaseAgent.__init__``.
+        """
+        # Pass heuristics as a keyword argument so Pydantic sets the field
+        # through its normal validated path.  Callbacks are wired here rather
+        # than as class-level defaults so each instance gets fresh closures.
+        super().__init__(
+            name="SmartMoneyAnalyst",
+            heuristics=heuristics,
+            before_agent_callback=smart_money_fetch_callback,
+            after_agent_callback=make_evidence_callback(
+                analyst="smart_money",
+                extractor=extract_smart_money_features,
+                verdicts_state_key="smart_money_verdicts",
+            ),
+            **kwargs,
+        )
+
+    async def _run_async_impl(
+        self,
+        ctx: InvocationContext,
+    ) -> AsyncGenerator[Event, None]:
+        """Compute per-ticker smart-money verdicts deterministically and write to state.
+
+        Reads ``state["smart_money_data"]`` (written by the fetch callback),
+        runs ``extract_smart_money_features`` + ``derive_smart_money_verdict``
+        for every ticker, and writes the resulting verdict dicts to
+        ``state["smart_money_verdicts"]``.  The after-callback
+        (``make_evidence_callback``) then converts those verdicts into
+        ``AnalystEvidence`` records.
+
+        Args:
+            ctx: ADK invocation context providing access to session state.
+
+        Yields:
+            Nothing — state mutation is written directly, matching the pattern
+            used by TechnicalAnalyst, SocialAnalyst, MemoryWriter, and
+            RiskGateAgent.
+        """
+        state = ctx.session.state
+        tickers: list[str] = state.get("tickers", []) or []
+        data: dict[str, dict] = state.get("smart_money_data", {}) or {}
+
+        # Build as a list of dicts so make_evidence_callback can iterate them
+        # and build its ticker → verdict lookup.  Each dict includes a
+        # "ticker" key alongside the AnalystVerdict fields.
+        verdicts: list[dict[str, Any]] = []
+
+        for ticker in tickers:
+            features = extract_smart_money_features(data.get(ticker, {}), ticker)
+            verdict  = derive_smart_money_verdict(features, self.heuristics)
+            v_dict   = verdict.model_dump(mode="json")
+            v_dict["ticker"] = ticker
+            verdicts.append(v_dict)
+
+        # Write the verdict list so the after_agent_callback can read it.
+        state["smart_money_verdicts"] = verdicts
+
+        # Surface trace — no-op unless state["_trace"] is set by trace_tick.py.
+        _trace_maybe(ctx.session.state, "02_smart_money_verdict", verdicts)
+
+        # No events emitted — pure state mutation, same as TechnicalAnalyst.
+        return
+        yield  # required to make this an async generator
+
+
+# Module-level singleton — used directly by unit tests and the analyst_pool
+# singleton in agents/analysts/__init__.py.
+smart_money_analyst = SmartMoneyAnalyst(heuristics=load_heuristics().smart_money)
+
+
+def _build_smart_money_analyst(
+    heuristics: SmartMoneyHeuristics | None = None,
+) -> SmartMoneyAnalyst:
+    """Construct a fresh ``SmartMoneyAnalyst`` for the orchestrator factory.
+
+    Args:
+        heuristics: Optional pre-loaded ``SmartMoneyHeuristics``.  When
+                    ``None``, ``load_heuristics()`` is called to obtain the
+                    cached config.
+
+    Returns:
+        A new ``SmartMoneyAnalyst`` instance bound to the given heuristics.
+    """
+    if heuristics is None:
+        heuristics = load_heuristics().smart_money
+    return SmartMoneyAnalyst(heuristics=heuristics)

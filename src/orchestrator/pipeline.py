@@ -5,20 +5,35 @@ from google.adk.agents import SequentialAgent
 
 
 def _build_analyst_pool():
-    """Build a fresh AnalystPool each time to avoid single-parent constraint."""
+    """Build a fresh AnalystPool each time to avoid single-parent constraint.
+
+    Five children: Fundamental, News, SmartMoney, Technical, and Social —
+    all three deterministic analysts (SmartMoney, Technical, Social) are
+    ``BaseAgent`` subclasses that derive verdicts via heuristics in
+    ``_run_async_impl`` with no LLM involvement.
+    """
     from google.adk.agents import ParallelAgent
 
     from agents.analysts.fundamental.agent import _build_fundamental_analyst
-    from agents.analysts.sentiment.agent import _build_sentiment_analyst
+    from agents.analysts.heuristics import load_heuristics
+    from agents.analysts.news.agent import _build_news_analyst
     from agents.analysts.smart_money.agent import _build_smart_money_analyst
+    from agents.analysts.social.agent import _build_social_analyst
     from agents.analysts.technical.agent import _build_technical_analyst
+
+    # Load heuristics once so all deterministic analysts share the same cached
+    # config object — consumed by technical, social, and smart_money BaseAgent
+    # analysts.
+    h = load_heuristics()
+
     return ParallelAgent(
         name="AnalystPool",
         sub_agents=[
-            _build_technical_analyst(),
-            _build_fundamental_analyst(),
-            _build_sentiment_analyst(),
-            _build_smart_money_analyst(),
+            _build_technical_analyst(h.technical),         # deterministic BaseAgent
+            _build_fundamental_analyst(h.fundamental_vocabulary),  # narrowed LlmAgent
+            _build_news_analyst(h.news_vocabulary),
+            _build_social_analyst(h.social),            # deterministic BaseAgent
+            _build_smart_money_analyst(h.smart_money),  # deterministic BaseAgent
         ],
     )
 

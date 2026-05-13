@@ -37,7 +37,7 @@ class TickerStance(BaseModel):
             analyst signals, whereas analyst confidence is each analyst's
             self-reported certainty about their individual signal.
         rationale: A short human-readable justification for the stance
-            (max 140 chars — intentionally brief; full reasoning lives in
+            (max 200 chars — intentionally brief; full reasoning lives in
             the LLM's chain-of-thought, not the schema).
         horizon: Optional investment horizon. ``None`` means the
             strategist did not specify one.
@@ -61,7 +61,7 @@ class TickerStance(BaseModel):
     conviction: float = Field(ge=0.0, le=1.0)
 
     # Brief justification; kept short to encourage clear thinking.
-    rationale: str = Field(max_length=140)
+    rationale: str = Field(max_length=200)
 
     # Optional lifecycle / context fields
     horizon: Literal["intraday", "swing", "long_term"] | None = None

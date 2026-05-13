@@ -48,7 +48,7 @@ def make_evidence_callback(
     ----------
     analyst:
         The ``AnalystName`` literal identifying this analyst
-        (``"technical"``, ``"fundamental"``, ``"sentiment"``, or
+        (``"technical"``, ``"fundamental"``, ``"news"``, ``"social"``, or
         ``"smart_money"``).
     extractor:
         Callable ``(raw_ticker_data, ticker) -> {feature: value}`` that
@@ -65,7 +65,7 @@ def make_evidence_callback(
         protocol.  The callback returns ``None`` (no re-prompt) in all paths.
     """
 
-    def _callback(ctx: CallbackContext) -> genai_types.Content | None:
+    def _callback(callback_context: CallbackContext) -> genai_types.Content | None:
         """Execute the evidence-build loop for one analyst tick.
 
         Reads verdicts, runs extractors, and writes a complete evidence list
@@ -73,7 +73,7 @@ def make_evidence_callback(
         this callback (the exhaustive-validator behaviour from dual-emit is
         retired in D3).
         """
-        state = ctx.state
+        state = callback_context.state
         tickers: list[str] = state.get("tickers", []) or []
         tick_id: str = state.get("tick_id", "unknown")
 
@@ -85,7 +85,16 @@ def make_evidence_callback(
         data: dict = state.get(f"{analyst}_data", {}) or {}
 
         # Build a lookup from ticker → verdict dict for fast access below.
-        raw_verdicts: list[dict] = state.get(verdicts_state_key, []) or []
+        # Two shapes are supported:
+        # - Deterministic analysts (Technical, Social, SmartMoney) write a
+        #   flat ``list[dict]`` directly to ``state[verdicts_state_key]``.
+        # - LLM analysts (Fundamental, News) use ADK's ``output_schema=VerdictBatch``,
+        #   which lands as ``{"verdicts": [...]}`` in state. Unwrap that here.
+        raw = state.get(verdicts_state_key, []) or []
+        if isinstance(raw, dict) and "verdicts" in raw:
+            raw_verdicts: list[dict] = raw["verdicts"] or []
+        else:
+            raw_verdicts = raw
         verdicts_by_ticker: dict[str, dict] = {
             v["ticker"]: v for v in raw_verdicts
         }
