@@ -38,7 +38,7 @@ def _format_per_analyst(te: TickerEvidence) -> list[str]:
     """Build one formatted line per analyst slot for a TickerEvidence block.
 
     Always emits lines in the canonical order: technical, fundamental,
-    news, smart_money. A missing analyst is noted as ``(missing)``; a
+    news, social, smart_money. A missing analyst is noted as ``(missing)``; a
     no-data analyst is noted as ``no_data`` so the LLM can distinguish it from
     a genuine 0.0-confidence neutral verdict.
 
@@ -54,7 +54,7 @@ def _format_per_analyst(te: TickerEvidence) -> list[str]:
         embedding in a larger block.
     """
     lines: list[str] = []
-    for analyst in ("technical", "fundamental", "news", "smart_money"):  # "sentiment" → "news" in Task 6
+    for analyst in ("technical", "fundamental", "news", "social", "smart_money"):
         ev = te.per_analyst.get(analyst)
 
         if ev is None:
@@ -90,7 +90,7 @@ def render_ticker_evidence(items: Iterable[TickerEvidence]) -> str:
     Produces one text block per ticker, each containing:
     - The aggregate lean, magnitude, confidence, and disagreement.
     - An optional summary line from the aggregator.
-    - One compact line per analyst (technical, fundamental, news, smart_money).
+    - One compact line per analyst (technical, fundamental, news, social, smart_money).
 
     Parameters
     ----------
