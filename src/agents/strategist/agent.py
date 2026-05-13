@@ -114,7 +114,7 @@ def _evidence_view_before_callback(
     # Collect evidence for each analyst dimension, indexed by ticker.
     tech = _index("technical_evidence")
     fund = _index("fundamental_evidence")
-    sent = _index("sentiment_evidence")
+    news = _index("news_evidence")  # renamed from sentiment_evidence in Task 6
     sm = _index("smart_money_evidence")
 
     # Build one TickerEvidence per watchlist ticker by assembling the available
@@ -127,8 +127,8 @@ def _evidence_view_before_callback(
             per_analyst["technical"] = tech[t]
         if t in fund:
             per_analyst["fundamental"] = fund[t]
-        if t in sent:
-            per_analyst["sentiment"] = sent[t]
+        if t in news:
+            per_analyst["news"] = news[t]
         if t in sm:
             per_analyst["smart_money"] = sm[t]
 

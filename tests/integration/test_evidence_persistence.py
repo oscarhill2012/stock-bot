@@ -75,7 +75,7 @@ def test_save_ticker_evidence_round_trip(db_session):
             "disagreement": 0.12,
             "summary": "3/4 analysts bullish with low disagreement",
         },
-        weights={"technical": 1.0, "fundamental": 1.0, "sentiment": 1.0, "smart_money": 1.0},
+        weights={"technical": 1.0, "fundamental": 1.0, "news": 1.0, "smart_money": 1.0},
         analyst_count=4,
     )
     db_session.commit()
@@ -94,6 +94,6 @@ def test_save_ticker_evidence_round_trip(db_session):
     assert json.loads(r.weights_json) == {
         "technical": 1.0,
         "fundamental": 1.0,
-        "sentiment": 1.0,
+        "news": 1.0,
         "smart_money": 1.0,
     }

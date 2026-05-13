@@ -48,7 +48,7 @@ def make_evidence_callback(
     ----------
     analyst:
         The ``AnalystName`` literal identifying this analyst
-        (``"technical"``, ``"fundamental"``, ``"sentiment"``, or
+        (``"technical"``, ``"fundamental"``, ``"news"``, ``"social"``, or
         ``"smart_money"``).
     extractor:
         Callable ``(raw_ticker_data, ticker) -> {feature: value}`` that

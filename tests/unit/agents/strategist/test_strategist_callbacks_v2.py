@@ -89,9 +89,8 @@ def test_evidence_view_callback_builds_ticker_evidence_from_per_analyst_state():
         recorded_at="2026-05-08T14:00:00Z",
         technical_evidence=[_ev("technical", "bullish", 0.6).model_dump(mode="json")],
         fundamental_evidence=[_ev("fundamental", "bullish", 0.5).model_dump(mode="json")],
-        # State key is still "sentiment_evidence" until Task 6 renames it;
-        # the AnalystEvidence inside uses the new "news" literal (Task 2).
-        sentiment_evidence=[_ev("news", "neutral", 0.3).model_dump(mode="json")],
+        # Task 6: state key renamed from "sentiment_evidence" to "news_evidence".
+        news_evidence=[_ev("news", "neutral", 0.3).model_dump(mode="json")],
         smart_money_evidence=[_ev("smart_money", "neutral", 0.0).model_dump(mode="json")],
     )
     _evidence_view_before_callback(_Ctx(state))

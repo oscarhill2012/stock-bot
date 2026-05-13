@@ -46,7 +46,7 @@ def _ev(analyst: str, lean: str, conf: float, ticker: str) -> dict:
     """Build a minimal ``AnalystEvidence`` dict for one analyst / ticker pair.
 
     Args:
-        analyst: One of ``"technical"``, ``"fundamental"``, ``"sentiment"``,
+        analyst: One of ``"technical"``, ``"fundamental"``, ``"news"``,
             or ``"smart_money"``.
         lean: Directional call — ``"bullish"``, ``"bearish"``, or
             ``"neutral"``.
@@ -134,7 +134,7 @@ async def test_strategist_v2_emits_per_ticker_stances_with_held_position():
     # Leans / confidences per plan §C15:
     #   technical → bullish 0.6
     #   fundamental → bullish 0.5
-    #   sentiment → neutral 0.3
+    #   news → neutral 0.3
     #   smart_money → neutral 0.0
     tickers = ["AAPL", "MSFT"]
 
@@ -154,7 +154,7 @@ async def test_strategist_v2_emits_per_ticker_stances_with_held_position():
         # Per-analyst evidence lists — each is a list[AnalystEvidence] dump.
         "technical_evidence":   _build_evidence_list("technical",   "bullish", 0.6),
         "fundamental_evidence": _build_evidence_list("fundamental",  "bullish", 0.5),
-        "sentiment_evidence":   _build_evidence_list("sentiment",    "neutral", 0.3),
+        "news_evidence":        _build_evidence_list("news",         "neutral", 0.3),
         "smart_money_evidence": _build_evidence_list("smart_money",  "neutral", 0.0),
     }
 

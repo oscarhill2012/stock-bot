@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -49,17 +51,21 @@ async def test_fundamental_fetch_writes_state():
 
 
 @pytest.mark.asyncio
-async def test_sentiment_fetch_writes_state():
-    from agents.analysts.sentiment.fetch import sentiment_fetch_callback
+async def test_news_fetch_writes_state():
+    """Task 6: news fetch callback writes news_data (renamed from sentiment_data).
+
+    The social_sentiment branch is removed — only news/ is fetched here.
+    """
+    from agents.analysts.news.fetch import news_fetch_callback
+
     news_mock = MagicMock()
     news_mock.model_dump.return_value = {"headline": "Good news"}
-    social_mock = MagicMock()
-    social_mock.model_dump.return_value = {"score": 0.5}
+
     ctx = _make_ctx(["AAPL"])
-    with (
-        patch("agents.analysts.sentiment.fetch.get_stock_news", new=AsyncMock(return_value=[news_mock])),
-        patch("agents.analysts.sentiment.fetch.get_social_sentiment", new=AsyncMock(return_value=social_mock)),
-    ):
-        result = await sentiment_fetch_callback(ctx)
+    with patch("agents.analysts.news.fetch.get_stock_news", new=AsyncMock(return_value=[news_mock])):
+        result = await news_fetch_callback(ctx)
+
     assert result is None
-    assert "AAPL" in ctx.state["sentiment_data"]
+    assert "AAPL" in ctx.state["news_data"]
+    # Social sentinel no longer present in the news payload.
+    assert "social" not in ctx.state["news_data"]["AAPL"]

@@ -1,4 +1,10 @@
-"""Sentiment analyst deterministic feature extractor."""
+"""News analyst deterministic feature extractor.
+
+Renamed from ``sentiment.py`` / ``extract_sentiment_features`` in Task 6.
+Logic is unchanged — scoped to news data only (social_volume_z retained for
+backwards compatibility but will not be populated once the social_sentiment
+branch is removed from the news fetch callback).
+"""
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -17,22 +23,23 @@ def _zero_features() -> dict[str, float]:
     """Return a zeroed-out dict covering every expected output key.
 
     Returns:
-        dict[str, float]: All sentiment feature keys mapped to 0.0.
+        dict[str, float]: All news feature keys mapped to 0.0.
     """
     return {k: 0.0 for k in _KEYS}
 
 
-def extract_sentiment_features(raw: Mapping[str, Any], ticker: str) -> dict[str, float]:
-    """Compute the sentiment feature catalogue from raw news + sentiment data.
+def extract_news_features(raw: Mapping[str, Any], ticker: str) -> dict[str, float]:
+    """Compute the news feature catalogue from raw news data.
 
     Caller is expected to have already filtered news_items to the last 7 days
     (the analyst's fetch callback is the right place for that). This function
-    just summarises whatever it's given.
+    just summarises whatever it is given.
 
     Parameters:
         raw:    Raw provider payload containing ``news_items`` (list of dicts,
                 each with a ``polarity`` float) and optionally
-                ``social_volume_z`` (float).
+                ``social_volume_z`` (float, legacy — not populated after the
+                social_sentiment branch was removed from news_fetch_callback).
         ticker: Ticker symbol — reserved for future per-ticker adjustments;
                 not used in arithmetic today.
 

@@ -67,10 +67,7 @@ def test_single_ticker_block_contains_all_sections():
     # Per-analyst verdicts visible
     assert "technical" in out.lower()
     assert "fundamental" in out.lower()
-    # Note: evidence_view.py still iterates the old four-slot tuple until Task 6
-    # renames the sentiment slot to news. The fixture now uses "news" as the analyst
-    # key, so "news" appears in the per_analyst data but the rendered slot label is
-    # still "sentiment" (the view iterates by hardcoded name). Both are present.
+    assert "news" in out.lower()       # Task 6: slot renamed from "sentiment" → "news"
     assert "smart_money" in out.lower()
 
 

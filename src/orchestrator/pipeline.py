@@ -9,7 +9,7 @@ def _build_analyst_pool():
     from google.adk.agents import ParallelAgent
 
     from agents.analysts.fundamental.agent import _build_fundamental_analyst
-    from agents.analysts.sentiment.agent import _build_sentiment_analyst
+    from agents.analysts.news.agent import _build_news_analyst
     from agents.analysts.smart_money.agent import _build_smart_money_analyst
     from agents.analysts.technical.agent import _build_technical_analyst
     return ParallelAgent(
@@ -17,7 +17,7 @@ def _build_analyst_pool():
         sub_agents=[
             _build_technical_analyst(),
             _build_fundamental_analyst(),
-            _build_sentiment_analyst(),
+            _build_news_analyst(),
             _build_smart_money_analyst(),
         ],
     )
