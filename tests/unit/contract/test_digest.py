@@ -163,7 +163,8 @@ def test_missing_analysts_neutral_filled():
     }
     te = build_ticker_evidence(per_analyst, "AAPL", "t", _now(), DEFAULT_ANALYST_WEIGHTS)
     assert set(te.per_analyst.keys()) == set(DEFAULT_ANALYST_WEIGHTS.keys())
-    for missing in ("fundamental", "news", "smart_money"):
+    # Task 7 adds social; all four non-provided analysts should be neutral-filled.
+    for missing in ("fundamental", "news", "social", "smart_money"):
         assert te.per_analyst[missing].verdict.lean == "neutral"
         assert te.per_analyst[missing].verdict.magnitude == 0.0
         assert te.per_analyst[missing].verdict.confidence == 0.0
@@ -194,7 +195,9 @@ def test_smart_money_no_data_flag_treated_as_neutral():
     }
     te = build_ticker_evidence(per_analyst, "AAPL", "t", _now(), DEFAULT_ANALYST_WEIGHTS)
     assert te.aggregate.lean == "bullish"
-    assert te.aggregate.magnitude == pytest.approx(0.45, rel=0.01)
+    # Task 7 adds social as a 5th analyst (is_no_data → 0.0 contribution).
+    # Magnitude = (0.6 + 0.6 + 0.6) / 5 = 0.36.
+    assert te.aggregate.magnitude == pytest.approx(0.36, rel=0.01)
 
 
 # ── weights snapshotting (top-level on TickerEvidence) ────────────────────────

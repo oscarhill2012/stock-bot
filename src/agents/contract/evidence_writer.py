@@ -1,11 +1,12 @@
 """Persist AnalystEvidence + TickerEvidence rows after every tick.
 
-``EvidenceWriter`` is a lightweight ADK ``BaseAgent`` that reads four
-``{analyst}_evidence`` keys (technical, fundamental, news, smart_money) and
-``ticker_evidence_objects`` from session state, then calls the savers in
-``orchestrator.persistence`` to write one ``AnalystEvidenceRow`` per evidence
-item and one ``TickerEvidenceRow`` per ticker.  It yields no events — it is a
-pure side-effectful write step wired into the orchestrator pipeline.
+``EvidenceWriter`` is a lightweight ADK ``BaseAgent`` that reads five
+``{analyst}_evidence`` keys (technical, fundamental, news, smart_money,
+social) and ``ticker_evidence_objects`` from session state, then calls the
+savers in ``orchestrator.persistence`` to write one ``AnalystEvidenceRow``
+per evidence item and one ``TickerEvidenceRow`` per ticker.  It yields no
+events — it is a pure side-effectful write step wired into the orchestrator
+pipeline.
 """
 from __future__ import annotations
 
@@ -18,11 +19,13 @@ from google.adk.events import Event
 
 # Maps session-state key → analyst label used in the database.
 # "sentiment_evidence" / "sentiment" renamed to "news_evidence" / "news" in Task 6.
+# "social_evidence" / "social" added in Task 7 when SocialAnalyst became the 5th analyst.
 _EVIDENCE_KEYS = (
     ("technical_evidence", "technical"),
     ("fundamental_evidence", "fundamental"),
     ("news_evidence", "news"),
     ("smart_money_evidence", "smart_money"),
+    ("social_evidence", "social"),
 )
 
 

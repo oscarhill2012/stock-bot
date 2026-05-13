@@ -9,9 +9,10 @@ tunable without code changes, promote to `config/digest.json` + a loader.
 from __future__ import annotations
 
 DEFAULT_ANALYST_WEIGHTS: dict[str, float] = {
-    "technical": 1.0,
+    "technical":   1.0,
     "fundamental": 1.0,
-    "news": 1.0,
+    "news":        1.0,
+    "social":      1.0,   # added Task 7 — deterministic social analyst
     "smart_money": 1.0,
 }
 

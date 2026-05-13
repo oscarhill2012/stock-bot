@@ -10,10 +10,14 @@ def test_analyst_pool_is_parallel_agent():
     assert isinstance(analyst_pool, ParallelAgent)
 
 
-def test_analyst_pool_has_four_agents():
-    assert len(analyst_pool.sub_agents) == 4
+def test_analyst_pool_has_five_agents():
+    """Task 7 adds SocialAnalyst as the fifth child of the pool."""
+    assert len(analyst_pool.sub_agents) == 5
 
 
 def test_analyst_pool_agent_names():
     names = {a.name for a in analyst_pool.sub_agents}
-    assert names == {"TechnicalAnalyst", "FundamentalAnalyst", "NewsAnalyst", "SmartMoneyAnalyst"}
+    assert names == {
+        "TechnicalAnalyst", "FundamentalAnalyst", "NewsAnalyst",
+        "SocialAnalyst", "SmartMoneyAnalyst",
+    }
