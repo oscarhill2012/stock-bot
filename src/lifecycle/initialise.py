@@ -57,6 +57,20 @@ def _check_env() -> None:
         raise EnvVarMissingError(f"missing required env vars: {missing}")
 
 
+def _check_heuristics() -> None:
+    """Fail-fast load of analyst heuristics. Surfaces JSON/schema errors at boot.
+
+    Imports the loader inside the function so the lifecycle module does not pull
+    the agents package at import time (avoiding circular-import risk). If the
+    JSON file is missing, malformed, or fails Pydantic validation this will raise
+    immediately — before any ticker work begins.
+    """
+    # Deferred import so lifecycle does not depend on agents at module level.
+    from agents.analysts.heuristics import load_heuristics
+
+    load_heuristics()  # raises ValidationError if malformed
+
+
 def _check_live_tables_empty(db_url: str) -> None:
     engine = make_engine(db_url)
     insp = inspect(engine)
@@ -121,6 +135,9 @@ async def initialise(
     """Pre-flight, seed schema, write anchor, resume scheduler."""
     # 1. Env
     _check_env()
+
+    # 1b. Analyst heuristics config — fail fast before any DB or broker work
+    _check_heuristics()
 
     # 2. Schema seed (idempotent)
     create_all(make_engine(db_url))

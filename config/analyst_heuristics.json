@@ -1,0 +1,55 @@
+{
+  "technical": {
+    "rsi_overbought": 75,
+    "rsi_oversold": 25,
+    "pct_change_momentum_scale": 4.0,
+    "vol_ratio_breakout": 1.5,
+    "vol_ratio_dry_up": 0.7,
+    "atr_high_volatility_pct": 5.0,
+    "near_52w_extreme_pct": 5.0,
+    "confidence_base": 0.5,
+    "confidence_boost_step": 0.2,
+    "confidence_penalty_step": 0.3,
+    "magnitude_cap": 1.0
+  },
+  "social": {
+    "score_neutral_band": 0.05,
+    "score_to_magnitude_scale": 2.0,
+    "high_volume_mentions": 200,
+    "high_volume_magnitude_boost": 0.15,
+    "confidence_volume_floor": 30,
+    "platform_disagreement_threshold": 0.3,
+    "confidence_base": 0.4,
+    "confidence_boost_step": 0.2,
+    "confidence_penalty_step": 0.2,
+    "magnitude_cap": 1.0
+  },
+  "smart_money": {
+    "multi_filer_min_count": 3,
+    "high_activity_trade_count": 5,
+    "lone_filer_confidence_floor": 0.1,
+    "consensus_confidence_ceiling": 0.9,
+    "magnitude_cap": 1.0
+  },
+  "fundamental_vocabulary": {
+    "guidance":  ["raised", "maintained", "lowered", "none"],
+    "tone":      ["confident", "cautious", "defensive", "mixed"],
+    "risks":     ["regulatory", "litigation", "cybersecurity", "supply_chain",
+                  "macro", "competition", "key_person", "debt_refinance",
+                  "going_concern", "guidance_change", "customer_concentration"],
+    "insider_signals": ["cluster_buying", "cluster_selling",
+                        "planned_sale_dominant", "discretionary_sale_dominant",
+                        "option_exercise_dump", "option_exercise_hold",
+                        "gift_disposal", "mixed"]
+  },
+  "news_vocabulary": {
+    "catalysts": ["earnings", "guidance", "m_and_a", "regulatory",
+                  "product_launch", "legal", "macro", "downgrade",
+                  "upgrade", "none"],
+    "novelty":   ["high", "medium", "low"],
+    "direction": ["positive", "negative", "mixed", "none"]
+  },
+  "golden_set": {
+    "min_direction_agreement_pct": 70
+  }
+}
