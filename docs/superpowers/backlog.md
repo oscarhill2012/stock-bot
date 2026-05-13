@@ -16,6 +16,7 @@ The strategist is being grown in three goals. Items below are tagged with which 
   - `plan-C-strategist-v2.md` — strategist rewrite against the new contract, per-ticker stance output, derived lifecycle, held-position context, TradeLog FKs
   - `plan-D-cleanup.md` — drop dual-emit, persist `AnalystEvidenceRow` + `TickerEvidenceRow`, retire `AttributionWriter`, delete legacy `<Analyst>Signal` schemas
   Substrate from the earlier dropped council / exit-rules specs (lifecycle validation, telemetry tables, `opening_tick_id`/`closing_tick_id` FKs) was absorbed into Plan C.
+- **Phase 5 — Analyst re-categorisation + deterministic-first baseline.** *Specced.* Spec: `docs/Phase5-analyst-refine/spec.md`. Plan: `docs/Phase5-analyst-refine/plan.md`. Restructures the analyst pool to 5 concerns (Technical / Fundamental / News / Social / SmartMoney) — three deterministic, two narrowed-LLM — with a closed-vocabulary `key_factors` set and a surface-trace harness. Operationalises the minimum-LLM baseline policy that [[B16]] codifies as a ratchet for any future LLM expansion.
 - **Goal 3 — Knowledge base / self-improvement.** *Long arc.* The strategist learns from its own outcomes. The user's framing: "save the signal, not the trade." Stock-agnostic pattern recall, not a vector DB of past trades. Needs Phase 4 telemetry shipped + weeks of paper data before it can be designed concretely.
 
 A few items previously in this backlog (council debate, persona memory, persona model diversity) are gone — they assumed the council architecture, which v2 dropped. If multi-LLM deliberation ever comes back, it'll be a fresh design conversation gated on Goal 3 outcome data.
@@ -72,6 +73,14 @@ Both are "knowledge bases" in the loose sense; they answer different questions a
 - Composite index `(analyst, ticker, recorded_at)` on `AnalystEvidenceRow` for per-ticker history scans.
 - Surface-tracing harness for measuring before/after retrieval impact.
 
+**RAG flavours to weigh during the brainstorm** *(the same corpus can be retrieved over in multiple ways; v1 likely picks one)*:
+
+- **Semantic RAG** — embed the corpus once, fetch top-k by vector similarity at prompt time. Static index, ticker-keyed cosine lookup. Cheapest. Suits filings (low churn, long shelf-life).
+- **Agentic RAG** — the analyst (or a separate retrieval sub-agent) iteratively decides what to search for, reads the result, then decides whether to search further. Suits exploratory questions ("what did this company say last quarter about supply chain?") where the right query isn't knowable upfront. More expensive; trace-justified under [[B16]].
+- **Dynamic / fresh-corpus RAG** — the corpus is rebuilt continuously as new filings/news land; retrieval includes recency weighting and de-duplicates against previously-injected chunks. Suits news (high churn, short shelf-life) more than filings.
+
+These aren't mutually exclusive — a plausible progression is semantic-only over filings (v1) → layered dynamic-fresh on top for news (v2) → agentic retrieval once the closed-vocab `key_factors` give the analyst something concrete to query against (v3).
+
 **Key questions to brainstorm:**
 - Corpus scope for v1: filings only, or filings + news? Earnings call transcripts are a third corpus with their own provider story (not currently fetched).
 - Storage backend: SQLite + FTS5 for text search? SQLite + sidecar vector store (sqlite-vec, Chroma, LanceDB)? Postgres + pgvector? The choice intersects with deployment.
@@ -85,6 +94,57 @@ Both are "knowledge bases" in the loose sense; they answer different questions a
 **Dependencies:** Analyst-LLM narrowing refactor shipped. Independent of B2 in design, though both may benefit from shared embedding infrastructure.
 
 **Likely outcome of the brainstorm:** decompose into sub-specs (e.g. "filings corpus + retrieval", "news corpus + retrieval", "earnings transcript ingestion", "prompt-side retrieval wiring"). Each becomes its own spec under `docs/superpowers/specs/`.
+
+---
+
+### TradingAgents-inspired explorations (B12, B14)
+
+The two entries below — and [[B13]] in Tier 2 — are deferred experiments inspired by the TradingAgents paper (`docs/papers/TradingAgents.pdf`). They are *not* commitments. Each must clear [[B16]]'s ratchet checklist (trace-data evidence of a baseline gap, minimal-hop justification, cost estimate, shelve-criterion) before being scheduled. Listed here so the inspiration source isn't lost when the next brainstorm picks one up.
+
+---
+
+### B12. Bull/Bear researcher debate over the analyst pack  *(TradingAgents-inspired, experimental)*
+
+**Origin:** Surfaced during the post-paper-reading review of `docs/papers/TradingAgents.pdf`. The paper inserts a Bull/Bear researcher debate *between* the analyst reports and the trader's final decision. Each researcher reads the same analyst output and argues their side; the Trader (≈ our Strategist) reads the debate transcript rather than the raw analyst pack.
+
+**Distinction from [[B13]] (risk debate):** B12 debates *direction* (should we be long, short, or flat on this ticker?). B13 debates *sizing* (given the direction, how aggressive should the position be?). Both can co-exist; B12 sits logically upstream of B13.
+
+**The goal — experiment, not copy:** test whether inserting a two-agent (or three: Bull / Bear / Neutral) directional debate between the analyst pack and the Strategist materially improves per-ticker stance quality, measured against a surface-trace baseline of the same evidence going directly to the Strategist.
+
+**Experimentation path:**
+- **v0** — current state: 5-analyst pack → Strategist (the Strategist itself does the bull/bear reasoning internally).
+- **v1** — externalise the bull/bear voices as two prompts that emit structured rebuttals; Strategist reads both alongside the digest.
+- **v2** — multi-round debate (Bull rebuts Bear's rebuttal, etc.) with a turn cap.
+
+**Key questions:**
+- Per-ticker vs per-tick: do Bull/Bear run once per ticker per tick, or only on tickers where the digest is contested (`disagreement_score` over a threshold)? Strong sparse-execution overlap with [[B9]].
+- Output shape: free-form transcript injected into the Strategist prompt, or structured `BullCase` / `BearCase` evidence objects parallel to `TickerEvidence`?
+- Cost: roughly doubles (or triples) per-ticker LLM calls on contested tickers. Trace-justified expansion under [[B16]].
+- Strategist coupling: does the Strategist still see the digest, or only the debate output? (Probably both — losing the digest discards calibration.)
+- Aggregation: when Bull and Bear materially disagree about the *evidence itself* (not just its sign), does that propagate as a `disagreement_score` boost?
+
+**Shelve-criteria:** if v1 surface traces show the externalised bull/bear voices restate what the Strategist's internal reasoning already covers — shelve. Revisit if Goal 3 ([[B2]]) outcome attribution shows the Strategist is systematically wrong on contested tickers.
+
+**Dependencies:** Phase 5 shipped. Goes through [[B16]]'s ratchet checklist. Strong design overlap with [[B9]] (only run on contested tickers).
+
+---
+
+### B14. Per-stock per-analyst prose reports  *(TradingAgents-inspired, deferred from Phase 5)*
+
+**Origin:** During the Phase 5 analyst re-categorisation brainstorm the user proposed having each analyst emit a short prose report per ticker (TradingAgents-style, where each analyst writes a few paragraphs that downstream agents read). Deferred from Phase 5 to keep the deterministic-first baseline minimal; the closed-vocabulary `key_factors` tags currently carry the same information in compressed form.
+
+**The goal:** evaluate whether prose-form analyst reports — one short paragraph per analyst per ticker, generated by the same LLM that already runs for Fundamental/News and synthesised mechanically (or via cheap LLM rendering) for the deterministic analysts — help the Strategist make better per-ticker decisions than the current `key_factors` + digest substrate.
+
+**Key questions:**
+- Generation cost: Technical/Social/SmartMoney are deterministic — do we synthesise their "report" from features via a template (free), or invoke an LLM to render features into prose (~3× more LLM calls per tick)?
+- Storage: does each `AnalystEvidenceRow` gain a `report_prose: str | None` column, or live in a sibling `AnalystReportRow`?
+- Strategist consumption: prose reports replace the digest in the prompt, augment it, or are summarised by a separate "Manager" agent (the TradingAgents pattern)?
+- Risk of redundancy: if the prose reports just restate the closed-vocab tags, this is pure cost with no signal lift. The trace-data check matters more here than for B12/B13.
+- Per-ticker vs per-tick: same sparse-execution question as [[B9]] and [[B12]] — only generate for tickers the Strategist is actively considering acting on?
+
+**Shelve-criteria:** if a v1 surface trace shows the Strategist's per-ticker stance distribution is statistically indistinguishable from the no-prose baseline — shelve. Revisit if Goal 3 outcome attribution shows the Strategist's *rationales* are systematically thin in ways prose context would fix.
+
+**Dependencies:** Phase 5 shipped. Goes through [[B16]]'s ratchet checklist. Strong design overlap with [[B12]] (both add per-ticker LLM hops between analysts and Strategist).
 
 ---
 
@@ -158,21 +218,95 @@ Both are "knowledge bases" in the loose sense; they answer different questions a
 
 ---
 
-### B10. Narrative analyst — 13D letters and Form-4 footnotes
+### B10. Narrative analyst — 13D letters and Form-4 deep-footnote reading
 
-**Origin:** Surfaced during the analyst-LLM narrowing brainstorm. The smart_money analyst was switched to deterministic because today's prompt only classifies counts — not because there is no prose to read. SC 13D filings often carry multi-page intent letters ("we plan to nominate two directors", "we believe management should be replaced") and SEC Form 4 footnotes carry context like "shares acquired pursuant to 10b5-1 trading plan adopted 2024-03-15" (i.e. *not* a discretionary buy). The deterministic analyst cannot read these.
+**Origin:** Surfaced during the analyst-LLM narrowing brainstorm. Phase 5 (analyst re-categorisation) then:
+- moved insider data into Fundamental's scope; and
+- pulled Form-4 footnote snippets in as a *truncated* supplement to the Fundamental LLM prompt (≤5 footnotes × ≤200 chars each).
 
-**The goal:** add a *new* sibling LLM analyst that reads the prose layer of smart-money filings and emits structured findings in the standard `AnalystEvidence` shape. Runs alongside the deterministic smart_money analyst rather than replacing it.
+Two narrative-prose sources remain unread after Phase 5:
+- Full Schedule 13D filings often carry multi-page intent letters ("we plan to nominate two directors", "we believe management should be replaced"). Fundamental does not touch these.
+- The Form-4 footnote supplement is intentionally truncated. Long footnotes describing complex arrangements (performance-award clawbacks, prearranged-plan amendments, derivative vesting triggers) are clipped before they reach the LLM.
+
+**The goal:** add a *new* sibling LLM analyst that reads the full narrative layer of owner-intent and insider filings. Runs alongside Fundamental (which reads MD&A + risk factors + the truncated insider supplement) rather than replacing it. After Phase 5 the insider data lives under Fundamental, so the natural pool position is "sibling to Fundamental" rather than "sibling to SmartMoney" — but the digest aggregation question is open (see below).
 
 **Key questions:**
-- Naming: `smart_money_narrative`? `activist_intent`? Something covering both 13D letters and Form-4 footnotes?
-- Where do we get the prose? `edgartools` returns 13D filings but the letter may be an exhibit — verify the extraction path. Form-4 footnote text is in the XML.
+- Naming: `activist_intent`? `owner_narrative`? `insider_narrative`? Something covering both 13D activist intent and Form-4 deep footnotes.
+- Where do we get the prose? `edgartools` returns 13D filings but the letter may be an exhibit — verify the extraction path. Form-4 footnote text is already in the XML; we'd lift Phase 5's truncation cap.
 - Verdict surface: bullish/bearish/neutral like the others, or a separate axis (e.g. `intent: activist | passive | strategic | none`)?
-- Aggregation: if both `smart_money` (deterministic) and `smart_money_narrative` (LLM) emit verdicts, does the digest treat them as two analysts in the weighted vote, or fold them into one smart-money slot with sub-weighting?
+- Aggregation: how does the digest treat this analyst's verdict — fold into Fundamental's weight as a sub-slot, treat as a sixth pool entry, or some hybrid?
 - Strong sparseness overlap with B9: 13D filings are rare per ticker; this analyst would emit `is_no_data=true` on most ticks. Likely lands together with the sparse-execution gate.
-- Closed vocabulary for `key_factors`: `intent:activist`, `intent:passive`, `plan:director_nomination`, `plan:replace_management`, `form4:10b5-1_plan`, `form4:open_market`, etc. Where does the vocabulary live — extend `config/analyst_heuristics.json`?
+- Closed vocabulary for `key_factors`: `intent:activist`, `intent:passive`, `plan:director_nomination`, `plan:replace_management`, `form4:performance_award_clawback`, `form4:10b5-1_plan_amendment`, etc. Extend `fundamental_vocabulary` (since it's a Fundamental sibling) or its own block?
 
-**Dependencies:** Analyst-LLM narrowing refactor shipped. Independent of B9 in principle, but likely co-developed.
+**Dependencies:** Phase 5 analyst re-categorisation shipped (insider lives in Fundamental). Independent of B9 in principle, but likely co-developed. Justified by Phase 5's baseline surface trace — if the truncated Form-4 footnote supplement is visibly underweighted by the strategist, this analyst is the obvious mitigation (and feeds back into [[B16]]'s ratchet-policy framework).
+
+---
+
+### B13. Three-perspective risk debate (Risky / Neutral / Safe)  *(experimental, trace-justified)*
+
+**Origin:** Surfaced during the post-paper-reading review of `docs/papers/TradingAgents.pdf`. The paper's "Risk Management" layer is three personas (Risky, Neutral, Safe) debating the Trader's proposed action before a Fund Manager arbitrates. The hypothesis: explicit risk-perspective tension reduces both over-leveraging and over-conservatism.
+
+**The goal — experiment, not copy:** test whether running the strategist's proposed action through a three-persona risk check produces better risk-adjusted outcomes than the existing deterministic `risk_gate`. The two co-exist: `risk_gate` enforces hard floors (cash, position caps); a Bull/Bear-style risk debate sits *between* the strategist and `risk_gate` and can attenuate position sizes the `risk_gate` would otherwise pass.
+
+**Experimentation path:**
+- **v0** — current state: strategist → `risk_gate` (deterministic clamps only).
+- **v1** — single LLM "risk reviewer" that adjusts position weights (not direction). Cheap, single-call.
+- **v2** — three personas (Risky / Neutral / Safe) with explicit aggregation logic. Closer to TradingAgents' setup.
+
+**Key questions:**
+- Authority boundary with the deterministic `risk_gate`: the debate can attenuate sizes; can it veto positions outright?
+- Persona configuration: prompt-engineered personas only, or different LLM models per persona (more diversity, more cost)?
+- Aggregation: weighted vote? Majority-with-veto? Always defer to Safe in tie-breaks?
+- Cost-vs-benefit: paper account is forgiving of bad sizing; the debate's value rises with capital at stake. Likely a pre-live-deployment gate, not a paper-stage one.
+
+**Shelve-criteria:** if v1 surface traces show the risk reviewer either (a) consistently agrees with `risk_gate`'s deterministic output, or (b) under-attenuates to the point of being decorative — shelve. Revisit when going live.
+
+**Dependencies:** Phase 5 shipped (strategist consuming the 5-analyst pack stably). Strategist v2 hardening (Plan E) probably needs to land first so the persona debate has a stable input contract. Goes through [[B16]]'s ratchet checklist before being scheduled.
+
+---
+
+### B15. Market-regime analyst  *(provider-gated)*
+
+**Origin:** During the Phase 5 analyst re-categorisation brainstorm the user noted that *market sentiment* (VIX, put/call ratio, AAII sentiment survey, sector rotation) is a distinct concept from news or social sentiment — it's market-wide regime data, not company-specific. No provider currently fetches it; the spec deferred it.
+
+**The goal:** add a sixth analyst slot for market-regime signals: VIX (volatility / fear index), CBOE put/call ratio, AAII bull/bear survey, sector-rotation indicators. Output is a regime-classifier verdict (`risk_on`, `risk_off`, `transitioning`, `flat`) plus the underlying numerics in features. The strategist consumes the regime verdict as portfolio-wide context rather than per-ticker.
+
+**Key questions:**
+- Data sources: VIX (CBOE / Yahoo), put/call (CBOE), AAII (weekly survey — different cadence), sector rotation (ETF-ratio derived). Free vs paid?
+- Verdict surface: regime classifier doesn't fit `AnalystVerdict(lean, magnitude, confidence)` cleanly. Extend `AnalystVerdict` with an optional regime axis? Or a separate `MarketContext` evidence object that bypasses the digest?
+- Per-ticker vs portfolio-wide: regime is one signal for the whole watchlist, not per ticker. Current `AnalystEvidence` shape is per-ticker. Needs a new persistence path.
+- Cadence: VIX is intra-day, AAII is weekly. Combining cadences in one analyst is awkward.
+- Strategist consumption: as a prompt block (cheap) or as a sizing multiplier (mechanical risk-on/off bias)?
+
+**Shelve-criteria:** if providers are paid/unavailable and surface traces show strategist decisions don't visibly need regime context (i.e. ticker-level evidence is sufficient even in volatile regimes), shelve indefinitely.
+
+**Dependencies:** A free or cheap provider exists for at least VIX + put/call ratio. AAII can be scraped if needed.
+
+---
+
+### B16. LLM augmentation per analyst — trace-justified ratchet  *(policy anchor)*
+
+**Origin:** Phase 5 commits the project to a minimum-LLM-as-baseline policy: only Fundamental + News + Strategist call LLMs. Adding LLM hops elsewhere (Technical, Social, SmartMoney, or extending Fundamental / News beyond their closed-vocab narrowed mandates) requires *trace-data evidence* that the baseline misses something material. This backlog entry is the policy *anchor* — every concrete LLM-expansion proposal becomes a sub-brainstorm with this entry as its checklist.
+
+**The goal:** when an LLM addition is proposed, run it through a structured justification before it is scheduled.
+
+**Checklist for any LLM-augmentation proposal:**
+1. **What baseline gap does the trace show?** Cite specific surface-trace files where the deterministic verdict (or the existing narrowed LLM) demonstrably misses signal that an LLM hop would catch.
+2. **What is the minimum LLM hop that closes the gap?** (Not the maximum.)
+3. **What is the expected token cost per tick?** Multiplied by tickers × tick rate × runtime hours.
+4. **What is the experimentation path** (v0 baseline → v1 minimal LLM → v2 expanded)?
+5. **What is the shelve-criterion** — under what trace-data condition do we revert?
+6. **Does it overlap with [[B9]] (sparse execution)** — can the LLM hop be cached / gated to non-changing inputs?
+
+**Likely candidates queued behind this gate** (none yet justified by data; listed for posterity):
+- Technical LLM that reads chart-pattern descriptions (depends on a chart-image provider).
+- Social LLM that reads raw Reddit/Twitter posts (depends on a raw-posts provider; Finnhub aggregate doesn't qualify).
+- SmartMoney LLM that reads 13D/13G prose — already its own entry ([[B10]]).
+- Fundamental / News mandate expansion beyond the closed-vocab narrowing.
+
+**Dependencies:** Phase 5 shipped with baseline surface trace in place.
+
+**Shelve-criteria for the entry itself:** if after 3 months of paper operation there have been zero LLM-augmentation proposals (i.e. the baseline is consistently adequate), retire as solved-by-omission.
 
 ---
 
@@ -227,11 +361,21 @@ Both are "knowledge bases" in the loose sense; they answer different questions a
 ```
 Phase 4 (Goals 1 + 2 — strategist v2 + analyst contract, plans A→B→C→D)
    │
-   ├── Analyst-LLM narrowing (specced: docs/superpowers/specs/analyst-llm-narrowing-design.md)
+   ├── Phase 5 (analyst re-categorisation: 5 analysts, deterministic-first baseline)
+   │     │     spec: docs/Phase5-analyst-refine/spec.md
+   │     │     plan: docs/Phase5-analyst-refine/plan.md
    │     │
    │     ├── B9  (sparse-execution gate)        ─┐
    │     ├── B10 (narrative analyst — 13D/Form4) ─┤── often co-developed
-   │     └── B11 (RAG / retrieval substrate)    ─┘
+   │     ├── B11 (RAG / retrieval substrate)    ─┘
+   │     └── B16 (LLM augmentation ratchet — policy anchor; gates B12/B13/B14 + future LLM hops)
+   │
+   ├── TradingAgents-inspired explorations (all trace-justified via B16)
+   │     ├── B12 (Bull/Bear directional debate over the analyst pack)
+   │     ├── B13 (three-perspective risk debate — sizing)
+   │     └── B14 (per-stock per-analyst prose reports)
+   │
+   ├── B15 (market-regime analyst — provider-gated, independent)
    │
    ├── B5 (per-evidence weighting) ─┐
    │                                 │
@@ -245,6 +389,6 @@ Phase 4 (Goals 1 + 2 — strategist v2 + analyst contract, plans A→B→C→D)
    └── B7 (cost observability)   — independent, low priority but feeds B2
 ```
 
-**Rough order if doing them in series:** Phase 4 plans A → B → C → D → analyst-LLM narrowing → B6 → B7 → B9 → B11 → B10 → B2 (long arc) → B5 → B4 → B3 → B8.
+**Rough order if doing them in series:** Phase 4 plans A → B → C → D → Phase 5 (analyst re-categorisation) → B16 (ratchet policy operationalised by Phase 5's surface trace) → B6 → B7 → B9 → B11 → B10 → B2 (long arc) → B5 → B4 → B3 → B8. B12/B13/B14/B15 fold in only as trace data justifies, ordered ad-hoc against [[B16]]'s checklist.
 
-Most are independent enough to reorder by what hurts most in operation. Two strict orderings hold: **Phase 4 before B2** (the knowledge base needs a clean signal contract and decision telemetry to reason over) and **analyst-LLM narrowing before B9/B10/B11** (sparse execution, the narrative sibling, and retrieval all assume the narrowed-LLM topology).
+Most are independent enough to reorder by what hurts most in operation. Two strict orderings hold: **Phase 4 before B2** (the knowledge base needs a clean signal contract and decision telemetry to reason over) and **Phase 5 before B9/B10/B11/B12/B13/B14** (every analyst-side and debate-side experiment assumes the post-Phase 5 5-analyst pack, deterministic baseline, and surface-trace harness).

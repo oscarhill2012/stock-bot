@@ -60,6 +60,7 @@ docs/performance/*.csv
 docs/performance/*.parquet
 logs/
 *.log
+docs/papers 
 
 # Data caches (raw market data shouldn't be committed)
 data/cache/
