@@ -14,17 +14,18 @@ The callback writes ``state["smart_money_data"]`` as:
         "notable_holders": {ticker: [holder_dict, ...]},
     }
 
-If neither source yields any activity across all tickers, a skip-Content is
-returned to short-circuit the LLM call and pre-seed an empty
-``smart_money_verdicts`` list so the downstream evidence-writer sees a clean
-no-data state rather than a missing key.
+The callback **always** returns ``None``.  This keeps ADK from setting
+``ctx.end_invocation = True`` (which would bypass ``_run_async_impl`` and
+prevent the after-agent-callback from firing).  Per-ticker no-data handling
+is the responsibility of ``SmartMoneyAnalyst._run_async_impl``, which reads
+``smart_money_data``, runs ``extract_smart_money_features``, and emits a
+no-data verdict via ``derive_smart_money_verdict`` when ``is_no_data=1.0``.
 """
 from __future__ import annotations
 
 import logging
 
 from google.adk.agents.callback_context import CallbackContext
-from google.genai import types as genai_types
 
 from data import (
     get_notable_holders,
@@ -39,12 +40,20 @@ logger = logging.getLogger(__name__)
 
 async def smart_money_fetch_callback(
     callback_context: CallbackContext,
-) -> genai_types.Content | None:
-    """Fetch smart-money data; return Content to skip LLM if no signal detected.
+) -> None:
+    """Fetch smart-money data and write it to state; always returns None.
 
     Pulls congressional / public-figure trades and notable 13F holders for
     every ticker in ``state["tickers"]``.  Insider trades are deliberately
     excluded — they are now fetched by the Fundamental analyst's callback.
+
+    The function **always** returns ``None`` so ADK does not set
+    ``end_invocation = True``.  Returning a ``Content`` object would cause ADK
+    to skip ``_run_async_impl`` entirely (see ``BaseAgent.run_async``, line
+    476), which would prevent per-ticker no-data verdicts from being emitted
+    and block the after-agent-callback from writing evidence.  No-data handling
+    is delegated to ``SmartMoneyAnalyst._run_async_impl`` via the
+    ``is_no_data=1.0`` feature flag.
 
     Parameters
     ----------
@@ -54,10 +63,9 @@ async def smart_money_fetch_callback(
 
     Returns
     -------
-    google.genai.types.Content | None
-        A skip-Content if no politician or holder activity was found (causing
-        ADK to bypass the LLM call for this analyst), or ``None`` to let the
-        LLM proceed normally.
+    None
+        Always — delegates verdict derivation and no-data handling to
+        ``_run_async_impl``.
     """
     state = callback_context.state
     tickers: list[str] = state.get("tickers", [])
@@ -66,7 +74,6 @@ async def smart_money_fetch_callback(
         "politicians": {},
         "notable_holders": {},
     }
-    has_signal = False
 
     for ticker in tickers:
         try:
@@ -90,20 +97,9 @@ async def smart_money_fetch_callback(
             h.model_dump() if hasattr(h, "model_dump") else h for h in holders
         ]
 
-        if politicians or holders:
-            has_signal = True
-
     state["smart_money_data"] = smart_money_data
 
-    if not has_signal:
-        # Pre-seed an empty verdicts list so the after-callback
-        # (make_evidence_callback) short-circuits cleanly and synthesises
-        # no-data evidence for every ticker rather than raising KeyError on
-        # an absent key.
-        state["smart_money_verdicts"] = []
-        return genai_types.Content(
-            parts=[genai_types.Part(text="no smart money signal — skipping")],
-            role="model",
-        )
-
+    # Return None unconditionally so ADK does NOT set end_invocation=True.
+    # Per-ticker no-data handling is delegated to _run_async_impl via the
+    # ``is_no_data=1.0`` feature flag in extract_smart_money_features.
     return None
