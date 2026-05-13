@@ -8,6 +8,7 @@ from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event
 
+from observability.trace import _trace_maybe
 from orchestrator.state import MIN_HELD_WEIGHT
 
 from .constraints import apply_constraints
@@ -50,6 +51,9 @@ class RiskGateAgent(BaseAgent):
         # Snapshot pre-clamp weights for lifecycle validation below.
         original_weights = dict(proposed)
 
+        # Surface trace — record the weights entering the clamp loop.
+        _trace_maybe(state, "06_risk_gate_in", {"proposed_weights": proposed})
+
         if self.broker:
             portfolio = await self.broker.get_portfolio()
             current_weights = portfolio.current_weights()
@@ -83,6 +87,14 @@ class RiskGateAgent(BaseAgent):
 
         state["final_orders"] = [o.model_dump() for o in orders]
         state["risk_clamps_applied"] = [c.model_dump() for c in clamps]
+
+        # Surface trace — record clamped weights and generated orders.
+        _trace_maybe(state, "06_risk_gate_out", {
+            "clamped_weights": proposed,
+            "orders": state["final_orders"],
+            "clamps": state["risk_clamps_applied"],
+        })
+
         return
         yield  # required to make this an async generator
 

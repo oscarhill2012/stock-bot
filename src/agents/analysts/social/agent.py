@@ -32,6 +32,7 @@ from google.adk.events import Event
 from agents.analysts._common import make_evidence_callback
 from agents.analysts.heuristics import SocialHeuristics, load_heuristics
 from contract.extractors.social import derive_social_verdict, extract_social_features
+from observability.trace import _trace_maybe
 
 from .fetch import social_fetch_callback
 
@@ -113,6 +114,9 @@ class SocialAnalyst(BaseAgent):
 
         # Write the verdict list so the after_agent_callback can read it.
         state["social_verdicts"] = verdicts
+
+        # Surface trace — no-op unless state["_trace"] is set by trace_tick.py.
+        _trace_maybe(ctx.session.state, "02_social_verdict", verdicts)
 
         # No events emitted — pure state mutation, same as RiskGateAgent.
         return

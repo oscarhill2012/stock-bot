@@ -31,6 +31,7 @@ from data import (
     get_notable_holders,
     get_public_figure_trades,
 )
+from observability.trace import _trace_maybe
 
 POLITICIAN_LOOKBACK_DAYS = 30
 HOLDER_LOOKBACK_DAYS = 90
@@ -98,6 +99,9 @@ async def smart_money_fetch_callback(
         ]
 
     state["smart_money_data"] = smart_money_data
+
+    # Surface trace — no-op unless state["_trace"] is set by trace_tick.py.
+    _trace_maybe(state, "01_fetch_smart_money", smart_money_data)
 
     # Return None unconditionally so ADK does NOT set end_invocation=True.
     # Per-ticker no-data handling is delegated to _run_async_impl via the

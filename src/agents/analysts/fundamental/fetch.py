@@ -39,6 +39,7 @@ from google.genai import types as genai_types
 
 from data import get_company_filings, get_insider_trades, get_stock_stats
 from data.models import Form4Bundle, InsiderTrade
+from observability.trace import _trace_maybe
 
 logger = logging.getLogger(__name__)
 
@@ -277,5 +278,8 @@ async def fundamental_fetch_callback(
     # Join all per-ticker blocks into one string for the {fundamental_context}
     # ADK instruction placeholder.
     state["fundamental_context"] = "\n\n".join(context_blocks) if context_blocks else "(no data)"
+
+    # Surface trace — no-op unless state["_trace"] is set by trace_tick.py.
+    _trace_maybe(state, "01_fetch_fundamental", fundamental_data)
 
     return None

@@ -16,6 +16,7 @@ from google.adk.agents.callback_context import CallbackContext
 from google.genai import types as genai_types
 
 from data import get_social_sentiment
+from observability.trace import _trace_maybe
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,9 @@ async def social_fetch_callback(
             social_data[ticker] = {}
 
     state["social_data"] = social_data
+
+    # Surface trace — no-op unless state["_trace"] is set by trace_tick.py.
+    _trace_maybe(state, "01_fetch_social", social_data)
 
     # Return None so the agent body (_run_async_impl) continues normally.
     return None

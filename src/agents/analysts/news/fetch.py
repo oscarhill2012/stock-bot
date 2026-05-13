@@ -20,6 +20,7 @@ from google.adk.agents.callback_context import CallbackContext
 from google.genai import types as genai_types
 
 from data import get_stock_news
+from observability.trace import _trace_maybe
 
 logger = logging.getLogger(__name__)
 
@@ -135,5 +136,8 @@ async def news_fetch_callback(
     # Join all per-ticker blocks into one string for the {news_context} ADK
     # instruction placeholder — mirrors the fundamental_context pattern.
     state["news_context"] = "\n\n".join(context_blocks) if context_blocks else "(no news data)"
+
+    # Surface trace — no-op unless state["_trace"] is set by trace_tick.py.
+    _trace_maybe(state, "01_fetch_news", news_data)
 
     return None

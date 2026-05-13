@@ -32,6 +32,7 @@ from google.adk.events import Event
 from agents.analysts._common import make_evidence_callback
 from agents.analysts.heuristics import TechnicalHeuristics, load_heuristics
 from contract.extractors.technical import derive_technical_verdict, extract_technical_features
+from observability.trace import _trace_maybe
 
 from .fetch import technical_fetch_callback
 
@@ -116,6 +117,9 @@ class TechnicalAnalyst(BaseAgent):
 
         # Write the verdict list so the after_agent_callback can read it.
         state["technical_verdicts"] = verdicts
+
+        # Surface trace — no-op unless state["_trace"] is set by trace_tick.py.
+        _trace_maybe(ctx.session.state, "02_technical_verdict", verdicts)
 
         # No events emitted — pure state mutation, same as SocialAnalyst.
         return
