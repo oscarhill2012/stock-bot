@@ -7,10 +7,19 @@ from .filings import Filing
 from .market import OHLCBar, StockStats
 from .news import NewsArticle
 from .sentiment import SocialSentiment, SocialSentimentSnapshot
-from .trades import InsiderTrade, NotableHolder, PoliticianTrade, TradeSide
+from .trades import (
+    Form4Bundle,
+    InsiderDerivativeTrade,
+    InsiderTrade,
+    NotableHolder,
+    PoliticianTrade,
+    TradeSide,
+)
 
 __all__ = [
     "Filing",
+    "Form4Bundle",
+    "InsiderDerivativeTrade",
     "InsiderTrade",
     "NewsArticle",
     "NotableHolder",
