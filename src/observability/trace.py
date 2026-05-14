@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -161,3 +162,124 @@ def _trace_maybe(
     # the no-op *production* path is never affected by trace-side failures.
     with contextlib.suppress(Exception):
         tw.snapshot(label, payload, state_keys=state_keys)
+
+
+# ── Shared LLM trace callback factory ────────────────────────────────────────
+
+
+def _extract_content_text(content: Any) -> str:
+    """Concatenate every text part of a single ADK ``Content`` into one string.
+
+    Parameters
+    ----------
+    content:
+        An ADK ``Content`` object — has a ``.parts`` list whose entries may
+        carry a ``.text`` attribute. Non-text parts are silently skipped.
+
+    Returns
+    -------
+    str
+        The concatenated text, or an empty string if no text parts exist.
+    """
+    if content is None:
+        return ""
+
+    parts = getattr(content, "parts", None) or []
+    chunks: list[str] = []
+
+    for part in parts:
+        text = getattr(part, "text", None)
+        if text:
+            chunks.append(text)
+
+    return "\n".join(chunks)
+
+
+def make_llm_trace_callbacks(section_name: str, *, model: str) -> tuple[Callable, Callable]:
+    """Build paired before/after model callbacks that capture the LLM round-trip.
+
+    Captures BOTH the rendered system instruction (which contains the
+    ``{news_context}`` / ``{fundamental_context}`` placeholders after ADK
+    substitution) AND the user-side ``contents``. Pre-Phase-5 helpers only
+    captured ``contents`` and silently dropped the system instruction, which
+    meant every surface trace was missing the actual article / filing text the
+    LLM saw.
+
+    The captured prompt is structured as::
+
+        === system ===
+        <rendered system instruction>
+        === user ===
+        <user contents>
+
+    Both callbacks are no-ops when ``state["_trace"]`` is not a
+    ``TraceWriter`` — production runs pay a single dict lookup.
+
+    Parameters
+    ----------
+    section_name:
+        Base label for the trace section (e.g. ``"03_news_llm"``). The
+        before-callback writes to ``{section_name}_in``; the after-callback
+        writes to ``{section_name}_out``.
+    model:
+        Model identifier string to record alongside the prompt + response
+        (e.g. ``"gemini-2.5-flash-lite"``).
+
+    Returns
+    -------
+    (before, after):
+        Two callables matching ADK's ``before_model_callback`` and
+        ``after_model_callback`` signatures.
+    """
+
+    def _state_writer(ctx: Any) -> TraceWriter | None:
+        """Look up the TraceWriter on ``ctx.state``; return None if absent."""
+        state = ctx.state
+        try:
+            tw = state.get("_trace")
+        except (AttributeError, TypeError):
+            return None
+        return tw if isinstance(tw, TraceWriter) else None
+
+    def _before(callback_context: Any, llm_request: Any) -> None:
+        """Capture system + user prompt portions into the trace writer."""
+        tw = _state_writer(callback_context)
+        if tw is None:
+            return None
+
+        # System instruction (where {news_context} / {fundamental_context}
+        # / {tickers} are substituted) lives on llm_request.config.system_instruction.
+        config = getattr(llm_request, "config", None)
+        system_text = _extract_content_text(getattr(config, "system_instruction", None))
+
+        # User contents — the historical capture target.
+        user_chunks: list[str] = []
+        for content in (getattr(llm_request, "contents", None) or []):
+            user_chunks.append(_extract_content_text(content))
+        user_text = "\n---\n".join(c for c in user_chunks if c)
+
+        prompt = (
+            "=== system ===\n"
+            f"{system_text or '(no system instruction)'}\n"
+            "=== user ===\n"
+            f"{user_text or '(no user content)'}"
+        )
+
+        tw.llm_pair(section_name, prompt=prompt, response="(pending)", model=model)
+        return None
+
+    def _after(callback_context: Any, llm_response: Any) -> None:
+        """Overwrite the ``(pending)`` placeholder with the model's response text."""
+        tw = _state_writer(callback_context)
+        if tw is None:
+            return None
+
+        response_text = _extract_content_text(getattr(llm_response, "content", None))
+
+        tw._sections[f"{section_name}_out"] = {
+            "model": model,
+            "response": response_text or "(no text parts)",
+        }
+        return None
+
+    return _before, _after
