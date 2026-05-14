@@ -63,6 +63,7 @@ import logging
 from collections.abc import Callable
 from pathlib import Path
 
+from google.adk.models import LlmResponse
 from google.genai import types as genai_types
 
 from agents.analysts.report_cache import read_cache, write_cache
@@ -146,8 +147,16 @@ def make_report_cache_callbacks(
 
         Returns
         -------
-        google.genai.types.Content | None
-            A synthetic ``Content`` on a full cache hit; ``None`` on any miss.
+        google.adk.models.LlmResponse | None
+            A synthetic ``LlmResponse`` on a full cache hit; ``None`` on any
+            miss.  ADK's downstream post-processors (notably ``_nl_planning``)
+            read ``llm_response.content`` on the return value, so the synthetic
+            ``Content`` MUST be wrapped in an ``LlmResponse`` — returning a
+            bare ``Content`` here crashes the agent flow with ``AttributeError:
+            'Content' object has no attribute 'content'`` the moment a cache
+            hit actually occurs.  See the regression test
+            ``test_before_full_hit_returns_llm_response`` for the pinned
+            contract.
         """
         if not cfg.enabled:
             return None
@@ -202,9 +211,18 @@ def make_report_cache_callbacks(
                     model="cache",
                 )
 
-        # Returning a Content object short-circuits the model call in ADK.
-        return genai_types.Content(
-            parts=[genai_types.Part.from_text(text="(cached)")]
+        # Short-circuit the model call.  ADK expects an LlmResponse here, not
+        # a bare Content — downstream post-processors (``_nl_planning`` et al.)
+        # access ``llm_response.content``, which only exists on LlmResponse.
+        # Returning a raw Content here crashes the agent flow with
+        # ``AttributeError: 'Content' object has no attribute 'content'`` the
+        # moment a real cache hit occurs.  This latent bug was invisible while
+        # the lifecycle bug (B22) prevented the cache from ever being written;
+        # surfacing it required B22 to first land.
+        return LlmResponse(
+            content=genai_types.Content(
+                parts=[genai_types.Part.from_text(text="(cached)")]
+            )
         )
 
     # -----------------------------------------------------------------------

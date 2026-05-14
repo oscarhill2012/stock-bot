@@ -284,6 +284,24 @@ def test_before_full_hit_short_circuits(stub_config):
         "_before returned None despite full cache hit for both tickers."
     )
 
+    # Regression pin — ADK's downstream post-processors (``_nl_planning`` and
+    # friends) access ``llm_response.content`` on whatever the
+    # before_model_callback returns.  Returning a bare ``genai_types.Content``
+    # crashes with ``AttributeError: 'Content' object has no attribute
+    # 'content'`` the moment a real cache hit occurs.  The hook MUST therefore
+    # return an ``LlmResponse`` that wraps the Content.  This assertion fails
+    # loudly if anyone "simplifies" back to returning the raw Content.
+    from google.adk.models import LlmResponse
+
+    assert isinstance(result, LlmResponse), (
+        f"_before returned {type(result).__name__}, expected LlmResponse — "
+        "ADK's _nl_planning post-processor reads .content on this object."
+    )
+    assert result.content is not None, (
+        "_before returned LlmResponse without populated .content — "
+        "downstream post-processors will crash on the missing payload."
+    )
+
     # State must have been populated with the cached verdicts batch.
     assert _VERDICTS_KEY in ctx.state, (
         "_before did not write to state[verdicts_state_key] on cache hit."
