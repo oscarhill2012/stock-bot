@@ -134,6 +134,73 @@ async def test_stats_cache_returns_stock_stats(_wire_store: CachedDataStore) -> 
 
 
 @pytest.mark.asyncio
+async def test_stats_cache_history_populated_from_ohlcv(
+    _wire_store: CachedDataStore,
+) -> None:
+    """Regression: ``stats_cache.fetch`` must return a ``StockStats`` whose
+    ``history`` list is non-empty and contains only bars dated ≤ ``as_of``.
+
+    Previously, ``read_market_meta`` returned ``history=[]``, which caused
+    every technical indicator in the extractor to compute as zero during
+    backtests.  The fix populates ``history`` from the OHLCV cache using a
+    365-day lookback before ``as_of``.
+    """
+    from backtest.providers import stats_cache  # noqa: F401
+
+    as_of = datetime(2023, 3, 15, tzinfo=UTC)
+
+    # Write a market-meta snapshot.
+    snapshot = StockStats(
+        ticker="AAPL",
+        history=[],
+        market_cap=2_000_000_000_000,
+        last_price=170.0,
+        sector="Technology",
+        long_name="Apple Inc.",
+    )
+    _wire_store.write_market_meta("AAPL", snapshot, as_of_date=date(2023, 3, 9))
+
+    # Write three OHLCV bars: two within the 365-day lookback, one future bar.
+    bars = [
+        OHLCBar(
+            timestamp=datetime(2023, 2, 28, tzinfo=UTC),
+            open=168.0, high=172.0, low=166.0, close=170.0, volume=50_000_000,
+        ),
+        OHLCBar(
+            timestamp=datetime(2023, 3, 14, tzinfo=UTC),  # one day before as_of
+            open=169.0, high=173.0, low=167.0, close=171.0, volume=55_000_000,
+        ),
+        OHLCBar(
+            timestamp=datetime(2023, 3, 16, tzinfo=UTC),  # one day AFTER as_of — must be excluded
+            open=172.0, high=175.0, low=170.0, close=174.0, volume=60_000_000,
+        ),
+    ]
+    _wire_store.write_ohlcv("AAPL", bars)
+
+    result = await stats_cache.fetch(
+        "AAPL",
+        as_of=as_of,
+    )
+
+    # History must be populated — not the empty list that caused the bug.
+    assert result is not None
+    assert len(result.history) > 0, "history must be non-empty from the OHLCV cache"
+
+    # Every bar in history must be dated ≤ as_of (no lookahead bias).
+    for bar in result.history:
+        assert bar.timestamp <= as_of, (
+            f"bar {bar.timestamp} is after as_of {as_of} — lookahead bias!"
+        )
+
+    # The future bar (2023-03-16) must not appear.
+    bar_dates = [b.timestamp.date() for b in result.history]
+    from datetime import date as date_type
+    assert date_type(2023, 3, 16) not in bar_dates, (
+        "future bar leaked into history — point-in-time filter broken"
+    )
+
+
+@pytest.mark.asyncio
 async def test_stats_cache_returns_none_on_miss(_wire_store: CachedDataStore) -> None:
     """``stats_cache.fetch`` returns ``None`` when no data is cached."""
     from backtest.providers import stats_cache  # noqa: F401
