@@ -97,3 +97,19 @@ def test_decision_rule_present() -> None:
     assert "direction" in rendered.lower(), "Expected direction decision rule not found"
     # Expect mention of novelty driving magnitude.
     assert "novelty" in rendered.lower(), "Expected novelty decision rule not found"
+
+
+def test_report_schema_instructions_present() -> None:
+    """The Phase 5 report schema block is present in the rendered prompt.
+
+    Asserts both the section heading and the driver count constraint so
+    the LLM receives the full shape specification (summary + 2-4 drivers).
+    """
+    rendered = build_news_instruction(_vocab())
+
+    assert "Report schema:" in rendered, (
+        "'Report schema:' heading not found — LLM will not know to emit a report"
+    )
+    assert "drivers  2-4 entries" in rendered, (
+        "'drivers  2-4 entries' constraint not found — driver count mandate missing"
+    )

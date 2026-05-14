@@ -108,3 +108,17 @@ def test_lean_options_in_prompt() -> None:
     rendered = build_fundamental_instruction(_vocab())
     for lean in ("bullish", "bearish", "neutral"):
         assert lean in rendered, f"Lean option '{lean}' not found in rendered prompt"
+
+
+def test_report_schema_instructions_present() -> None:
+    """The Phase 5 report schema block is present in the rendered prompt.
+
+    Mirrors the equivalent assertion in the News prompt tests — both LLM
+    analysts must emit the same report shape so the Strategist surface can
+    render them uniformly.
+    """
+    rendered = build_fundamental_instruction(_vocab())
+
+    assert "Report schema:" in rendered, (
+        "'Report schema:' heading not found — LLM will not know to emit a report"
+    )
