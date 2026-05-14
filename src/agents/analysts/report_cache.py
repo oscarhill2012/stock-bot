@@ -20,8 +20,10 @@ Both pieces must match for a hit. Anything else is a miss -> LLM is called
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
+import sys
 from datetime import UTC, datetime
 from hashlib import blake2b
 from pathlib import Path
@@ -35,16 +37,162 @@ from data.models import (
 )
 
 # ---------------------------------------------------------------------------
-# Prompt-version fingerprints — bump when prompt or closed vocab changes.
+# Prompt-version fingerprints — auto-derived from the rendered instruction
+# ---------------------------------------------------------------------------
+# Each constant is a 6-byte blake2b digest of the rendered prompt
+# instruction string with an ``"auto:"`` prefix.  Because the rendered
+# string is built by ``build_<analyst>_instruction(vocab)``, it embeds
+# (a) the prompt template body, (b) the closed-vocab lists from
+# ``analyst_heuristics.json``, and (c) the rationale char-cap from
+# ``analysts.json::output_caps``.  Any change to any of those three
+# automatically flips the version -> every cached entry written under the
+# old version is treated as a miss and is overwritten on the next LLM call.
+#
+# Rationale:
+#   Hand-maintained version strings rot — a contributor editing a prompt
+#   template has no structural prompt to bump the constant.  Forgetting to
+#   bump silently serves stale verdicts generated under the old prompt.
+#   Auto-derivation removes the human-discipline failure mode entirely.
+#   See backlog entry [[B23]] for the design discussion.
 # ---------------------------------------------------------------------------
 
-#: Version string baked into every News cache entry. Bump to invalidate all
-#: cached News verdicts after a prompt-template or vocabulary change.
-NEWS_PROMPT_VERSION = "2026-05-14-a"
+def _derive_prompt_version(instruction: str) -> str:
+    """Compute the cache-key version fingerprint for a rendered prompt.
 
-#: Version string baked into every Fundamental cache entry. Bump to invalidate
-#: all cached Fundamental verdicts after a prompt-template or vocabulary change.
-FUNDAMENTAL_PROMPT_VERSION = "2026-05-14-a"
+    Parameters
+    ----------
+    instruction:
+        The fully-rendered instruction string returned by
+        ``build_<analyst>_instruction(vocab)``.  Hashing the rendered
+        string (rather than the template plus a reference vocab) means a
+        change to the template, the closed-vocab lists, or the char-cap
+        substitutions all flow into the hash through a single channel.
+
+    Returns
+    -------
+    str
+        A string of the form ``"auto:<12-hex-chars>"`` — a 6-byte
+        blake2b digest with a literal ``"auto:"`` prefix that lets
+        humans see at a glance the version was machine-derived rather
+        than hand-set.  6 bytes is plenty: collision-resistance is
+        irrelevant here (we only need inequality with the prior value)
+        and a longer digest is too long for the eye to scan.
+    """
+    return f"auto:{blake2b(instruction.encode(), digest_size=6).hexdigest()}"
+
+
+# Render each analyst's instruction once at import time using the
+# heuristics file's closed-vocab lists, then hash the result.  Both
+# ``load_heuristics()`` and the analyst-config singleton consumed inside
+# ``build_*_instruction`` are ``lru_cache(maxsize=1)``, so this work is
+# cheap and only fires on the first import.
+#
+# NOTE: The prompt-builder modules are loaded via ``importlib`` rather
+# than a normal ``from agents.analysts.news.prompts import ...`` statement
+# to avoid a circular import cycle.  The ``agents.analysts`` package
+# ``__init__.py`` eagerly imports all five agent modules; those agents
+# import ``cache_callbacks``, which imports ``report_cache``; so any
+# normal ``from agents.analysts.*`` import fired during ``report_cache``
+# initialisation re-enters the partially-initialised chain and raises
+# ``ImportError``.  Loading the two ``.prompts`` files by filesystem
+# path via ``importlib.util.spec_from_file_location`` bypasses the
+# package init entirely and does not disturb the ongoing initialisation.
+
+def _load_prompt_builders() -> tuple:
+    """Load the prompt-builder callables for both analysts without
+    triggering the ``agents.analysts`` package ``__init__.py``.
+
+    Uses ``importlib.util.spec_from_file_location`` to load
+    ``heuristics.py``, ``news/prompts.py``, and
+    ``fundamental/prompts.py`` directly from their filesystem paths,
+    bypassing the package ``__init__`` that would otherwise cause a
+    circular-import error.  The loaded modules are inserted into
+    ``sys.modules`` under their canonical dotted names so subsequent
+    normal imports (e.g. from the agent modules) resolve to the same
+    module object rather than loading a duplicate.
+
+    Returns
+    -------
+    tuple
+        ``(load_heuristics, build_news_instruction,
+        build_fundamental_instruction)`` — the three callables needed
+        to render both analyst instructions.
+    """
+    # Resolve the ``src/`` root so paths work regardless of cwd.
+    _src = Path(__file__).parent.parent.parent   # src/agents/analysts/report_cache.py -> src/
+
+    def _load(dotted_name: str, rel_path: str):
+        """Load a single module by file path, registering it in sys.modules."""
+        # Re-use the cached module if it was already loaded normally.
+        if dotted_name in sys.modules:
+            return sys.modules[dotted_name]
+
+        spec = importlib.util.spec_from_file_location(
+            dotted_name, _src / rel_path
+        )
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[dotted_name] = mod          # Register before exec to handle any internal relative imports.
+        spec.loader.exec_module(mod)
+        return mod
+
+    heuristics_mod = _load(
+        "agents.analysts.heuristics",
+        "agents/analysts/heuristics.py",
+    )
+    news_prompts_mod = _load(
+        "agents.analysts.news.prompts",
+        "agents/analysts/news/prompts.py",
+    )
+    fundamental_prompts_mod = _load(
+        "agents.analysts.fundamental.prompts",
+        "agents/analysts/fundamental/prompts.py",
+    )
+
+    return (
+        heuristics_mod.load_heuristics,
+        news_prompts_mod.build_news_instruction,
+        fundamental_prompts_mod.build_fundamental_instruction,
+    )
+
+
+def _compute_version_constants() -> tuple[str, str]:
+    """Render both analyst instructions and return their version fingerprints.
+
+    Kept as a private function so the importlib machinery is contained in
+    one place and the version constants remain simple module-level
+    assignments.
+
+    Returns
+    -------
+    tuple[str, str]
+        ``(news_version, fundamental_version)`` — both in
+        ``"auto:<digest>"`` format as returned by ``_derive_prompt_version``.
+    """
+    load_heuristics, build_news_instruction, build_fundamental_instruction = (
+        _load_prompt_builders()
+    )
+    heuristics = load_heuristics()
+
+    news_version = _derive_prompt_version(
+        build_news_instruction(heuristics.news_vocabulary)
+    )
+    fundamental_version = _derive_prompt_version(
+        build_fundamental_instruction(heuristics.fundamental_vocabulary)
+    )
+
+    return news_version, fundamental_version
+
+
+_news_ver, _fundamental_ver = _compute_version_constants()
+
+#: Version string baked into every News cache entry.  Auto-derived from
+#: the rendered News prompt at module import time — see
+#: ``_derive_prompt_version`` above.
+NEWS_PROMPT_VERSION: str = _news_ver
+
+#: Version string baked into every Fundamental cache entry.  Auto-derived
+#: from the rendered Fundamental prompt at module import time.
+FUNDAMENTAL_PROMPT_VERSION: str = _fundamental_ver
 
 
 # ---------------------------------------------------------------------------
