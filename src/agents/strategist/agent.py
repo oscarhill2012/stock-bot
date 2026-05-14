@@ -9,7 +9,6 @@ from google.adk.agents.callback_context import CallbackContext
 from google.genai import types as genai_types
 
 from agents.strategist.derivation import TickContext, derive_legacy_fields
-from agents.strategist.evidence_view import render_ticker_evidence
 from agents.strategist.held_view import render_held_positions_view
 from agents.strategist.lifecycle import derive_lifecycle_action
 from agents.strategist.prompts import STRATEGIST_INSTRUCTION
@@ -18,6 +17,7 @@ from broker.portfolio import Portfolio
 from contract.digest import build_ticker_evidence
 from contract.digest_defaults import DEFAULT_ANALYST_WEIGHTS
 from contract.evidence import AnalystEvidence
+from contract.strategist_prompt import render_all_ticker_blocks
 from contract.ticker_evidence import TickerEvidence
 from observability.trace import _trace_maybe, make_llm_trace_callbacks
 
@@ -145,8 +145,11 @@ def _evidence_view_before_callback(
 
     # Keep both shapes in state — the rendered string for the prompt template, and
     # the JSON-serialised objects for any downstream code that wants structured data.
+    # The renderer (render_all_ticker_blocks) uses the feature-bullet registries in
+    # contract.strategist_prompt to produce labelled, human-readable per-ticker blocks
+    # that include feature values, rationale tags, and any prose AnalystReport.
     state["ticker_evidence_objects"] = [te.model_dump(mode="json") for te in ticker_evidence]
-    state["ticker_evidence"] = render_ticker_evidence(ticker_evidence)
+    state["ticker_evidence"] = render_all_ticker_blocks(ticker_evidence)
 
     # Surface trace — no-op unless state["_trace"] is set by trace_tick.py.
     _trace_maybe(state, "04_digest", state["ticker_evidence_objects"])

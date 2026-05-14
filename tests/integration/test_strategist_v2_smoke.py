@@ -45,6 +45,10 @@ pytestmark = pytest.mark.skipif(
 def _ev(analyst: str, lean: str, conf: float, ticker: str) -> dict:
     """Build a minimal ``AnalystEvidence`` dict for one analyst / ticker pair.
 
+    For the ``"news"`` analyst this helper automatically attaches a minimal
+    ``AnalystReport`` so the smoke test exercises the report-rendering path
+    through the strategist prompt (feature added in Task 5).
+
     Args:
         analyst: One of ``"technical"``, ``"fundamental"``, ``"news"``,
             or ``"smart_money"``.
@@ -57,7 +61,37 @@ def _ev(analyst: str, lean: str, conf: float, ticker: str) -> dict:
         A JSON-serialisable dict matching the ``AnalystEvidence`` schema,
         suitable for insertion into ``state["{analyst}_evidence"]``.
     """
-    from contract.evidence import AnalystEvidence, AnalystVerdict
+    from contract.evidence import (
+        AnalystEvidence,
+        AnalystReport,
+        AnalystVerdict,
+        ReportDriver,
+    )
+
+    # Attach a minimal AnalystReport to the news verdict so the smoke test
+    # exercises the full render_all_ticker_blocks path including prose reports.
+    report: AnalystReport | None = None
+    if analyst == "news":
+        report = AnalystReport(
+            summary=(
+                "Smoke-test news summary. Two articles this tick — one broadly "
+                "positive on earnings expectations, one cautious on macro outlook."
+            ),
+            drivers=[
+                ReportDriver(
+                    name="Earnings optimism",
+                    direction="bull",
+                    weight=0.6,
+                    body="Analyst consensus raised guidance expectations ahead of print.",
+                ),
+                ReportDriver(
+                    name="Macro headwind",
+                    direction="bear",
+                    weight=0.3,
+                    body="Rising yield environment tempers near-term multiple expansion.",
+                ),
+            ],
+        )
 
     evidence = AnalystEvidence(
         ticker=ticker,
@@ -70,6 +104,7 @@ def _ev(analyst: str, lean: str, conf: float, ticker: str) -> dict:
             magnitude=conf,
             confidence=conf,
             rationale=f"Smoke test stub ({lean})",
+            report=report,
         ),
     )
 
