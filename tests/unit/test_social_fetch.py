@@ -31,7 +31,8 @@ async def test_social_fetch_writes_state_dict(monkeypatch):
         aggregate_score=0.2,
     )
 
-    async def fake_get_social_sentiment(ticker):
+    async def fake_get_social_sentiment(ticker, *, as_of=None, **kwargs):
+        # Accept ``as_of`` forwarded by the social fetch callback (Phase C migration).
         assert ticker == "AAPL"
         return fake_result
 
@@ -82,7 +83,8 @@ async def test_social_fetch_writes_per_platform_shape(monkeypatch):
         aggregate_score=0.4,
     )
 
-    async def fake_get_social_sentiment(ticker):
+    async def fake_get_social_sentiment(ticker, *, as_of=None, **kwargs):
+        # Accept ``as_of`` forwarded by the social fetch callback (Phase C migration).
         return fake_result
 
     monkeypatch.setattr(fetch_mod, "get_social_sentiment", fake_get_social_sentiment)
