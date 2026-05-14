@@ -19,27 +19,26 @@ import logging
 from google.adk.agents.callback_context import CallbackContext
 from google.genai import types as genai_types
 
-from config.analysts import get_analysts_config
+from config.analysts import NewsCaps, get_analysts_config
 from data import get_stock_news
 from observability.trace import _trace_maybe
 
 logger = logging.getLogger(__name__)
 
 
-def _caps() -> tuple[int, int]:
-    """Return ``(max_articles, max_summary_chars)`` from the analysts config.
+def _caps() -> NewsCaps:
+    """Return the ``NewsCaps`` section from the analysts config.
 
     Reads caps lazily on first call — avoids running the config loader at
     module import time, which simplifies test isolation.
 
     Returns
     -------
-    tuple[int, int]
-        ``(max_articles_per_ticker, max_summary_chars)`` as configured in
-        ``config/analysts.json``.
+    NewsCaps
+        Validated caps object containing ``max_articles_per_ticker`` and
+        ``max_summary_chars`` as configured in ``config/analysts.json``.
     """
-    cfg = get_analysts_config().news
-    return cfg.max_articles_per_ticker, cfg.max_summary_chars
+    return get_analysts_config().news
 
 
 def _build_ticker_news_context(ticker: str, articles: list) -> str:
@@ -71,10 +70,10 @@ def _build_ticker_news_context(ticker: str, articles: list) -> str:
         return "\n".join(lines)
 
     # Read caps from config — done once per call, not per article.
-    max_articles, max_summary_chars = _caps()
+    caps = _caps()
 
     # Limit to the most recent N articles.
-    recent = articles[:max_articles]
+    recent = articles[:caps.max_articles_per_ticker]
 
     for i, article in enumerate(recent, start=1):
         # Support both dict access and attribute access depending on how the
@@ -93,7 +92,7 @@ def _build_ticker_news_context(ticker: str, articles: list) -> str:
 
         if summary:
             # Truncate to avoid token bloat while preserving the key content.
-            lines.append(f"       {summary[:max_summary_chars]}")
+            lines.append(f"       {summary[:caps.max_summary_chars]}")
 
     return "\n".join(lines)
 

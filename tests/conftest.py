@@ -6,7 +6,22 @@ from pathlib import Path
 
 import pytest
 
+from config.analysts import get_analysts_config
+
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+@pytest.fixture(autouse=True)
+def _clear_analysts_config_cache():
+    """Ensure each test starts with a fresh AnalystsConfig.
+
+    The ``@lru_cache(maxsize=1)`` on ``get_analysts_config`` would otherwise
+    let one test's loaded config leak into the next test's callbacks (e.g.
+    ``_caps()`` in ``news/fetch.py`` and ``fundamental/fetch.py``).
+    """
+    get_analysts_config.cache_clear()
+    yield
+    get_analysts_config.cache_clear()
 
 
 @pytest.fixture
