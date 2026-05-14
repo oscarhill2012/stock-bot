@@ -47,6 +47,12 @@ def test_report_rejects_empty_drivers() -> None:
         AnalystReport(summary="x", drivers=[])
 
 
+def test_report_rejects_single_driver() -> None:
+    """A single driver fails — the prompt mandates 2-4 entries."""
+    with pytest.raises(ValidationError):
+        AnalystReport(summary="x", drivers=[_driver()])
+
+
 def test_report_rejects_too_many_drivers() -> None:
     """More than 4 drivers is dilution — reject."""
     drivers = [_driver(name=f"D{i}") for i in range(5)]
