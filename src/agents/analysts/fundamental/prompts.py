@@ -20,6 +20,7 @@ agent-run time.
 from __future__ import annotations
 
 from agents.analysts.heuristics import FundamentalVocabulary
+from config.analysts import get_analysts_config
 
 # ---------------------------------------------------------------------------
 # Prompt template
@@ -27,7 +28,12 @@ from agents.analysts.heuristics import FundamentalVocabulary
 # Vocabulary tokens (single-brace) are substituted at agent-construction time
 # by ``build_fundamental_instruction``.  Runtime state tokens
 # ``{fundamental_context}`` and ``{tickers}`` are left intact as single-brace
-# so ADK's state injector fills them each tick.
+# so ADK's state injector fills them each tick.  Char-cap placeholders (e.g.
+# ``{rationale_max}``) are substituted at build time from
+# ``config/analysts.json`` so the value the LLM is told stays in sync with
+# the prompt-facing cap.  The schema's ``Field(max_length=...)`` derives a
+# *larger* value from the same prompt cap via ``schema_cap()`` — see the
+# "two-tier convention" note in ``src/config/strategist.py``.
 # ---------------------------------------------------------------------------
 
 _TEMPLATE = """You are the Fundamental analyst.
@@ -63,7 +69,7 @@ For each ticker output a JSON object with fields:
   lean         ∈ {{bullish, bearish, neutral}}
   magnitude    ∈ [0, 1]
   confidence   ∈ [0, 1]
-  rationale    string ≤160 chars naming the dominant finding
+  rationale    string ≤{rationale_max} chars naming the dominant finding
   key_factors  list of closed-vocabulary tags (≤8)
   is_no_data   true if no excerpts AND no insider activity
   report       object — see schema below; omit only when is_no_data=true.
@@ -122,11 +128,18 @@ def build_fundamental_instruction(vocab: FundamentalVocabulary) -> str:
         The rendered instruction string.  Contains exactly two remaining
         single-brace tokens: ``{fundamental_context}`` and ``{tickers}``.
     """
+    # Prompt-facing rationale cap — what we tell the LLM.  The schema in
+    # ``contract/evidence.py`` accepts up to ``schema_cap(rationale_max)``
+    # so the LLM's natural 1–5% character overshoot does not crash the
+    # tick — see the "two-tier convention" note in ``src/config/strategist.py``.
+    out_caps = get_analysts_config().output_caps
+
     return _TEMPLATE.format(
         guidance_options=" | ".join(vocab.guidance),
         tone_options     =" | ".join(vocab.tone),
         risk_tags        =" | ".join(vocab.risks),
         insider_signals  =" | ".join(vocab.insider_signals),
+        rationale_max    = out_caps.verdict_rationale_max_chars,
         # Protect the two ADK runtime placeholders from str.format substitution
         # by passing them back as themselves.
         fundamental_context="{fundamental_context}",

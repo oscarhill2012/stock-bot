@@ -43,6 +43,12 @@ def cache_root(tmp_path, monkeypatch):
             "max_insider_footnotes": 5,
             "max_insider_footnote_chars": 400,
         },
+        "output_caps": {
+            "verdict_rationale_max_chars":   160,
+            "report_summary_max_chars":     2000,
+            "report_driver_name_max_chars":   60,
+            "report_driver_body_max_chars": 1000,
+        },
         "cache": {"enabled": True, "directory": str(tmp_path / "cache")},
     }))
 

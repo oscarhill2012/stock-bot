@@ -61,9 +61,20 @@ def test_verdict_rejects_magnitude_out_of_range():
         _verdict(magnitude=1.5)
 
 
-def test_verdict_rejects_rationale_over_160_chars():
+def test_verdict_rejects_rationale_over_schema_cap():
+    """The schema cap is the prompt-facing rationale cap from
+    ``config/analysts.json::output_caps.verdict_rationale_max_chars`` plus
+    ``slack_percent`` headroom — see the "two-tier convention" note in
+    ``src/config/strategist.py``.  Reads the live schema cap from config so
+    retuning either the prompt cap or the slack does not silently invalidate
+    this regression."""
+    from config.analysts import get_analysts_config
+
+    cfg        = get_analysts_config()
+    schema_cap = cfg.schema_cap(cfg.output_caps.verdict_rationale_max_chars)
+
     with pytest.raises(ValidationError):
-        _verdict(rationale="x" * 161)
+        _verdict(rationale="x" * (schema_cap + 1))
 
 
 def test_evidence_valid():

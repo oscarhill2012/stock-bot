@@ -20,7 +20,25 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from config.analysts import get_analysts_config
+
 AnalystName = Literal["technical", "fundamental", "news", "social", "smart_money"]
+
+# ---------------------------------------------------------------------------
+# Cap resolution
+# ---------------------------------------------------------------------------
+# Char caps on LLM-emitted free-text fields come from ``config/analysts.json``
+# via the analyst-config loader.  The values referenced by the schemas are the
+# *schema* caps (prompt-facing cap + ``slack_percent`` headroom) — the prompt
+# templates still substitute the prompt-facing values.  See the "two-tier
+# convention" note in ``src/config/strategist.py`` and the analyst-specific
+# rationale in ``src/config/analysts.py``.  The two-tier gap is intentional
+# and load-bearing; do **not** "fix" the apparent mismatch with the prompt.
+# ---------------------------------------------------------------------------
+
+_cfg          = get_analysts_config()
+_OUT          = _cfg.output_caps
+_schema_cap   = _cfg.schema_cap                                                # alias for terser Field declarations
 
 
 class ReportDriver(BaseModel):
@@ -33,7 +51,9 @@ class ReportDriver(BaseModel):
     Parameters
     ----------
     name:
-        Short label for the driver (4-6 words), 1-60 characters.
+        Short label for the driver (4-6 words).  Capped at
+        ``output_caps.report_driver_name_max_chars`` (prompt-facing) plus
+        ``slack_percent`` schema headroom.
     direction:
         The directional signal this driver contributes — one of
         "bull", "bear", or "neutral".
@@ -43,13 +63,14 @@ class ReportDriver(BaseModel):
         constraint is not strictly enforced.
     body:
         2-3 sentence explanation of the driver. No source URLs — synthesise.
-        1-1000 characters.
+        Capped at ``output_caps.report_driver_body_max_chars`` (prompt-facing)
+        plus ``slack_percent`` schema headroom.
     """
 
-    name:      str   = Field(min_length=1, max_length=60)
+    name:      str   = Field(min_length=1, max_length=_schema_cap(_OUT.report_driver_name_max_chars))
     direction: Literal["bull", "bear", "neutral"]
     weight:    float = Field(ge=0.0, le=1.0)
-    body:      str   = Field(min_length=1, max_length=1_000)
+    body:      str   = Field(min_length=1, max_length=_schema_cap(_OUT.report_driver_body_max_chars))
 
 
 class AnalystReport(BaseModel):
@@ -64,13 +85,15 @@ class AnalystReport(BaseModel):
     ----------
     summary:
         3-5 sentences of connective tissue covering the gestalt this tick.
-        Not a bullet list — must argue the lean. 1-2000 characters.
+        Not a bullet list — must argue the lean.  Capped at
+        ``output_caps.report_summary_max_chars`` (prompt-facing) plus
+        ``slack_percent`` schema headroom.
     drivers:
         2-4 ``ReportDriver`` entries giving the primary reasons for the
         lean. Min 2 enforces proper differentiation; max 4 prevents dilution.
     """
 
-    summary: str                = Field(min_length=1, max_length=2_000)
+    summary: str                = Field(min_length=1, max_length=_schema_cap(_OUT.report_summary_max_chars))
     drivers: list[ReportDriver] = Field(min_length=2, max_length=4)
 
 
@@ -80,7 +103,7 @@ class AnalystVerdict(BaseModel):
     lean: Literal["bullish", "bearish", "neutral"]
     magnitude: float = Field(ge=0.0, le=1.0)
     confidence: float = Field(ge=0.0, le=1.0)
-    rationale: str = Field(max_length=160)
+    rationale: str = Field(max_length=_schema_cap(_OUT.verdict_rationale_max_chars))
     key_factors: list[str] = Field(default_factory=list, max_length=8)
     is_no_data: bool = False
 

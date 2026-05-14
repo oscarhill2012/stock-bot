@@ -103,8 +103,21 @@ def test_canned_bad_verdict_invalid_lean_rejected() -> None:
 
 
 def test_canned_bad_verdict_rationale_too_long_rejected() -> None:
-    """A rationale exceeding 160 characters is rejected by the schema."""
-    long_rationale = "x" * 161
+    """A rationale exceeding the *schema* cap is rejected.
+
+    The schema cap is the prompt-facing cap from
+    ``config/analysts.json::output_caps.verdict_rationale_max_chars``
+    plus ``slack_percent`` headroom — see the "two-tier convention" note
+    in ``src/config/strategist.py``.  Reads the live schema cap from
+    config so retuning either the prompt cap or the slack does not
+    silently invalidate this regression.
+    """
+    from config.analysts import get_analysts_config
+
+    cfg        = get_analysts_config()
+    schema_cap = cfg.schema_cap(cfg.output_caps.verdict_rationale_max_chars)
+    long_rationale = "x" * (schema_cap + 1)  # one char over the *schema* (slack-applied) cap
+
     raw = {
         "lean": "neutral",
         "magnitude": 0.3,

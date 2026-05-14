@@ -8,7 +8,7 @@ and reference these files by relative path (resolved from the project root).
 | `data.json` | Active provider per data domain + fetch defaults + HTTP timeout | `src/data/config.py` (`get_config()`) |
 | `watchlist.json` | The list of tickers the bot trades | `src/orchestrator/stock_picker.py` (`get_watchlist()`) |
 | `analyst_heuristics.json` | Thresholds + closed-vocabulary tag lists for all five analysts | `src/agents/analysts/heuristics.py` (`load_heuristics()`) |
-| `analysts.json` | Per-analyst input caps + LLM report cache toggle | `src/config/analysts.py` (`get_analysts_config()`) |
+| `analysts.json` | Per-analyst input caps + LLM output caps + report cache toggle | `src/config/analysts.py` (`get_analysts_config()`) |
 | `schedule.json` | Tick cadence — how many ticks per day and their ET times | `src/config/schedule.py` (`get_schedule_config()`) |
 | `strategist.json` | Character caps on strategist LLM free-text fields | `src/config/strategist.py` (`get_strategist_config()`) |
 
@@ -177,6 +177,33 @@ process restart is required after edits.
 | `fundamental.max_filing_risk_chars` | int [1–20000] | Character cap on the risk-factors excerpt for each filing. Default 1500 (widened from 500). |
 | `fundamental.max_insider_footnotes` | int [0–50] | Maximum insider footnote snippets included in the LLM prompt per ticker. Default 5. |
 | `fundamental.max_insider_footnote_chars` | int [1–5000] | Character cap per footnote excerpt. Default 400 (widened from 200). |
+
+### `slack_percent` — prompt-cap vs. schema-cap headroom (analyst outputs)
+
+| Setting | Type | Meaning |
+|---|---|---|
+| `slack_percent` | int [0–50] | Schema-side headroom on top of every value in `output_caps`. The values there are the **prompt-facing** caps the LLM is told (e.g. "≤160 chars"); the schema in `src/contract/evidence.py` accepts `ceil(prompt_cap × (1 + slack_percent / 100))`. Independent of the strategist's `slack_percent` so each LLM tier can be tuned separately. Default 10. |
+
+Same rationale as the strategist's `slack_percent` (see below) — LLMs tokenise
+on subword boundaries and overshoot any stated `≤N chars` cap by ~1–5%, so we
+tell them the prompt cap honestly and let the schema absorb the natural
+overshoot rather than hard-truncating mid-sentence. The full reasoning lives
+in the docstring of `src/config/analysts.py`.
+
+### `output_caps` — analyst LLM free-text output caps
+
+Character caps on the free-text fields emitted by the **LLM** analysts (News,
+Fundamental). Deterministic analysts (Technical, SmartMoney, Social) emit no
+free text so these caps don't apply to them. The values here are the
+prompt-facing caps; the Pydantic schemas in `src/contract/evidence.py` derive
+their `Field(max_length=...)` via `AnalystsConfig.schema_cap()`.
+
+| Setting | Type | Meaning |
+|---|---|---|
+| `output_caps.verdict_rationale_max_chars` | int [50–1000] | Cap on `AnalystVerdict.rationale` — one-line summary of the dominant catalyst/finding. Default 160. |
+| `output_caps.report_summary_max_chars` | int [200–8000] | Cap on `AnalystReport.summary` — the 3–5 sentence gestalt that argues the lean. Default 2000. |
+| `output_caps.report_driver_name_max_chars` | int [20–200] | Cap on `ReportDriver.name` — short label (4–6 words). Default 60. |
+| `output_caps.report_driver_body_max_chars` | int [100–4000] | Cap on `ReportDriver.body` — 2–3 sentence explanation per driver. Default 1000. |
 
 ### `cache` — LLM report cache
 
