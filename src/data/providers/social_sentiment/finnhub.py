@@ -53,7 +53,11 @@ def _summarise(rows: list[dict[str, Any]], platform: str) -> SocialSentimentSnap
     rate_per_minute=60,
     burst=30,
 )
-async def fetch(ticker: str) -> SocialSentiment:
+async def fetch(
+    ticker: str,
+    *,
+    as_of=None,  # noqa: ANN001 — accepted for signature uniformity; live provider ignores it
+) -> SocialSentiment:
     symbol = ticker.upper()
     payload = await asyncio.to_thread(_fetch_social, symbol)
 

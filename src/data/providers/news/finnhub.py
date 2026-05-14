@@ -35,6 +35,7 @@ async def fetch(
     from_date: date,
     to_date: date,
     limit: int | None = 50,
+    as_of=None,  # noqa: ANN001 — accepted for signature uniformity; live provider ignores it
 ) -> list[NewsArticle]:
     symbol = ticker.upper()
     raw = await asyncio.to_thread(

@@ -132,6 +132,7 @@ async def fetch(
     limit: int = 5,
     *,
     include_excerpts: bool = True,
+    as_of=None,  # noqa: ANN001 — accepted for signature uniformity; live provider ignores it
 ) -> list[Filing]:
     """Latest `limit` filings of the given `form_types` for `ticker`."""
     symbol = ticker.upper()

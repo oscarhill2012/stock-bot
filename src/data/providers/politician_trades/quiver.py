@@ -88,6 +88,7 @@ async def fetch(
     ticker: str | None = None,
     *,
     lookback_days: int = 90,
+    as_of=None,  # noqa: ANN001 — accepted for signature uniformity; live provider ignores it
 ) -> list[PoliticianTrade]:
     api_key = os.getenv("QUIVER_QUANT_API_KEY")
     if not api_key:

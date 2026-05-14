@@ -112,6 +112,8 @@ async def fetch(
     ticker: str,
     lookback_days: int = 180,
     limit: int = 20,
+    *,
+    as_of=None,  # noqa: ANN001 — accepted for signature uniformity; live provider ignores it
 ) -> list[NotableHolder]:
     """Recent SC 13D/13G (and amendment) filings naming `ticker` as subject.
 

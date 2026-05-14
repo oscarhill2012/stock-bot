@@ -484,7 +484,12 @@ def _fetch_and_parse_one(filing: Any, symbol: str) -> Form4Bundle:
 
 
 @register(domain="insider_trades", name="edgar", upstream="edgar", rate_per_minute=600, burst=20)
-async def fetch(ticker: str, lookback_days: int = 30) -> Form4Bundle:
+async def fetch(
+    ticker: str,
+    lookback_days: int = 30,
+    *,
+    as_of=None,  # noqa: ANN001 — accepted for signature uniformity; live provider ignores it
+) -> Form4Bundle:
     """Form 4 buys/sells and derivatives filed in the last `lookback_days` for `ticker`.
 
     Acquires one EDGAR token per filing to parse. At 10 req/sec this is

@@ -72,6 +72,7 @@ async def get_stock_signal_bundle(
     history_interval: str = "1d",
     filings_per_form: int = 3,
     include_filing_excerpts: bool = True,
+    as_of: datetime | None = None,
 ) -> StockSignalBundle:
     """Aggregate every data-source signal for `ticker` into one payload.
 
@@ -81,48 +82,73 @@ async def get_stock_signal_bundle(
 
     Per-provider failures land in `bundle.errors` so the strategist
     can decide how to weigh partial information.
+
+    Parameters
+    ----------
+    ticker:
+        Ticker symbol (case-insensitive; uppercased internally).
+    as_of:
+        Point-in-time anchor for all provider calls.  ``None`` → wall-clock
+        now (live behaviour).  Backtest mode passes the historical tick
+        timestamp so every provider's lookback window is anchored to the
+        same synthetic "now".
     """
     symbol = ticker.upper()
-    today = date.today()
+
+    # Freeze the clock once for the whole bundle so every lookback window
+    # is anchored to the same "now".  Live mode defaults to wall-clock;
+    # backtest mode passes the historical tick timestamp.
+    if as_of is None:
+        as_of = datetime.now(tz=UTC)
+
+    # Derive date-typed bounds from as_of for providers that need them.
+    today = as_of.date()
+
     errors: list[ProviderError] = []
 
     stats, news, social, insiders, politicians, holders, filings = await asyncio.gather(
-        _safe("stats", dispatch("stats", symbol, period=history_period, interval=history_interval), errors),
+        _safe("stats", dispatch(
+            "stats", symbol,
+            period=history_period, interval=history_interval, as_of=as_of,
+        ), errors),
         _safe(
             "news",
             dispatch("news", symbol,
                      from_date=today - timedelta(days=news_lookback_days),
-                     to_date=today),
+                     to_date=today,
+                     as_of=as_of),
             errors,
         ),
-        _safe("social_sentiment", dispatch("social_sentiment", symbol), errors),
+        _safe("social_sentiment", dispatch("social_sentiment", symbol, as_of=as_of), errors),
         _safe("insider_trades",
-              dispatch("insider_trades", symbol, lookback_days=insider_lookback_days),
+              dispatch("insider_trades", symbol, lookback_days=insider_lookback_days, as_of=as_of),
               errors),
         _safe(
             "politician_trades",
-            dispatch("politician_trades", symbol, lookback_days=politician_lookback_days),
+            dispatch("politician_trades", symbol, lookback_days=politician_lookback_days, as_of=as_of),
             errors,
         ),
         _safe(
             "notable_holders",
             dispatch("notable_holders", symbol,
                      lookback_days=notable_holder_lookback_days,
-                     limit=notable_holder_limit),
+                     limit=notable_holder_limit,
+                     as_of=as_of),
             errors,
         ),
         _safe(
             "filings",
             dispatch("filings", symbol,
                      limit=filings_per_form,
-                     include_excerpts=include_filing_excerpts),
+                     include_excerpts=include_filing_excerpts,
+                     as_of=as_of),
             errors,
         ),
     )
 
     return StockSignalBundle(
         ticker=symbol,
-        generated_at=datetime.now(tz=UTC),
+        generated_at=as_of,
         stats=stats,
         news=news,
         social_sentiment=social,

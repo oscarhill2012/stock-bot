@@ -64,14 +64,38 @@ from .models import (
     StockSignalBundle,
     StockStats,
 )
+from datetime import UTC, datetime as _datetime
+
+from . import registry as _registry  # noqa: F401
 from .rate_limit import AsyncRateLimiter
-from .registry import dispatch as _dispatch  # noqa: F401  (re-export)
+from .registry import dispatch as _dispatch  # noqa: F401  (re-export for callers that imported it)
 from .registry import min_decision_interval_seconds
 
 
-async def get_stock_stats(ticker: str, period: str = "1y", interval: str = "1d"):
-    """Fetch OHLCV + fundamentals for `ticker` via the active stats provider."""
-    return await _dispatch("stats", ticker.upper(), period=period, interval=interval)
+async def get_stock_stats(
+    ticker: str,
+    period: str = "1y",
+    interval: str = "1d",
+    *,
+    as_of: _datetime | None = None,
+):
+    """Fetch OHLCV + fundamentals for ``ticker`` via the active stats provider.
+
+    Parameters
+    ----------
+    ticker:
+        Ticker symbol (case-insensitive; uppercased internally).
+    period:
+        History period string passed to the provider (e.g. ``"1y"``).
+    interval:
+        Bar interval string (e.g. ``"1d"``).
+    as_of:
+        Point-in-time anchor.  ``None`` → wall-clock now (live behaviour).
+        Backtest mode passes the historical tick timestamp.
+    """
+    if as_of is None:
+        as_of = _datetime.now(tz=UTC)
+    return await _registry.dispatch("stats", ticker.upper(), period=period, interval=interval, as_of=as_of)
 
 
 async def get_stock_news(
@@ -80,40 +104,103 @@ async def get_stock_news(
     to_date=None,
     *,
     limit: int | None = 50,
+    as_of: _datetime | None = None,
 ):
-    """Fetch news articles for `ticker` via the active news provider."""
-    from datetime import date as _d
+    """Fetch news articles for ``ticker`` via the active news provider.
+
+    Parameters
+    ----------
+    ticker:
+        Ticker symbol.
+    from_date:
+        Earliest publication date filter.  Defaults to 7 days before ``as_of``.
+    to_date:
+        Latest publication date filter.  Defaults to ``as_of`` date.
+    limit:
+        Maximum number of articles to return.
+    as_of:
+        Point-in-time anchor.  ``None`` → wall-clock now (live behaviour).
+    """
     from datetime import timedelta as _td
-    today = _d.today()
-    return await _dispatch(
+
+    if as_of is None:
+        as_of = _datetime.now(tz=UTC)
+    today = as_of.date()
+    return await _registry.dispatch(
         "news",
         ticker.upper(),
         from_date=from_date or (today - _td(days=7)),
         to_date=to_date or today,
         limit=limit,
+        as_of=as_of,
     )
 
 
-async def get_social_sentiment(ticker: str):
-    """Fetch social-sentiment snapshot for `ticker` via the active provider."""
-    return await _dispatch("social_sentiment", ticker.upper())
+async def get_social_sentiment(
+    ticker: str,
+    *,
+    as_of: _datetime | None = None,
+):
+    """Fetch social-sentiment snapshot for ``ticker`` via the active provider.
+
+    Parameters
+    ----------
+    ticker:
+        Ticker symbol.
+    as_of:
+        Point-in-time anchor.  ``None`` → wall-clock now (live behaviour).
+    """
+    if as_of is None:
+        as_of = _datetime.now(tz=UTC)
+    return await _registry.dispatch("social_sentiment", ticker.upper(), as_of=as_of)
 
 
-async def get_insider_trades(ticker: str, *, lookback_days: int = 30):
-    """Fetch SEC Form 4 insider trades for `ticker` via the active provider."""
-    return await _dispatch("insider_trades", ticker.upper(), lookback_days=lookback_days)
+async def get_insider_trades(
+    ticker: str,
+    *,
+    lookback_days: int = 30,
+    as_of: _datetime | None = None,
+):
+    """Fetch SEC Form 4 insider trades for ``ticker`` via the active provider.
+
+    Parameters
+    ----------
+    ticker:
+        Ticker symbol.
+    lookback_days:
+        How many days back to look.
+    as_of:
+        Point-in-time anchor.  ``None`` → wall-clock now (live behaviour).
+    """
+    if as_of is None:
+        as_of = _datetime.now(tz=UTC)
+    return await _registry.dispatch("insider_trades", ticker.upper(), lookback_days=lookback_days, as_of=as_of)
 
 
 async def get_public_figure_trades(
     ticker: str | None = None,
     *,
     lookback_days: int = 90,
+    as_of: _datetime | None = None,
 ):
-    """Fetch politician/congressional trades via the active provider."""
-    return await _dispatch(
+    """Fetch politician/congressional trades via the active provider.
+
+    Parameters
+    ----------
+    ticker:
+        Ticker symbol, or ``None`` for all-ticker aggregate.
+    lookback_days:
+        How many days back to look.
+    as_of:
+        Point-in-time anchor.  ``None`` → wall-clock now (live behaviour).
+    """
+    if as_of is None:
+        as_of = _datetime.now(tz=UTC)
+    return await _registry.dispatch(
         "politician_trades",
         ticker.upper() if ticker else None,
         lookback_days=lookback_days,
+        as_of=as_of,
     )
 
 
@@ -122,11 +209,26 @@ async def get_notable_holders(
     *,
     lookback_days: int = 180,
     limit: int = 20,
+    as_of: _datetime | None = None,
 ):
-    """Fetch notable EDGAR 13F holders for `ticker` via the active provider."""
-    return await _dispatch(
+    """Fetch notable EDGAR 13F holders for ``ticker`` via the active provider.
+
+    Parameters
+    ----------
+    ticker:
+        Ticker symbol.
+    lookback_days:
+        How many days back to look.
+    limit:
+        Maximum number of holders to return.
+    as_of:
+        Point-in-time anchor.  ``None`` → wall-clock now (live behaviour).
+    """
+    if as_of is None:
+        as_of = _datetime.now(tz=UTC)
+    return await _registry.dispatch(
         "notable_holders", ticker.upper(),
-        lookback_days=lookback_days, limit=limit,
+        lookback_days=lookback_days, limit=limit, as_of=as_of,
     )
 
 
@@ -136,11 +238,28 @@ async def get_company_filings(
     limit: int = 5,
     *,
     include_excerpts: bool = True,
+    as_of: _datetime | None = None,
 ):
-    """Fetch SEC filings for `ticker` via the active filings provider."""
-    return await _dispatch(
+    """Fetch SEC filings for ``ticker`` via the active filings provider.
+
+    Parameters
+    ----------
+    ticker:
+        Ticker symbol.
+    form_types:
+        Tuple of SEC form type strings to include (e.g. ``("10-K", "10-Q")``).
+    limit:
+        Maximum number of filings per form type.
+    include_excerpts:
+        Whether to fetch MD&A / risk-factor text excerpts.
+    as_of:
+        Point-in-time anchor.  ``None`` → wall-clock now (live behaviour).
+    """
+    if as_of is None:
+        as_of = _datetime.now(tz=UTC)
+    return await _registry.dispatch(
         "filings", ticker.upper(),
-        form_types=form_types, limit=limit, include_excerpts=include_excerpts,
+        form_types=form_types, limit=limit, include_excerpts=include_excerpts, as_of=as_of,
     )
 
 

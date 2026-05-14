@@ -85,6 +85,12 @@ def _fetch_stats(symbol: str, period: str, interval: str) -> StockStats:
     rate_per_minute=60,
     burst=30,
 )
-async def fetch(ticker: str, *, period: str = "1y", interval: str = "1d") -> StockStats:
+async def fetch(
+    ticker: str,
+    *,
+    period: str = "1y",
+    interval: str = "1d",
+    as_of=None,  # noqa: ANN001 — accepted for signature uniformity; live provider ignores it
+) -> StockStats:
     symbol = ticker.upper()
     return await asyncio.to_thread(_fetch_stats, symbol, period, interval)
