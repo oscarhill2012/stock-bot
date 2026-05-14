@@ -100,3 +100,45 @@ def min_decision_interval_seconds() -> float:
         (_LIMITERS[u].min_interval_seconds for u in active_upstreams() if u in _LIMITERS),
         default=0.0,
     )
+
+
+def set_active_provider(domain: str, name: str) -> Callable[[], None]:
+    """Swap the active provider for ``domain`` in-process; return a restore fn.
+
+    Used by the backtest runner to point every live domain at the ``cache``
+    provider for the duration of a run.  Live (production) code never calls
+    this — the active provider is read from ``config/data.json``.
+
+    Returns a zero-arg callable that restores the previous mapping; the
+    runner uses this in a ``try/finally`` so a crashed run does not leave
+    the in-process config pointing at ``cache``.
+
+    Parameters
+    ----------
+    domain:
+        One of the known domain names (``stats``, ``news``, etc.).
+    name:
+        The provider name to activate (e.g. ``"cache"``).
+
+    Returns
+    -------
+    Callable[[], None]
+        Zero-arg restore function; call it to revert the swap.
+
+    Raises
+    ------
+    ValueError
+        If ``domain`` is not in the known ``DOMAINS`` frozenset.
+    """
+    if domain not in DOMAINS:
+        raise ValueError(f"unknown domain: {domain!r}")
+
+    cfg = get_config()
+    previous = cfg.providers[domain]
+    cfg.providers[domain] = name
+
+    def _restore() -> None:
+        """Revert ``providers[domain]`` to the value captured at swap time."""
+        get_config().providers[domain] = previous
+
+    return _restore
