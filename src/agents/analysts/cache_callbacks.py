@@ -190,11 +190,21 @@ def make_report_cache_callbacks(
 
             cached_verdicts.append({**v, "ticker": ticker})
 
-        # All tickers hit — validate the assembled batch and write to state so
-        # that make_evidence_callback (after_agent_callback) sees populated verdicts.
-        state[verdicts_state_key] = VerdictBatch.model_validate(
-            {"verdicts": cached_verdicts}
-        ).model_dump()
+        # All tickers hit — validate the assembled batch.  We need the parsed
+        # object (to write to state) AND the JSON string (to feed back as the
+        # synthetic LLM response text — see the comment block above the
+        # ``return LlmResponse(...)`` at the bottom of this function).
+        batch      = VerdictBatch.model_validate({"verdicts": cached_verdicts})
+        batch_json = batch.model_dump_json()
+
+        # Write to state so that make_evidence_callback (after_agent_callback)
+        # sees populated verdicts.  Note: ADK's ``__maybe_save_output_to_state``
+        # will ALSO parse ``batch_json`` below and write it to
+        # ``state[output_key]`` — which for our analysts is the same key as
+        # ``verdicts_state_key`` — so this manual write is technically
+        # redundant.  It is kept as defence-in-depth in case an analyst is ever
+        # configured without ``output_key`` set.
+        state[verdicts_state_key] = batch.model_dump()
 
         # Emit a trace marker so the trace log reflects that the LLM was bypassed.
         if trace_label is not None:
@@ -211,17 +221,30 @@ def make_report_cache_callbacks(
                     model="cache",
                 )
 
-        # Short-circuit the model call.  ADK expects an LlmResponse here, not
-        # a bare Content — downstream post-processors (``_nl_planning`` et al.)
-        # access ``llm_response.content``, which only exists on LlmResponse.
-        # Returning a raw Content here crashes the agent flow with
-        # ``AttributeError: 'Content' object has no attribute 'content'`` the
-        # moment a real cache hit occurs.  This latent bug was invisible while
-        # the lifecycle bug (B22) prevented the cache from ever being written;
-        # surfacing it required B22 to first land.
+        # Short-circuit the model call.  Two constraints on the return value:
+        #
+        # 1. ADK's downstream post-processors (``_nl_planning`` et al.) access
+        #    ``llm_response.content``, which only exists on ``LlmResponse``.
+        #    Returning a raw ``Content`` crashes the flow with
+        #    ``AttributeError: 'Content' object has no attribute 'content'``.
+        #
+        # 2. ADK's ``__maybe_save_output_to_state`` (in
+        #    ``google.adk.agents.llm_agent``) then validates the response's
+        #    text against the agent's ``output_schema``.  Our analysts declare
+        #    ``output_schema=VerdictBatch``, so the text MUST be valid JSON
+        #    that parses cleanly as a ``VerdictBatch`` — a placeholder string
+        #    like ``"(cached)"`` raises ``pydantic.ValidationError: Invalid
+        #    JSON`` and tanks the tick.
+        #
+        # Both bugs were latent while B22 was unfixed (cache writes never
+        # landed, so this code path never fired); they surfaced the first time
+        # a real cache hit was attempted after B22 + B23 landed.  The
+        # regression tests ``test_before_full_hit_returns_llm_response`` and
+        # ``test_before_full_hit_content_is_valid_verdict_batch_json`` pin
+        # both invariants.
         return LlmResponse(
             content=genai_types.Content(
-                parts=[genai_types.Part.from_text(text="(cached)")]
+                parts=[genai_types.Part.from_text(text=batch_json)]
             )
         )
 

@@ -315,6 +315,69 @@ def test_before_full_hit_short_circuits(stub_config):
     )
 
 
+def test_before_full_hit_content_is_valid_verdict_batch_json(stub_config):
+    """Regression pin for the ``"(cached)"`` placeholder bug.
+
+    ADK's ``__maybe_save_output_to_state`` (in
+    ``google.adk.agents.llm_agent``) runs after a before-model-callback that
+    returns a non-None ``LlmResponse`` and validates that response's text
+    payload against the agent's declared ``output_schema``.  Our LLM
+    analysts declare ``output_schema=VerdictBatch``, so the response text
+    MUST be valid JSON that parses cleanly as a ``VerdictBatch``.
+
+    Earlier code returned the literal string ``"(cached)"`` as a placeholder
+    — fine in unit tests that only inspect the wrapper type, but the moment
+    a real cache hit fired in a live ADK run it raised
+    ``pydantic.ValidationError: Invalid JSON: expected value at line 1
+    column 1, input_value='(cached)'`` and tanked the tick.  This test
+    fails loudly if anyone reintroduces a placeholder string.
+    """
+    before, _ = _make_callbacks()
+
+    # Pre-populate the cache so the full-hit short-circuit fires.
+    for ticker in ("AAPL", "MSFT"):
+        write_cache(
+            stub_config, _ANALYST, ticker,
+            input_hash=_FIXED_HASH,
+            prompt_version=_PROMPT_VER,
+            verdict={
+                "ticker":      ticker,
+                "lean":        "neutral",
+                "magnitude":   0.3,
+                "confidence":  0.6,
+                "rationale":   "cached",
+                "key_factors": [],
+                "is_no_data":  False,
+            },
+            report=None,
+        )
+
+    ctx = _Ctx({
+        "tickers":  ["AAPL", "MSFT"],
+        _DATA_KEY:  {"AAPL": {}, "MSFT": {}},
+    })
+
+    result = before(ctx, llm_request=None)
+
+    # Pull the synthetic response text out of the wrapper.
+    text = result.content.parts[0].text
+
+    # It must parse as JSON — a placeholder string like "(cached)" would not.
+    payload = json.loads(text)
+
+    # And the parsed shape must round-trip through ``VerdictBatch`` cleanly,
+    # because that is exactly what ADK's downstream validator will attempt.
+    from contract.evidence import VerdictBatch
+
+    batch = VerdictBatch.model_validate(payload)
+    tickers_in_payload = {v.ticker for v in batch.verdicts}
+
+    assert tickers_in_payload == {"AAPL", "MSFT"}, (
+        f"VerdictBatch in synthetic response carries tickers {tickers_in_payload}, "
+        "expected {AAPL, MSFT}."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Test 4 — before returns None on any partial miss
 # ---------------------------------------------------------------------------
