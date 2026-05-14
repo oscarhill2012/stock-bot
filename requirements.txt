@@ -22,6 +22,7 @@ TA-Lib>=0.6.8                   # canonical TA-Lib bindings for Phase 4 technica
 # === Backtesting + reporting ===
 matplotlib>=3.8.0
 plotly>=5.20.0
+pandas-market-calendars>=4.4.0  # NYSE holiday/session schedule for tick generator
 
 # === Resilience / async ===
 tenacity>=8.2.0                 # retry flaky API calls
