@@ -144,6 +144,16 @@ class ExecutorAgent(BaseAgent):
         # Surface trace — no-op unless state["_trace"] is set by trace_tick.py.
         _trace_maybe(state, "07_broker_calls", executions)
 
+        # Decision-snapshot hook — no-op in live runs that do not set
+        # ``state["_decision_logger"]``.  Backtest runner installs one per run;
+        # future live-paper deployment can also install one to grow the RAG corpus.
+        dl = state.get("_decision_logger")
+        if dl is not None:
+            try:
+                dl.on_executions(dict(state))
+            except Exception:  # defensive: logger must never abort the tick
+                pass
+
 
 def build_executor(broker: Broker, db_session=None) -> ExecutorAgent:
     """Factory used by the pipeline builder to wire in the broker and DB session."""
