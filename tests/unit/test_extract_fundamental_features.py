@@ -3,6 +3,9 @@
 These tests verify the new insider + filings-derived feature columns added in
 Phase 5.  Existing stats-extraction coverage lives in
 ``tests/unit/contract/extractors/test_fundamental.py``.
+
+Phase 5 data-model split: the ``"stats"`` key in the raw payload is renamed
+to ``"ratios"`` throughout. Field names inside the dict are unchanged.
 """
 from __future__ import annotations
 
@@ -52,10 +55,13 @@ def _bundle_with_cluster_buys() -> Form4Bundle:
     )
 
 
-def _raw_with_stats(**extra) -> dict:
-    """Build a minimal Phase-5-shaped fundamental_data payload."""
+def _raw_with_ratios(**extra) -> dict:
+    """Build a minimal Phase-5-shaped fundamental_data payload.
+
+    Uses ``"ratios"`` key (renamed from ``"stats"`` in the Phase 5 data-model split).
+    """
     return {
-        "stats": {"pe_trailing": 25.0, "revenue_growth_yoy": 0.08, **extra},
+        "ratios": {"pe_trailing": 25.0, "revenue_growth_yoy": 0.08, **extra},
         "filings": [],
         "insider": Form4Bundle(trades=[], derivatives=[]),
     }
@@ -68,7 +74,7 @@ def _raw_with_stats(**extra) -> dict:
 def test_extractor_emits_insider_columns():
     """The extractor now produces every Phase 5 insider feature column."""
     raw = {
-        "stats": {"pe_trailing": 25.0, "revenue_growth_yoy": 0.08},
+        "ratios": {"pe_trailing": 25.0, "revenue_growth_yoy": 0.08},
         "filings": [],
         "insider": _bundle_with_cluster_buys(),
     }
@@ -93,7 +99,7 @@ def test_extractor_emits_insider_columns():
 def test_all_features_are_floats():
     """Every value in the returned feature dict must be a plain float."""
     raw = {
-        "stats": {},
+        "ratios": {},
         "filings": [],
         "insider": _bundle_with_cluster_buys(),
     }
@@ -109,7 +115,7 @@ def test_all_features_are_floats():
 def test_extractor_cluster_buy_flag_fires_with_three_distinct_officers():
     """Three or more distinct officer-level buyers in the window flips cluster_buy_flag."""
     raw = {
-        "stats": {},
+        "ratios": {},
         "filings": [],
         "insider": _bundle_with_cluster_buys(),
     }
@@ -130,7 +136,7 @@ def test_cluster_buy_flag_off_with_two_buyers():
         derivatives=[],
     )
     features = extract_fundamental_features(
-        {"stats": {}, "filings": [], "insider": bundle}, "AAPL"
+        {"ratios": {}, "filings": [], "insider": bundle}, "AAPL"
     )
     assert features["insider_cluster_buy_flag"] == 0.0
     assert features["insider_n_buys_30d"] == 2.0
@@ -148,7 +154,7 @@ def test_cluster_sell_flag_fires_with_three_distinct_sellers():
         derivatives=[],
     )
     features = extract_fundamental_features(
-        {"stats": {}, "filings": [], "insider": bundle}, "AAPL"
+        {"ratios": {}, "filings": [], "insider": bundle}, "AAPL"
     )
     assert features["insider_cluster_sell_flag"] == 1.0
 
@@ -168,7 +174,7 @@ def test_extractor_planned_sale_ratio_counts_10b5_1_correctly():
         derivatives=[],
     )
     features = extract_fundamental_features(
-        {"stats": {}, "filings": [], "insider": bundle}, "AAPL"
+        {"ratios": {}, "filings": [], "insider": bundle}, "AAPL"
     )
     assert abs(features["insider_planned_sale_ratio"] - (2 / 3)) < 1e-6
 
@@ -176,7 +182,7 @@ def test_extractor_planned_sale_ratio_counts_10b5_1_correctly():
 def test_planned_sale_ratio_zero_when_no_sells():
     """When there are no sell transactions, ratio defaults to 0.0 (no division)."""
     features = extract_fundamental_features(
-        {"stats": {}, "filings": [], "insider": Form4Bundle(trades=[], derivatives=[])},
+        {"ratios": {}, "filings": [], "insider": Form4Bundle(trades=[], derivatives=[])},
         "AAPL",
     )
     assert features["insider_planned_sale_ratio"] == 0.0
@@ -195,7 +201,7 @@ def test_max_filer_role_rank_ceo_scores_highest():
         derivatives=[],
     )
     features = extract_fundamental_features(
-        {"stats": {}, "filings": [], "insider": bundle}, "AAPL"
+        {"ratios": {}, "filings": [], "insider": bundle}, "AAPL"
     )
     assert features["insider_max_filer_role_rank"] == 5.0
 
@@ -209,7 +215,7 @@ def test_max_filer_role_rank_unknown_title_scores_zero():
         derivatives=[],
     )
     features = extract_fundamental_features(
-        {"stats": {}, "filings": [], "insider": bundle}, "AAPL"
+        {"ratios": {}, "filings": [], "insider": bundle}, "AAPL"
     )
     assert features["insider_max_filer_role_rank"] == 0.0
 
@@ -234,7 +240,7 @@ def test_net_dollars_buy_minus_sell():
 
     bundle = Form4Bundle(trades=[buy_trade, sell_trade], derivatives=[])
     features = extract_fundamental_features(
-        {"stats": {}, "filings": [], "insider": bundle}, "AAPL"
+        {"ratios": {}, "filings": [], "insider": bundle}, "AAPL"
     )
     # Expected: 150_000 - 30_000 = 120_000
     assert abs(features["insider_net_dollars_30d"] - 120_000.0) < 1.0
@@ -255,7 +261,7 @@ def test_derivative_exercise_count_code_m():
     )
     bundle = Form4Bundle(trades=[], derivatives=[deriv])
     features = extract_fundamental_features(
-        {"stats": {}, "filings": [], "insider": bundle}, "AAPL"
+        {"ratios": {}, "filings": [], "insider": bundle}, "AAPL"
     )
     assert features["insider_derivative_exercise_count"] == 1.0
     assert features["insider_derivative_grant_count"] == 0.0
@@ -272,7 +278,7 @@ def test_derivative_grant_count_code_a():
     )
     bundle = Form4Bundle(trades=[], derivatives=[deriv])
     features = extract_fundamental_features(
-        {"stats": {}, "filings": [], "insider": bundle}, "AAPL"
+        {"ratios": {}, "filings": [], "insider": bundle}, "AAPL"
     )
     assert features["insider_derivative_grant_count"] == 1.0
     assert features["insider_derivative_exercise_count"] == 0.0
@@ -285,7 +291,7 @@ def test_derivative_grant_count_code_a():
 def test_extractor_returns_zero_columns_when_no_insider_data():
     """Empty Form4Bundle yields zeros for every insider column."""
     features = extract_fundamental_features(
-        {"stats": {}, "filings": [], "insider": Form4Bundle(trades=[], derivatives=[])},
+        {"ratios": {}, "filings": [], "insider": Form4Bundle(trades=[], derivatives=[])},
         "AAPL",
     )
     assert features["insider_n_buys_30d"] == 0.0
@@ -302,7 +308,7 @@ def test_extractor_returns_zero_columns_when_no_insider_data():
 def test_extractor_handles_entirely_missing_insider_key():
     """If the 'insider' key is absent the extractor returns zero insider columns."""
     features = extract_fundamental_features(
-        {"stats": {"pe_trailing": 20.0}, "filings": []},
+        {"ratios": {"pe_trailing": 20.0}, "filings": []},
         "AAPL",
     )
     assert features["insider_n_buys_30d"] == 0.0
@@ -310,13 +316,13 @@ def test_extractor_handles_entirely_missing_insider_key():
 
 
 # ---------------------------------------------------------------------------
-# Stats columns still work with the new shape
+# Ratios columns still work with the new shape
 # ---------------------------------------------------------------------------
 
-def test_stats_columns_still_extracted_from_nested_stats_key():
-    """pe_trailing and revenue_growth_yoy must still be extracted from raw['stats']."""
+def test_ratios_columns_extracted_from_ratios_key():
+    """pe_trailing and revenue_growth_yoy must be extracted from raw['ratios']."""
     raw = {
-        "stats": {
+        "ratios": {
             "trailing_pe": 28.5,
             "revenue_growth_yoy": 0.12,
         },

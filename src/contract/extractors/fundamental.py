@@ -1,14 +1,19 @@
 """Fundamental analyst deterministic feature extractor.
 
-Phase 5 extends the extractor to consume the new triad payload shape:
+Phase 5 extends the extractor to consume the triad payload shape (post-split):
 
 .. code-block:: python
 
     raw = {
-        "stats":   dict | None,          # company fundamentals (P/E, ROE, …)
+        "ratios":  dict | None,          # scalar company fundamentals (P/E, beta, …)
         "filings": list[dict],            # serialised Filing objects
         "insider": Form4Bundle | None,   # typed Form 4 bundle
     }
+
+The ``"ratios"`` key replaces the old ``"stats"`` key from before the Phase 5
+data-model split. Field names *inside* the ratios dict are unchanged
+(``trailing_pe``, ``market_cap``, etc.) so downstream digest/strategist logic
+is unaffected.
 
 The function returns a ``dict[str, float]`` with exactly the keys in ``_KEYS``
 (all floats, never NaN, never missing).
@@ -26,7 +31,7 @@ from data.models import Form4Bundle
 # ---------------------------------------------------------------------------
 # Any change to _KEYS must be coordinated with the analyst contract schema.
 _KEYS = (
-    # Company fundamentals extracted from the "stats" sub-dict.
+    # Company fundamentals extracted from the "ratios" sub-dict.
     "pe_trailing",
     "pe_forward",
     "peg",
@@ -140,12 +145,16 @@ def _role_rank(title: str | None) -> int:
 
 
 def _extract_stats_features(stats: Mapping[str, Any] | None) -> dict[str, float]:
-    """Pull financial ratio features from the ``stats`` sub-dict.
+    """Pull financial ratio features from the ``ratios`` sub-dict.
 
     Parameters
     ----------
     stats:
-        The ``raw["stats"]`` sub-dict (may be ``None`` or empty).
+        The ``raw["ratios"]`` sub-dict (may be ``None`` or empty).
+        Named ``stats`` internally for historical reasons; the dict schema is
+        unchanged — only the key used to retrieve it from ``raw`` changed.
+        (Phase 5 data-model split renamed ``"stats"`` → ``"ratios"`` at the
+        fetch-callback level; this helper receives the sub-dict directly.)
 
     Returns
     -------
@@ -332,15 +341,18 @@ def _extract_insider_features(
 def extract_fundamental_features(raw: Mapping[str, Any], ticker: str) -> dict[str, float]:
     """Pull the locked fundamental feature catalogue from a raw payload dict.
 
-    Accepts the Phase 5 triad payload shape::
+    Accepts the Phase 5 triad payload shape (post data-model split)::
 
         {
-            "stats":   dict | None,
+            "ratios":  dict | None,
             "filings": list[dict],
             "insider": Form4Bundle | None,
         }
 
-    All stats field aliases from different data providers are normalised
+    The ``"ratios"`` key replaces the old ``"stats"`` key. Field names inside
+    the dict (``trailing_pe``, ``market_cap``, etc.) are unchanged.
+
+    All ratios field aliases from different data providers are normalised
     (e.g. both ``trailing_pe`` and ``pe_trailing`` are accepted).
 
     Parameters
@@ -363,8 +375,8 @@ def extract_fundamental_features(raw: Mapping[str, Any], ticker: str) -> dict[st
 
     now = datetime.now(tz=UTC)
 
-    # --- stats ---
-    stats_sub = raw.get("stats") or {}
+    # --- ratios (Phase 5: renamed from "stats" key at the fetch-callback level) ---
+    stats_sub = raw.get("ratios") or {}
     out.update(_extract_stats_features(stats_sub))
 
     # --- filings ---

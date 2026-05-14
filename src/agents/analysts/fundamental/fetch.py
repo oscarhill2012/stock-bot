@@ -2,7 +2,10 @@
 
 Phase 5 introduces a triad of data domains for the Fundamental analyst:
 
-- **stats** — company fundamentals (P/E, ROE, FCF, etc.) via the active stats provider.
+- **ratios** — scalar company fundamentals (P/E, beta, market cap, etc.) via the
+  active company_ratios provider. The 252-row OHLCV history is deliberately
+  excluded — Fundamental never uses it and the Phase 5 data-model split removes it
+  from the payload to avoid dragging inert data through state.
 - **filings** — recent SEC filings (10-K, 10-Q, 8-K) with MD&A / risk-factor excerpts.
 - **insider** — Form 4 insider trades and derivative transactions as a ``Form4Bundle``.
 
@@ -13,7 +16,7 @@ available to the downstream extractor and LLM.
 The resulting ``state["fundamental_data"]`` layout per ticker is::
 
     {
-        "stats":   <dict from StockStats.model_dump() | None on failure>,
+        "ratios":  <dict from CompanyRatios.model_dump() | None on failure>,
         "filings": [<Filing.model_dump()>, ...],
         "insider": <Form4Bundle instance>,
     }
@@ -37,7 +40,7 @@ import logging
 from google.adk.agents.callback_context import CallbackContext
 from google.genai import types as genai_types
 
-from data import get_company_filings, get_insider_trades, get_stock_stats
+from data import get_company_filings, get_company_ratios, get_insider_trades
 from data.models import Form4Bundle, InsiderTrade
 from observability.trace import _trace_maybe
 
@@ -223,15 +226,18 @@ async def fundamental_fetch_callback(
     context_blocks: list[str] = []
 
     for ticker in tickers:
-        # --- stats ---
+        # --- ratios ---
+        # Fundamental no longer drags the 252-row OHLCV history with it; the
+        # split data-model (Phase 5 redesign) means only the scalar ratios
+        # come along. The Technical analyst is the sole consumer of bars.
         try:
-            stats_obj = await get_stock_stats(ticker)
-            stats_payload = (
-                stats_obj.model_dump() if hasattr(stats_obj, "model_dump") else stats_obj
+            ratios_obj = await get_company_ratios(ticker)
+            ratios_payload = (
+                ratios_obj.model_dump() if hasattr(ratios_obj, "model_dump") else ratios_obj
             )
         except Exception as exc:
-            logger.warning("stats fetch failed for %s: %s", ticker, exc)
-            stats_payload = None
+            logger.warning("company_ratios fetch failed for %s: %s", ticker, exc)
+            ratios_payload = None
 
         # --- filings ---
         try:
@@ -263,7 +269,7 @@ async def fundamental_fetch_callback(
             insider_bundle = Form4Bundle(trades=[], derivatives=[])
 
         fundamental_data[ticker] = {
-            "stats": stats_payload,
+            "ratios":  ratios_payload,
             "filings": filings_payload,
             "insider": insider_bundle,
         }

@@ -15,7 +15,9 @@ from .config import get_config
 from .rate_limit import AsyncRateLimiter
 
 DOMAINS: frozenset[str] = frozenset({
-    "stats",
+    # Phase 5: "stats" retired — split into two purpose-scoped domains.
+    "price_history",
+    "company_ratios",
     "news",
     "social_sentiment",
     "insider_trades",
