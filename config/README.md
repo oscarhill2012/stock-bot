@@ -160,3 +160,26 @@ Era-keyed historical windows for the backtest harness. Each entry:
 - `notes`: free-form description of the regime this window captures.
 
 Add new windows by editing this file — no code changes needed.
+
+---
+
+## `backtest_settings.json`
+
+Runtime defaults for the backtest harness driver and runner.
+
+| Setting | Type | Meaning |
+|---|---|---|
+| `cache_path` | string | Relative path to the shared golden SQLite cache store. |
+| `runs_root` | string | Relative path to the directory that holds per-run output trees. |
+| `ticks_per_day` | list[string] | Which intraday phases to schedule per NYSE session (`"open"` and/or `"close"`). |
+| `tz` | string | IANA timezone for tick timestamps (should always be `"America/New_York"`). |
+| `open_time` | string | Market-open time in `HH:MM` (local NY time). |
+| `close_time` | string | Market-close time in `HH:MM` (local NY time). |
+| `failed_tick_abort_ratio` | float | If the fraction of failed ticks exceeds this threshold, the run aborts with status `"aborted"`. |
+| `fake_broker_starting_cash` | float | Cash balance given to `FakeBroker` at the start of each backtest run. |
+| `forward_return_horizons_days` | list[int] | Lookahead windows (in calendar days) patched into `forward_returns` by `reporting.py`. |
+| `default_lookback_days.news` | int | Default lookback window for the news cache reader. |
+| `default_lookback_days.insider_trades` | int | Default lookback window for the insider-trades cache reader. |
+| `default_lookback_days.politician_trades` | int | Default lookback window for the politician-trades cache reader. |
+| `default_lookback_days.notable_holders` | int | Default lookback window for the notable-holders cache reader. |
+| `default_lookback_days.filings` | int | Default lookback window for the filings cache reader. |
