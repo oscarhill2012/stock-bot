@@ -75,3 +75,6 @@ data/stockbot.db-shm
 
 # Surface trace outputs — written by scripts/trace_tick.py; never commit.
 docs/surface-traces/
+
+# Local-only worktrees for parallel feature work.
+.worktrees/
