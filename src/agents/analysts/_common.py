@@ -169,10 +169,14 @@ def _chain_before(*callbacks: Callable | None) -> Callable | None:
     if not active:
         return None
 
-    def _chained(ctx, llm_request):
+    # ADK invokes before-model callbacks with keyword arguments
+    # (``callback_context=...``, ``llm_request=...``), so the outer wrapper
+    # must declare the same parameter names — positional names like ``ctx``
+    # cause ``TypeError: unexpected keyword argument 'callback_context'``.
+    def _chained(callback_context, llm_request):
         """Invoke each before-model callback; stop and return on first non-None result."""
         for cb in active:
-            result = cb(ctx, llm_request)
+            result = cb(callback_context, llm_request)
             if result is not None:
                 return result
         return None
@@ -197,10 +201,11 @@ def _chain_after(*callbacks: Callable | None) -> Callable | None:
     if not active:
         return None
 
-    def _chained(ctx, llm_response):
+    # Match ADK's keyword-argument call convention (see _chain_before).
+    def _chained(callback_context, llm_response):
         """Invoke every after-model callback regardless of their return values."""
         for cb in active:
-            cb(ctx, llm_response)
+            cb(callback_context, llm_response)
         return None
 
     return _chained
