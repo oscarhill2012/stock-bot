@@ -241,7 +241,7 @@ def make_llm_trace_callbacks(section_name: str, *, model: str) -> tuple[Callable
             return None
         return tw if isinstance(tw, TraceWriter) else None
 
-    def _before(callback_context: Any, llm_request: Any) -> None:
+    def _before(callback_context: Any, llm_request: Any) -> Any:
         """Capture system + user prompt portions into the trace writer."""
         tw = _state_writer(callback_context)
         if tw is None:
@@ -268,7 +268,7 @@ def make_llm_trace_callbacks(section_name: str, *, model: str) -> tuple[Callable
         tw.llm_pair(section_name, prompt=prompt, response="(pending)", model=model)
         return None
 
-    def _after(callback_context: Any, llm_response: Any) -> None:
+    def _after(callback_context: Any, llm_response: Any) -> Any:
         """Overwrite the ``(pending)`` placeholder with the model's response text."""
         tw = _state_writer(callback_context)
         if tw is None:
@@ -276,6 +276,9 @@ def make_llm_trace_callbacks(section_name: str, *, model: str) -> tuple[Callable
 
         response_text = _extract_content_text(getattr(llm_response, "content", None))
 
+        # Intentional direct write — overwrites the ``(pending)`` placeholder set
+        # by ``llm_pair`` in ``_before`` so the ``_in`` entry isn't duplicated.
+        # ``TraceWriter`` has no public update method for this case yet.
         tw._sections[f"{section_name}_out"] = {
             "model": model,
             "response": response_text or "(no text parts)",

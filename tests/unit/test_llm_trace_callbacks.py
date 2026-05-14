@@ -76,3 +76,17 @@ def test_callbacks_are_noops_without_trace_writer() -> None:
     before, after = make_llm_trace_callbacks("03_news_llm", model="gemini-test")
     assert before(ctx, _fake_request("sys", "usr")) is None
     assert after(ctx, _fake_response("out")) is None
+
+
+def test_after_callback_without_before_is_safe() -> None:
+    """After-callback runs even if the before-callback never fired (orphan ordering)."""
+    tw = TraceWriter()
+    state = _FakeState({"_trace": tw})
+    ctx = SimpleNamespace(state=state)
+
+    _before, after = make_llm_trace_callbacks("03_news_llm", model="gemini-test")
+    after(ctx, _fake_response("only-after"))
+
+    out_section = tw._sections["03_news_llm_out"]
+    assert out_section["response"] == "only-after"
+    assert out_section["model"] == "gemini-test"
