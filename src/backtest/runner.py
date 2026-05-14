@@ -265,6 +265,15 @@ class Runner:
             json.dumps(manifest, indent=2, default=str)
         )
 
+        # ── Generate report ───────────────────────────────────────────────
+        # Run unconditionally: even an aborted run benefits from whatever
+        # snapshots were recorded before the abort point.
+        try:
+            from backtest.reporting import report as _report
+            _report(run_dir, self._settings)
+        except Exception:
+            logger.exception("report generation failed for %s", run_id)
+
         return RunResult(
             run_id=run_id,
             run_dir=run_dir,
