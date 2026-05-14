@@ -33,6 +33,7 @@ object graph into the instruction.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 
 from google.adk.agents.callback_context import CallbackContext
 from google.genai import types as genai_types
@@ -219,13 +220,16 @@ async def fundamental_fetch_callback(
     state = callback_context.state
     tickers: list[str] = state.get("tickers", [])
 
+    # Pull the historical clock from session state; default to wall-clock for live.
+    as_of: datetime = state.get("as_of") or datetime.now(tz=UTC)
+
     fundamental_data: dict[str, dict] = {}
     context_blocks: list[str] = []
 
     for ticker in tickers:
         # --- stats ---
         try:
-            stats_obj = await get_stock_stats(ticker)
+            stats_obj = await get_stock_stats(ticker, as_of=as_of)
             stats_payload = (
                 stats_obj.model_dump() if hasattr(stats_obj, "model_dump") else stats_obj
             )
@@ -235,7 +239,7 @@ async def fundamental_fetch_callback(
 
         # --- filings ---
         try:
-            filings = await get_company_filings(ticker)
+            filings = await get_company_filings(ticker, as_of=as_of)
             filings_payload = [
                 f.model_dump() if hasattr(f, "model_dump") else f for f in filings
             ]
@@ -246,7 +250,7 @@ async def fundamental_fetch_callback(
         # --- insider trades (Form 4) ---
         try:
             insider_bundle = await get_insider_trades(
-                ticker, lookback_days=_INSIDER_LOOKBACK_DAYS
+                ticker, lookback_days=_INSIDER_LOOKBACK_DAYS, as_of=as_of
             )
             # Store the raw Form4Bundle so the extractor can access typed fields
             # directly without re-parsing a dict.

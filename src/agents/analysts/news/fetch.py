@@ -15,6 +15,7 @@ formatted text (``news_context``) so the prompt stays compact.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 
 from google.adk.agents.callback_context import CallbackContext
 from google.genai import types as genai_types
@@ -111,15 +112,21 @@ async def news_fetch_callback(
     state = callback_context.state
     tickers: list[str] = state.get("tickers", [])
 
+    # Pull the historical clock from session state; default to wall-clock for live.
+    as_of: datetime = state.get("as_of") or datetime.now(tz=UTC)
+
     news_data: dict[str, dict] = {}
     context_blocks: list[str] = []
 
     for ticker in tickers:
         try:
-            news = await get_stock_news(ticker)
+            news = await get_stock_news(ticker, as_of=as_of)
         except Exception as exc:
             logger.warning("news fetch failed for %s: %s", ticker, exc)
             news = []
+
+        # Guard against None (e.g. cache miss returns None rather than []).
+        news = news or []
 
         # Serialise to dicts for the machine-readable store.
         serialised = [

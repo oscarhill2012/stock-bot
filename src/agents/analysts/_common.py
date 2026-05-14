@@ -79,7 +79,9 @@ def make_evidence_callback(
 
         # Single timestamp for the whole batch — avoids microsecond skew
         # between records that belong to the same tick.
-        recorded_at = datetime.now(tz=UTC)
+        # In backtest mode the driver injects ``state["as_of"]`` so the
+        # recorded_at stamp is the historical tick time, not wall-clock.
+        recorded_at = state.get("as_of") or datetime.now(tz=UTC)
 
         # Per-ticker raw data dict keyed by ticker symbol.
         data: dict = state.get(f"{analyst}_data", {}) or {}

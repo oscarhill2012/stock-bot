@@ -24,6 +24,7 @@ no-data verdict via ``derive_smart_money_verdict`` when ``is_no_data=1.0``.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 
 from google.adk.agents.callback_context import CallbackContext
 
@@ -71,6 +72,9 @@ async def smart_money_fetch_callback(
     state = callback_context.state
     tickers: list[str] = state.get("tickers", [])
 
+    # Pull the historical clock from session state; default to wall-clock for live.
+    as_of: datetime = state.get("as_of") or datetime.now(tz=UTC)
+
     smart_money_data: dict = {
         "politicians": {},
         "notable_holders": {},
@@ -79,14 +83,14 @@ async def smart_money_fetch_callback(
     for ticker in tickers:
         try:
             politicians = await get_public_figure_trades(
-                ticker, lookback_days=POLITICIAN_LOOKBACK_DAYS
+                ticker, lookback_days=POLITICIAN_LOOKBACK_DAYS, as_of=as_of
             )
         except Exception as exc:
             logger.warning("politician_trades fetch failed for %s: %s", ticker, exc)
             politicians = []
 
         try:
-            holders = await get_notable_holders(ticker, lookback_days=HOLDER_LOOKBACK_DAYS)
+            holders = await get_notable_holders(ticker, lookback_days=HOLDER_LOOKBACK_DAYS, as_of=as_of)
         except Exception as exc:
             logger.warning("notable_holders fetch failed for %s: %s", ticker, exc)
             holders = []

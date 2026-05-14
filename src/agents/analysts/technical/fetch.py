@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 
 from google.adk.agents.callback_context import CallbackContext
 from google.genai import types as genai_types
@@ -15,14 +16,23 @@ logger = logging.getLogger(__name__)
 async def technical_fetch_callback(
     callback_context: CallbackContext,
 ) -> genai_types.Content | None:
-    """Fetch OHLCV + fundamentals for every watchlist ticker before the LLM runs."""
+    """Fetch OHLCV + fundamentals for every watchlist ticker before the LLM runs.
+
+    Reads the historical-clock value from ``state["as_of"]`` and passes it to
+    ``get_stock_stats``.  In live mode ``as_of`` is not present in state and
+    the wrapper defaults to wall-clock; in backtest mode the driver injects the
+    tick timestamp, anchoring the fetch to the correct historical snapshot.
+    """
     state = callback_context.state
     tickers: list[str] = state.get("tickers", [])
+
+    # Pull the historical clock from session state; default to wall-clock for live.
+    as_of: datetime = state.get("as_of") or datetime.now(tz=UTC)
 
     technical_data = {}
     for ticker in tickers:
         try:
-            stats = await get_stock_stats(ticker)
+            stats = await get_stock_stats(ticker, as_of=as_of)
         except Exception as exc:
             logger.warning("stats fetch failed for %s: %s", ticker, exc)
             stats = None

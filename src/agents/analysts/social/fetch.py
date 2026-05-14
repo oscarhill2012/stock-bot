@@ -11,6 +11,7 @@ body, not here.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 
 from google.adk.agents.callback_context import CallbackContext
 from google.genai import types as genai_types
@@ -43,12 +44,15 @@ async def social_fetch_callback(
     state = callback_context.state
     tickers: list[str] = state.get("tickers", []) or []
 
+    # Pull the historical clock from session state; default to wall-clock for live.
+    as_of: datetime = state.get("as_of") or datetime.now(tz=UTC)
+
     social_data: dict[str, dict] = {}
 
     for ticker in tickers:
         # ── Fetch ─────────────────────────────────────────────────────────────
         try:
-            sentiment = await get_social_sentiment(ticker)
+            sentiment = await get_social_sentiment(ticker, as_of=as_of)
         except Exception as exc:
             logger.warning("social_sentiment fetch failed for %s: %s", ticker, exc)
             sentiment = None
