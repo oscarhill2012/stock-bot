@@ -466,7 +466,9 @@ Two narrative-prose sources remain unread after Phase 5:
 
 ---
 
-### B22. Shared report-cache callback factory (deduplicate News + Fundamental)
+### ~~B22~~. Shared report-cache callback factory (deduplicate News + Fundamental)
+
+**Status: resolved (2026-05-14)** — Pulled forward from the backlog and shipped as an urgent fix after a live trace (`trace-20260514T150248-5f0a2911-AAPL.json`) revealed the lifecycle bug: both per-analyst `_after` hooks read `state[verdicts_state_key]`, but ADK's `__maybe_save_output_to_state` writes to state *after* the after-model-callback chain fires, so the hooks iterated zero verdicts and the cache was never populated. The refactor was the correct structural fix: the new `make_report_cache_callbacks` factory in `src/agents/analysts/cache_callbacks.py` reads `llm_response.content` directly in `_after`, bypassing the state-save timing issue entirely. See commit `refactor(analysts): shared report-cache callback factory (B22)`.
 
 **Origin:** Phase 5 analyst-surface-redesign Task 6 shipped a hash-based LLM report cache for the News and Fundamental analysts. The two agents now hold byte-identical copies (~150 LOC each) of `_build_*_cache_callbacks` — the only differences are the analyst label, prompt-version constant, state key, hash function, output key, and trace section name. Flagged in the Opus final review as a non-blocking follow-up; deferred so Phase 5 could close cleanly before backtest.
 

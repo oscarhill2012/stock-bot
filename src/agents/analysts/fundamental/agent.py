@@ -11,11 +11,13 @@ prompt via ``build_fundamental_instruction`` before wiring the
 ``LlmAgent``.  The module-level singleton uses the default heuristics config
 so unit tests that import the module directly still work.
 
-Phase 5 Task 6 adds a disk-backed memoisation cache.  Before the model call,
-a ``before_model_callback`` consults the hash cache for every watchlist ticker.
-If all tickers hit the cache, the LLM round-trip is skipped and verdicts are
-loaded directly from disk.  After a real LLM call, an ``after_model_callback``
-persists the fresh verdicts so subsequent ticks on the same data are free.
+Phase 5 Task 6 adds a disk-backed memoisation cache.  The cache layer is now
+wired via the shared ``make_report_cache_callbacks`` factory in
+``agents.analysts.cache_callbacks`` — see that module's docstring for the
+lifecycle details and the B22 bug-fix that motivates centralising the logic
+(specifically, ``_after`` must parse ``llm_response`` directly rather than
+reading state, because ADK's ``__maybe_save_output_to_state`` runs after the
+after-model-callback chain).
 
 When the environment variable ``STOCKBOT_TRACE=1`` is set, the factory also
 attaches trace hooks (after the cache layer) that capture the raw LLM prompt
@@ -24,222 +26,65 @@ the ``"_trace"`` key).
 """
 from __future__ import annotations
 
-import logging
 import os
-from pathlib import Path
 
 from google.adk.agents import LlmAgent
-from google.genai import types as genai_types
 
 from agents.analysts._common import (
     _chain_after,
     _chain_before,
     make_evidence_callback,
 )
+from agents.analysts.cache_callbacks import make_report_cache_callbacks
 from agents.analysts.heuristics import FundamentalVocabulary, load_heuristics
 from agents.analysts.report_cache import (
     FUNDAMENTAL_PROMPT_VERSION,
     fundamental_hash_inputs,
-    read_cache,
-    write_cache,
 )
-from config.analysts import get_analysts_config
 from contract.evidence import VerdictBatch
 from contract.extractors.fundamental import extract_fundamental_features
 from data.models import CompanyRatios, Filing, Form4Bundle
-from observability.trace import TraceWriter, make_llm_trace_callbacks
+from observability.trace import make_llm_trace_callbacks
 
 from .fetch import fundamental_fetch_callback
 from .prompts import build_fundamental_instruction
 
-# Module-level logger — used in the _after cache callback so that disk errors
-# after a paid LLM call produce a warning rather than crashing the agent tick.
-_log = logging.getLogger(__name__)
-
 # ---------------------------------------------------------------------------
-# Cache helper
+# Internal helper — typed-object reconstruction for the hash lambda
 # ---------------------------------------------------------------------------
 
-def _build_fundamental_cache_callbacks():
-    """Return ``(before, after)`` hooks for the Fundamental report cache.
+def _fundamental_hash_inputs_from_dict(ticker: str, triad: dict) -> str:
+    """Reconstruct typed objects from the per-ticker state dict and hash them.
 
-    Mirrors ``_build_news_cache_callbacks`` in the News agent.  The key
-    differences are:
+    The fetch callback stores ``ratios`` as a ``CompanyRatios.model_dump()``
+    dict (or ``None`` on failure), ``filings`` as a list of
+    ``Filing.model_dump()`` dicts, and ``insider`` as a typed ``Form4Bundle``
+    instance.  This function re-validates the stored dicts so
+    ``fundamental_hash_inputs`` receives the proper typed objects.
 
-    - Cache subdirectory is ``"fundamental"``.
-    - Hash function is ``fundamental_hash_inputs(ratios, filings, insider)``
-      which re-constructs typed objects from the dicts stored in
-      ``state["fundamental_data"]``.
-    - Prompt-version constant is ``FUNDAMENTAL_PROMPT_VERSION``.
-    - Output state key is ``"fundamental_verdicts"``.
+    Parameters
+    ----------
+    ticker:
+        Ticker symbol — used as the ``CompanyRatios`` fallback dict key.
+    triad:
+        Per-ticker slice from ``state["fundamental_data"]``.
 
     Returns
     -------
-    tuple[Callable, Callable]
-        ``(before_model_callback, after_model_callback)`` suitable for passing
-        directly to ``LlmAgent``.
+    str
+        Blake2b hex digest over the combined fundamental input payload.
     """
-    cfg  = get_analysts_config().cache
-    root = Path(cfg.directory)
+    ratios_dict = triad.get("ratios") or {"ticker": ticker}
+    filings_raw = triad.get("filings") or []
+    insider_obj = triad.get("insider") or Form4Bundle(trades=[], derivatives=[])
 
-    def _before(callback_context, llm_request):
-        """Short-circuit the LLM if every watchlist ticker hits the cache.
+    ratios = CompanyRatios.model_validate(ratios_dict)
+    filings = [
+        Filing.model_validate(f) if isinstance(f, dict) else f
+        for f in filings_raw
+    ]
 
-        Reconstructs typed ``CompanyRatios``, ``list[Filing]``, and
-        ``Form4Bundle`` objects from the dicts stored by the fetch callback
-        before computing the hash.  The insider bundle is already a typed
-        object in state; ratios and filings are re-validated from dicts.
-
-        Parameters
-        ----------
-        callback_context:
-            ADK callback context with mutable session state.
-        llm_request:
-            The pending LLM request (not inspected; may be ``None`` in tests).
-
-        Returns
-        -------
-        google.genai.types.Content | None
-            Synthetic ``Content`` on a full cache hit; ``None`` on any miss.
-        """
-        if not cfg.enabled:
-            return None
-
-        state = callback_context.state
-        tickers: list[str] = state.get("tickers", []) or []
-        fundamental_data: dict = state.get("fundamental_data", {}) or {}
-
-        cached_verdicts = []
-
-        for ticker in tickers:
-            triad = fundamental_data.get(ticker) or {}
-
-            # Re-construct typed objects from the state dicts.  The fetch
-            # callback stores ratios as a model_dump() dict (or None on
-            # failure) and filings as a list of model_dump() dicts; the
-            # insider bundle is stored as a typed Form4Bundle instance.
-            ratios_dict = triad.get("ratios") or {"ticker": ticker}
-            filings_raw = triad.get("filings") or []
-            insider_obj = triad.get("insider") or Form4Bundle(trades=[], derivatives=[])
-
-            ratios  = CompanyRatios.model_validate(ratios_dict)
-            filings = [
-                Filing.model_validate(f) if isinstance(f, dict) else f
-                for f in filings_raw
-            ]
-
-            input_hash = fundamental_hash_inputs(ratios, filings, insider_obj)
-
-            hit = read_cache(
-                root, "fundamental", ticker,
-                input_hash=input_hash,
-                prompt_version=FUNDAMENTAL_PROMPT_VERSION,
-            )
-
-            if hit is None:
-                return None  # Any miss -> run the full LLM call.
-
-            # Merge the report back into the verdict dict if one was stored.
-            v = hit["verdict"]
-            if hit["report"] is not None:
-                v = {**v, "report": hit["report"]}
-
-            cached_verdicts.append({**v, "ticker": ticker})
-
-        # All tickers hit — write cached batch into the output key.
-        state["fundamental_verdicts"] = VerdictBatch.model_validate(
-            {"verdicts": cached_verdicts}
-        ).model_dump()
-
-        # Emit a trace marker if a TraceWriter is active.
-        try:
-            tw = state.get("_trace")
-        except (AttributeError, TypeError):
-            tw = None
-
-        if isinstance(tw, TraceWriter):
-            tw.llm_pair(
-                "03_fundamental_llm",
-                prompt=f"(cache hit — all tickers, prompt_version={FUNDAMENTAL_PROMPT_VERSION})",
-                response="(loaded from cache/reports/fundamental/<ticker>.json)",
-                model="cache",
-            )
-
-        return genai_types.Content(
-            parts=[genai_types.Part.from_text(text="(cached)")]
-        )
-
-    def _after(callback_context, llm_response):
-        """Persist fresh verdicts from a real LLM call to the cache.
-
-        Parameters
-        ----------
-        callback_context:
-            ADK callback context with mutable session state.
-        llm_response:
-            Raw LLM response (not inspected; we read state instead).
-
-        Returns
-        -------
-        None
-            Always ``None`` — this hook never short-circuits the flow.
-        """
-        if not cfg.enabled:
-            return None
-
-        state = callback_context.state
-        batch = state.get("fundamental_verdicts") or {}
-        fundamental_data: dict = state.get("fundamental_data", {}) or {}
-
-        if isinstance(batch, dict):
-            verdicts = batch.get("verdicts", [])
-        else:
-            verdicts = getattr(batch, "verdicts", [])
-
-        for v in verdicts:
-            v_dict = v if isinstance(v, dict) else v.model_dump()
-            ticker = v_dict.get("ticker")
-            if not ticker:
-                continue
-
-            triad = fundamental_data.get(ticker) or {}
-            ratios_dict = triad.get("ratios") or {"ticker": ticker}
-            filings_raw = triad.get("filings") or []
-            insider_obj = triad.get("insider") or Form4Bundle(trades=[], derivatives=[])
-
-            ratios  = CompanyRatios.model_validate(ratios_dict)
-            filings = [
-                Filing.model_validate(f) if isinstance(f, dict) else f
-                for f in filings_raw
-            ]
-
-            input_hash = fundamental_hash_inputs(ratios, filings, insider_obj)
-
-            verdict_payload = {k: val for k, val in v_dict.items() if k != "report"}
-            report_payload  = v_dict.get("report")
-
-            try:
-                write_cache(
-                    root, "fundamental", ticker,
-                    input_hash=input_hash,
-                    prompt_version=FUNDAMENTAL_PROMPT_VERSION,
-                    verdict=verdict_payload,
-                    report=report_payload,
-                )
-            except OSError:
-                # Disk errors after a paid LLM call must not crash the agent
-                # tick.  Log a warning and continue — the verdict is still
-                # usable; the cache will simply miss on the next run.
-                _log.warning(
-                    "fundamental cache write failed for ticker %s — disk error, "
-                    "verdict will not be cached for this tick.",
-                    ticker,
-                    exc_info=True,
-                )
-
-        return None
-
-    return _before, _after
+    return fundamental_hash_inputs(ratios, filings, insider_obj)
 
 
 # ---------------------------------------------------------------------------
@@ -257,9 +102,12 @@ def _build_fundamental_analyst(vocab: FundamentalVocabulary) -> LlmAgent:
     ``fundamental_fetch_callback``.
 
     Cache layer:
-        ``_build_fundamental_cache_callbacks()`` returns before/after hooks
-        that consult the disk cache.  A full cache hit short-circuits the LLM
-        call; a miss falls through to the real model.
+        ``make_report_cache_callbacks(...)`` (from ``agents.analysts.cache_callbacks``)
+        returns before/after hooks that consult the disk cache.  A full cache hit
+        short-circuits the LLM call; a miss falls through to the real model.
+        The ``hash_inputs`` lambda calls ``_fundamental_hash_inputs_from_dict``
+        which reconstructs typed ``CompanyRatios`` / ``Filing`` / ``Form4Bundle``
+        objects before invoking ``fundamental_hash_inputs``.
 
     Trace layer:
         When ``STOCKBOT_TRACE=1`` is set, trace hooks are chained *after* the
@@ -286,9 +134,23 @@ def _build_fundamental_analyst(vocab: FundamentalVocabulary) -> LlmAgent:
     if os.environ.get("STOCKBOT_TRACE") == "1":
         trace_before, trace_after = make_llm_trace_callbacks("03_fundamental_llm", model=model)
 
-    # Build cache hooks — run before trace so that cache hits appear in the
-    # trace log as model="cache".
-    cache_before, cache_after = _build_fundamental_cache_callbacks()
+    # Build cache hooks via the shared factory — run before trace so that cache
+    # hits appear in the trace log as model="cache".  The hash_inputs lambda
+    # reconstructs typed objects from the per-ticker state dict (the fetch
+    # callback stores them as model_dump() dicts) before computing the hash.
+    # The ticker is extracted from the ratios dict's own "ticker" field — the
+    # fetch callback always sets it, so the fallback to "" is defensive-only.
+    cache_before, cache_after = make_report_cache_callbacks(
+        analyst_name       = "fundamental",
+        prompt_version     = FUNDAMENTAL_PROMPT_VERSION,
+        data_state_key     = "fundamental_data",
+        verdicts_state_key = "fundamental_verdicts",
+        hash_inputs        = lambda d: _fundamental_hash_inputs_from_dict(
+            ticker=((d or {}).get("ratios") or {}).get("ticker", ""),
+            triad=(d or {}),
+        ),
+        trace_label        = "03_fundamental_llm",
+    )
 
     # Chain: cache first (may short-circuit), then trace.
     before_cb = _chain_before(cache_before, trace_before)

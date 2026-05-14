@@ -8,13 +8,44 @@ cache is keyed on filing accession numbers, so adding any new filing busts it.
 
 The ``cache_root`` fixture and ``_Ctx`` stub are defined in ``conftest.py``
 and auto-discovered by pytest.
+
+NOTE: the ``_after`` hook now reads verdicts from ``llm_response.content``
+directly (B22 bug-fix).  Tests must pass a fake response object.
 """
 from __future__ import annotations
 
+import json
+import types
 from datetime import UTC, datetime
 
-from agents.analysts.fundamental.agent import _build_fundamental_cache_callbacks
+from agents.analysts.cache_callbacks import make_report_cache_callbacks
+from agents.analysts.fundamental.agent import _fundamental_hash_inputs_from_dict
+from agents.analysts.report_cache import FUNDAMENTAL_PROMPT_VERSION
 from tests.integration.conftest import _Ctx
+
+
+def _fake_llm_response(verdicts: list[dict]) -> types.SimpleNamespace:
+    """Minimal fake LLM response whose ``.content.parts[0].text`` is the JSON payload."""
+    text    = json.dumps({"verdicts": verdicts})
+    part    = types.SimpleNamespace(text=text)
+    content = types.SimpleNamespace(parts=[part])
+    return types.SimpleNamespace(content=content)
+
+
+def _make_fundamental_callbacks():
+    """Construct fundamental cache callbacks via the shared factory."""
+    return make_report_cache_callbacks(
+        analyst_name       = "fundamental",
+        prompt_version     = FUNDAMENTAL_PROMPT_VERSION,
+        data_state_key     = "fundamental_data",
+        verdicts_state_key = "fundamental_verdicts",
+        hash_inputs        = lambda d: _fundamental_hash_inputs_from_dict(
+            ticker=((d or {}).get("ratios") or {}).get("ticker", ""),
+            triad=(d or {}),
+        ),
+        trace_label        = "03_fundamental_llm",
+    )
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -58,7 +89,7 @@ def test_new_filing_busts_cache(cache_root):
     numbers: a new accession number changes the digest, which invalidates the
     previously cached entry.
     """
-    before, after = _build_fundamental_cache_callbacks()
+    before, after = _make_fundamental_callbacks()
 
     # --- First run — one existing filing ---
     filing_v1 = _minimal_filing("0000320193-26-000010")
@@ -77,27 +108,25 @@ def test_new_filing_busts_cache(cache_root):
     # First run: miss -> LLM would run.
     assert before(ctx, llm_request=None) is None
 
-    # Simulate LLM output and persist to cache.
-    ctx.state["fundamental_verdicts"] = {
-        "verdicts": [{
-            "ticker":       "AAPL",
-            "lean":         "bullish",
-            "magnitude":    0.55,
-            "confidence":   0.75,
-            "rationale":    "Strong quarterly results.",
-            "key_factors":  [],
-            "is_no_data":   False,
-            "report": {
-                "summary": "Quarterly filing shows continued top-line growth.",
-                "drivers": [
-                    {"name": "Revenue beat",       "direction": "bull",    "weight": 0.6, "body": "Revenue exceeded consensus by 4%."},
-                    {"name": "PE still stretched", "direction": "neutral", "weight": 0.4, "body": "Trailing PE of 28 is above the sector average."},
-                ],
-            },
-        }],
-    }
+    # Persist to cache via the fake LLM response.
+    verdicts_payload = [{
+        "ticker":       "AAPL",
+        "lean":         "bullish",
+        "magnitude":    0.55,
+        "confidence":   0.75,
+        "rationale":    "Strong quarterly results.",
+        "key_factors":  [],
+        "is_no_data":   False,
+        "report": {
+            "summary": "Quarterly filing shows continued top-line growth.",
+            "drivers": [
+                {"name": "Revenue beat",       "direction": "bull",    "weight": 0.6, "body": "Revenue exceeded consensus by 4%."},
+                {"name": "PE still stretched", "direction": "neutral", "weight": 0.4, "body": "Trailing PE of 28 is above the sector average."},
+            ],
+        },
+    }]
 
-    after(ctx, llm_response=None)
+    after(ctx, llm_response=_fake_llm_response(verdicts_payload))
 
     # --- Second run — add a brand-new filing ---
     filing_v2 = _minimal_filing("0000320193-26-000099")
