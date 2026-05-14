@@ -149,3 +149,35 @@ The News LLM must restrict its tag choices to exactly these lists.
 | Setting | Type | Meaning |
 |---|---|---|
 | `min_direction_agreement_pct` | int [0–100] | Minimum % of golden-set tickers that must have consistent direction tags for the acceptance gate to pass. |
+
+---
+
+## `analysts.json` — analyst truncation caps + report cache
+
+LLM context-window caps for the News and Fundamental analysts, plus the
+toggle and directory for the hash-based report cache. Loaded once at boot via
+`src/config/analysts.py::get_analysts_config()` (`lru_cache(maxsize=1)`); a
+process restart is required after edits.
+
+### `news` — News analyst input caps
+
+| Setting | Type | Meaning |
+|---|---|---|
+| `news.max_articles_per_ticker` | int [1–200] | Maximum article count per ticker fed to the News LLM. Wider than the old hard-coded 10 — default 20. |
+| `news.max_summary_chars` | int [1–10000] | Maximum characters of each article's summary kept in the prompt. Default 500 (widened from 300). |
+
+### `fundamental` — Fundamental analyst input caps
+
+| Setting | Type | Meaning |
+|---|---|---|
+| `fundamental.max_filing_mda_chars` | int [1–20000] | Character cap on the MD&A excerpt for each filing. Default 1500 (widened from 500). |
+| `fundamental.max_filing_risk_chars` | int [1–20000] | Character cap on the risk-factors excerpt for each filing. Default 1500 (widened from 500). |
+| `fundamental.max_insider_footnotes` | int [0–50] | Maximum insider footnote snippets included in the LLM prompt per ticker. Default 5. |
+| `fundamental.max_insider_footnote_chars` | int [1–5000] | Character cap per footnote excerpt. Default 400 (widened from 200). |
+
+### `cache` — LLM report cache
+
+| Setting | Type | Meaning |
+|---|---|---|
+| `cache.enabled` | bool | Toggle the hash-based LLM report cache. When `false`, every tick re-prompts the LLM (matches pre-redesign behaviour). Default `true`. |
+| `cache.directory` | string | On-disk root for cached report files. Must be under the gitignored `cache/` tree. Default `cache/reports`. |

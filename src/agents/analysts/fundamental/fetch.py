@@ -40,6 +40,7 @@ import logging
 from google.adk.agents.callback_context import CallbackContext
 from google.genai import types as genai_types
 
+from config.analysts import FundamentalCaps, get_analysts_config
 from data import get_company_filings, get_company_ratios, get_insider_trades
 from data.models import Form4Bundle, InsiderTrade
 from observability.trace import _trace_maybe
@@ -49,12 +50,20 @@ logger = logging.getLogger(__name__)
 # Lookback window for Form 4 insider trades passed to the provider.
 _INSIDER_LOOKBACK_DAYS = 30
 
-# Maximum number of insider footnote snippets to include in the LLM prompt
-# per ticker.  Footnotes can be verbose; cap them to control token usage.
-_MAX_FOOTNOTES = 5
 
-# Maximum character length per footnote excerpt.  Truncated beyond this.
-_MAX_FOOTNOTE_CHARS = 200
+def _caps() -> FundamentalCaps:
+    """Return the ``FundamentalCaps`` section from the analysts config.
+
+    Reads caps lazily on first call — avoids running the config loader at
+    module import time, which simplifies test isolation.
+
+    Returns
+    -------
+    FundamentalCaps
+        Validated caps object containing all four truncation settings for the
+        Fundamental analyst's LLM context block.
+    """
+    return get_analysts_config().fundamental
 
 
 def _build_ticker_context(
@@ -85,6 +94,9 @@ def _build_ticker_context(
     """
     lines: list[str] = [f"=== {ticker} ==="]
 
+    # Read all four caps from config once per call.
+    caps = _caps()
+
     # --- Filing excerpts ---
     if filings_payload:
         lines.append("-- COMPANY FILINGS (PROSE) --")
@@ -98,9 +110,9 @@ def _build_ticker_context(
             if mda or risk_fac:
                 lines.append(f"  [{form_type}, filed {filed_at}]")
                 if mda:
-                    lines.append(f"  MD&A: {mda[:500]}")
+                    lines.append(f"  MD&A: {mda[:caps.max_filing_mda_chars]}")
                 if risk_fac:
-                    lines.append(f"  Risk factors: {risk_fac[:500]}")
+                    lines.append(f"  Risk factors: {risk_fac[:caps.max_filing_risk_chars]}")
     else:
         lines.append("-- COMPANY FILINGS (PROSE) --")
         lines.append("  (no filings available)")
@@ -168,21 +180,21 @@ def _build_ticker_context(
     ])
 
     # --- Insider footnotes (prose, capped) ---
-    lines.append("-- INSIDER FOOTNOTES (≤5, prose) --")
+    lines.append(f"-- INSIDER FOOTNOTES (≤{caps.max_insider_footnotes}, prose) --")
     footnotes: list[str] = []
 
     for trade in trades:
         note = (getattr(trade, "footnote", None) or "").strip()
         if note:
-            footnotes.append(note[:_MAX_FOOTNOTE_CHARS])
+            footnotes.append(note[:caps.max_insider_footnote_chars])
 
     for deriv in derivatives:
         note = (getattr(deriv, "footnote", None) or "").strip()
         if note:
-            footnotes.append(note[:_MAX_FOOTNOTE_CHARS])
+            footnotes.append(note[:caps.max_insider_footnote_chars])
 
     if footnotes:
-        for i, note in enumerate(footnotes[:_MAX_FOOTNOTES]):
+        for i, note in enumerate(footnotes[:caps.max_insider_footnotes]):
             lines.append(f"  [{i + 1}] {note}")
     else:
         lines.append("  (no footnotes)")

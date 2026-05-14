@@ -19,17 +19,27 @@ import logging
 from google.adk.agents.callback_context import CallbackContext
 from google.genai import types as genai_types
 
+from config.analysts import get_analysts_config
 from data import get_stock_news
 from observability.trace import _trace_maybe
 
 logger = logging.getLogger(__name__)
 
-# Maximum number of headlines to include per ticker in the LLM context block.
-# Caps token usage while keeping the most recent signal visible.
-_MAX_HEADLINES = 10
 
-# Maximum character length for an article summary excerpt shown to the LLM.
-_MAX_SUMMARY_CHARS = 300
+def _caps() -> tuple[int, int]:
+    """Return ``(max_articles, max_summary_chars)`` from the analysts config.
+
+    Reads caps lazily on first call — avoids running the config loader at
+    module import time, which simplifies test isolation.
+
+    Returns
+    -------
+    tuple[int, int]
+        ``(max_articles_per_ticker, max_summary_chars)`` as configured in
+        ``config/analysts.json``.
+    """
+    cfg = get_analysts_config().news
+    return cfg.max_articles_per_ticker, cfg.max_summary_chars
 
 
 def _build_ticker_news_context(ticker: str, articles: list) -> str:
@@ -37,8 +47,9 @@ def _build_ticker_news_context(ticker: str, articles: list) -> str:
 
     Formats headlines and article summaries into a text block suitable for
     direct inclusion in an LLM prompt.  Only the most recent
-    ``_MAX_HEADLINES`` articles are included; summaries are truncated to
-    ``_MAX_SUMMARY_CHARS`` characters to control token usage.
+    ``max_articles`` articles are included; summaries are truncated to
+    ``max_summary_chars`` characters to control token usage. Both caps are
+    read from ``config/analysts.json`` via ``_caps()``.
 
     Parameters
     ----------
@@ -59,8 +70,11 @@ def _build_ticker_news_context(ticker: str, articles: list) -> str:
         lines.append("  (no news available)")
         return "\n".join(lines)
 
+    # Read caps from config — done once per call, not per article.
+    max_articles, max_summary_chars = _caps()
+
     # Limit to the most recent N articles.
-    recent = articles[:_MAX_HEADLINES]
+    recent = articles[:max_articles]
 
     for i, article in enumerate(recent, start=1):
         # Support both dict access and attribute access depending on how the
@@ -79,7 +93,7 @@ def _build_ticker_news_context(ticker: str, articles: list) -> str:
 
         if summary:
             # Truncate to avoid token bloat while preserving the key content.
-            lines.append(f"       {summary[:_MAX_SUMMARY_CHARS]}")
+            lines.append(f"       {summary[:max_summary_chars]}")
 
     return "\n".join(lines)
 

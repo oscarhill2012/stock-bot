@@ -1,0 +1,16 @@
+{
+  "news": {
+    "max_articles_per_ticker": 20,
+    "max_summary_chars": 500
+  },
+  "fundamental": {
+    "max_filing_mda_chars": 1500,
+    "max_filing_risk_chars": 1500,
+    "max_insider_footnotes": 5,
+    "max_insider_footnote_chars": 400
+  },
+  "cache": {
+    "enabled": true,
+    "directory": "cache/reports"
+  }
+}
