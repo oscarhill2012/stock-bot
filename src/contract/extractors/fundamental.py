@@ -329,7 +329,12 @@ def _extract_insider_features(
 # Public API
 # ---------------------------------------------------------------------------
 
-def extract_fundamental_features(raw: Mapping[str, Any], ticker: str) -> dict[str, float]:
+def extract_fundamental_features(
+    raw: Mapping[str, Any],
+    ticker: str,
+    *,
+    as_of: datetime | None = None,
+) -> dict[str, float]:
     """Pull the locked fundamental feature catalogue from a raw payload dict.
 
     Accepts the Phase 5 triad payload shape::
@@ -349,6 +354,11 @@ def extract_fundamental_features(raw: Mapping[str, Any], ticker: str) -> dict[st
         Phase 5 triad payload for a single ticker.
     ticker:
         Ticker symbol — used for future logging / error context.
+    as_of:
+        Point-in-time anchor for time-delta calculations (``days_since_last_filing``,
+        insider 30-day window).  ``None`` → wall-clock now (live behaviour).
+        Backtest mode passes the historical tick timestamp so the same raw data
+        produces the same feature values regardless of when the extractor runs.
 
     Returns
     -------
@@ -361,7 +371,8 @@ def extract_fundamental_features(raw: Mapping[str, Any], ticker: str) -> dict[st
     if not raw:
         return out
 
-    now = datetime.now(tz=UTC)
+    # Use the supplied point-in-time anchor; fall back to wall-clock for live runs.
+    now = as_of if as_of is not None else datetime.now(tz=UTC)
 
     # --- stats ---
     stats_sub = raw.get("stats") or {}

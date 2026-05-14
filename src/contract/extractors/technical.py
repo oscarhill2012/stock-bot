@@ -77,7 +77,12 @@ def _df_from_history(history: list[Mapping[str, Any]]) -> pd.DataFrame | None:
     return df
 
 
-def extract_technical_features(raw: Mapping[str, Any], ticker: str) -> dict[str, float]:
+def extract_technical_features(
+    raw: Mapping[str, Any],
+    ticker: str,
+    *,
+    as_of=None,  # noqa: ANN001 — accepted for signature uniformity; clock-free extractor ignores it
+) -> dict[str, float]:
     """Compute the locked technical feature catalogue from raw OHLCV history.
 
     Accepts the per-ticker data slice from ``state["technical_data"][ticker]``.

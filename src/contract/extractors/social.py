@@ -43,7 +43,12 @@ def _net(scores: dict[str, Any]) -> float:
     return pos - neg
 
 
-def extract_social_features(raw: dict[str, Any], ticker: str) -> dict[str, float]:
+def extract_social_features(
+    raw: dict[str, Any],
+    ticker: str,
+    *,
+    as_of=None,  # noqa: ANN001 — accepted for signature uniformity; clock-free extractor ignores it
+) -> dict[str, float]:
     """Reduce the per-ticker social payload to the Phase-5 feature vector.
 
     Expected ``raw`` shape (one ticker's slice of ``state["social_data"]``):

@@ -106,7 +106,10 @@ def make_evidence_callback(
         for ticker in tickers:
             # Run the deterministic feature extractor for this ticker.
             # The extractor receives the per-ticker slice, not the full dict.
-            features: dict[str, float] = extractor(data.get(ticker, {}), ticker)
+            # Pass ``as_of`` so time-sensitive extractors (fundamental) use the
+            # historical tick timestamp rather than wall-clock.
+            extractor_as_of = state.get("as_of") or datetime.now(tz=UTC)
+            features: dict[str, float] = extractor(data.get(ticker, {}), ticker, as_of=extractor_as_of)
 
             raw_v = verdicts_by_ticker.get(ticker)
 

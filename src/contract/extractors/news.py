@@ -28,7 +28,12 @@ def _zero_features() -> dict[str, float]:
     return {k: 0.0 for k in _KEYS}
 
 
-def extract_news_features(raw: Mapping[str, Any], ticker: str) -> dict[str, float]:
+def extract_news_features(
+    raw: Mapping[str, Any],
+    ticker: str,
+    *,
+    as_of=None,  # noqa: ANN001 — accepted for signature uniformity; clock-free extractor ignores it
+) -> dict[str, float]:
     """Compute the news feature catalogue from raw news data.
 
     Caller is expected to have already filtered news_items to the last 7 days

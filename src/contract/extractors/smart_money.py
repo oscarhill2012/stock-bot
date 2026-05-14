@@ -84,7 +84,12 @@ def _amount(filing: Mapping[str, Any]) -> float:
         return 0.0
 
 
-def extract_smart_money_features(raw: Mapping[str, Any], ticker: str) -> dict[str, float]:
+def extract_smart_money_features(
+    raw: Mapping[str, Any],
+    ticker: str,
+    *,
+    as_of=None,  # noqa: ANN001 — accepted for signature uniformity; clock-free extractor ignores it
+) -> dict[str, float]:
     """Aggregate congressional filings into counts, dollar totals, and a no-data flag.
 
     Caller is expected to have already filtered to the last 30 days; this
