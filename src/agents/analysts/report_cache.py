@@ -87,29 +87,53 @@ def _derive_prompt_version(instruction: str) -> str:
 # ``build_*_instruction`` are ``lru_cache(maxsize=1)``, so this work is
 # cheap and only fires on the first import.
 #
-# NOTE: The prompt-builder modules are loaded via ``importlib`` rather
-# than a normal ``from agents.analysts.news.prompts import ...`` statement
-# to avoid a circular import cycle.  The ``agents.analysts`` package
-# ``__init__.py`` eagerly imports all five agent modules; those agents
-# import ``cache_callbacks``, which imports ``report_cache``; so any
-# normal ``from agents.analysts.*`` import fired during ``report_cache``
-# initialisation re-enters the partially-initialised chain and raises
-# ``ImportError``.  Loading the two ``.prompts`` files by filesystem
-# path via ``importlib.util.spec_from_file_location`` bypasses the
-# package init entirely and does not disturb the ongoing initialisation.
+# NOTE — why the filesystem loader (and why a deferred import does NOT work).
+#
+# The cycle is two layers deep.  Surface layer:
+#   ``agents.analysts.__init__`` eagerly imports all five agent modules;
+#   each agent module imports ``cache_callbacks``; ``cache_callbacks``
+#   imports ``report_cache``.  So by the time *this* module body runs,
+#   ``cache_callbacks`` is mid-init in ``sys.modules`` and the chain
+#   above it is partially built.
+#
+# Deeper layer (the one that defeats a "just defer the import" fix):
+#   A naive ``from agents.analysts.news.prompts import build_news_instruction``
+#   — whether at module-top OR inside a function called later — does NOT
+#   import ``news/prompts.py`` in isolation.  Python first runs
+#   ``agents/analysts/news/__init__.py``, which eagerly does
+#   ``from .agent import news_analyst``.  That re-enters ``cache_callbacks``
+#   (still partially initialised) and raises ``ImportError: cannot import
+#   name 'make_report_cache_callbacks' from partially initialized module``.
+#
+# The filesystem loader below sidesteps both layers by loading
+# ``heuristics.py`` / ``news/prompts.py`` / ``fundamental/prompts.py``
+# DIRECTLY by path via ``importlib.util.spec_from_file_location``.  That
+# never executes ``news/__init__.py`` or ``fundamental/__init__.py``, so
+# the eager-agent chain that owns the cycle never fires.  The loaded
+# modules are registered in ``sys.modules`` under their canonical dotted
+# names so that when ``agents.analysts.__init__`` later runs normally and
+# the agent modules do ``from agents.analysts.news.prompts import ...``,
+# they resolve to the same module objects (no duplicate load, no drift).
+#
+# A cleaner long-term fix would be to drop the eager
+# ``from .agent import news_analyst`` from the news + fundamental package
+# ``__init__.py`` files, or to move the prompt builders out of those
+# sub-packages — both are structural refactors beyond the scope of B23.
 
 def _load_prompt_builders() -> tuple:
     """Load the prompt-builder callables for both analysts without
-    triggering the ``agents.analysts`` package ``__init__.py``.
+    triggering the ``agents.analysts.{news,fundamental}`` sub-package
+    ``__init__.py`` files (which eagerly import their ``agent`` module
+    and re-enter the cache-callback chain — see the block comment above
+    for the full cycle).
 
     Uses ``importlib.util.spec_from_file_location`` to load
     ``heuristics.py``, ``news/prompts.py``, and
     ``fundamental/prompts.py`` directly from their filesystem paths,
-    bypassing the package ``__init__`` that would otherwise cause a
-    circular-import error.  The loaded modules are inserted into
-    ``sys.modules`` under their canonical dotted names so subsequent
-    normal imports (e.g. from the agent modules) resolve to the same
-    module object rather than loading a duplicate.
+    bypassing those sub-package ``__init__`` files.  The loaded modules
+    are inserted into ``sys.modules`` under their canonical dotted names
+    so subsequent normal imports (e.g. from the agent modules) resolve
+    to the same module object rather than loading a duplicate.
 
     Returns
     -------
