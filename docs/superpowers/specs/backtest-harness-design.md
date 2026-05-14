@@ -28,6 +28,7 @@ Three architectural constraints drive every decision below:
 1. **Same code path, live and backtest.** The orchestrator, analyst pool, evidence writer, strategist, strategist-decision writer, risk gate, executor, portfolio-snapshot writer, and trace writer all run unchanged. Backtest mode differs from live mode in exactly two places: (a) which upstream each provider domain is wired to (`yfinance` / `finnhub` / `edgar` / etc. in live, `cache` in backtest), and (b) what value `as_of` carries when fetch callbacks fire (`datetime.utcnow()` in live, the historical tick timestamp in backtest).
 2. **Provider shell is the seam.** The existing `@register / dispatch` shell already supports per-domain upstream selection. Cache providers register themselves as a new upstream named `cache`. No analyst code changes; analysts call the same `provider_shell.dispatch(domain, ticker, as_of=...)` they always did.
 3. **`as_of` becomes an explicit kwarg on every fetch.** Today, fetch callbacks implicitly use `datetime.utcnow()`. The migration: every `fetch(...)` signature gains `as_of: datetime = datetime.utcnow()`. Live behaviour is unchanged by the default; backtest passes the historical timestamp. This loud, explicit contract beats any clock-bus or session-state-monkey-patch alternative.
+4. **Wall-clock leakage outside the fetch path must also be closed.** Determinism only holds if every code path whose output depends on "now" honours `as_of`, not just network fetches. Time-delta feature extractors, evidence `recorded_at` stamps, and tick-identity derivation all read wall-clock in the live pipeline today; each must accept `as_of` (or read it from session state) for backtest replay to be reproducible. Concrete enumeration lives in the plan.
 
 The harness adds a thin driver layer on top of the live pipeline:
 
@@ -81,6 +82,17 @@ The harness adds a thin driver layer on top of the live pipeline:
                        │     limit-respecting)      │
                        └────────────────────────────┘
 ```
+
+### Per-run database, from scratch
+
+Each run materialises its own SQLite at `<runs_root>/<run_id>/db.sqlite` (sibling of `manifest.json`, `traces/`, `decisions/`). On startup the runner calls `create_all(engine)` against the same `Base` metadata the live writers use; from that point the writer surface (`EvidenceWriter`, `StrategistDecisionWriter`, `PortfolioSnapshotWriter`, buffer / trade-log writers) is byte-identical to live.
+
+Implications:
+
+- **No carry-over.** Every run begins with empty buffers, no open positions, no prior ticker stances. The driver's initial-state builder is the only seeder. A backtest simulates a live run *from scratch*; it never warm-starts from another run's artefacts.
+- **Deterministic `tick_id` is safe.** Because the DB is fresh per run, `tick_id` can be derived deterministically from `(run_id, tick.as_of, tick.phase)` without risk of `UniqueConstraint` collision. Reruns of the same window with a fresh `run_id` are independently comparable.
+- **Live DB is never touched.** Backtest pipelines never open `data/stockbot.db`. Cache providers read `backtests/cache/store.db`; writers write the per-run DB. There is no path by which a backtest can mutate live state.
+- **Schema evolution is free.** Because every run starts with `create_all`, schema changes to the live persistence layer require no migration for backtest. (Persistence-layer refresh is tracked separately in the backlog.)
 
 ## Module layout
 

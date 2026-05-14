@@ -466,6 +466,56 @@ Two narrative-prose sources remain unread after Phase 5:
 
 ---
 
+### B22. Shared report-cache callback factory (deduplicate News + Fundamental)
+
+**Origin:** Phase 5 analyst-surface-redesign Task 6 shipped a hash-based LLM report cache for the News and Fundamental analysts. The two agents now hold byte-identical copies (~150 LOC each) of `_build_*_cache_callbacks` — the only differences are the analyst label, prompt-version constant, state key, hash function, output key, and trace section name. Flagged in the Opus final review as a non-blocking follow-up; deferred so Phase 5 could close cleanly before backtest.
+
+**The goal:** collapse both copies into a single `_build_report_cache_callbacks(analyst, prompt_version, input_reader, hash_fn, output_key, trace_section)` factory in `src/agents/analysts/_common.py` (where `_chain_before` / `_chain_after` already live after the Task 6 polish pass). News and Fundamental agents become ~10-line call sites passing the differences as arguments.
+
+**Key questions:**
+- Factory signature: pass `input_reader` as a `Callable[[state, ticker], Any]` so each analyst owns its dict→typed-model reconstruction (Fundamental rebuilds `CompanyRatios` / `Filing` / `Form4Bundle`; News just reads the article list)? Or pass the state keys and let the factory do generic dict access?
+- Where to live: `_common.py` is the obvious home — verify nothing in the news/fundamental imports would now cycle.
+- Test strategy: the existing integration tests (`test_news_cache_*`, `test_fundamental_cache_*`) act as the regression net. Add one unit test exercising the factory directly with a stub analyst so a future third analyst's wiring is exercised.
+- A future third analyst that wants caching (e.g. politician-trades, fundamentals-deep) becomes a 10-line addition rather than a third 150-LOC mirror — name this as the motivating use case in the spec.
+
+**Dependencies:** None. Pure refactor on top of `worktree-phase5-analyst-surface-redesign`.
+
+---
+
+### B23. Auto-derived prompt-version fingerprint (close the silent-stale-cache risk)
+
+**Origin:** Phase 5 Task 6 keyed the report cache on `(input_hash, prompt_version)`. The version strings (`NEWS_PROMPT_VERSION` / `FUNDAMENTAL_PROMPT_VERSION` in `src/agents/analysts/report_cache.py:43-47`) are hand-maintained constants living in a different file from the prompt templates (`src/agents/analysts/{news,fundamental}/prompts.py`). A contributor editing a template has no structural prompt to bump the constant; if they forget, the cache silently serves stale verdicts generated under the old prompt. Flagged in the Opus final review as a non-blocking follow-up; risk is low while pre-deployment but bites once the cache has accumulated weeks of live entries.
+
+**The goal:** derive each prompt-version string from a hash of its rendered template (plus closed vocabulary) instead of maintaining it by hand. Any edit to the template automatically invalidates every cached entry — no human discipline required.
+
+**Key questions:**
+- What to hash: just the rendered instruction text? Instruction + vocab JSON? Instruction + vocab + the `AnalystVerdict` / `AnalystReport` schema fingerprint (catches contract drift too)?
+- Reference vocab problem: News and Fundamental render against a `Vocabulary` value that varies tick-to-tick. Hashing the instruction needs a deterministic reference vocab so the version is stable across ticks. Hard-code a `_REFERENCE_VOCAB` constant per analyst, or hash the *template* (pre-substitution) rather than the rendered output?
+- Backtest compatibility: a mid-sweep template edit would now invalidate a partially-populated cache. Probably the right behaviour, but the backtest harness should pin the version string for the duration of a sweep — verify this is compatible with the cache layout.
+- Migration: existing cache entries on disk use the old string-literal version. First run after this lands invalidates them all. Acceptable, but document it.
+- Where to live: probably `src/agents/analysts/report_cache.py` — a `_derive_prompt_version(instruction, schema)` helper, and the module-level constants become `NEWS_PROMPT_VERSION = _derive_prompt_version(...)` at import time.
+
+**Dependencies:** None. Cleanest after [[B22]] (which centralises the cache wiring) but doesn't strictly require it.
+
+---
+
+### B24. Persistence schema refresh — after first backtest runs
+
+**Origin:** Backtest harness design review (May 2026). `src/orchestrator/persistence.py` (~420 lines) hasn't been touched since the early scaffolding. Backtest reuses it via the existing `db_session` seam and per-run `create_all(engine)` pattern — no refactor is required to ship backtest. But the schema carries early-days cruft: no FK relationships between `evidence` / `ticker_stance` / `decision` / `portfolio_snapshot` (all just stamp `tick_id` as a free-string column, no JOINs), inconsistent timestamp column names (`timestamp` vs `recorded_at` vs `opened_at`), no Alembic / migration story, and a single 420-line module that wants splitting per table. Flagged during the spec review as deferred deliberately — refactor-before-X is a classic trap, and backtest runs are the right pressure to learn which schema choices actually hurt.
+
+**The goal:** after one or two backtest runs have surfaced friction in result-summarisation and cross-run analytics, propose and execute a focused persistence refresh that addresses what backtest readers actually need — not speculative cleanup.
+
+**Key questions:**
+- Which JOINs does backtest result-summarisation actually need? (Probably `evidence` ↔ `ticker_stance` ↔ `decision` ↔ resulting `fill`.) Those become the FK candidates.
+- Should `recorded_at` / `timestamp` / `opened_at` collapse to a single canonical name? Worth the churn?
+- Alembic adoption: justified pre-deployment, given fresh-DB-per-run for free? Probably defer until live is on the horizon.
+- File layout: keep `persistence.py` monolithic, or split per table?
+- Pre-deployment means no live data to migrate, so any breaking schema change is safe — re-runnable backtests are the only consumer.
+
+**Dependencies:** Backtest harness must have produced at least one full run so the refactor has empirical guidance instead of speculation. No code-level dependency beyond that.
+
+---
+
 ## How segments interact
 
 ```
@@ -503,7 +553,8 @@ Phase 4 (Goals 1 + 2 — strategist v2 + analyst contract, plans A→B→C→D)
    ├── B3 (sub-tick exit)        — independent, any time
    ├── B4 (trailing stops)       — small extension on top of v2
    ├── B6 (risk clamp persistence) — small follow-up
-   └── B7 (cost observability)   — independent, low priority but feeds B2
+   ├── B7 (cost observability)   — independent, low priority but feeds B2
+   └── B24 (persistence schema refresh — after first backtest runs; depends on backtest harness completing)
 ```
 
 **Rough order if doing them in series:** Phase 4 plans A → B → C → D → Phase 5 (analyst re-categorisation) → B16 (ratchet policy operationalised by Phase 5's surface trace) → analyst-surface-redesign (consolidates B9 + half of B14) → B6 → B7 → B11 → B18 (co-specced with B11) → B10 → B2 (long arc) → B5 → B17 (likely folds into B2) → B4 → B3 → B8. B12/B13/B14-deterministic-narrator/B15 fold in only as trace data justifies, ordered ad-hoc against [[B16]]'s checklist.
