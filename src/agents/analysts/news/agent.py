@@ -27,13 +27,18 @@ the ``"_trace"`` key).
 """
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
 from google.adk.agents import LlmAgent
 from google.genai import types as genai_types
 
-from agents.analysts._common import make_evidence_callback
+from agents.analysts._common import (
+    _chain_after,
+    _chain_before,
+    make_evidence_callback,
+)
 from agents.analysts.heuristics import NewsVocabulary, load_heuristics
 from agents.analysts.report_cache import (
     NEWS_PROMPT_VERSION,
@@ -48,6 +53,10 @@ from observability.trace import TraceWriter, make_llm_trace_callbacks
 
 from .fetch import news_fetch_callback
 from .prompts import build_news_instruction
+
+# Module-level logger — used in the _after cache callback so that disk errors
+# after a paid LLM call produce a warning rather than crashing the agent tick.
+_log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Cache helper
@@ -191,76 +200,28 @@ def _build_news_cache_callbacks():
             verdict_payload = {k: val for k, val in v_dict.items() if k != "report"}
             report_payload  = v_dict.get("report")
 
-            write_cache(
-                root, "news", ticker,
-                input_hash=input_hash,
-                prompt_version=NEWS_PROMPT_VERSION,
-                verdict=verdict_payload,
-                report=report_payload,
-            )
+            try:
+                write_cache(
+                    root, "news", ticker,
+                    input_hash=input_hash,
+                    prompt_version=NEWS_PROMPT_VERSION,
+                    verdict=verdict_payload,
+                    report=report_payload,
+                )
+            except OSError:
+                # Disk errors after a paid LLM call must not crash the agent
+                # tick.  Log a warning and continue — the verdict is still
+                # usable; the cache will simply miss on the next run.
+                _log.warning(
+                    "news cache write failed for ticker %s — disk error, "
+                    "verdict will not be cached for this tick.",
+                    ticker,
+                    exc_info=True,
+                )
 
         return None
 
     return _before, _after
-
-
-# ---------------------------------------------------------------------------
-# Callback chain helpers
-# ---------------------------------------------------------------------------
-
-def _chain_before(*callbacks):
-    """Run before-model callbacks in order; first non-None return short-circuits.
-
-    If no callbacks are provided, or all are ``None``, returns ``None``
-    (no-op for that slot).
-
-    Parameters
-    ----------
-    *callbacks:
-        Zero or more before-model callback functions (or ``None`` entries).
-
-    Returns
-    -------
-    Callable | None
-        A chained callback, or ``None`` if the chain is empty.
-    """
-    active = [c for c in callbacks if c is not None]
-    if not active:
-        return None
-
-    def _chained(ctx, llm_request):
-        for cb in active:
-            result = cb(ctx, llm_request)
-            if result is not None:
-                return result
-        return None
-
-    return _chained
-
-
-def _chain_after(*callbacks):
-    """Run after-model callbacks in order; all are invoked unconditionally.
-
-    Parameters
-    ----------
-    *callbacks:
-        Zero or more after-model callback functions (or ``None`` entries).
-
-    Returns
-    -------
-    Callable | None
-        A chained callback, or ``None`` if the chain is empty.
-    """
-    active = [c for c in callbacks if c is not None]
-    if not active:
-        return None
-
-    def _chained(ctx, llm_response):
-        for cb in active:
-            cb(ctx, llm_response)
-        return None
-
-    return _chained
 
 
 # ---------------------------------------------------------------------------
