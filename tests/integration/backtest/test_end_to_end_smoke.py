@@ -221,6 +221,10 @@ async def _fake_news_run(self_agent, ctx):
 # ── Smoke test ────────────────────────────────────────────────────────────────
 
 @pytest.mark.slow
+@pytest.mark.skipif(
+    __import__("os").environ.get("RUN_SLOW_TESTS") != "1",
+    reason="Set RUN_SLOW_TESTS=1 to run the full end-to-end smoke test",
+)
 def test_end_to_end_run_produces_full_artefact_tree(
     tmp_path: Path,
     runner_paths,
