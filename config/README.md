@@ -149,3 +149,14 @@ The News LLM must restrict its tag choices to exactly these lists.
 | Setting | Type | Meaning |
 |---|---|---|
 | `min_direction_agreement_pct` | int [0–100] | Minimum % of golden-set tickers that must have consistent direction tags for the acceptance gate to pass. |
+
+---
+
+## `backtest_windows.json`
+
+Era-keyed historical windows for the backtest harness. Each entry:
+
+- `start` / `end`: ISO date strings (inclusive); tick schedule covers NYSE business days in the range.
+- `notes`: free-form description of the regime this window captures.
+
+Add new windows by editing this file — no code changes needed.
