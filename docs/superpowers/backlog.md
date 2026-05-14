@@ -484,7 +484,9 @@ Two narrative-prose sources remain unread after Phase 5:
 
 ---
 
-### B23. Auto-derived prompt-version fingerprint (close the silent-stale-cache risk)
+### ~~B23~~. Auto-derived prompt-version fingerprint (close the silent-stale-cache risk)
+
+**Status: resolved (2026-05-14)** — Shipped as a pre-backtest hardening pass: the report-cache version strings in `src/agents/analysts/report_cache.py` are now auto-derived at import time from a blake2b digest of each analyst's rendered prompt instruction. Any edit to a prompt template, the closed-vocab JSON, or the analyst output caps automatically flips the version → all cached entries miss on next read and are overwritten with fresh LLM output. The hand-maintained string constants are gone; the silent-stale-cache risk is closed structurally rather than by human discipline. See commit `refactor(analysts): auto-derive prompt-version fingerprint (B23)`.
 
 **Origin:** Phase 5 Task 6 keyed the report cache on `(input_hash, prompt_version)`. The version strings (`NEWS_PROMPT_VERSION` / `FUNDAMENTAL_PROMPT_VERSION` in `src/agents/analysts/report_cache.py:43-47`) are hand-maintained constants living in a different file from the prompt templates (`src/agents/analysts/{news,fundamental}/prompts.py`). A contributor editing a template has no structural prompt to bump the constant; if they forget, the cache silently serves stale verdicts generated under the old prompt. Flagged in the Opus final review as a non-blocking follow-up; risk is low while pre-deployment but bites once the cache has accumulated weeks of live entries.
 
