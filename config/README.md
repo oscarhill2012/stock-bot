@@ -8,7 +8,9 @@ and reference these files by relative path (resolved from the project root).
 | `data.json` | Active provider per data domain + fetch defaults + HTTP timeout | `src/data/config.py` (`get_config()`) |
 | `watchlist.json` | The list of tickers the bot trades | `src/orchestrator/stock_picker.py` (`get_watchlist()`) |
 | `analyst_heuristics.json` | Thresholds + closed-vocabulary tag lists for all five analysts | `src/agents/analysts/heuristics.py` (`load_heuristics()`) |
+| `analysts.json` | Per-analyst input caps + LLM report cache toggle | `src/config/analysts.py` (`get_analysts_config()`) |
 | `schedule.json` | Tick cadence — how many ticks per day and their ET times | `src/config/schedule.py` (`get_schedule_config()`) |
+| `strategist.json` | Character caps on strategist LLM free-text fields | `src/config/strategist.py` (`get_strategist_config()`) |
 
 When adding or changing a config value: update the JSON file, then update the
 relevant section in this README.
@@ -209,3 +211,70 @@ clock times adjust automatically.
 (~30 min after close). There is deliberate headroom to add a midday
 `12:30 ET` tick once the hash-based report cache and richer narrative
 reports prove themselves on paper data.
+
+---
+
+## `strategist.json` — strategist free-text caps
+
+Character caps on every free-text field the strategist LLM emits, plus the
+caps on the `PositionThesis` records the strategist persists when opening a
+position. Loaded once at boot via
+`src/config/strategist.py::get_strategist_config()` (`lru_cache(maxsize=1)`);
+a process restart is required after edits because Pydantic bakes the
+`max_length` constraints into the model classes at import time.
+
+**Philosophy — more is not always better.** These caps are summary budgets,
+not space for the LLM to dump full chain-of-thought. Raising them is cheap
+in the short term but bloats prompts and persistence rows, and quietly
+nudges the model away from concise reasoning. If we ever feel the urge to
+keep raising them, the right move is usually a separate retrieval layer
+(RAG over historical rationales) rather than fatter on-tick payloads. Treat
+the caps as a forcing function for the LLM to pick its strongest points.
+
+### `slack_percent` — prompt-cap vs. schema-cap headroom
+
+| Setting | Type | Meaning |
+|---|---|---|
+| `slack_percent` | int [0–50] | Schema-side headroom on top of every cap below. The values in `decision_caps` / `stance_caps` / `position_thesis_caps` are the **prompt-facing** caps the LLM is told (e.g. "≤600 chars"); the schema accepts `ceil(prompt_cap × (1 + slack_percent / 100))`. Default 10. |
+
+LLMs do not count characters reliably — they tokenise on subword boundaries
+and treat any `≤N chars` instruction as a fuzzy length *vibe*, so live runs
+show the strategist overshooting any stated cap by roughly 1–5% (occasionally
+up to 10%). Rather than hard-truncating mid-sentence — losing information
+right where the conclusion usually sits — we tell the model the prompt cap
+honestly and let the schema absorb the natural overshoot via `slack_percent`.
+If validation starts raising on length, the signal is to either raise this
+knob or to actually build a soft-clip module; until then it's the simplest
+mechanism that keeps data clean without losing meaning. See the docstring of
+`src/config/strategist.py` for the full rationale.
+
+### `decision_caps` — top-level `StrategistDecision` fields
+
+| Setting | Type | Meaning |
+|---|---|---|
+| `decision_caps.reasoning_max_chars` | int [50–2000] | Cap on `StrategistDecision.reasoning` — the overall summary across all stances. Raised from the original 300 after live runs showed Gemini routinely overflowed. Default 600. |
+| `decision_caps.updated_thesis_max_chars` | int [50–2000] | Cap on `StrategistDecision.updated_thesis` — the working hypothesis carried into the next tick. Default 500. |
+
+### `stance_caps` — per-ticker `TickerStance` fields
+
+| Setting | Type | Meaning |
+|---|---|---|
+| `stance_caps.rationale_max_chars` | int [50–1000] | Cap on `TickerStance.rationale` — brief justification for the stance. Default 200. |
+| `stance_caps.catalyst_max_chars` | int [20–500] | Cap on `TickerStance.catalyst` — optional near-term catalyst. Default 80. |
+| `stance_caps.close_reason_max_chars` | int [20–500] | Cap on `TickerStance.close_reason` — why the position is being fully closed. Default 120. |
+| `stance_caps.trim_reason_max_chars` | int [20–500] | Cap on `TickerStance.trim_reason` — why the position is being reduced but not closed. Default 120. |
+
+### `position_thesis_caps` — persisted `PositionThesis` fields
+
+| Setting | Type | Meaning |
+|---|---|---|
+| `position_thesis_caps.rationale_max_chars` | int [50–2000] | Cap on `PositionThesis.rationale` — why we entered the position. Longer than the per-tick stance rationale because it must survive across many ticks. Default 400. |
+| `position_thesis_caps.catalyst_max_chars` | int [20–500] | Cap on `PositionThesis.catalyst` — optional named catalyst for the held position. Default 100. |
+| `position_thesis_caps.last_review_note_max_chars` | int [20–1000] | Cap on `PositionThesis.last_review_note` — short note appended each tick we review (but do not close) the position. Default 200. |
+
+The strategist prompt template at `src/agents/strategist/prompts.py` reads
+the same config singleton and substitutes the `≤N chars` markers at module
+load, so the prompt-facing caps the LLM is told are always the values from
+this file. The schema's `Field(max_length=...)` is then derived from those
+values via `StrategistConfig.schema_cap()` (see `slack_percent` above) —
+the two-tier gap is intentional and load-bearing; do not "fix" it.

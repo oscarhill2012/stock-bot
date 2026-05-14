@@ -1,0 +1,18 @@
+{
+  "slack_percent": 10,
+  "decision_caps": {
+    "reasoning_max_chars": 600,
+    "updated_thesis_max_chars": 500
+  },
+  "stance_caps": {
+    "rationale_max_chars": 200,
+    "catalyst_max_chars": 80,
+    "close_reason_max_chars": 120,
+    "trim_reason_max_chars": 120
+  },
+  "position_thesis_caps": {
+    "rationale_max_chars": 400,
+    "catalyst_max_chars": 100,
+    "last_review_note_max_chars": 200
+  }
+}

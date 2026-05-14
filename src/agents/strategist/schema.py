@@ -7,6 +7,30 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from agents.strategist.stance_schema import TickerStance
+from config.strategist import get_strategist_config
+
+# ---------------------------------------------------------------------------
+# Cap resolution
+# ---------------------------------------------------------------------------
+# All char caps on free-text fields are sourced from ``config/strategist.json``
+# via the loader.  Resolving them at import time keeps the ``Field(max_length=
+# ...)`` arguments literal, which is what Pydantic v2 expects, while still
+# allowing operators to retune via a single JSON edit and a process restart.
+#
+# Note the deliberate gap between the prompt-facing cap and the schema cap:
+# ``_cfg.schema_cap(prompt_cap)`` applies the ``slack_percent`` headroom from
+# ``config/strategist.json`` (default 10%) so the schema absorbs the LLM's
+# natural 1–5% character overshoot rather than truncating mid-sentence.  The
+# prompt template still tells the model the prompt-facing cap (e.g. "≤600
+# chars") — see the "two-tier convention" note in ``src/config/strategist.py``
+# for the full rationale.  Do **not** "fix" the apparent mismatch — it is
+# load-bearing.
+# ---------------------------------------------------------------------------
+
+_cfg          = get_strategist_config()
+_DECISION     = _cfg.decision_caps
+_POS_THESIS   = _cfg.position_thesis_caps
+_schema_cap   = _cfg.schema_cap                                                # alias for terser Field declarations
 
 
 class PositionThesis(BaseModel):
@@ -16,15 +40,15 @@ class PositionThesis(BaseModel):
     ticker: str
     opened_at: datetime
     opened_price: float
-    opened_tag: str                                    # decision_tag from the opening tick
-    rationale: str = Field(max_length=400)             # why we entered
+    opened_tag: str                                                                            # decision_tag from the opening tick
+    rationale: str = Field(max_length=_schema_cap(_POS_THESIS.rationale_max_chars))            # why we entered
     horizon: Literal["intraday", "swing", "long_term"]
     target_price: float | None = None
     stop_price: float | None   = None
-    catalyst: str | None = Field(default=None, max_length=100)
+    catalyst: str | None = Field(default=None, max_length=_schema_cap(_POS_THESIS.catalyst_max_chars))
     last_reviewed_at: datetime
-    last_review_note: str = Field(default="", max_length=200)
-    opened_tick_id: str = ""                           # tick_id that opened this position; populated by the executor on BUY (C13); empty for legacy/pre-tick positions
+    last_review_note: str = Field(default="", max_length=_schema_cap(_POS_THESIS.last_review_note_max_chars))
+    opened_tick_id: str = ""                                                                   # tick_id that opened this position; populated by the executor on BUY (C13); empty for legacy/pre-tick positions
 
 
 class StrategistDecision(BaseModel):
@@ -44,9 +68,9 @@ class StrategistDecision(BaseModel):
     # the model can be constructed without them during testing / migration.
     target_weights: dict[str, float] = Field(default_factory=dict)
 
-    decision_tag: str                                  # snake_case label for this tick
-    reasoning: str = Field(max_length=300)             # ≤300 char reasoning summary
-    updated_thesis: str = Field(max_length=500)        # working hypothesis carried to next tick
+    decision_tag: str                                                                          # snake_case label for this tick
+    reasoning:      str = Field(max_length=_schema_cap(_DECISION.reasoning_max_chars))         # overall reasoning summary
+    updated_thesis: str = Field(max_length=_schema_cap(_DECISION.updated_thesis_max_chars))    # working hypothesis carried to next tick
     confidence: float = Field(ge=0.0, le=1.0)
 
     # Required when opening a new position (weight 0 → >0).

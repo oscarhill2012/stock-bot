@@ -5,6 +5,7 @@ import pytest
 from pydantic import ValidationError
 
 from agents.strategist.stance_schema import TickerStance
+from config.strategist import get_strategist_config
 
 
 def test_minimal_valid():
@@ -46,9 +47,24 @@ def test_rejects_conviction_out_of_range():
         TickerStance(ticker="AAPL", preferred_weight=0.5, conviction=1.5, rationale="x")
 
 
-def test_rejects_rationale_over_200_chars():
+def test_rejects_rationale_over_schema_cap():
+    """``rationale`` is bounded by the *schema* cap (prompt cap +
+    ``slack_percent`` headroom — see the "two-tier convention" note in
+    ``src/config/strategist.py``).  Reads the live schema cap so that
+    retuning either the prompt cap or the slack does not silently
+    invalidate this regression.
+    """
+
+    cfg        = get_strategist_config()
+    schema_cap = cfg.schema_cap(cfg.stance_caps.rationale_max_chars)
+
     with pytest.raises(ValidationError):
-        TickerStance(ticker="AAPL", preferred_weight=0.5, conviction=0.5, rationale="x" * 201)
+        TickerStance(
+            ticker="AAPL",
+            preferred_weight=0.5,
+            conviction=0.5,
+            rationale="x" * (schema_cap + 1),  # one char over the *schema* (slack-applied) cap
+        )
 
 
 def test_rejects_unknown_horizon():
