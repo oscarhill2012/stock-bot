@@ -302,15 +302,16 @@ def test_smart_money_no_data():
     """SmartMoney marked no-data must render as a compact no-data line."""
     out = render_ticker_block(_make_ticker_evidence())
     assert "[SmartMoney]" in out
-    # The no-data branch should be short and visible (not an empty gap).
-    assert "no_data" in out or "is_no_data" in out
+    # The renderer always emits the literal "is_no_data: true" for no-data slots.
+    assert "is_no_data: true" in out
 
 
 def test_social_no_data():
     """Social marked no-data must render as a compact no-data line."""
     out = render_ticker_block(_make_ticker_evidence())
     assert "[Social]" in out
-    assert "no_data" in out or "is_no_data" in out
+    # The renderer always emits the literal "is_no_data: true" for no-data slots.
+    assert "is_no_data: true" in out
 
 
 # ---------------------------------------------------------------------------

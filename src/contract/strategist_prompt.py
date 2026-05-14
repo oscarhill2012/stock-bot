@@ -328,33 +328,46 @@ def _render_features(
 ) -> list[str]:
     """Render a list of labelled feature-bullet lines from a feature dict.
 
-    For each entry in ``bullets``, looks up ``features[key]``. If the key is
-    absent or the feature value is exactly 0.0 *and* the bullet has an
-    interpreter that would render nothing, the line still appears but shows
-    ``"(no data)"``. This keeps the block layout stable — the LLM always
-    sees the same slot positions.
+    For each entry in ``bullets``:
+
+    - If the feature key is **absent** from ``features``, the bullet is skipped
+      entirely (no line emitted). This indicates the extractor did not produce
+      that feature for this tick.
+    - If the key is **present** but its value is ``None``, the bullet renders
+      as ``"(no data)"``. This covers extractors that report missing data by
+      setting the key to ``None`` rather than dropping it.
+    - Otherwise the formatter is called on the value and the result is indented
+      as a normal bullet. Present values of ``0.0`` always format normally
+      (e.g. ``+0.0%``) — they are never treated as absent.
 
     Parameters
     ----------
     features:
-        Dict of feature key → float value from the analyst extractor.
+        Dict of feature key → float (or None) value from the analyst extractor.
     bullets:
         List of ``(key, label, formatter, interpreter)`` entries to render.
 
     Returns
     -------
     list[str]
-        One indented string per bullet entry.
+        One indented string per bullet entry whose key is present in
+        ``features``.
     """
     lines: list[str] = []
 
     for key, label, formatter, interpreter in bullets:
         if key not in features:
-            # Key not present — extractor didn't emit it for this tick.
-            lines.append(f"  {label:<30} (no data)")
+            # Key absent — extractor didn't emit it for this tick; skip bullet.
             continue
 
         value = features[key]
+
+        # Present-but-None occurs when an extractor reports missing data without
+        # dropping the key (e.g. a provider returned null for this field).
+        if value is None:
+            lines.append(f"  {label:<30} (no data)")
+            continue
+
         display = formatter(value)
 
         # Append interpreter annotation when present and non-empty.
