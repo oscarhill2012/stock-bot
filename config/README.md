@@ -8,6 +8,7 @@ and reference these files by relative path (resolved from the project root).
 | `data.json` | Active provider per data domain + fetch defaults + HTTP timeout | `src/data/config.py` (`get_config()`) |
 | `watchlist.json` | The list of tickers the bot trades | `src/orchestrator/stock_picker.py` (`get_watchlist()`) |
 | `analyst_heuristics.json` | Thresholds + closed-vocabulary tag lists for all five analysts | `src/agents/analysts/heuristics.py` (`load_heuristics()`) |
+| `schedule.json` | Tick cadence — how many ticks per day and their ET times | `src/config/schedule.py` (`get_schedule_config()`) |
 
 When adding or changing a config value: update the JSON file, then update the
 relevant section in this README.
@@ -149,3 +150,62 @@ The News LLM must restrict its tag choices to exactly these lists.
 | Setting | Type | Meaning |
 |---|---|---|
 | `min_direction_agreement_pct` | int [0–100] | Minimum % of golden-set tickers that must have consistent direction tags for the acceptance gate to pass. |
+
+---
+
+## `analysts.json` — analyst truncation caps + report cache
+
+LLM context-window caps for the News and Fundamental analysts, plus the
+toggle and directory for the hash-based report cache. Loaded once at boot via
+`src/config/analysts.py::get_analysts_config()` (`lru_cache(maxsize=1)`); a
+process restart is required after edits.
+
+### `news` — News analyst input caps
+
+| Setting | Type | Meaning |
+|---|---|---|
+| `news.max_articles_per_ticker` | int [1–200] | Maximum article count per ticker fed to the News LLM. Wider than the old hard-coded 10 — default 20. |
+| `news.max_summary_chars` | int [1–10000] | Maximum characters of each article's summary kept in the prompt. Default 500 (widened from 300). |
+
+### `fundamental` — Fundamental analyst input caps
+
+| Setting | Type | Meaning |
+|---|---|---|
+| `fundamental.max_filing_mda_chars` | int [1–20000] | Character cap on the MD&A excerpt for each filing. Default 1500 (widened from 500). |
+| `fundamental.max_filing_risk_chars` | int [1–20000] | Character cap on the risk-factors excerpt for each filing. Default 1500 (widened from 500). |
+| `fundamental.max_insider_footnotes` | int [0–50] | Maximum insider footnote snippets included in the LLM prompt per ticker. Default 5. |
+| `fundamental.max_insider_footnote_chars` | int [1–5000] | Character cap per footnote excerpt. Default 400 (widened from 200). |
+
+### `cache` — LLM report cache
+
+| Setting | Type | Meaning |
+|---|---|---|
+| `cache.enabled` | bool | Toggle the hash-based LLM report cache. When `false`, every tick re-prompts the LLM (matches pre-redesign behaviour). Default `true`. |
+| `cache.directory` | string | On-disk root for cached report files. Must be under the gitignored `cache/` tree. Default `cache/reports`. |
+
+---
+
+## `schedule.json` — tick cadence
+
+Controls how many times per trading day the bot runs its full analyst →
+strategist pipeline, and when those ticks fire. Loaded once at boot via
+`src/config/schedule.py::get_schedule_config()` (`lru_cache(maxsize=1)`);
+a process restart is required after edits.
+
+Tick times are expressed in **Eastern Time (`America/New_York`)** and are
+DST-aware by design. The runner converts each time to UTC at scheduling
+time using `zoneinfo.ZoneInfo("America/New_York")`, which pulls from the
+OS tz database — no manual UTC offset arithmetic is needed. When EDT
+(UTC-4) transitions to EST (UTC-5) or vice versa, the scheduled UTC wall
+clock times adjust automatically.
+
+| Setting | Type | Meaning |
+|---|---|---|
+| `ticks_per_day` | int [1–10] | Number of ticks expected per trading day. Must equal the length of `tick_times_et`. |
+| `tick_times_et` | list[string] | Ordered list of `HH:MM` tick times in `America/New_York`. Each entry must be a valid 24-hour time. |
+| `comment` | string | Operator annotation — not used at runtime. |
+
+**Current schedule:** `09:45 ET` (~15 min after NYSE open) and `16:30 ET`
+(~30 min after close). There is deliberate headroom to add a midday
+`12:30 ET` tick once the hash-based report cache and richer narrative
+reports prove themselves on paper data.

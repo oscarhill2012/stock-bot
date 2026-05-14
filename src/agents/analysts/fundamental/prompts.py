@@ -66,6 +66,21 @@ For each ticker output a JSON object with fields:
   rationale    string ≤160 chars naming the dominant finding
   key_factors  list of closed-vocabulary tags (≤8)
   is_no_data   true if no excerpts AND no insider activity
+  report       object — see schema below; omit only when is_no_data=true.
+
+Report schema:
+  summary  3-5 sentences of connective tissue covering the gestalt this
+           tick — not a bullet list. Argue your lean.
+  drivers  2-4 entries. Each driver:
+    name       short label (4-6 words)
+    direction  ∈ {{bull, bear, neutral}}
+    weight     ∈ [0, 1] — relative importance vs other drivers; should sum
+               roughly to 1.0 but is not strictly normalised
+    body       2-3 sentences explaining the driver. Do NOT cite source URLs;
+               synthesise.
+
+The report is your reasoning; the verdict is your conclusion. They must be
+consistent — the lean and direction-weighted driver mix should agree.
 
 Decision rule:
 - Cluster open-market buys by multiple officers + raised guidance + confident

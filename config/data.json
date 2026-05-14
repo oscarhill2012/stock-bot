@@ -1,6 +1,7 @@
 {
   "providers": {
-    "stats": "yfinance",
+    "price_history": "yfinance",
+    "company_ratios": "yfinance",
     "news": "finnhub",
     "social_sentiment": "finnhub",
     "insider_trades": "edgar",

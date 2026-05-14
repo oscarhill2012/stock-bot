@@ -1,4 +1,18 @@
-"""Technical analyst data fetch callback."""
+"""Technical analyst data fetch callback.
+
+Fetches the OHLCV price history *and* scalar company ratios for every
+watchlist ticker. Writes ``state["technical_data"][ticker]`` with two sub-keys:
+
+- ``price_history`` — dict from ``PriceHistory.model_dump()``; the extractor
+  reads bars from here.
+- ``ratios`` — dict from ``CompanyRatios.model_dump()``; reserved for future
+  cross-feature work (e.g. dividend-yield-aware overrides). Not required by
+  the current extractor.
+
+Phase 5 redesign: the old ``get_stock_stats`` call (which bundled both OHLCV
+history and fundamentals together) is replaced by two separate provider calls
+sharing the same underlying yfinance round-trip via an LRU cache.
+"""
 from __future__ import annotations
 
 import logging
@@ -6,7 +20,7 @@ import logging
 from google.adk.agents.callback_context import CallbackContext
 from google.genai import types as genai_types
 
-from data import get_stock_stats
+from data import get_company_ratios, get_price_history
 from observability.trace import _trace_maybe
 
 logger = logging.getLogger(__name__)
@@ -15,18 +29,53 @@ logger = logging.getLogger(__name__)
 async def technical_fetch_callback(
     callback_context: CallbackContext,
 ) -> genai_types.Content | None:
-    """Fetch OHLCV + fundamentals for every watchlist ticker before the LLM runs."""
+    """Fetch ``PriceHistory`` and ``CompanyRatios`` for every watchlist ticker.
+
+    Iterates ``state["tickers"]`` and, for each ticker, dispatches two
+    independent provider calls. Partial failures are tolerated — each domain
+    catches its own exception, logs a warning, and falls back to ``None``.
+
+    Writes ``state["technical_data"]`` as a dict keyed by ticker, each value
+    being a dict with ``"price_history"`` and ``"ratios"`` sub-keys.
+
+    Parameters
+    ----------
+    callback_context:
+        ADK callback context. ``callback_context.state["tickers"]`` must be a
+        list of ticker strings.
+
+    Returns
+    -------
+    google.genai.types.Content | None
+        Always ``None`` — this callback never short-circuits the LLM call.
+    """
     state = callback_context.state
     tickers: list[str] = state.get("tickers", [])
 
-    technical_data = {}
+    technical_data: dict[str, dict] = {}
+
     for ticker in tickers:
+
+        # --- price history ---
         try:
-            stats = await get_stock_stats(ticker)
+            ph = await get_price_history(ticker)
+            ph_payload = ph.model_dump() if hasattr(ph, "model_dump") else ph
         except Exception as exc:
-            logger.warning("stats fetch failed for %s: %s", ticker, exc)
-            stats = None
-        technical_data[ticker] = stats.model_dump() if hasattr(stats, "model_dump") else stats
+            logger.warning("price_history fetch failed for %s: %s", ticker, exc)
+            ph_payload = None
+
+        # --- ratios ---
+        try:
+            cr = await get_company_ratios(ticker)
+            cr_payload = cr.model_dump() if hasattr(cr, "model_dump") else cr
+        except Exception as exc:
+            logger.warning("company_ratios fetch failed for %s: %s", ticker, exc)
+            cr_payload = None
+
+        technical_data[ticker] = {
+            "price_history": ph_payload,
+            "ratios":        cr_payload,
+        }
 
     state["technical_data"] = technical_data
 

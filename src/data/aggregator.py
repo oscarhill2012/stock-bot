@@ -14,6 +14,10 @@ its trading cadence above the data-refresh floor.
 
 Partial failures degrade gracefully: a provider that raises has its
 exception captured into `bundle.errors` and its slot left as None / [].
+
+Phase 5: ``StockStats`` retired — the ``stats`` domain is split into
+``price_history`` and ``company_ratios``. The bundle carries them in
+separate typed fields.
 """
 from __future__ import annotations
 
@@ -33,18 +37,37 @@ from .registry import dispatch, min_decision_interval_seconds
 logger = logging.getLogger(__name__)
 
 
+# Safe defaults used when a provider raises.  Each value must be compatible
+# with the corresponding field type on StockSignalBundle.
 _DEFAULTS: dict[str, Any] = {
-    "stats": None,
+    "price_history": None,
+    "company_ratios": None,
     "news": [],
     "social_sentiment": None,
     "insider_trades": [],
-    "politician_trades": [],   # was "politicians"
+    "politician_trades": [],
     "notable_holders": [],
     "filings": [],
 }
 
 
 async def _safe(domain: str, coro: Awaitable, errors: list[ProviderError]) -> Any:
+    """Run ``coro`` and return its result; on failure append to ``errors`` and return default.
+
+    Parameters
+    ----------
+    domain:
+        Provider domain name — used to look up the provider name for the error entry.
+    coro:
+        Awaitable to run.
+    errors:
+        Mutable list; any captured exception is appended here as a ``ProviderError``.
+
+    Returns
+    -------
+    Any
+        The coroutine's return value, or the domain-specific safe default on failure.
+    """
     try:
         return await coro
     except Exception as exc:  # provider boundary — catch-all is intentional
@@ -81,24 +104,75 @@ async def get_stock_signal_bundle(
 
     Per-provider failures land in `bundle.errors` so the strategist
     can decide how to weigh partial information.
+
+    Parameters
+    ----------
+    ticker:
+        Ticker symbol (will be uppercased).
+    news_lookback_days:
+        How many days of news articles to fetch.
+    insider_lookback_days:
+        Lookback window for Form 4 insider trades.
+    politician_lookback_days:
+        Lookback window for congressional/politician trades.
+    notable_holder_lookback_days:
+        Lookback window for notable EDGAR 13F holders.
+    notable_holder_limit:
+        Maximum number of notable holders to return.
+    history_period:
+        yfinance history period (e.g. ``"1y"``).
+    history_interval:
+        yfinance history interval (e.g. ``"1d"``).
+    filings_per_form:
+        Maximum number of filings to retrieve per form type.
+    include_filing_excerpts:
+        Whether to include MD&A / risk-factor excerpts in filings.
+
+    Returns
+    -------
+    StockSignalBundle
+        Aggregated payload. ``bundle.errors`` lists any partial failures.
     """
     symbol = ticker.upper()
     today = date.today()
     errors: list[ProviderError] = []
 
-    stats, news, social, insiders, politicians, holders, filings = await asyncio.gather(
-        _safe("stats", dispatch("stats", symbol, period=history_period, interval=history_interval), errors),
+    (
+        price_history,
+        company_ratios,
+        news,
+        social,
+        insiders,
+        politicians,
+        holders,
+        filings,
+    ) = await asyncio.gather(
+        _safe(
+            "price_history",
+            dispatch("price_history", symbol, period=history_period, interval=history_interval),
+            errors,
+        ),
+        _safe(
+            "company_ratios",
+            dispatch("company_ratios", symbol, period=history_period, interval=history_interval),
+            errors,
+        ),
         _safe(
             "news",
-            dispatch("news", symbol,
-                     from_date=today - timedelta(days=news_lookback_days),
-                     to_date=today),
+            dispatch(
+                "news",
+                symbol,
+                from_date=today - timedelta(days=news_lookback_days),
+                to_date=today,
+            ),
             errors,
         ),
         _safe("social_sentiment", dispatch("social_sentiment", symbol), errors),
-        _safe("insider_trades",
-              dispatch("insider_trades", symbol, lookback_days=insider_lookback_days),
-              errors),
+        _safe(
+            "insider_trades",
+            dispatch("insider_trades", symbol, lookback_days=insider_lookback_days),
+            errors,
+        ),
         _safe(
             "politician_trades",
             dispatch("politician_trades", symbol, lookback_days=politician_lookback_days),
@@ -106,16 +180,22 @@ async def get_stock_signal_bundle(
         ),
         _safe(
             "notable_holders",
-            dispatch("notable_holders", symbol,
-                     lookback_days=notable_holder_lookback_days,
-                     limit=notable_holder_limit),
+            dispatch(
+                "notable_holders",
+                symbol,
+                lookback_days=notable_holder_lookback_days,
+                limit=notable_holder_limit,
+            ),
             errors,
         ),
         _safe(
             "filings",
-            dispatch("filings", symbol,
-                     limit=filings_per_form,
-                     include_excerpts=include_filing_excerpts),
+            dispatch(
+                "filings",
+                symbol,
+                limit=filings_per_form,
+                include_excerpts=include_filing_excerpts,
+            ),
             errors,
         ),
     )
@@ -123,7 +203,8 @@ async def get_stock_signal_bundle(
     return StockSignalBundle(
         ticker=symbol,
         generated_at=datetime.now(tz=UTC),
-        stats=stats,
+        price_history=price_history,
+        ratios=company_ratios,
         news=news,
         social_sentiment=social,
         insider_trades=insiders,
@@ -139,6 +220,6 @@ def get_stock_signal_bundle_blocking(*args, **kwargs) -> StockSignalBundle:
     """Sync wrapper for non-async callers (CLI, tests, ad-hoc scripts).
 
     Do not call this from inside a running event loop — use the async
-    `get_stock_signal_bundle` directly there.
+    ``get_stock_signal_bundle`` directly there.
     """
     return asyncio.run(get_stock_signal_bundle(*args, **kwargs))

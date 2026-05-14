@@ -13,8 +13,10 @@ from pydantic import BaseModel, Field, model_validator
 
 # Mirrors data.registry.DOMAINS. Defined here too to avoid a circular
 # import (config validates without needing the registry to exist yet).
+# Phase 5: "stats" retired — split into "price_history" and "company_ratios".
 _DOMAINS: frozenset[str] = frozenset({
-    "stats",
+    "price_history",
+    "company_ratios",
     "news",
     "social_sentiment",
     "insider_trades",

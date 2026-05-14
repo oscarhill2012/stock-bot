@@ -97,7 +97,10 @@ def test_evidence_view_callback_builds_ticker_evidence_from_per_analyst_state():
     rendered = state["ticker_evidence"]
     assert isinstance(rendered, str)
     assert "AAPL" in rendered
-    assert "Aggregate" in rendered or "aggregate" in rendered
+    # New renderer (Task 5) produces per-analyst blocks instead of an Aggregate header.
+    # Assert the section header and at least one analyst header are present.
+    assert "=== AAPL ===" in rendered
+    assert "[Technical]" in rendered or "[Fundamental]" in rendered or "[News]" in rendered
 
 
 # ── after callback: missing tickers ───────────────────────────────────────────

@@ -23,6 +23,57 @@ from pydantic import BaseModel, Field
 AnalystName = Literal["technical", "fundamental", "news", "social", "smart_money"]
 
 
+class ReportDriver(BaseModel):
+    """One driver of an LLM analyst's lean — a labelled, weighted reason.
+
+    Drivers complement the closed-vocab ``key_factors`` field on
+    ``AnalystVerdict``: tags are machine-aggregatable; drivers are
+    strategist-readable prose with relative weighting.
+
+    Parameters
+    ----------
+    name:
+        Short label for the driver (4-6 words), 1-60 characters.
+    direction:
+        The directional signal this driver contributes — one of
+        "bull", "bear", or "neutral".
+    weight:
+        Relative importance of this driver vs the others, in [0, 1].
+        Drivers within a report should sum roughly to 1.0 but the
+        constraint is not strictly enforced.
+    body:
+        2-3 sentence explanation of the driver. No source URLs — synthesise.
+        1-1000 characters.
+    """
+
+    name:      str   = Field(min_length=1, max_length=60)
+    direction: Literal["bull", "bear", "neutral"]
+    weight:    float = Field(ge=0.0, le=1.0)
+    body:      str   = Field(min_length=1, max_length=1_000)
+
+
+class AnalystReport(BaseModel):
+    """LLM analyst's qualitative reasoning, paired with the verdict.
+
+    Populated only by the LLM analysts (News, Fundamental). Deterministic
+    analysts (Technical, SmartMoney, Social) leave ``AnalystVerdict.report``
+    as ``None`` — their cognition is fully captured by the verdict and
+    extractor features; they have no prose to summarise.
+
+    Parameters
+    ----------
+    summary:
+        3-5 sentences of connective tissue covering the gestalt this tick.
+        Not a bullet list — must argue the lean. 1-2000 characters.
+    drivers:
+        2-4 ``ReportDriver`` entries giving the primary reasons for the
+        lean. Min 2 enforces proper differentiation; max 4 prevents dilution.
+    """
+
+    summary: str                = Field(min_length=1, max_length=2_000)
+    drivers: list[ReportDriver] = Field(min_length=2, max_length=4)
+
+
 class AnalystVerdict(BaseModel):
     """LLM-emitted directional call for one ticker."""
 
@@ -32,6 +83,11 @@ class AnalystVerdict(BaseModel):
     rationale: str = Field(max_length=160)
     key_factors: list[str] = Field(default_factory=list, max_length=8)
     is_no_data: bool = False
+
+    # New in Phase 5 redesign: LLM analysts populate this; deterministic
+    # analysts leave it None. The Strategist prompt surface keys off presence
+    # to decide whether to render a "Drivers:" block.
+    report: AnalystReport | None = None
 
 
 class TickerVerdict(AnalystVerdict):

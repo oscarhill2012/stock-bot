@@ -6,6 +6,10 @@ that reads LLM-emitted verdicts directly from state and writes fully-formed
 ``AnalystEvidence`` records.  The legacy ``AnalystSignal`` Pydantic class is
 also removed — the four per-analyst ``schema.py`` subclasses are deleted
 alongside it (see D3 option-a).
+
+``_chain_before`` and ``_chain_after`` are defined here to avoid identical
+copies living in every LLM agent module.  Import them wherever callback
+chains are needed.
 """
 from __future__ import annotations
 
@@ -139,3 +143,64 @@ def make_evidence_callback(
         return None
 
     return _callback
+
+
+# ---------------------------------------------------------------------------
+# Callback chain helpers — shared across all LLM analyst modules.
+# ---------------------------------------------------------------------------
+
+def _chain_before(*callbacks: Callable | None) -> Callable | None:
+    """Run before-model callbacks in order; first non-None return short-circuits.
+
+    If no callbacks are provided, or all are ``None``, returns ``None``
+    (no-op for that slot).
+
+    Parameters
+    ----------
+    *callbacks:
+        Zero or more before-model callback functions (or ``None`` entries).
+
+    Returns
+    -------
+    Callable | None
+        A chained callback, or ``None`` if the chain is empty.
+    """
+    active = [c for c in callbacks if c is not None]
+    if not active:
+        return None
+
+    def _chained(ctx, llm_request):
+        """Invoke each before-model callback; stop and return on first non-None result."""
+        for cb in active:
+            result = cb(ctx, llm_request)
+            if result is not None:
+                return result
+        return None
+
+    return _chained
+
+
+def _chain_after(*callbacks: Callable | None) -> Callable | None:
+    """Run after-model callbacks in order; all are invoked unconditionally.
+
+    Parameters
+    ----------
+    *callbacks:
+        Zero or more after-model callback functions (or ``None`` entries).
+
+    Returns
+    -------
+    Callable | None
+        A chained callback, or ``None`` if the chain is empty.
+    """
+    active = [c for c in callbacks if c is not None]
+    if not active:
+        return None
+
+    def _chained(ctx, llm_response):
+        """Invoke every after-model callback regardless of their return values."""
+        for cb in active:
+            cb(ctx, llm_response)
+        return None
+
+    return _chained

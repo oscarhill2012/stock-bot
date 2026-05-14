@@ -19,8 +19,14 @@ Thesis:       {thesis}
 ## Held Positions (your prior decisions)
 {held_positions_view}
 
-## Ticker Evidence (digested per-ticker — already aggregated across analysts)
+## Ticker Evidence (per-analyst breakdown — features, tags, and prose reports)
 {ticker_evidence}
+
+## Reading analyst reports
+Where an analyst's report contradicts its lean, the lean is the analyst's
+final call — treat the report as their reasoning, not their conclusion. You
+may still override an analyst, but you must write down which signal you chose
+to overweight and why.
 
 ## Your Job
 Emit a TickerStance for EVERY watchlist ticker: {tickers}.

@@ -10,8 +10,9 @@ Two public entry points:
   for table-driven unit tests (no I/O, no globals).
 
 Input for the extractor: the dict that lives under
-``state["technical_data"][ticker]`` — typically a dump of the project's
-``StockStats`` model.
+``state["technical_data"][ticker]``.  Accepted shape: a dict with
+``price_history`` (PriceHistory.model_dump()) and optional ``ratios``
+sub-keys.
 """
 from __future__ import annotations
 
@@ -104,8 +105,15 @@ def extract_technical_features(raw: Mapping[str, Any], ticker: str) -> dict[str,
     if not raw:
         return out
 
-    # Support both 'price_history' (canonical) and 'history' (legacy fallback).
-    history = raw.get("price_history") or raw.get("history") or []
+    # Phase 5 redesign: technical_data[ticker]["price_history"] is now a dict
+    # from PriceHistory.model_dump() — bars live under the ``"bars"`` sub-key.
+    # Legacy ``"history"`` top-level key falls back for any unmigrated caller.
+    ph_payload = raw.get("price_history")
+    if isinstance(ph_payload, dict):
+        history = ph_payload.get("bars") or []
+    else:
+        history = ph_payload or raw.get("history") or []
+
     df = _df_from_history(history)
 
     if df is None or len(df) < 2:
@@ -159,6 +167,10 @@ def extract_technical_features(raw: Mapping[str, Any], ticker: str) -> dict[str,
 
     # --- Distance from 52-week high / low (in percent) ---
     # Negative dist_from_high means the stock is trading below its annual peak.
+    # Note: ``high_52w`` / ``low_52w`` were never present on the old ``StockStats``
+    # model and are not carried by the new ``CompanyRatios`` model either.  These
+    # keys always resolve to None via the raw dict lookup; the fallback paths below
+    # compute approximate 52-week extremes from the bar history directly.
     high_52w = raw.get("high_52w")
     low_52w = raw.get("low_52w")
     last_close = float(close.iloc[-1])

@@ -51,24 +51,21 @@ def _build_strategist():
 
     from agents.strategist.agent import (
         _composite_before_callback,
-        _make_strategist_trace_after,
-        _make_strategist_trace_before,
         _strategist_validation_callback,
     )
     from agents.strategist.prompts import STRATEGIST_INSTRUCTION
     from agents.strategist.schema import StrategistDecision
+    from observability.trace import make_llm_trace_callbacks
 
     # Wire the LLM-trace callbacks only when STOCKBOT_TRACE=1.  On production
     # runs both callbacks are ``None`` and ADK skips the hooks entirely.
     model_name = "gemini-2.5-pro"
-    before_model = (
-        _make_strategist_trace_before(model_name)
-        if os.environ.get("STOCKBOT_TRACE") == "1" else None
-    )
-    after_model = (
-        _make_strategist_trace_after(model_name)
-        if os.environ.get("STOCKBOT_TRACE") == "1" else None
-    )
+    before_model = None
+    after_model = None
+    if os.environ.get("STOCKBOT_TRACE") == "1":
+        before_model, after_model = make_llm_trace_callbacks(
+            "05_strategist_llm", model=model_name
+        )
 
     return LlmAgent(
         name="Strategist",

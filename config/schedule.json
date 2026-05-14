@@ -1,0 +1,5 @@
+{
+  "ticks_per_day": 2,
+  "tick_times_et": ["09:45", "16:30"],
+  "comment": "09:45 ET runs ~15 min after NYSE open; 16:30 ET runs ~30 min after close. Times are interpreted in America/New_York and DST is handled by the scheduler. Headroom to add 12:30 ET once cache + reports prove themselves on paper data."
+}
