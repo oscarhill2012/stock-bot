@@ -8,6 +8,7 @@ and reference these files by relative path (resolved from the project root).
 | `data.json` | Active provider per data domain + fetch defaults + HTTP timeout | `src/data/config.py` (`get_config()`) |
 | `watchlist.json` | The list of tickers the bot trades | `src/orchestrator/stock_picker.py` (`get_watchlist()`) |
 | `analyst_heuristics.json` | Thresholds + closed-vocabulary tag lists for all five analysts | `src/agents/analysts/heuristics.py` (`load_heuristics()`) |
+| `schedule.json` | Tick cadence — how many ticks per day and their ET times | `src/config/schedule.py` (`get_schedule_config()`) |
 
 When adding or changing a config value: update the JSON file, then update the
 relevant section in this README.
@@ -181,3 +182,30 @@ process restart is required after edits.
 |---|---|---|
 | `cache.enabled` | bool | Toggle the hash-based LLM report cache. When `false`, every tick re-prompts the LLM (matches pre-redesign behaviour). Default `true`. |
 | `cache.directory` | string | On-disk root for cached report files. Must be under the gitignored `cache/` tree. Default `cache/reports`. |
+
+---
+
+## `schedule.json` — tick cadence
+
+Controls how many times per trading day the bot runs its full analyst →
+strategist pipeline, and when those ticks fire. Loaded once at boot via
+`src/config/schedule.py::get_schedule_config()` (`lru_cache(maxsize=1)`);
+a process restart is required after edits.
+
+Tick times are expressed in **Eastern Time (`America/New_York`)** and are
+DST-aware by design. The runner converts each time to UTC at scheduling
+time using `zoneinfo.ZoneInfo("America/New_York")`, which pulls from the
+OS tz database — no manual UTC offset arithmetic is needed. When EDT
+(UTC-4) transitions to EST (UTC-5) or vice versa, the scheduled UTC wall
+clock times adjust automatically.
+
+| Setting | Type | Meaning |
+|---|---|---|
+| `ticks_per_day` | int [1–10] | Number of ticks expected per trading day. Must equal the length of `tick_times_et`. |
+| `tick_times_et` | list[string] | Ordered list of `HH:MM` tick times in `America/New_York`. Each entry must be a valid 24-hour time. |
+| `comment` | string | Operator annotation — not used at runtime. |
+
+**Current schedule:** `09:45 ET` (~15 min after NYSE open) and `16:30 ET`
+(~30 min after close). There is deliberate headroom to add a midday
+`12:30 ET` tick once the hash-based report cache and richer narrative
+reports prove themselves on paper data.
