@@ -146,6 +146,41 @@ The two entries below — and [[B13]] in Tier 2 — are deferred experiments ins
 
 **Dependencies:** Phase 5 shipped. Goes through [[B16]]'s ratchet checklist. Strong design overlap with [[B12]] (both add per-ticker LLM hops between analysts and Strategist).
 
+> *Update — B14 partially shipped under `docs/superpowers/specs/analyst-surface-redesign-design.md`. That spec implements the per-analyst prose-report half (News + Fundamental emit a structured `AnalystReport` with summary + drivers; deterministic analysts surface features as labelled bullets) but explicitly excludes the deterministic-analyst LLM-narrator variant the original B14 also flagged. If the deterministic-narrator variant becomes interesting later, it reopens here under [[B16]]'s ratchet.*
+
+---
+
+### B18. Cross-tick analyst memory and "what changed since last tick"
+
+**Origin:** Surfaced during the analyst-surface-redesign brainstorm (`docs/superpowers/specs/analyst-surface-redesign-design.md`). The hybrid analyst-report design originally included a `what_changed` field — the LLM surfaces what's new since the prior tick. Removed from that spec because filling it cleanly requires feeding the prior report into the LLM, which is most of an analyst-memory feature. Doing it half-implemented (no prior context, LLM fabricates the delta) creates a field that promises more than it delivers.
+
+**The goal:** give each LLM analyst persistent memory of its prior verdict + report per ticker, fed back into the next tick's prompt as continuity context. Enables genuine `what_changed`, drift detection ("I said X two ticks ago and now I'm saying not-X — why?"), and prepares the substrate for the calibration loop in [[B2]].
+
+**Distinction from [[B11]] (RAG / retrieval substrate):**
+
+- **B11** retrieves *external* prose (filings, news, transcripts) into the analyst prompt — document chunks the analyst hasn't seen.
+- **B18** retrieves the *analyst's own prior output* — degenerate one-document RAG over the analyst's last verdict + report for a ticker.
+
+The two share retrieval primitives but answer different questions. They likely co-design but ship as separate features.
+
+**Substrate already in place after the analyst-surface-redesign spec ships:**
+- `AnalystReport` schema (`summary` + `drivers`) on `AnalystVerdict.report`.
+- Per-(analyst, ticker) report cache at `cache/reports/<analyst>/<ticker>.json` — already stores the most recent verdict + report with a prompt-version fingerprint. Natural seed for "prior tick" lookup.
+- Hash-cache machinery for input change detection (gives `what_changed` a clean denominator: which articles/filings are new vs prior).
+
+**Key questions:**
+- Memory shape: just the prior tick's report, or a rolling N reports? Verbatim or summarised? Per-ticker only, or also a portfolio-wide rolling memory?
+- Storage: extend the existing report cache (it already stores the prior report; just add a `previous_*` field), or a sibling memory store with its own retention policy?
+- Wiring: feed prior report into the prompt unconditionally on every cache miss, or only when an explicit "summarise the delta" instruction is active?
+- Hallucination risk: an LLM citing prior context can confidently misremember it. What's the forcing function tying recalled memory back to ground truth — assertions over the cached report? Diffing the LLM's `what_changed` against the deterministic hash-diff?
+- Cold-start: first tick after deploy has no prior report. Behaviour? (Probably: omit `what_changed`, emit a "first observation this tick" flag.)
+- Eviction: when does memory get forgotten — never, on watchlist removal, on TTL, on a manual invalidation event?
+- Interaction with the prompt-version fingerprint: bumping the prompt version invalidates the cache; does it also invalidate memory, or do we let the new prompt "see" the old report?
+
+**Dependencies:** Analyst surface redesign spec shipped (`analyst-surface-redesign-design.md`). Likely co-specced with [[B11]] since they share retrieval / continuity primitives.
+
+**Likely outcome of the brainstorm:** unify [[B11]] and B18 under one retrieval-and-continuity substrate spec, with two sub-features (external corpus retrieval; self-prior-report retrieval) sharing storage + invalidation machinery.
+
 ---
 
 ## Tier 2 — Medium enhancements
@@ -310,6 +345,32 @@ Two narrative-prose sources remain unread after Phase 5:
 
 ---
 
+### B17. Deterministic-analyst confidence calibration
+
+**Origin:** Surfaced during the analyst-surface-redesign brainstorm (`docs/superpowers/specs/analyst-surface-redesign-design.md`). The AAPL baseline trace at `docs/surface-traces/trace-20260513T165408-9adf5766-AAPL.json` shows Technical firing `bearish, confidence=0.90` because all five deterministic rules fired (`trend_up_20d`, `momentum_agree`, `rsi_overbought`, `near_52w_high`, `near_52w_low`). RSI-overbought-near-52w-high in a strong uptrend can persist for weeks; the regime does not warrant 90% confidence. Today's confidence is rule-firing-count, not probability.
+
+**The goal:** replace rule-count confidence with empirical, regime-aware calibration. Backtest hit-rates by feature combination yield posterior probabilities; confidence becomes "P(direction correct | features fired)" rather than "fraction of rules that fired."
+
+**Why it matters:** the strategist treats deterministic verdict confidence as a cognitive anchor against narrative drift (see `analyst-surface-redesign-design.md` § 2). If that anchor is mis-calibrated, the strategist either over-defers to overconfident deterministic verdicts or under-weights them once it learns they're noisy. Calibration restores the anchor's load-bearing role.
+
+**Key questions:**
+- Calibration granularity: per-rule, per-rule-combination, or per-feature-vector embedding? Combinatorial blowup risk with rule-combination.
+- Cold-start: until enough paper data accumulates, what does confidence read from? (Probably: keep the rule-count formula as a fallback, gate the empirical override behind a sample-size threshold.)
+- Storage: lookup table keyed on feature signature? Embedding + nearest-neighbours? Logistic-regression coefficients shipped in config?
+- Per-ticker vs cross-ticker calibration: AAPL overbought behaves differently from NVDA overbought, but per-ticker needs orders of magnitude more data. Likely cross-ticker for v1.
+- Where does the recalibrated confidence live: replace the existing `confidence` field, or sit alongside (`confidence_calibrated`) so legacy paths keep working?
+- Telemetry: surface-trace needs to show both raw rule-count confidence and calibrated confidence so we can A/B them post-hoc.
+
+**Overlaps:**
+- [[B5]] (per-evidence-key analyst weighting) — both touch how analyst features turn into trusted signals; B5 is the weighting side, B17 is the confidence side. Likely co-specced.
+- [[B2]] (knowledge base outcome learning) — B17 is essentially a thin slice of B2's outcome-attribution pipeline applied to one specific question. May absorb into B2 rather than ship standalone.
+
+**Dependencies:** Analyst surface redesign spec shipped. Phase 4 telemetry shipped (the hit-rate data lives in `TickerStanceRow` + `TradeLogRow` joins). ~weeks-to-months of paper-trading data for empirical hit-rates.
+
+**Likely outcome of the brainstorm:** decide whether to ship as a standalone Tier 2 spec or fold into B2's design. If standalone, scope is small enough for a single spec + implementation plan.
+
+---
+
 ## Tier 3 — Small follow-ups & easy wins
 
 ### B6. Persist `risk_clamps_applied`
@@ -365,21 +426,28 @@ Phase 4 (Goals 1 + 2 — strategist v2 + analyst contract, plans A→B→C→D)
    │     │     spec: docs/Phase5-analyst-refine/spec.md
    │     │     plan: docs/Phase5-analyst-refine/plan.md
    │     │
-   │     ├── B9  (sparse-execution gate)        ─┐
-   │     ├── B10 (narrative analyst — 13D/Form4) ─┤── often co-developed
-   │     ├── B11 (RAG / retrieval substrate)    ─┘
+   │     ├── analyst-surface-redesign (input split + reports + cache) ─┐
+   │     │     consolidates B9 + B14 (LLM-analyst prose half).         │
+   │     │     spec: docs/superpowers/specs/analyst-surface-redesign-design.md
+   │     │                                                              │
+   │     ├── B9  (sparse-execution gate)  — consolidated into above ───┤── often co-developed
+   │     ├── B10 (narrative analyst — 13D/Form4)                       │
+   │     ├── B11 (RAG / retrieval substrate)                          ─┤
+   │     ├── B18 (cross-tick analyst memory — degenerate self-RAG)    ─┘
    │     └── B16 (LLM augmentation ratchet — policy anchor; gates B12/B13/B14 + future LLM hops)
    │
    ├── TradingAgents-inspired explorations (all trace-justified via B16)
    │     ├── B12 (Bull/Bear directional debate over the analyst pack)
    │     ├── B13 (three-perspective risk debate — sizing)
-   │     └── B14 (per-stock per-analyst prose reports)
+   │     └── B14 (per-stock per-analyst prose reports — LLM half consolidated;
+   │              deterministic-narrator variant remains here)
    │
    ├── B15 (market-regime analyst — provider-gated, independent)
    │
-   ├── B5 (per-evidence weighting) ─┐
+   ├── B5  (per-evidence weighting) ─┐
+   ├── B17 (deterministic confidence calibration) ─┤── adjacent, may fold into B2
    │                                 │
-   ├── Goal 3 = B2 (knowledge base, long arc) ─┼── (B5 is one of B2's outputs)
+   ├── Goal 3 = B2 (knowledge base, long arc) ─┼── (B5 + B17 are outputs of B2)
    │                                 │
    │                                 └── B8 (replay tooling — validates B2's experiments)
    │
@@ -389,6 +457,6 @@ Phase 4 (Goals 1 + 2 — strategist v2 + analyst contract, plans A→B→C→D)
    └── B7 (cost observability)   — independent, low priority but feeds B2
 ```
 
-**Rough order if doing them in series:** Phase 4 plans A → B → C → D → Phase 5 (analyst re-categorisation) → B16 (ratchet policy operationalised by Phase 5's surface trace) → B6 → B7 → B9 → B11 → B10 → B2 (long arc) → B5 → B4 → B3 → B8. B12/B13/B14/B15 fold in only as trace data justifies, ordered ad-hoc against [[B16]]'s checklist.
+**Rough order if doing them in series:** Phase 4 plans A → B → C → D → Phase 5 (analyst re-categorisation) → B16 (ratchet policy operationalised by Phase 5's surface trace) → analyst-surface-redesign (consolidates B9 + half of B14) → B6 → B7 → B11 → B18 (co-specced with B11) → B10 → B2 (long arc) → B5 → B17 (likely folds into B2) → B4 → B3 → B8. B12/B13/B14-deterministic-narrator/B15 fold in only as trace data justifies, ordered ad-hoc against [[B16]]'s checklist.
 
 Most are independent enough to reorder by what hurts most in operation. Two strict orderings hold: **Phase 4 before B2** (the knowledge base needs a clean signal contract and decision telemetry to reason over) and **Phase 5 before B9/B10/B11/B12/B13/B14** (every analyst-side and debate-side experiment assumes the post-Phase 5 5-analyst pack, deterministic baseline, and surface-trace harness).
