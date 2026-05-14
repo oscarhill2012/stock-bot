@@ -3,8 +3,9 @@
 The underlying yfinance call is shared per-ticker per-tick by an in-memory
 LRU cache keyed on ``(symbol, period, interval)`` so that requesting both
 ``price_history`` and ``ratios`` for the same ticker does not double the
-yfinance hit. The cache is cleared between ticks because each tick mints a
-fresh process state via the orchestrator's session bootstrap.
+yfinance hit. This relies on each tick running in a fresh OS process (e.g. Cloud Run Jobs). For
+in-process multi-tick callers — test harnesses, long-running daemon modes — call
+``_yt_raw.cache_clear()`` between ticks to avoid serving stale data.
 """
 from __future__ import annotations
 

@@ -10,8 +10,9 @@ Two public entry points:
   for table-driven unit tests (no I/O, no globals).
 
 Input for the extractor: the dict that lives under
-``state["technical_data"][ticker]`` — typically a dump of the project's
-``StockStats`` model.
+``state["technical_data"][ticker]``.  Accepted shape: a dict with
+``price_history`` (PriceHistory.model_dump()) and optional ``ratios``
+sub-keys.
 """
 from __future__ import annotations
 

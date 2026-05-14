@@ -269,7 +269,7 @@ async def fundamental_fetch_callback(
             insider_bundle = Form4Bundle(trades=[], derivatives=[])
 
         fundamental_data[ticker] = {
-            "ratios":  ratios_payload,
+            "ratios": ratios_payload,
             "filings": filings_payload,
             "insider": insider_bundle,
         }
