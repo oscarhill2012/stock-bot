@@ -371,6 +371,24 @@ Two narrative-prose sources remain unread after Phase 5:
 
 ---
 
+### B19. Historical social-sentiment ingestion  *(unlocks social analyst in backtest)*
+
+**Origin:** Backtest harness spec (`docs/superpowers/specs/backtest-harness-design.md`) explicitly skips social in backtest — Finnhub's social endpoint went paid, the official Reddit API has no historical depth past ~1000 posts, and Twitter/X historical is dead since 2023. The strategist already tolerates `social=None`, so the harness ships without it, but every backtest is one signal short until this lands.
+
+**The goal:** restore historical social sentiment back to ~2022 for free by scraping a Pushshift-successor mirror (pullpush.io / arctic_shift / similar) and computing sentiment locally so we are not dependent on a paid endpoint.
+
+**Key questions:**
+- Which mirror is most reliable? pullpush.io is community-run with no SLA — what's the failure mode and what's the fallback?
+- Which subreddits earn their place: WSB only, or a broader set (`investing`, `stocks`, ticker-specific subs)?
+- Sentiment model: VADER is 3 lines, runs on CPU, decent on social text. FinBERT is more accurate but heavier. Pick one or run both side-by-side?
+- How do deletions / edits get handled — snapshot once and freeze, or refresh periodically?
+- Where does this wire in: register as a new `social` upstream in the existing provider shell, so live and backtest use it identically.
+- Backfill posture: one-time fill into the existing `backtests/cache/store.sqlite` plus an incremental nightly job once live.
+
+**Dependencies:** Backtest harness shipped (so we know what shape the cache expects). Not gated on anything else.
+
+---
+
 ## Tier 3 — Small follow-ups & easy wins
 
 ### B6. Persist `risk_clamps_applied`
@@ -414,6 +432,37 @@ Two narrative-prose sources remain unread after Phase 5:
 - Diffing: how do we render "original decision vs replayed decision" usefully — per-ticker stance diff?
 
 **Dependencies:** Phase 4 telemetry shipped (so there's something to replay). Cleaner once Goal 3 is being designed, since validating its experiments is the main use case.
+
+---
+
+### B20. Backtest resumability
+
+**Origin:** Backtest harness v1 treats interruption (Ctrl-C, OOM, transient cache failure mid-run) as terminal — the user starts a fresh `run_id`. Acceptable for short windows; painful as multi-window suites grow.
+
+**The goal:** allow an interrupted run to be resumed against the same `run_id` from the last completed tick.
+
+**Key questions:**
+- Checkpoint shape: last-completed-tick in `manifest.json` is probably enough since per-tick artefacts are atomic.
+- Resumption safety: refuse to resume if git sha, cache schema version, config snapshot, or watchlist drift since interruption.
+- CLI ergonomics: `--resume <run-id>` vs an opt-in flag; what happens on conflict.
+
+**Dependencies:** Backtest harness shipped.
+
+---
+
+### B21. Multi-window orchestration + cross-window dashboards
+
+**Origin:** Backtest harness v1 ships with one configured era window (`svb-stress-2023-03`) to keep scope tight. Real evaluation needs results across multiple regimes (covid recovery, fed pivot, AI rally, election, tariff shock, etc.).
+
+**The goal:** a driver that runs all configured era windows in sequence (or a subset by tag), and a cross-window report comparing Sharpe / vs-SPY / trade count by regime — so we can spot "the bot wins in calm regimes but loses in stress regimes" or vice versa.
+
+**Key questions:**
+- Cache pre-fill orchestration: warm every window's cache once up front, or lazily as each run starts?
+- Report shape: one combined `metrics.md` table, or per-window + a top-level summary?
+- Era tagging: add a `tags: ["high-volatility", "rate-shock", ...]` field to `backtest_windows.json` so we can filter (`--tags rate-shock`)?
+- LLM cost guardrails: a full sweep is N× single-window cost. Add a `--dry-run-cost-estimate` mode.
+
+**Dependencies:** Backtest harness shipped. Worth more once B19 (social ingestion) is also in so the analyst pack is complete.
 
 ---
 
