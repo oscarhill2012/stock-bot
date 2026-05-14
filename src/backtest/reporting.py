@@ -236,11 +236,16 @@ def compute_metrics(
     win_rate = win_ticks / len(bot_rets) if bot_rets else float("nan")
 
     # ── Annualised Sharpe (252-day basis) ──────────────────────────────────
+    # Returns here are per-tick.  The bot runs twice per trading day (morning
+    # and afternoon ticks), so there are 252 * 2 = 504 ticks per year.
+    # Annualisation factor = sqrt(ticks_per_year) = sqrt(504).
+    # Using sqrt(252) would overstate Sharpe by a factor of sqrt(2) ≈ 1.41.
     # Using population std (ddof=0) to match the baselines/spy.py approach.
+    _TICKS_PER_YEAR = 252 * 2  # two ticks per trading day
     if len(bot_rets) >= 2:
         mean_r = statistics.mean(bot_rets)
         std_r  = statistics.pstdev(bot_rets)
-        sharpe = (mean_r / std_r * (252 ** 0.5)) if std_r > 0 else float("nan")
+        sharpe = (mean_r / std_r * (_TICKS_PER_YEAR ** 0.5)) if std_r > 0 else float("nan")
     else:
         sharpe = float("nan")
 
@@ -287,7 +292,7 @@ def compute_metrics(
         f"- **Total return (bot):** {_fmt_pct(total_return)}",
         f"- **SPY return (window):** {spy_return_str}",
         f"- **vs-SPY delta:** {vs_spy_str}",
-        f"- **Annualised Sharpe (252d basis):** {_fmt_float(sharpe)}",
+        f"- **Annualised Sharpe (504-tick/yr basis):** {_fmt_float(sharpe)}",
         f"- **Max drawdown:** {_fmt_pct(max_dd)}",
         f"- **Win rate (ticks beating SPY):** {_fmt_pct(win_rate)}",
         f"- **Ticks recorded:** {len(snapshots)}",
@@ -409,9 +414,14 @@ def _backfill_one(
 
     snapshot["forward_returns"] = forwards
 
-    # Write atomically-ish: build the new JSON string before overwriting.
+    # Write atomically via a sibling temp file then os.replace().
+    # This guards against partial writes corrupting the decision JSON if the
+    # process is interrupted mid-write (e.g. SIGKILL, disk full).
     new_text = json.dumps(snapshot, indent=2, default=str)
-    path.write_text(new_text)
+    tmp_path = path.with_suffix(".tmp")
+    tmp_path.write_text(new_text)
+    import os
+    os.replace(tmp_path, path)
 
 
 # ── Internal helpers ───────────────────────────────────────────────────────────

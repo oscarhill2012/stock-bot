@@ -246,13 +246,16 @@ class Driver:
                 new_message=msg,
             ):
                 pass
-        except (AttributeError, BaseException) as exc:
+        except (AttributeError, BaseExceptionGroup, Exception) as exc:
             # ADK 1.32 has a known runner-cleanup bug: after the pipeline
             # runs, the runner may raise AttributeError('NoneType'.partial)
             # or a BaseExceptionGroup wrapping GeneratorExit from parallel-
             # agent teardown.  Both happen *after* session state has been
             # written, so the tick result is still available via the
             # captured session.  We log and continue.
+            # NOTE: deliberately NOT catching KeyboardInterrupt / SystemExit —
+            # those are BaseException subclasses that should propagate so the
+            # user can interrupt a long run with Ctrl-C.
             logger.warning(
                 "ADK runner raised after tick %s (pipeline likely completed): "
                 "%s: %s",
