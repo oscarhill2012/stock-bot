@@ -65,7 +65,7 @@ async def technical_fetch_callback(
 
         # --- price history ---
         try:
-            ph = await get_price_history(ticker, as_of=as_of)
+            ph = await get_price_history(ticker, as_of=as_of, phase=state.get("tick_phase"))
             ph_payload = ph.model_dump() if hasattr(ph, "model_dump") else ph
         except Exception as exc:
             logger.warning("price_history fetch failed for %s: %s", ticker, exc)

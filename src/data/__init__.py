@@ -89,6 +89,7 @@ async def get_price_history(
     interval: str = "1d",
     *,
     as_of: datetime | None = None,
+    phase: str | None = None,
 ) -> PriceHistory:
     """Fetch OHLCV history for ``ticker`` via the active price-history provider.
 
@@ -105,6 +106,11 @@ async def get_price_history(
         clock) so live callers that omit this argument behave identically to
         before.  Backtest callers pass the tick timestamp so providers see the
         correct point-in-time.
+    phase:
+        Tick phase — ``"open"`` or ``"close"``.  Forwarded so cache
+        providers can trim the same-day bar at the open tick.  When the
+        caller is the live pipeline between scheduled ticks, ``None`` is
+        acceptable.
 
     Returns
     -------
@@ -114,7 +120,7 @@ async def get_price_history(
     as_of = resolve_as_of(as_of, allow_wallclock=True, site="data.get_price_history")
     return await _dispatch(
         "price_history", ticker.upper(),
-        period=period, interval=interval, as_of=as_of,
+        period=period, interval=interval, as_of=as_of, phase=phase,
     )
 
 
