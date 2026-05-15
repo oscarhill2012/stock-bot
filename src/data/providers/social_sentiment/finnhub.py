@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+from datetime import datetime
 from typing import Any
 
 import finnhub
@@ -11,6 +13,8 @@ from data.retry import with_retry
 from data.secrets import require_key
 
 from ...models import SocialSentiment, SocialSentimentSnapshot
+
+logger = logging.getLogger(__name__)
 
 
 def _client() -> finnhub.Client:
@@ -53,9 +57,29 @@ def _summarise(rows: list[dict[str, Any]], platform: str) -> SocialSentimentSnap
     rate_per_minute=60,
     burst=30,
 )
-async def fetch(ticker: str) -> SocialSentiment:
+async def fetch(
+    ticker: str,
+    *,
+    as_of: datetime,
+    **_unused,
+) -> SocialSentiment:
+    """Reddit/Twitter sentiment snapshot for ``ticker`` from Finnhub.
+
+    ``as_of`` is accepted for dispatch parity.  Finnhub's social sentiment
+    endpoint is premium-only and soft-fails on the free tier; ``as_of`` is
+    not used by the current implementation.
+    """
     symbol = ticker.upper()
-    payload = await asyncio.to_thread(_fetch_social, symbol)
+
+    try:
+        payload = await asyncio.to_thread(_fetch_social, symbol)
+    except finnhub.FinnhubAPIException as exc:
+        # Premium-only endpoint — free-tier accounts receive a 403.  Soft-fail
+        # to an empty SocialSentiment so the pipeline continues without crashing.
+        logger.warning(
+            "social_sentiment/finnhub: soft-fail for %s (%s)", symbol, exc
+        )
+        return SocialSentiment(ticker=symbol, snapshots=[], aggregate_score=0.0)
 
     snapshots = [
         _summarise(payload.get("reddit") or [], "reddit"),
