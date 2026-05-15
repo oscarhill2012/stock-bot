@@ -93,11 +93,21 @@ def _build(filing: Any, symbol: str) -> NotableHolder | None:
 
 
 @with_retry
-def _list_holder_filings(symbol: str, lookback_days: int, limit: int) -> list[Any]:
+def _list_holder_filings(
+    symbol: str,
+    lookback_days: int,
+    limit: int,
+    as_of: datetime,
+) -> list[Any]:
+    """List SC 13D/13G/13F filings naming ``symbol`` in ``(as_of - lookback, as_of]``.
+
+    Anchored on ``as_of`` so backfill sees only filings that existed historically.
+    """
     _ensure_identity()
-    from_iso = (date.today() - timedelta(days=lookback_days)).isoformat()
-    company = Company(symbol)
-    filings = company.get_filings(form=list(_FORMS), filing_date=f"{from_iso}:")
+    upper_iso = as_of.date().isoformat()
+    lower_iso = (as_of.date() - timedelta(days=lookback_days)).isoformat()
+    company   = Company(symbol)
+    filings   = company.get_filings(form=list(_FORMS), filing_date=f"{lower_iso}:{upper_iso}")
     return list(filings.head(max(1, min(limit, 50))))
 
 
@@ -110,17 +120,22 @@ def _list_holder_filings(symbol: str, lookback_days: int, limit: int) -> list[An
 )
 async def fetch(
     ticker: str,
+    *,
+    as_of: datetime,
     lookback_days: int = 180,
     limit: int = 20,
+    **_unused,
 ) -> list[NotableHolder]:
-    """Recent SC 13D/13G (and amendment) filings naming `ticker` as subject.
+    """Recent SC 13D/13G (and amendment) filings naming ``ticker`` as subject.
 
-    `lookback_days` defaults to 180 since these filings are infrequent
-    relative to Form 4. `limit` caps how many we return after sorting.
+    ``lookback_days`` defaults to 180 since these filings are infrequent
+    relative to Form 4.  ``limit`` caps how many we return after sorting.
     """
     symbol = ticker.upper()
 
-    filings = await asyncio.to_thread(_list_holder_filings, symbol, lookback_days, limit)
+    filings = await asyncio.to_thread(
+        _list_holder_filings, symbol, lookback_days, limit, as_of,
+    )
 
     out: list[NotableHolder] = []
     for filing in filings:
