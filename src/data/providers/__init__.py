@@ -1,4 +1,5 @@
 """Per-source provider modules. Importing each module triggers its @register call."""
+from . import company_ratios as _company_ratios  # noqa: F401
 from .filings import edgar as _filings_edgar  # noqa: F401
 from .insider_trades import edgar as _insider_trades_edgar  # noqa: F401
 from .news import finnhub as _news_finnhub  # noqa: F401
