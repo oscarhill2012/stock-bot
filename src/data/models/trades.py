@@ -15,8 +15,10 @@ class PoliticianTrade(BaseModel):
     chamber: str | None = Field(default=None, description="House or Senate.")
     party: str | None = None
     side: TradeSide
-    transaction_date: date
-    disclosure_date: date | None = None
+    # Accepts both date and datetime so the cache layer can receive
+    # fully-timestamped values after the Date → DateTime schema migration.
+    transaction_date: date | datetime
+    disclosure_date: date | datetime | None = None
     amount_min_usd: float | None = None
     amount_max_usd: float | None = None
 

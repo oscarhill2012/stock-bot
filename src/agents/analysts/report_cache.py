@@ -395,6 +395,10 @@ def read_cache(
     On any IO or parsing error the function returns ``None`` rather than
     raising — the LLM call is always the safe fallback.
 
+    The returned dict includes ``originating_as_of`` (ISO-8601 string or
+    ``None``) so callers can log "this verdict was first computed at tick T1
+    and is being served at tick T2" through the audit telemetry.
+
     Parameters
     ----------
     root:
@@ -411,8 +415,9 @@ def read_cache(
     Returns
     -------
     dict | None
-        ``{"verdict": ..., "report": ...}`` on a hit; ``None`` on any miss
-        (missing file, hash mismatch, version mismatch, or IO error).
+        ``{"verdict": ..., "report": ..., "originating_as_of": ...}`` on a
+        hit; ``None`` on any miss (missing file, hash mismatch, version
+        mismatch, or IO error).
     """
     path = _cache_path(root, analyst, ticker)
     if not path.exists():
@@ -429,7 +434,11 @@ def read_cache(
     if record.get("prompt_version") != prompt_version:
         return None
 
-    return {"verdict": record.get("verdict"), "report": record.get("report")}
+    return {
+        "verdict":           record.get("verdict"),
+        "report":            record.get("report"),
+        "originating_as_of": record.get("originating_as_of"),
+    }
 
 
 def write_cache(
@@ -441,12 +450,19 @@ def write_cache(
     prompt_version: str,
     verdict: dict,
     report: dict | None,
+    originating_as_of: datetime | None = None,
 ) -> None:
     """Atomically write a fresh cache entry for one ``(analyst, ticker)`` pair.
 
     Uses ``os.replace`` for atomicity so a crash mid-write does not leave the
     cache file in an unparseable state. Creates the parent directory tree if
     it does not yet exist.
+
+    ``originating_as_of`` records the tick's historical clock at write
+    time.  Cache hits during later ticks expose this via ``read_cache`` so
+    the audit telemetry can surface "this verdict was originally computed
+    under a different as_of" — informational, not a hard filter (same
+    inputs imply same verdict, by construction of the input_hash).
 
     Parameters
     ----------
@@ -464,19 +480,64 @@ def write_cache(
         Verdict dict (everything in the ``AnalystVerdict`` minus ``report``).
     report:
         Optional ``AnalystReport`` dict, or ``None`` if no report was produced.
+    originating_as_of:
+        The tick's ``as_of`` at the moment the verdict was computed.
+        Stored in the JSON payload for later retrieval by ``read_cache``.
     """
     path = _cache_path(root, analyst, ticker)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     payload = {
-        "input_hash":     input_hash,
-        "prompt_version": prompt_version,
-        "verdict":        verdict,
-        "report":         report,
-        "stored_at":      datetime.now(UTC).isoformat(),
+        "input_hash":        input_hash,
+        "prompt_version":    prompt_version,
+        "verdict":           verdict,
+        "report":            report,
+        "originating_as_of": originating_as_of.isoformat() if originating_as_of else None,
+        "stored_at":         datetime.now(UTC).isoformat(),
     }
 
     # Write to a temp file then atomically replace — prevents partial writes.
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
     os.replace(tmp, path)
+
+
+def log_cache_hit_to_state(
+    state: dict,
+    *,
+    analyst: str,
+    ticker: str,
+    input_hash: str,
+    originating_as_of: str | None,
+) -> None:
+    """Append a cache-hit record to ``state['_report_cache_hits_for_audit']``.
+
+    Called by analyst code immediately after a ``read_cache`` hit.  The
+    driver drains the list at end-of-tick into the telemetry record.
+
+    This is informational only — same inputs always imply the same verdict
+    by construction of ``input_hash``, so a differing ``originating_as_of``
+    is not an error.  The audit surface uses it to flag that the cached
+    computation was originally run under a different historical clock.
+
+    Parameters
+    ----------
+    state:
+        ADK session state for this tick.
+    analyst:
+        Name of the analyst that produced the cached verdict.
+    ticker:
+        Ticker symbol the verdict covers.
+    input_hash:
+        Hash of the inputs that produced the cached verdict.
+    originating_as_of:
+        ISO-8601 string of the ``as_of`` at the time the verdict was first
+        computed, or ``None`` if not recorded (older cache entries).
+    """
+    bucket: list[dict] = state.setdefault("_report_cache_hits_for_audit", [])
+    bucket.append({
+        "analyst":           analyst,
+        "ticker":            ticker,
+        "input_hash":        input_hash,
+        "originating_as_of": originating_as_of,
+    })

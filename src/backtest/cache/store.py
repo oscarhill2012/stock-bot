@@ -65,6 +65,39 @@ from data.models.missing import is_missing_timestamp
 logger = logging.getLogger(__name__)
 
 
+def _promote_date_only(value: date | datetime) -> datetime:
+    """Promote a date-only value to ``next_business_day @ 00:00 UTC``.
+
+    Conservative rule: if the row has no intraday time, the cache assumes
+    the disclosure could have been made any time during ``value`` and
+    therefore only becomes "publicly knowable" at the next-business-day
+    open.  Already-timestamped datetimes pass through unchanged.
+
+    Parameters
+    ----------
+    value:
+        Either a ``date`` (date-only) or a ``datetime`` (full timestamp).
+
+    Returns
+    -------
+    datetime
+        A timezone-aware UTC datetime.
+    """
+    from datetime import timedelta
+
+    # isinstance check must come BEFORE date because datetime is a subclass of date.
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value
+
+    # Pure ``date`` — bump to next business day @ 00:00 UTC.
+    nxt = value + timedelta(days=1)
+    while nxt.weekday() >= 5:   # 5 = Saturday, 6 = Sunday
+        nxt += timedelta(days=1)
+    return datetime(nxt.year, nxt.month, nxt.day, tzinfo=UTC)
+
+
 class CachedDataStore:
     """SQLite-backed read/write façade over the golden backtest cache.
 
@@ -549,6 +582,11 @@ class CachedDataStore:
         side, amount_min_usd, amount_max_usd)`` because the upstream feed has
         no natural identifier.
 
+        Date-only upstream values (no intraday time) are stored as midnight
+        UTC of the *next business day*.  This conservative promotion prevents
+        same-day leakage because the STOCK Act allows disclosure any time of
+        day on the recorded disclosure_date.
+
         Parameters
         ----------
         ticker:
@@ -558,10 +596,13 @@ class CachedDataStore:
         """
         with Session(self._engine) as s:
             for t in trades:
+                disc_dt = _promote_date_only(t.disclosure_date) if t.disclosure_date else None
+                txn_dt  = _promote_date_only(t.transaction_date)
+
                 key = "|".join([
                     ticker,
                     t.politician,
-                    str(t.transaction_date),
+                    str(txn_dt),
                     t.side,
                     str(t.amount_min_usd),
                     str(t.amount_max_usd),
@@ -575,8 +616,8 @@ class CachedDataStore:
                     chamber=t.chamber,
                     party=t.party,
                     side=t.side,
-                    transaction_date=t.transaction_date,
-                    disclosure_date=t.disclosure_date,
+                    transaction_date=txn_dt,
+                    disclosure_date=disc_dt,
                     amount_min_usd=t.amount_min_usd,
                     amount_max_usd=t.amount_max_usd,
                 ).on_conflict_do_nothing(index_elements=["row_hash"])
@@ -595,22 +636,24 @@ class CachedDataStore:
         used as the fallback (conservative — likely an older record without
         disclosure metadata).
 
+        Comparison is on full ``DateTime`` values — a 16:00 disclosure on
+        day D is invisible at the 09:30 same-day open.
+
         Parameters
         ----------
         ticker:
             Ticker symbol.
         as_of:
-            Upper bound (inclusive) on the PIT date.
+            Upper bound (inclusive) on the PIT datetime.
         lookback_days:
             How many calendar days back to look.
 
         Returns
         -------
         list[PoliticianTrade]
-            Matching trades, most-recent by PIT date first.
+            Matching trades, most-recent by PIT datetime first.
         """
-        lower = (as_of - timedelta(days=lookback_days)).date()
-        as_of_date = as_of.date()
+        lower = as_of - timedelta(days=lookback_days)
 
         pit = func.coalesce(
             PoliticianTradeRow.disclosure_date,
@@ -622,7 +665,7 @@ class CachedDataStore:
                 select(PoliticianTradeRow)
                 .where(
                     PoliticianTradeRow.ticker == ticker,
-                    pit <= as_of_date,
+                    pit <= as_of,
                     pit >  lower,
                 )
                 .order_by(pit.desc())
