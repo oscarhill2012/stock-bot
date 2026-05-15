@@ -84,3 +84,6 @@ docs/surface-traces/
 
 # Local-only worktrees for parallel feature work.
 .worktrees/
+
+# Backtest golden-cache SQLite files — binary, large, developer-local only.
+backtests/
