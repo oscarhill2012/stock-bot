@@ -33,6 +33,7 @@ import hashlib
 import logging
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -167,7 +168,7 @@ class CachedDataStore:
             ).scalars().all()
 
             # OHLCBar.timestamp ≠ row.ts in name — map explicitly.
-            return [
+            bars = [
                 OHLCBar(
                     timestamp=row.ts,
                     open=row.open,
@@ -178,6 +179,8 @@ class CachedDataStore:
                 )
                 for row in rows
             ]
+            self._audit_record("price_history", ticker, bars)
+            return bars
 
     # ── company ratios ────────────────────────────────────────────────────────
 
@@ -249,7 +252,9 @@ class CachedDataStore:
             # ``as_of_date`` is not a CompanyRatios field — excluded implicitly
             # because CompanyRatios doesn't forbid extra attributes (Pydantic
             # ignores unknown source attributes in from_attributes mode).
-            return CompanyRatios.model_validate(row, from_attributes=True)
+            ratios = CompanyRatios.model_validate(row, from_attributes=True)
+            self._audit_record("company_ratios", ticker, [ratios])
+            return ratios
 
     # ── news ──────────────────────────────────────────────────────────────────
 
@@ -324,10 +329,12 @@ class CachedDataStore:
                 .order_by(NewsArticleRow.published_at.desc())
             ).scalars().all()
 
-            return [
+            articles = [
                 NewsArticle.model_validate(r, from_attributes=True)
                 for r in rows
             ]
+            self._audit_record("news", ticker, articles)
+            return articles
 
     # ── filings ───────────────────────────────────────────────────────────────
 
@@ -407,7 +414,9 @@ class CachedDataStore:
                 .order_by(FilingRow.filed_at.desc())
             ).scalars().all()
 
-            return [Filing.model_validate(r, from_attributes=True) for r in rows]
+            filings = [Filing.model_validate(r, from_attributes=True) for r in rows]
+            self._audit_record("filings", ticker, filings)
+            return filings
 
     # ── insider trades ────────────────────────────────────────────────────────
 
@@ -509,7 +518,7 @@ class CachedDataStore:
 
             # InsiderTrade has extra="forbid" — construct explicitly to avoid
             # Pydantic rejecting the row's extra column (row_hash).
-            return [
+            trades = [
                 InsiderTrade(
                     ticker=row.ticker,
                     insider_name=row.insider_name,
@@ -526,6 +535,8 @@ class CachedDataStore:
                 )
                 for row in rows
             ]
+            self._audit_record("insider_trades", ticker, trades)
+            return trades
 
     # ── politician trades ─────────────────────────────────────────────────────
 
@@ -619,10 +630,12 @@ class CachedDataStore:
 
             # row_hash is not a PoliticianTrade field — from_attributes works
             # because PoliticianTrade doesn't have extra="forbid".
-            return [
+            pol_trades = [
                 PoliticianTrade.model_validate(r, from_attributes=True)
                 for r in rows
             ]
+            self._audit_record("politician_trades", ticker, pol_trades)
+            return pol_trades
 
     # ── notable holders ───────────────────────────────────────────────────────
 
@@ -699,7 +712,55 @@ class CachedDataStore:
                 .order_by(NotableHolderRow.filed_at.desc())
             ).scalars().all()
 
-            return [
+            holders = [
                 NotableHolder.model_validate(r, from_attributes=True)
                 for r in rows
             ]
+            self._audit_record("notable_holders", ticker, holders)
+            return holders
+
+    # ── Audit hook ────────────────────────────────────────────────────────────
+    #
+    # The driver enables read capture once per tick; every ``read_*`` method
+    # appends its rows into ``self._audit_reads``.  At end-of-tick the driver
+    # calls ``_audit_drain_reads`` to retrieve and reset the captured set.
+    #
+    # When capture is disabled (the default — live runs) the methods skip
+    # the append for zero overhead.
+
+    def _audit_capture_enabled(self) -> bool:
+        """Return ``True`` iff per-tick read capture is currently on."""
+        return getattr(self, "_audit_reads", None) is not None
+
+    def _audit_record(self, domain: str, ticker: str, rows: list[Any]) -> None:
+        """Append ``rows`` into the per-tick capture if enabled.
+
+        Parameters
+        ----------
+        domain:
+            Domain key (e.g. ``"news"``, ``"price_history"``).
+        ticker:
+            Ticker symbol.
+        rows:
+            Model instances returned by the read method.
+        """
+        if not self._audit_capture_enabled():
+            return
+        self._audit_reads.setdefault(domain, {}).setdefault(ticker, []).extend(rows)
+
+    def _audit_enable_capture(self) -> None:
+        """Begin per-tick read capture.  Idempotent — clears any prior state."""
+        self._audit_reads: dict = {}
+
+    def _audit_drain_reads(self) -> dict:
+        """Return and reset the per-tick capture log.
+
+        Returns
+        -------
+        dict
+            ``{domain: {ticker: [rows]}}`` — empty when capture was never
+            enabled.
+        """
+        captured = getattr(self, "_audit_reads", {}) or {}
+        self._audit_reads = {}
+        return captured
