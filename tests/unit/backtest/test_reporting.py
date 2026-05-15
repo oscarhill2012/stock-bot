@@ -11,7 +11,12 @@ from pathlib import Path
 
 import pytest
 
-from backtest.reporting import _write_metrics, _backfill_forward_returns, _parse_date
+from backtest.reporting import (
+    _write_metrics,
+    _backfill_forward_returns,
+    _compute_vs_spy_delta,
+    _parse_date,
+)
 
 
 # ── _write_metrics ────────────────────────────────────────────────────────────
@@ -264,4 +269,130 @@ class TestBackfillForwardReturns:
 
         mock_cache = MagicMock()
         _backfill_forward_returns(decisions_dir, mock_cache, horizons_days=[1])
+        mock_cache.read_ohlcv.assert_not_called()
+
+
+# ── _write_metrics: win rate + fill count ────────────────────────────────────
+
+class TestWriteMetricsNewFields:
+    """Unit tests for the win rate, fill count, and vs-SPY fields in metrics.md."""
+
+    _SIMPLE_SERIES = [
+        (datetime(2023, 3, 6, tzinfo=UTC), 100_000.0),
+        (datetime(2023, 3, 7, tzinfo=UTC), 105_000.0),
+    ]
+
+    def test_win_rate_written(self, tmp_path: Path) -> None:
+        """Win rate is written as a percentage when provided."""
+        _write_metrics(
+            self._SIMPLE_SERIES,
+            tmp_path / "metrics.md",
+            fill_count=10,
+            win_rate=0.6,
+        )
+        text = (tmp_path / "metrics.md").read_text()
+        assert "60.0%" in text, f"Expected win rate in output; got:\n{text}"
+
+    def test_fill_count_written(self, tmp_path: Path) -> None:
+        """Total fill count is written as an integer."""
+        _write_metrics(
+            self._SIMPLE_SERIES,
+            tmp_path / "metrics.md",
+            fill_count=42,
+            win_rate=0.5,
+        )
+        text = (tmp_path / "metrics.md").read_text()
+        assert "**42**" in text, f"Expected fill count 42 in output; got:\n{text}"
+
+    def test_win_rate_nan_written_as_na(self, tmp_path: Path) -> None:
+        """When win_rate is NaN (no trades), output contains 'N/A'."""
+        _write_metrics(
+            self._SIMPLE_SERIES,
+            tmp_path / "metrics.md",
+            fill_count=0,
+            win_rate=float("nan"),
+        )
+        text = (tmp_path / "metrics.md").read_text()
+        assert "N/A" in text, f"Expected N/A for win rate; got:\n{text}"
+
+    def test_vs_spy_float_written_as_percent(self, tmp_path: Path) -> None:
+        """vs-SPY delta as float is written as a signed percentage."""
+        _write_metrics(
+            self._SIMPLE_SERIES,
+            tmp_path / "metrics.md",
+            vs_spy_delta=0.03,  # +3 pp outperformance
+        )
+        text = (tmp_path / "metrics.md").read_text()
+        assert "+3.00%" in text, f"Expected +3.00% vs-SPY delta; got:\n{text}"
+
+    def test_vs_spy_na_string_written_as_italic(self, tmp_path: Path) -> None:
+        """vs-SPY delta as a string is written in italics (Markdown underscore)."""
+        _write_metrics(
+            self._SIMPLE_SERIES,
+            tmp_path / "metrics.md",
+            vs_spy_delta="N/A — SPY not in cache (run backtest_fetch with SPY)",
+        )
+        text = (tmp_path / "metrics.md").read_text()
+        assert "SPY not in cache" in text, f"Expected SPY N/A message; got:\n{text}"
+
+
+# ── _compute_vs_spy_delta ────────────────────────────────────────────────────
+
+class TestComputeVsSpyDelta:
+    """Unit tests for the _compute_vs_spy_delta helper."""
+
+    _EQUITY = [
+        (datetime(2023, 3, 6, tzinfo=UTC), 10_000.0),
+        (datetime(2023, 3, 8, tzinfo=UTC), 10_500.0),   # +5% bot return
+    ]
+
+    def test_delta_computed_when_spy_present(self) -> None:
+        """When SPY bars are in the cache, the delta is bot_return − spy_return."""
+        from unittest.mock import MagicMock
+        from data.models import OHLCBar
+
+        spy_open  = MagicMock(spec=OHLCBar); spy_open.open  = 400.0
+        spy_close = MagicMock(spec=OHLCBar); spy_close.close = 404.0  # +1% SPY
+
+        mock_cache = MagicMock()
+        # read_ohlcv returns a list: first bar for open, last bar for close.
+        mock_cache.read_ohlcv.return_value = [spy_open, spy_close]
+
+        delta = _compute_vs_spy_delta(self._EQUITY, mock_cache)
+
+        # bot +5%, SPY +1% → delta = +4 pp = 0.04
+        assert isinstance(delta, float), f"Expected float, got {type(delta)}"
+        assert pytest.approx(delta, rel=1e-3) == 0.04
+
+    def test_na_string_when_spy_absent(self) -> None:
+        """When SPY has no bars, a descriptive string is returned (no crash)."""
+        from unittest.mock import MagicMock
+
+        mock_cache = MagicMock()
+        mock_cache.read_ohlcv.return_value = []  # SPY not in cache
+
+        delta = _compute_vs_spy_delta(self._EQUITY, mock_cache)
+
+        assert isinstance(delta, str), f"Expected str N/A, got {type(delta)}"
+        assert "SPY" in delta, f"Expected SPY mention in N/A message: {delta}"
+
+    def test_na_string_on_cache_error(self) -> None:
+        """When cache.read_ohlcv raises, a descriptive string is returned."""
+        from unittest.mock import MagicMock
+
+        mock_cache = MagicMock()
+        mock_cache.read_ohlcv.side_effect = RuntimeError("db locked")
+
+        delta = _compute_vs_spy_delta(self._EQUITY, mock_cache)
+
+        assert isinstance(delta, str), f"Expected str N/A on error, got {type(delta)}"
+
+    def test_na_string_when_equity_empty(self) -> None:
+        """When the equity series is empty, a descriptive string is returned."""
+        from unittest.mock import MagicMock
+
+        mock_cache = MagicMock()
+        delta = _compute_vs_spy_delta([], mock_cache)
+
+        assert isinstance(delta, str)
         mock_cache.read_ohlcv.assert_not_called()
