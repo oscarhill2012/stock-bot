@@ -95,7 +95,14 @@ class ExecutorAgent(BaseAgent):
                             if isinstance(opened_at_raw, str)
                             else opened_at_raw
                         )
-                        closed_at = datetime.now(tz=UTC)
+                        # Use state["as_of"] if present (backtest replay) so
+                        # holding_hours is deterministic against historical ticks.
+                        # Fall back to wall-clock on live runs.
+                        raw_as_of = state.get("as_of")
+                        closed_at = (
+                            raw_as_of if isinstance(raw_as_of, datetime)
+                            else datetime.now(tz=UTC)
+                        )
                         holding_hours = int(
                             (closed_at - opened_at_dt).total_seconds() / 3600
                         )

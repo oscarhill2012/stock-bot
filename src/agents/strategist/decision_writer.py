@@ -81,7 +81,11 @@ class StrategistDecisionWriter(BaseAgent):
         current_weights = portfolio.current_weights()
 
         # Timestamp shared across all rows written in this invocation.
-        recorded_at = datetime.now(tz=UTC)
+        # Prefer state["as_of"] (set by the backtest driver to the historical
+        # tick timestamp) so replay is deterministic.  Fall back to wall-clock
+        # only on live runs where as_of is absent.
+        raw_as_of = state.get("as_of")
+        recorded_at = raw_as_of if isinstance(raw_as_of, datetime) else datetime.now(tz=UTC)
 
         # Loop: one DB row per stance in the decision.
         for stance in decision.stances:

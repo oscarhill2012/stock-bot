@@ -102,8 +102,14 @@ class MemoryWriter(BaseAgent):
         day_digest: str = state.get("day_digest", "")
         executions = state.get("executions", [])
 
+        # Use state["as_of"] when present so memory-buffer timestamps are
+        # aligned to the historical tick in backtest replay rather than
+        # wall-clock time.  Falls back to wall-clock on live runs.
+        raw_as_of = state.get("as_of")
+        entry_ts = raw_as_of if isinstance(raw_as_of, datetime) else datetime.now(tz=UTC)
+
         new_entry = BufferEntry(
-            timestamp=datetime.now(tz=UTC),
+            timestamp=entry_ts,
             decision_tag=(
                 decision.get("decision_tag", "unknown")
                 if isinstance(decision, dict)

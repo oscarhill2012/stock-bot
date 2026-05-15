@@ -84,15 +84,23 @@ def _evidence_view_before_callback(
     tickers: list[str] = state.get("tickers", []) or []
     tick_id: str = state.get("tick_id", "unknown")
 
-    # recorded_at may arrive as an ISO string (most common when state is round-tripped
-    # through JSON), as a datetime already (in-process path), or be absent entirely.
-    # On Python 3.11+ ``datetime.fromisoformat`` accepts the trailing ``Z`` natively.
-    recorded_at_raw = state.get("recorded_at")
-    recorded_at = (
-        datetime.fromisoformat(recorded_at_raw)
-        if isinstance(recorded_at_raw, str)
-        else (recorded_at_raw or datetime.now(tz=UTC))
-    )
+    # Resolve the tick timestamp used as ``recorded_at`` for evidence objects.
+    # Priority order:
+    #   1. state["as_of"]    — set by the backtest driver to the historical tick
+    #      timestamp; guarantees deterministic replay.
+    #   2. state["recorded_at"] — set by some live-path callers as an ISO string
+    #      or datetime.
+    #   3. datetime.now(tz=UTC) — live fallback when neither key is present.
+    as_of_raw = state.get("as_of")
+    if isinstance(as_of_raw, datetime):
+        recorded_at = as_of_raw
+    else:
+        recorded_at_raw = state.get("recorded_at")
+        recorded_at = (
+            datetime.fromisoformat(recorded_at_raw)
+            if isinstance(recorded_at_raw, str)
+            else (recorded_at_raw or datetime.now(tz=UTC))
+        )
 
     def _index(key: str) -> dict[str, AnalystEvidence]:
         """Index a per-analyst evidence list by ticker.
@@ -267,10 +275,18 @@ def _strategist_validation_callback(
     # ── Pass 4: Derive legacy fields ─────────────────────────────────────────
     # All validation passed — derive the flat legacy fields from the stances
     # so downstream consumers (executor, persistence) see the shape they expect.
+    #
+    # Use state["as_of"] as the derivation timestamp when available (backtest
+    # replay path) so PositionThesis.opened_at is deterministic.  Fall back to
+    # wall-clock on live runs where as_of is absent.
+    raw_as_of = state.get("as_of")
+    derivation_now = (
+        raw_as_of if isinstance(raw_as_of, datetime) else datetime.now(tz=UTC)
+    )
     ctx = TickContext(
         tick_id=str(tick_id),
         decision_tag=decision.decision_tag,
-        now=datetime.now(tz=UTC),
+        now=derivation_now,
         current_prices=current_prices,
         current_weights=current_weights,
     )

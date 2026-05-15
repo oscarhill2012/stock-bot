@@ -217,6 +217,10 @@ def save_portfolio_snapshot(session: Session, snap: dict) -> None:
     import json as json_mod
     row = PortfolioSnapshotRow(
         tick_id=snap["tick_id"],
+        # ``recorded_at`` is set by SnapshotterAgent from state["as_of"] (backtest
+        # path) or wall-clock (live path), so the snap dict always carries the
+        # correct value.  The fallback here only fires if the caller omits it
+        # entirely (e.g. legacy tests that pre-date the as_of migration).
         recorded_at=snap.get("recorded_at", datetime.now(tz=UTC)),
         bot_total_value=snap["bot_total_value"],
         bot_cash=snap["bot_cash"],
@@ -275,6 +279,7 @@ def save_analyst_evidence(
     verdict: dict,
     features: dict,
     feature_warnings: list[str],
+    recorded_at: datetime | None = None,
 ) -> None:
     """Persist one AnalystEvidence row.
 
@@ -290,6 +295,9 @@ def save_analyst_evidence(
             licence to construct one.
         features: Raw feature dict fed to the analyst (e.g. RSI, ATR values).
         feature_warnings: Any warnings raised during feature extraction.
+        recorded_at: Timestamp to stamp the row with.  Pass ``state["as_of"]``
+            in backtest mode for deterministic replay.  Defaults to wall-clock
+            when ``None`` (preserves live behaviour).
 
     Returns:
         None. The new row is flushed but **not** committed; the caller controls
@@ -297,7 +305,7 @@ def save_analyst_evidence(
     """
     row = AnalystEvidenceRow(
         tick_id=tick_id,
-        recorded_at=datetime.now(tz=UTC),
+        recorded_at=recorded_at if recorded_at is not None else datetime.now(tz=UTC),
         analyst=analyst,
         ticker=ticker,
         lean=verdict["lean"],
@@ -343,6 +351,7 @@ def save_ticker_evidence(
     aggregate: dict,
     weights: dict,
     analyst_count: int,
+    recorded_at: datetime | None = None,
 ) -> None:
     """Persist one TickerEvidence row.
 
@@ -358,6 +367,9 @@ def save_ticker_evidence(
         weights: Mapping of analyst name to numeric weight used during
             aggregation (e.g. ``{"technical": 1.0, ...}``).
         analyst_count: Total number of analysts whose evidence was aggregated.
+        recorded_at: Timestamp to stamp the row with.  Pass ``state["as_of"]``
+            in backtest mode for deterministic replay.  Defaults to wall-clock
+            when ``None`` (preserves live behaviour).
 
     Returns:
         None. The new row is flushed but **not** committed; the caller controls
@@ -365,7 +377,7 @@ def save_ticker_evidence(
     """
     row = TickerEvidenceRow(
         tick_id=tick_id,
-        recorded_at=datetime.now(tz=UTC),
+        recorded_at=recorded_at if recorded_at is not None else datetime.now(tz=UTC),
         ticker=ticker,
         lean=aggregate["lean"],
         magnitude=float(aggregate["magnitude"]),
