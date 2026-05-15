@@ -207,7 +207,25 @@ class Runner:
             failure_abort_ratio=self._settings["failed_tick_abort_ratio"],
         )
         schedule = generate_ticks(window.start, window.end)
-        state    = {"tickers": wl_filtered, "watchlist": wl_filtered}
+
+        # Seed the same initial state keys that ``orchestrator/tick.py``
+        # provides on live runs.  The strategist prompt template references
+        # ``{portfolio}`` directly (resolved by ADK's instruction-variable
+        # machinery), and several before-callbacks read ``portfolio``,
+        # ``positions``, ``memory_buffer``, ``day_digest``, and ``thesis``
+        # at the start of each tick.  Without these keys the ADK runner
+        # raises ``KeyError: 'Context variable not found: portfolio'``
+        # before the pipeline can execute even one agent.
+        portfolio = await broker.get_portfolio()
+        state: dict = {
+            "tickers":       wl_filtered,
+            "watchlist":     wl_filtered,
+            "portfolio":     portfolio.model_dump(mode="json"),
+            "positions":     {},
+            "memory_buffer": [],
+            "day_digest":    "",
+            "thesis":        "",
+        }
 
         status = "completed"
         try:
