@@ -29,7 +29,7 @@ import argparse
 import asyncio
 import json
 import logging
-from datetime import UTC, datetime, time
+from datetime import datetime, time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -45,22 +45,96 @@ from zoneinfo import ZoneInfo
 _NY = ZoneInfo("America/New_York")
 
 
-def _build_provider_fns() -> dict:
-    """Return the domain → live-provider fetch-function map for the Fetcher.
+def _as_of_close(end) -> datetime:
+    """Return a market-close datetime on ``end`` in New York time.
 
-    Each function has the signature
-    ``async fn(ticker: str, *, start: date, end: date) -> list``.
+    Matches the ``as_of`` timestamps used by live ticks so that the cache
+    stores data exactly as it would have been seen at 16:00 ET on that date.
+
+    Parameters
+    ----------
+    end:
+        A ``datetime.date`` representing the last day of a window.
+
+    Returns
+    -------
+    datetime
+        A timezone-aware datetime at 16:00 America/New_York on ``end``.
+    """
+    return datetime.combine(end, time(16, 0), tzinfo=_NY)
+
+
+async def _fill_quarterly_ratios(ticker: str, start, end) -> list:
+    """Fetch one ``CompanyRatios`` snapshot per quarter-end in ``[start, end]``.
+
+    Calls the active company_ratios provider once per quarter-end date and
+    returns ``list[(snapshot, quarter_end_date)]`` so ``Fetcher._fetch_one``
+    can unpack each tuple into the store's ``write_company_ratios`` signature.
+
+    The replay reader uses ``as_of_date <= as_of`` so multiple snapshots
+    inside one window let the analyst see the right quarter's fundamentals
+    rather than a single window-end snapshot.
+
+    Parameters
+    ----------
+    ticker:
+        Stock ticker symbol (e.g. ``"AAPL"``).
+    start:
+        First date of the backtest window (inclusive).
+    end:
+        Last date of the backtest window (inclusive).
+
+    Returns
+    -------
+    list[tuple[CompanyRatios, date]]
+        One entry per quarter-end that falls within ``[start, end]``, or a
+        single window-end snapshot if no quarter-end falls inside the range.
+    """
+    from datetime import date as _date
+
+    from data import get_company_ratios
+
+    # Calendar quarter-end dates: 31-Mar, 30-Jun, 30-Sep, 31-Dec.
+    _Q_ENDS = ((3, 31), (6, 30), (9, 30), (12, 31))
+
+    candidates: list[_date] = []
+    for year in range(start.year, end.year + 1):
+        for month, day in _Q_ENDS:
+            candidates.append(_date(year, month, day))
+
+    targets = [d for d in candidates if start <= d <= end]
+    if not targets:
+        # Window doesn't span any quarter-end — fall back to a single snapshot
+        # at window-end so the cache is not entirely empty.
+        targets = [end]
+
+    out: list = []
+    for qe in targets:
+        snapshot = await get_company_ratios(
+            ticker,
+            period="max",
+            interval="1d",
+            as_of=datetime.combine(qe, time(16, 0), tzinfo=_NY),
+        )
+        out.append((snapshot, qe))
+    return out
+
+
+def _build_provider_fns() -> dict:
+    """Return the domain → public-wrapper fetch-function map for the Fetcher.
+
+    Each function has the signature ``async fn(ticker, *, start, end)`` and
+    delegates to the matching ``data.get_*`` wrapper.  Whatever provider is
+    active in ``config/data.json`` is used automatically — switching is a
+    config-only operation.
 
     Returns
     -------
     dict[str, Callable]
-        Keys match the domain names used by ``CachedDataStore``
-        (``ohlcv``, ``company_ratios``, ``news``, ``filings``,
-        ``insider_trades``, ``politician_trades``, ``notable_holders``).
+        Keys mirror ``CachedDataStore`` writer domains.
     """
     from data import (
         get_company_filings,
-        get_company_ratios,
         get_insider_trades,
         get_notable_holders,
         get_price_history,
@@ -68,76 +142,44 @@ def _build_provider_fns() -> dict:
         get_stock_news,
     )
 
-    def _as_of_close(end) -> datetime:
-        """Build a market-close datetime on ``end`` in New York time."""
-        return datetime.combine(end, time(16, 0), tzinfo=_NY)
-
     async def _ohlcv(ticker: str, *, start, end) -> list:
-        """Fetch daily OHLCV bars for ``[start, end]`` via the price-history provider.
-
-        ``get_price_history`` dispatches to the registered yfinance provider and
-        returns a ``PriceHistory`` whose ``.bars`` list is what the store expects.
-        We request ``period="max"`` and ``interval="1d"`` then filter to the
-        window; yfinance doesn't accept arbitrary start/end with our wrapper, so
-        we pull a wide history and slice client-side.
-
-        Returns
-        -------
-        list[OHLCBar]
-            Bars whose date falls within ``[start, end]``, inclusive.
-        """
-        as_of = _as_of_close(end)
-        history = await get_price_history(ticker, period="max", interval="1d", as_of=as_of)
-        # Filter to the requested window — bars outside it are ignored.
-        return [
-            bar for bar in history.bars
-            if start <= bar.timestamp.date() <= end
-        ]
+        """Pull max-period history through the active price-history provider, then slice."""
+        history = await get_price_history(
+            ticker, period="max", interval="1d", as_of=_as_of_close(end),
+        )
+        return [bar for bar in history.bars if start <= bar.timestamp.date() <= end]
 
     async def _company_ratios(ticker: str, *, start, end) -> list:
-        """Fetch one fundamentals snapshot at window-close for ``ticker``.
-
-        ``write_company_ratios`` expects ``(ticker, snapshot, as_of_date)``
-        so we return a list of one ``(snapshot, as_of_date)`` tuple.
-
-        Returns
-        -------
-        list[tuple[CompanyRatios, date]]
-            Single-element list (or empty on failure).
-        """
-        as_of = _as_of_close(end)
-        snapshot = await get_company_ratios(ticker, period="max", interval="1d", as_of=as_of)
-        return [(snapshot, end)]
+        """Fan out quarter-end as_ofs across the window for PIT-correct snapshots."""
+        return await _fill_quarterly_ratios(ticker, start, end)
 
     async def _news(ticker: str, *, start, end) -> list:
         """Fetch news articles published within the window."""
-        as_of = _as_of_close(end)
-        return await get_stock_news(ticker, from_date=start, to_date=end, as_of=as_of)
+        return await get_stock_news(
+            ticker, from_date=start, to_date=end, as_of=_as_of_close(end),
+        )
 
     async def _filings(ticker: str, *, start, end) -> list:
         """Fetch SEC filings filed on or before window-close."""
-        as_of = _as_of_close(end)
-        return await get_company_filings(ticker, as_of=as_of)
+        return await get_company_filings(ticker, as_of=_as_of_close(end))
 
     async def _insider_trades(ticker: str, *, start, end) -> list:
         """Fetch Form 4 insider trades for the window period."""
-        as_of  = _as_of_close(end)
-        # Lookback covers the full window length (+ a small buffer) so that
-        # trades filed near the start of the window are included.
-        from datetime import date as _date
         lookback = (end - start).days + 14
-        return await get_insider_trades(ticker, lookback_days=lookback, as_of=as_of)
+        return await get_insider_trades(
+            ticker, lookback_days=lookback, as_of=_as_of_close(end),
+        )
 
     async def _politician_trades(ticker: str, *, start, end) -> list:
         """Fetch congressional/politician trades disclosed during the window."""
-        as_of    = _as_of_close(end)
         lookback = (end - start).days + 14
-        return await get_public_figure_trades(ticker, lookback_days=lookback, as_of=as_of)
+        return await get_public_figure_trades(
+            ticker, lookback_days=lookback, as_of=_as_of_close(end),
+        )
 
     async def _notable_holders(ticker: str, *, start, end) -> list:
         """Fetch SC-13D/13G/13F filings filed before window-close."""
-        as_of = _as_of_close(end)
-        return await get_notable_holders(ticker, as_of=as_of)
+        return await get_notable_holders(ticker, as_of=_as_of_close(end))
 
     return {
         "ohlcv":             _ohlcv,
