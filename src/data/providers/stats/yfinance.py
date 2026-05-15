@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+from datetime import datetime
 from functools import lru_cache
 from typing import Any
 
@@ -173,9 +174,19 @@ def _fetch_company_ratios(symbol: str, period: str, interval: str) -> CompanyRat
     burst=30,
 )
 async def fetch_price_history(
-    ticker: str, *, period: str = "1y", interval: str = "1d"
+    ticker: str,
+    *,
+    period: str = "1y",
+    interval: str = "1d",
+    as_of: datetime,
+    **_unused,
 ) -> PriceHistory:
     """Async wrapper for the price-history fetch — runs the blocking call off-thread.
+
+    ``as_of`` is accepted for dispatch parity but yfinance's period queries are
+    wall-clock anchored — live behaviour is unchanged.  Backfill callers slice
+    the returned ``max``-period history client-side to the historical window
+    (see ``scripts/backtest_fetch.py``).
 
     Parameters
     ----------
@@ -185,6 +196,11 @@ async def fetch_price_history(
         yfinance history period (default ``"1y"``).
     interval:
         yfinance history interval (default ``"1d"``).
+    as_of:
+        Required for interface parity with cache-backed providers; ignored here
+        as yfinance serves wall-clock-current data.
+    **_unused:
+        Absorbs any additional kwargs passed by the dispatch layer.
 
     Returns
     -------
@@ -203,9 +219,19 @@ async def fetch_price_history(
     burst=30,
 )
 async def fetch_company_ratios(
-    ticker: str, *, period: str = "1y", interval: str = "1d"
+    ticker: str,
+    *,
+    period: str = "1y",
+    interval: str = "1d",
+    as_of: datetime,
+    **_unused,
 ) -> CompanyRatios:
     """Async wrapper for the ratios fetch — runs the blocking call off-thread.
+
+    ``as_of`` is accepted for dispatch parity; yfinance's ``info`` endpoint
+    serves wall-clock-current data, so this provider is unsuitable for
+    historical PIT queries.  Use the ``pit_composite`` provider (added in a
+    later task) for backtests.
 
     Parameters
     ----------
@@ -215,6 +241,11 @@ async def fetch_company_ratios(
         yfinance history period (default ``"1y"``).
     interval:
         yfinance history interval (default ``"1d"``).
+    as_of:
+        Required for interface parity with cache-backed providers; ignored here
+        as yfinance's ``info`` endpoint serves wall-clock-current data.
+    **_unused:
+        Absorbs any additional kwargs passed by the dispatch layer.
 
     Returns
     -------

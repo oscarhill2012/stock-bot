@@ -34,10 +34,18 @@ async def fetch(
     *,
     from_date: date,
     to_date: date,
+    as_of: datetime,
     limit: int | None = 50,
+    **_unused,
 ) -> list[NewsArticle]:
+    """Recent news articles for ``ticker`` from Finnhub's ``company_news`` endpoint.
+
+    ``as_of`` is accepted for signature parity with other domains' providers but
+    Finnhub already filters by ``from_date``/``to_date`` so no additional logic
+    is needed.
+    """
     symbol = ticker.upper()
-    raw = await asyncio.to_thread(
+    raw    = await asyncio.to_thread(
         _fetch_company_news, symbol, from_date.isoformat(), to_date.isoformat()
     )
     if not raw:

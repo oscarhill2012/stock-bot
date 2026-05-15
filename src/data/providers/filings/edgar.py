@@ -106,10 +106,21 @@ def _build_filing(filing: Any, symbol: str, include_excerpts: bool) -> Filing:
 
 
 @with_retry
-def _list_filings(symbol: str, form_types: tuple[str, ...], limit: int) -> list[Any]:
+def _list_filings(
+    symbol: str,
+    form_types: tuple[str, ...],
+    limit: int,
+    as_of: datetime,
+) -> list[Any]:
+    """List the most recent ``limit`` filings of ``form_types`` for ``symbol``, filed on or before ``as_of``.
+
+    Uses the SEC's ``filing_date=":YYYY-MM-DD"`` upper-bound syntax so the
+    backfill never sees filings that did not yet exist at ``as_of``.
+    """
     _ensure_identity()
-    company = Company(symbol)
-    filings = company.get_filings(form=list(form_types))
+    upper_iso = as_of.date().isoformat()
+    company   = Company(symbol)
+    filings   = company.get_filings(form=list(form_types), filing_date=f":{upper_iso}")
     return list(filings.head(max(1, min(limit, 50))))
 
 
@@ -131,14 +142,18 @@ async def fetch(
     form_types: tuple[str, ...] = ("10-K", "10-Q", "8-K"),
     limit: int = 5,
     *,
+    as_of: datetime,
     include_excerpts: bool = True,
+    **_unused,
 ) -> list[Filing]:
-    """Latest `limit` filings of the given `form_types` for `ticker`."""
+    """Latest ``limit`` filings of ``form_types`` for ``ticker`` filed on or before ``as_of``."""
     symbol = ticker.upper()
 
     # The registry's dispatch already acquired one EDGAR token for the
     # index fetch. Per-filing fetches require additional tokens.
-    filings = await asyncio.to_thread(_list_filings, symbol, form_types, limit)
+    filings = await asyncio.to_thread(
+        _list_filings, symbol, form_types, limit, as_of,
+    )
 
     out: list[Filing] = []
     for filing in filings:

@@ -438,16 +438,20 @@ def _build_derivative(
 
 
 @with_retry
-def _list_form4_filings(symbol: str, lookback_days: int) -> list[Any]:
-    """Fetch the list of Form 4 filings for `symbol` within the lookback window.
+def _list_form4_filings(symbol: str, lookback_days: int, as_of: datetime) -> list[Any]:
+    """Fetch the list of Form 4 filings for ``symbol`` within the lookback window.
 
-    Returns up to 50 filings ordered by recency. Runs synchronously inside
-    `asyncio.to_thread` at the call site.
+    The window is anchored on ``as_of`` so backfill calls see only filings that
+    existed at that historical moment.  Live callers pass ``datetime.now(UTC)``
+    via the public wrapper, so behaviour is unchanged in production.
+
+    Returns up to 50 filings ordered by recency.
     """
     _ensure_identity()
-    from_iso = (date.today() - timedelta(days=lookback_days)).isoformat()
-    company = Company(symbol)
-    filings = company.get_filings(form="4", filing_date=f"{from_iso}:")
+    upper_iso = as_of.date().isoformat()
+    lower_iso = (as_of.date() - timedelta(days=lookback_days)).isoformat()
+    company   = Company(symbol)
+    filings   = company.get_filings(form="4", filing_date=f"{lower_iso}:{upper_iso}")
     return list(filings.head(50))
 
 
@@ -484,20 +488,38 @@ def _fetch_and_parse_one(filing: Any, symbol: str) -> Form4Bundle:
 
 
 @register(domain="insider_trades", name="edgar", upstream="edgar", rate_per_minute=600, burst=20)
-async def fetch(ticker: str, lookback_days: int = 30) -> Form4Bundle:
-    """Form 4 buys/sells and derivatives filed in the last `lookback_days` for `ticker`.
+async def fetch(
+    ticker: str,
+    *,
+    as_of: datetime,
+    lookback_days: int = 30,
+    **_unused,
+) -> Form4Bundle:
+    """Form 4 buys/sells and derivatives filed in ``(as_of - lookback_days, as_of]`` for ``ticker``.
 
-    Acquires one EDGAR token per filing to parse. At 10 req/sec this is
+    Parameters
+    ----------
+    ticker:
+        Symbol (uppercased internally).
+    as_of:
+        Upper bound for the filing window.  Live callers receive
+        ``datetime.now(UTC)`` from the public wrapper; backfill callers pass the
+        historical window-end timestamp.
+    lookback_days:
+        How many calendar days back from ``as_of`` to look.
+    _unused:
+        Absorbs kwargs other providers (e.g. news ``from_date``/``to_date``) use.
+
+    Acquires one EDGAR token per filing to parse.  At 10 req/sec this is
     comfortably under the SEC cap.
-
-    Returns a `Form4Bundle` combining all trade rows and all derivative
-    rows across every filing found in the lookback window.
     """
     symbol = ticker.upper()
 
-    filings = await asyncio.to_thread(_list_form4_filings, symbol, lookback_days)
+    filings = await asyncio.to_thread(
+        _list_form4_filings, symbol, lookback_days, as_of,
+    )
 
-    all_trades: list[InsiderTrade] = []
+    all_trades:      list[InsiderTrade]           = []
     all_derivatives: list[InsiderDerivativeTrade] = []
 
     for filing in filings:
