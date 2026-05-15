@@ -1,11 +1,11 @@
 {
   "providers": {
     "price_history": "yfinance",
-    "company_ratios": "yfinance",
-    "news": "finnhub",
+    "company_ratios": "pit_composite",
+    "news": "tiingo",
     "social_sentiment": "finnhub",
     "insider_trades": "edgar",
-    "politician_trades": "quiver",
+    "politician_trades": "fmp",
     "notable_holders": "edgar",
     "filings": "edgar"
   },

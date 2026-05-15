@@ -27,11 +27,12 @@ shared by all providers. Adding a new provider is a one-file drop in
 
 | Setting | Type | Meaning |
 |---|---|---|
-| `providers.stats` | string | Active provider name for stock stats (price, fundamentals, history). |
-| `providers.news` | string | Active provider name for news articles. |
+| `providers.price_history` | string | Active provider name for OHLCV price history. |
+| `providers.company_ratios` | string | Active provider for company fundamentals/ratios (active: `pit_composite`, fallback: `yfinance`) — XBRL fundamentals via edgartools + sliced yfinance OHLCV for price-derived technicals. PIT-correct. |
+| `providers.news` | string | Active provider name for news articles (active: `tiingo`, fallback: `finnhub`) — Tiingo News API (1000 articles/day/ticker free) with server-side date filtering. |
 | `providers.social_sentiment` | string | Active provider name for social-sentiment scores. |
 | `providers.insider_trades` | string | Active provider name for insider transactions. |
-| `providers.politician_trades` | string | Active provider name for politician trades. |
+| `providers.politician_trades` | string | Active provider name for politician trades (active: `fmp`, fallback: `quiver`) — Financial Modeling Prep `/senate-trading` + `/senate-disclosure` (free 250/day). |
 | `providers.notable_holders` | string | Active provider name for notable holders. |
 | `providers.filings` | string | Active provider name for SEC filings. |
 | `defaults.news_lookback_days` | int | Default lookback window for news fetch. |
