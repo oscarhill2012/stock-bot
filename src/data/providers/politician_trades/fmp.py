@@ -1,0 +1,283 @@
+"""FMP politician-trades provider — free 250/day, covers Senate + House.
+
+Endpoints (FMP v4):
+    https://financialmodelingprep.com/api/v4/senate-trading?symbol=AAPL&apikey=...
+    https://financialmodelingprep.com/api/v4/senate-disclosure?symbol=AAPL&apikey=...
+
+Both feeds use the same JSON row shape (``transactionDate``, ``disclosureDate``,
+``firstName``, ``lastName``, ``office``, ``type``, ``amount``).  This provider
+merges them, then applies the standard ``as_of`` cutoff + lookback window.
+
+Soft-fails to ``[]`` when ``FMP_API_KEY`` is unset.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+from datetime import date, datetime, timedelta
+from typing import Any
+
+import requests
+
+from data.registry import register
+from data.retry import with_retry
+
+from ...models import PoliticianTrade, TradeSide
+
+logger = logging.getLogger(__name__)
+
+_BASE_URL     = "https://financialmodelingprep.com/api/v4"
+_HTTP_TIMEOUT = 15.0
+
+# Mapping from FMP's free-text ``type`` field to our canonical ``TradeSide``.
+_SIDE_MAP: dict[str, TradeSide] = {
+    "purchase":         "buy",
+    "buy":              "buy",
+    "sale":             "sell",
+    "sale (full)":      "sell",
+    "sale (partial)":   "sell",
+    "sell":             "sell",
+    "exchange":         "exchange",
+}
+
+
+def _coerce_side(raw: Any) -> TradeSide:
+    """Map FMP's ``type`` string to our ``TradeSide`` literal.
+
+    Parameters
+    ----------
+    raw:
+        The raw ``type`` value from the FMP JSON row.
+
+    Returns
+    -------
+    TradeSide
+        Canonical side; ``"unknown"`` when unrecognised.
+    """
+    if not raw:
+        return "unknown"
+    return _SIDE_MAP.get(str(raw).strip().lower(), "unknown")
+
+
+def _parse_date(raw: Any) -> date | None:
+    """Coerce ``YYYY-MM-DD`` strings into ``date``; return ``None`` on failure.
+
+    Parameters
+    ----------
+    raw:
+        The raw date value (string or ``None``).
+
+    Returns
+    -------
+    date | None
+        Parsed date, or ``None`` if the value is missing or unparseable.
+    """
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).date()
+    except ValueError:
+        try:
+            return datetime.strptime(str(raw)[:10], "%Y-%m-%d").date()
+        except ValueError:
+            return None
+
+
+def _parse_amount_range(raw: Any) -> tuple[float | None, float | None]:
+    """Parse ``"$15,001 - $50,000"``-style amount strings into a numeric range.
+
+    Parameters
+    ----------
+    raw:
+        The raw amount string from the FMP JSON row.
+
+    Returns
+    -------
+    tuple[float | None, float | None]
+        ``(min, max)`` in USD, or ``(None, None)`` if unparseable.
+    """
+    if raw is None:
+        return None, None
+    text = str(raw).replace("$", "").replace(",", "").strip()
+    if not text:
+        return None, None
+    parts = [p.strip() for p in text.split("-")]
+    try:
+        if len(parts) == 2:
+            return float(parts[0]), float(parts[1])
+        return float(parts[0]), float(parts[0])
+    except ValueError:
+        return None, None
+
+
+@with_retry
+def _fetch_senate(symbol: str, api_key: str) -> list[dict]:
+    """Call FMP ``/senate-trading?symbol=...`` and return raw rows.
+
+    Parameters
+    ----------
+    symbol:
+        The ticker symbol to query.
+    api_key:
+        The FMP API key to authenticate with.
+
+    Returns
+    -------
+    list[dict]
+        Raw JSON rows from the endpoint, or an empty list on no content.
+    """
+    url    = f"{_BASE_URL}/senate-trading"
+    params = {"symbol": symbol, "apikey": api_key}
+    resp   = requests.get(url, params=params, timeout=_HTTP_TIMEOUT)
+    resp.raise_for_status()
+    payload = resp.json() if resp.content else []
+    return payload if isinstance(payload, list) else []
+
+
+@with_retry
+def _fetch_house(symbol: str, api_key: str) -> list[dict]:
+    """Call FMP ``/senate-disclosure?symbol=...`` (covers House) and return raw rows.
+
+    Despite the endpoint name, this feed contains House disclosures.  FMP
+    uses ``office`` within the row to indicate which chamber the politician
+    sits in.
+
+    Parameters
+    ----------
+    symbol:
+        The ticker symbol to query.
+    api_key:
+        The FMP API key to authenticate with.
+
+    Returns
+    -------
+    list[dict]
+        Raw JSON rows from the endpoint, or an empty list on no content.
+    """
+    url    = f"{_BASE_URL}/senate-disclosure"
+    params = {"symbol": symbol, "apikey": api_key}
+    resp   = requests.get(url, params=params, timeout=_HTTP_TIMEOUT)
+    resp.raise_for_status()
+    payload = resp.json() if resp.content else []
+    return payload if isinstance(payload, list) else []
+
+
+def _row_to_trade(row: dict, symbol: str) -> PoliticianTrade | None:
+    """Project one FMP row into a ``PoliticianTrade``.
+
+    Returns ``None`` when the row lacks a parseable ``transactionDate``,
+    as the date is required for PIT filtering.
+
+    Parameters
+    ----------
+    row:
+        A single raw JSON row from either FMP endpoint.
+    symbol:
+        The ticker symbol the row belongs to (injected since FMP omits it).
+
+    Returns
+    -------
+    PoliticianTrade | None
+        Populated model, or ``None`` if the row is unusable.
+    """
+    txn_date = _parse_date(row.get("transactionDate"))
+    if txn_date is None:
+        return None
+
+    disclosure = _parse_date(row.get("disclosureDate"))
+    amount_min, amount_max = _parse_amount_range(row.get("amount"))
+
+    # Combine firstName + lastName, falling back to "unknown" if both are absent.
+    politician = " ".join(
+        part for part in (row.get("firstName"), row.get("lastName")) if part
+    ) or "unknown"
+
+    return PoliticianTrade(
+        ticker=symbol,
+        politician=politician,
+        chamber=row.get("office") or None,
+        party=row.get("party") or None,
+        side=_coerce_side(row.get("type")),
+        transaction_date=txn_date,
+        disclosure_date=disclosure,
+        amount_min_usd=amount_min,
+        amount_max_usd=amount_max,
+    )
+
+
+@register(
+    domain="politician_trades",
+    name="fmp",
+    upstream="fmp",
+    rate_per_minute=20,
+    burst=10,
+)
+async def fetch(
+    ticker: str | None = None,
+    *,
+    as_of: datetime,
+    lookback_days: int = 90,
+    **_unused,
+) -> list[PoliticianTrade]:
+    """Senate + House trades for ``ticker`` filed in ``(as_of - lookback, as_of]``.
+
+    Merges FMP's two endpoints into one list of ``PoliticianTrade``s.  Applies
+    the same PIT cutoff as the cache reader: the effective date is
+    ``COALESCE(disclosure_date, transaction_date)`` — whichever is known first.
+
+    Soft-fails to ``[]`` when ``FMP_API_KEY`` is unset (no credentials configured).
+
+    Parameters
+    ----------
+    ticker:
+        Stock ticker symbol to filter trades by.  ``None`` is accepted but
+        will return an empty list (FMP requires a symbol).
+    as_of:
+        The historical reference point.  Trades with an effective PIT date
+        after this moment are excluded to prevent lookahead bias.
+    lookback_days:
+        How many calendar days before ``as_of`` to include.  Defaults to 90.
+    **_unused:
+        Absorbs extra keyword arguments forwarded by the provider registry
+        (e.g. ``window_start``, ``window_end``) so callers need not know the
+        exact signature of each registered provider.
+
+    Returns
+    -------
+    list[PoliticianTrade]
+        Filtered, merged trades from both FMP congressional-disclosure feeds.
+    """
+    api_key = os.getenv("FMP_API_KEY")
+    if not api_key:
+        logger.debug("FMP_API_KEY unset — fetch returning []")
+        return []
+
+    symbol = (ticker or "").upper()
+    if not symbol:
+        return []
+
+    # Fetch both endpoints concurrently to minimise latency.
+    senate, house = await asyncio.gather(
+        asyncio.to_thread(_fetch_senate, symbol, api_key),
+        asyncio.to_thread(_fetch_house,  symbol, api_key),
+    )
+
+    # PIT window: (lower, upper] — inclusive upper, exclusive lower.
+    lower = as_of.date() - timedelta(days=lookback_days)
+    upper = as_of.date()
+
+    out: list[PoliticianTrade] = []
+    for row in (*senate, *house):
+        trade = _row_to_trade(row, symbol)
+        if trade is None:
+            continue
+
+        # Use disclosure date where available; fall back to transaction date.
+        pit = trade.disclosure_date or trade.transaction_date
+        if pit <= lower or pit > upper:
+            continue
+
+        out.append(trade)
+
+    return out
