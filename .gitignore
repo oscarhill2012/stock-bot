@@ -69,6 +69,8 @@ data/raw/
 # LLM report cache — hash-memoised verdicts written by the News + Fundamental
 # analysts. Never commit; each developer's cache is an isolated local artefact.
 cache/
+# Exception: the backtest cache *source package* must be tracked.
+!src/backtest/cache/
 
 # Local dev SQLite — persistence tests write into it on every run; should
 # not be tracked. Schema is owned by SQLAlchemy ORM in orchestrator/persistence.py.
