@@ -9,12 +9,14 @@ side-effectful write step wired into the orchestrator pipeline.
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event
+
+from data.timeguard import resolve_as_of
 
 
 class StrategistDecisionWriter(BaseAgent):
@@ -85,7 +87,11 @@ class StrategistDecisionWriter(BaseAgent):
         # tick timestamp) so replay is deterministic.  Fall back to wall-clock
         # only on live runs where as_of is absent.
         raw_as_of = state.get("as_of")
-        recorded_at = raw_as_of if isinstance(raw_as_of, datetime) else datetime.now(tz=UTC)
+        recorded_at = resolve_as_of(
+            raw_as_of if isinstance(raw_as_of, datetime) else None,
+            allow_wallclock=True,
+            site="decision_writer",
+        )
 
         # Loop: one DB row per stance in the decision.
         for stance in decision.stances:

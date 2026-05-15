@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import datetime
 
 from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event
+
+from data.timeguard import resolve_as_of
 
 from .compress import compress
 from .dedup import detect_repeat
@@ -106,7 +108,11 @@ class MemoryWriter(BaseAgent):
         # aligned to the historical tick in backtest replay rather than
         # wall-clock time.  Falls back to wall-clock on live runs.
         raw_as_of = state.get("as_of")
-        entry_ts = raw_as_of if isinstance(raw_as_of, datetime) else datetime.now(tz=UTC)
+        entry_ts = resolve_as_of(
+            raw_as_of if isinstance(raw_as_of, datetime) else None,
+            allow_wallclock=True,
+            site="memory/writer",
+        )
 
         new_entry = BufferEntry(
             timestamp=entry_ts,

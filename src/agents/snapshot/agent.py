@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event
+
+from data.timeguard import resolve_as_of
 
 
 class SnapshotterAgent(BaseAgent):
@@ -68,7 +70,11 @@ class SnapshotterAgent(BaseAgent):
         # tick timestamp) so equity-curve timestamps are deterministic in replay.
         # Fall back to wall-clock on live runs where as_of is absent.
         raw_as_of = state.get("as_of")
-        recorded_at = raw_as_of if isinstance(raw_as_of, datetime) else datetime.now(tz=UTC)
+        recorded_at = resolve_as_of(
+            raw_as_of if isinstance(raw_as_of, datetime) else None,
+            allow_wallclock=True,
+            site="snapshot/agent",
+        )
 
         snap = {
             "tick_id":              tick_id,

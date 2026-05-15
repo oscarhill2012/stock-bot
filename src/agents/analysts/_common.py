@@ -14,13 +14,14 @@ chains are needed.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from google.adk.agents.callback_context import CallbackContext
 from google.genai import types as genai_types
 
 from contract.evidence import AnalystEvidence, AnalystName, AnalystVerdict
+from data.timeguard import resolve_as_of
 
 
 def make_evidence_callback(
@@ -86,7 +87,9 @@ def make_evidence_callback(
         # In a backtest, state["as_of"] holds the historical tick time so
         # evidence records are stamped with the replayed clock rather than
         # wall-clock now.  Live sessions have no "as_of" → wall-clock fallback.
-        recorded_at = state.get("as_of") or datetime.now(tz=UTC)
+        recorded_at: datetime = resolve_as_of(
+            state.get("as_of"), allow_wallclock=True, site="_common/fetch",
+        )
 
         # Per-ticker raw data dict keyed by ticker symbol.
         data: dict = state.get(f"{analyst}_data", {}) or {}

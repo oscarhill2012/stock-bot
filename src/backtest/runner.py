@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import signal
 import subprocess
 from dataclasses import dataclass
@@ -36,11 +37,11 @@ from pathlib import Path
 from backtest.cache.store import CachedDataStore
 from backtest.decision_logger import DecisionLogger
 from backtest.driver import Driver
-from backtest.providers import _store_handle
 
 # Importing each cache-provider module triggers its ``@register`` decorator,
 # making the ``"cache"`` name available to ``data.registry.dispatch``.
 from backtest.providers import (  # noqa: F401
+    _store_handle,
     company_ratios_cache,
     filings_cache,
     insider_trades_cache,
@@ -136,6 +137,15 @@ class Runner:
         watchlist: list[str] | None,
     ) -> RunResult:
         """Async implementation of the full run lifecycle."""
+        # Belt-and-braces: scripts.backtest_run also sets this, but defending
+        # in depth means a programmatic Runner.run caller can't accidentally
+        # leak wall-clock time into the dataset.
+        # Save the previous value so we can restore it in the finally block —
+        # this prevents test-environment contamination when Runner is invoked
+        # programmatically (e.g. in integration tests) without a full process exit.
+        _prev_strict = os.environ.get("STOCKBOT_STRICT_AS_OF")
+        os.environ["STOCKBOT_STRICT_AS_OF"] = "1"
+
         window  = self._windows[window_key]
         wl      = list(watchlist or self._watchlist)
         run_id  = f"{window_key}-{_git_sha7()}"
@@ -275,6 +285,12 @@ class Runner:
             # Restore the signal handlers registered before this run started.
             signal.signal(signal.SIGINT,  _prev_sigint)
             signal.signal(signal.SIGTERM, _prev_sigterm)
+            # Restore strict-mode env var to its pre-run value so that
+            # programmatic callers (e.g. test suites) don't inherit it.
+            if _prev_strict is None:
+                os.environ.pop("STOCKBOT_STRICT_AS_OF", None)
+            else:
+                os.environ["STOCKBOT_STRICT_AS_OF"] = _prev_strict
 
         # Re-read manifest (driver wrote the final status) and add finished_at.
         manifest = json.loads((run_dir / "manifest.json").read_text())

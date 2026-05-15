@@ -24,7 +24,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from . import providers as _providers  # noqa: F401  — triggers @register decorators
@@ -33,6 +33,7 @@ from .models import (
     StockSignalBundle,
 )
 from .registry import dispatch, min_decision_interval_seconds
+from .timeguard import resolve_as_of
 
 logger = logging.getLogger(__name__)
 
@@ -142,8 +143,7 @@ async def get_stock_signal_bundle(
     symbol = ticker.upper()
 
     # Resolve the historical clock once; all lookback dates derive from it.
-    if as_of is None:
-        as_of = datetime.now(tz=UTC)
+    as_of = resolve_as_of(as_of, allow_wallclock=True, site="data.aggregator")
     as_of_date = as_of.date()
 
     errors: list[ProviderError] = []

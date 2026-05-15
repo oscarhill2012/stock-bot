@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 
 from backtest.runner import Runner
@@ -25,6 +26,11 @@ def main() -> None:
     Parses ``--window`` (required) from ``sys.argv``, delegates to
     ``Runner().run()``, and exits with code 1 if the run was aborted.
     """
+    # Strict-as_of mode is mandatory for backtests — a missing as_of at any
+    # provider or writer site must abort the run rather than fabricate a
+    # wall-clock substitute.  See src/data/timeguard.py.
+    os.environ["STOCKBOT_STRICT_AS_OF"] = "1"
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",

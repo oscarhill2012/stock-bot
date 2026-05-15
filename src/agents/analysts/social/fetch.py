@@ -11,12 +11,13 @@ body, not here.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import datetime
 
 from google.adk.agents.callback_context import CallbackContext
 from google.genai import types as genai_types
 
 from data import get_social_sentiment
+from data.timeguard import resolve_as_of
 from observability.trace import _trace_maybe
 
 logger = logging.getLogger(__name__)
@@ -45,7 +46,9 @@ async def social_fetch_callback(
     tickers: list[str] = state.get("tickers", []) or []
 
     # Pull the historical clock from session state; default to wall-clock for live.
-    as_of: datetime = state.get("as_of") or datetime.now(tz=UTC)
+    as_of: datetime = resolve_as_of(
+        state.get("as_of"), allow_wallclock=True, site="social/fetch",
+    )
 
     social_data: dict[str, dict] = {}
 

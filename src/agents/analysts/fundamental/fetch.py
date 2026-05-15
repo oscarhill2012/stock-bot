@@ -36,7 +36,7 @@ object graph into the instruction.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import datetime
 
 from google.adk.agents.callback_context import CallbackContext
 from google.genai import types as genai_types
@@ -44,6 +44,7 @@ from google.genai import types as genai_types
 from config.analysts import FundamentalCaps, get_analysts_config
 from data import get_company_filings, get_company_ratios, get_insider_trades
 from data.models import Form4Bundle, InsiderTrade
+from data.timeguard import resolve_as_of
 from observability.trace import _trace_maybe
 
 logger = logging.getLogger(__name__)
@@ -236,7 +237,9 @@ async def fundamental_fetch_callback(
     tickers: list[str] = state.get("tickers", [])
 
     # Pull the historical clock from session state; default to wall-clock for live.
-    as_of: datetime = state.get("as_of") or datetime.now(tz=UTC)
+    as_of: datetime = resolve_as_of(
+        state.get("as_of"), allow_wallclock=True, site="fundamental/fetch",
+    )
 
     fundamental_data: dict[str, dict] = {}
     context_blocks: list[str] = []

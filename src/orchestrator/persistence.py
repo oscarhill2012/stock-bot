@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import UTC, datetime
+from datetime import datetime
 
 from sqlalchemy import (
     Boolean,
@@ -16,6 +16,8 @@ from sqlalchemy import (
     create_engine,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+
+from data.timeguard import resolve_as_of
 
 
 class Base(DeclarativeBase):
@@ -221,7 +223,11 @@ def save_portfolio_snapshot(session: Session, snap: dict) -> None:
         # path) or wall-clock (live path), so the snap dict always carries the
         # correct value.  The fallback here only fires if the caller omits it
         # entirely (e.g. legacy tests that pre-date the as_of migration).
-        recorded_at=snap.get("recorded_at", datetime.now(tz=UTC)),
+        recorded_at=resolve_as_of(
+            snap.get("recorded_at"),
+            allow_wallclock=True,
+            site="persistence.save_portfolio_snapshot",
+        ),
         bot_total_value=snap["bot_total_value"],
         bot_cash=snap["bot_cash"],
         bot_positions_value=snap["bot_positions_value"],
@@ -305,7 +311,11 @@ def save_analyst_evidence(
     """
     row = AnalystEvidenceRow(
         tick_id=tick_id,
-        recorded_at=recorded_at if recorded_at is not None else datetime.now(tz=UTC),
+        recorded_at=resolve_as_of(
+            recorded_at,
+            allow_wallclock=True,
+            site="persistence.save_analyst_evidence",
+        ),
         analyst=analyst,
         ticker=ticker,
         lean=verdict["lean"],
@@ -377,7 +387,11 @@ def save_ticker_evidence(
     """
     row = TickerEvidenceRow(
         tick_id=tick_id,
-        recorded_at=recorded_at if recorded_at is not None else datetime.now(tz=UTC),
+        recorded_at=resolve_as_of(
+            recorded_at,
+            allow_wallclock=True,
+            site="persistence.save_ticker_evidence",
+        ),
         ticker=ticker,
         lean=aggregate["lean"],
         magnitude=float(aggregate["magnitude"]),
