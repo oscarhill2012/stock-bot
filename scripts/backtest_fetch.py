@@ -257,6 +257,7 @@ async def _main_async(args: argparse.Namespace) -> None:
         watchlist=watchlist,
         provider_fns=_build_provider_fns(),
         live_providers_for_domain=_build_provider_name_map(),
+        refetch_domains=set(args.refetch_domain),
     )
 
     logging.info(
@@ -297,6 +298,17 @@ def main() -> None:
         "--watchlist",
         default="config/watchlist.json",
         help="Path to a JSON file with a 'tickers' list (default: config/watchlist.json).",
+    )
+    parser.add_argument(
+        "--refetch-domain",
+        action="append",
+        default=[],
+        metavar="DOMAIN",
+        help=(
+            "Force re-fetch of the named domain even when cache_runs has "
+            "status='ok'.  Pass multiple times to refetch several domains, "
+            "e.g. --refetch-domain news --refetch-domain filings."
+        ),
     )
 
     asyncio.run(_main_async(parser.parse_args()))

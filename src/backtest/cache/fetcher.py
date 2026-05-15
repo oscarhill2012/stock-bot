@@ -83,13 +83,21 @@ class Fetcher:
         watchlist: list[str],
         provider_fns: dict[str, Callable[..., Awaitable[Any]]],
         live_providers_for_domain: dict[str, str],
+        refetch_domains: set[str] | None = None,
     ) -> None:
-        self._store            = store
-        self._window_key       = window_key
-        self._window           = window
-        self._watchlist        = watchlist
-        self._provider_fns     = provider_fns
-        self._live_for_domain  = live_providers_for_domain
+        """Wire the fetcher.
+
+        ``refetch_domains`` (default empty) names domains whose existing
+        ``status='ok'`` rows are ignored — useful after a provider swap or
+        when the user passes ``--refetch-domain news`` on the CLI.
+        """
+        self._store              = store
+        self._window_key         = window_key
+        self._window             = window
+        self._watchlist          = watchlist
+        self._provider_fns       = provider_fns
+        self._live_for_domain    = live_providers_for_domain
+        self._refetch_domains    = refetch_domains or set()
 
     # ── public API ─────────────────────────────────────────────────────────────
 
@@ -112,7 +120,15 @@ class Fetcher:
     # ── internals ──────────────────────────────────────────────────────────────
 
     def _already_ok(self, ticker: str, domain: str) -> bool:
-        """Return ``True`` iff a prior fetch for this triple has ``status='ok'``.
+        """Return ``True`` iff a prior fetch for this triple has ``status='ok'``
+        **and** was written by the currently-configured ``source_provider``.
+
+        Including ``source_provider`` in the predicate means a ``config/data.json``
+        flip from e.g. ``finnhub`` to ``tiingo`` invalidates the skip — the new
+        provider is re-invoked rather than returning stale rows from the old one.
+
+        Domains listed in ``self._refetch_domains`` are never skipped, regardless
+        of the row's provider.
 
         Parameters
         ----------
@@ -125,15 +141,22 @@ class Fetcher:
         -------
         bool
             ``True`` when a ``cache_runs`` row exists for
-            ``(window_key, ticker, domain)`` with ``status='ok'``.
+            ``(window_key, ticker, domain, source_provider)`` with
+            ``status='ok'`` **and** the domain is not flagged for refetch.
         """
+        if domain in self._refetch_domains:
+            return False
+
+        expected_provider = self._live_for_domain.get(domain)
+
         with Session(self._store._engine) as s:
             row = s.execute(
                 select(CacheRunRow).where(
-                    CacheRunRow.window_key == self._window_key,
-                    CacheRunRow.ticker     == ticker,
-                    CacheRunRow.domain     == domain,
-                    CacheRunRow.status     == "ok",
+                    CacheRunRow.window_key      == self._window_key,
+                    CacheRunRow.ticker          == ticker,
+                    CacheRunRow.domain          == domain,
+                    CacheRunRow.source_provider == expected_provider,
+                    CacheRunRow.status          == "ok",
                 )
             ).scalar_one_or_none()
 
