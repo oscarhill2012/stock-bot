@@ -64,9 +64,15 @@ class SnapshotterAgent(BaseAgent):
         excess_return_pct = bot_return_pct - spy_return_pct
         spy_value_if_held = start * (1 + spy_return_pct / 100)
 
+        # Prefer state["as_of"] (set by the backtest driver to the historical
+        # tick timestamp) so equity-curve timestamps are deterministic in replay.
+        # Fall back to wall-clock on live runs where as_of is absent.
+        raw_as_of = state.get("as_of")
+        recorded_at = raw_as_of if isinstance(raw_as_of, datetime) else datetime.now(tz=UTC)
+
         snap = {
             "tick_id":              tick_id,
-            "recorded_at":          datetime.now(tz=UTC),
+            "recorded_at":          recorded_at,
             "bot_total_value":      bot_total,
             "bot_cash":             bot_cash,
             "bot_positions_value":  bot_positions_value,

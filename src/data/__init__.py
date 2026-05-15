@@ -78,9 +78,15 @@ from .rate_limit import AsyncRateLimiter
 from .registry import dispatch as _dispatch  # noqa: F401  (re-export)
 from .registry import min_decision_interval_seconds
 
+from datetime import UTC, datetime
+
 
 async def get_price_history(
-    ticker: str, period: str = "1y", interval: str = "1d"
+    ticker: str,
+    period: str = "1y",
+    interval: str = "1d",
+    *,
+    as_of: datetime | None = None,
 ) -> PriceHistory:
     """Fetch OHLCV history for ``ticker`` via the active price-history provider.
 
@@ -92,17 +98,31 @@ async def get_price_history(
         yfinance history period (default ``"1y"``).
     interval:
         yfinance history interval (default ``"1d"``).
+    as_of:
+        Historical clock timestamp.  Defaults to ``datetime.now(UTC)`` (wall
+        clock) so live callers that omit this argument behave identically to
+        before.  Backtest callers pass the tick timestamp so providers see the
+        correct point-in-time.
 
     Returns
     -------
     PriceHistory
         OHLCV bars ordered oldest -> newest.
     """
-    return await _dispatch("price_history", ticker.upper(), period=period, interval=interval)
+    if as_of is None:
+        as_of = datetime.now(tz=UTC)
+    return await _dispatch(
+        "price_history", ticker.upper(),
+        period=period, interval=interval, as_of=as_of,
+    )
 
 
 async def get_company_ratios(
-    ticker: str, period: str = "1y", interval: str = "1d"
+    ticker: str,
+    period: str = "1y",
+    interval: str = "1d",
+    *,
+    as_of: datetime | None = None,
 ) -> CompanyRatios:
     """Fetch scalar fundamentals for ``ticker`` via the active ratios provider.
 
@@ -114,13 +134,20 @@ async def get_company_ratios(
         yfinance history period (default ``"1y"``).
     interval:
         yfinance history interval (default ``"1d"``).
+    as_of:
+        Historical clock timestamp.  Defaults to ``datetime.now(UTC)``.
 
     Returns
     -------
     CompanyRatios
         Scalar fundamentals + summary stats.
     """
-    return await _dispatch("company_ratios", ticker.upper(), period=period, interval=interval)
+    if as_of is None:
+        as_of = datetime.now(tz=UTC)
+    return await _dispatch(
+        "company_ratios", ticker.upper(),
+        period=period, interval=interval, as_of=as_of,
+    )
 
 
 async def get_stock_news(
@@ -129,40 +156,105 @@ async def get_stock_news(
     to_date=None,
     *,
     limit: int | None = 50,
+    as_of: datetime | None = None,
 ):
-    """Fetch news articles for `ticker` via the active news provider."""
-    from datetime import date as _d
+    """Fetch news articles for ``ticker`` via the active news provider.
+
+    Parameters
+    ----------
+    ticker:
+        Ticker symbol (will be uppercased).
+    from_date:
+        Start of the news window.  Defaults to ``as_of - 7 days``.
+    to_date:
+        End of the news window.  Defaults to ``as_of.date()``.
+    limit:
+        Maximum number of articles to return.
+    as_of:
+        Historical clock timestamp.  Defaults to ``datetime.now(UTC)``.
+    """
     from datetime import timedelta as _td
-    today = _d.today()
+    if as_of is None:
+        as_of = datetime.now(tz=UTC)
+    as_of_date = as_of.date()
     return await _dispatch(
         "news",
         ticker.upper(),
-        from_date=from_date or (today - _td(days=7)),
-        to_date=to_date or today,
+        from_date=from_date or (as_of_date - _td(days=7)),
+        to_date=to_date or as_of_date,
         limit=limit,
+        as_of=as_of,
     )
 
 
-async def get_social_sentiment(ticker: str):
-    """Fetch social-sentiment snapshot for `ticker` via the active provider."""
-    return await _dispatch("social_sentiment", ticker.upper())
+async def get_social_sentiment(
+    ticker: str,
+    *,
+    as_of: datetime | None = None,
+):
+    """Fetch social-sentiment snapshot for ``ticker`` via the active provider.
+
+    Parameters
+    ----------
+    ticker:
+        Ticker symbol (will be uppercased).
+    as_of:
+        Historical clock timestamp.  Defaults to ``datetime.now(UTC)``.
+    """
+    if as_of is None:
+        as_of = datetime.now(tz=UTC)
+    return await _dispatch("social_sentiment", ticker.upper(), as_of=as_of)
 
 
-async def get_insider_trades(ticker: str, *, lookback_days: int = 30):
-    """Fetch SEC Form 4 insider trades for `ticker` via the active provider."""
-    return await _dispatch("insider_trades", ticker.upper(), lookback_days=lookback_days)
+async def get_insider_trades(
+    ticker: str,
+    *,
+    lookback_days: int = 30,
+    as_of: datetime | None = None,
+):
+    """Fetch SEC Form 4 insider trades for ``ticker`` via the active provider.
+
+    Parameters
+    ----------
+    ticker:
+        Ticker symbol (will be uppercased).
+    lookback_days:
+        Lookback window for Form 4 trades.
+    as_of:
+        Historical clock timestamp.  Defaults to ``datetime.now(UTC)``.
+    """
+    if as_of is None:
+        as_of = datetime.now(tz=UTC)
+    return await _dispatch(
+        "insider_trades", ticker.upper(),
+        lookback_days=lookback_days, as_of=as_of,
+    )
 
 
 async def get_public_figure_trades(
     ticker: str | None = None,
     *,
     lookback_days: int = 90,
+    as_of: datetime | None = None,
 ):
-    """Fetch politician/congressional trades via the active provider."""
+    """Fetch politician/congressional trades via the active provider.
+
+    Parameters
+    ----------
+    ticker:
+        Ticker symbol, or ``None`` for all tickers.
+    lookback_days:
+        Lookback window for trades.
+    as_of:
+        Historical clock timestamp.  Defaults to ``datetime.now(UTC)``.
+    """
+    if as_of is None:
+        as_of = datetime.now(tz=UTC)
     return await _dispatch(
         "politician_trades",
         ticker.upper() if ticker else None,
         lookback_days=lookback_days,
+        as_of=as_of,
     )
 
 
@@ -171,11 +263,26 @@ async def get_notable_holders(
     *,
     lookback_days: int = 180,
     limit: int = 20,
+    as_of: datetime | None = None,
 ):
-    """Fetch notable EDGAR 13F holders for `ticker` via the active provider."""
+    """Fetch notable EDGAR 13F holders for ``ticker`` via the active provider.
+
+    Parameters
+    ----------
+    ticker:
+        Ticker symbol (will be uppercased).
+    lookback_days:
+        Lookback window for 13F filings.
+    limit:
+        Maximum number of holders to return.
+    as_of:
+        Historical clock timestamp.  Defaults to ``datetime.now(UTC)``.
+    """
+    if as_of is None:
+        as_of = datetime.now(tz=UTC)
     return await _dispatch(
         "notable_holders", ticker.upper(),
-        lookback_days=lookback_days, limit=limit,
+        lookback_days=lookback_days, limit=limit, as_of=as_of,
     )
 
 
@@ -185,11 +292,29 @@ async def get_company_filings(
     limit: int = 5,
     *,
     include_excerpts: bool = True,
+    as_of: datetime | None = None,
 ):
-    """Fetch SEC filings for `ticker` via the active filings provider."""
+    """Fetch SEC filings for ``ticker`` via the active filings provider.
+
+    Parameters
+    ----------
+    ticker:
+        Ticker symbol (will be uppercased).
+    form_types:
+        Tuple of SEC form types to retrieve.
+    limit:
+        Maximum number of filings per form type.
+    include_excerpts:
+        Whether to include MD&A / risk-factor excerpts.
+    as_of:
+        Historical clock timestamp.  Defaults to ``datetime.now(UTC)``.
+    """
+    if as_of is None:
+        as_of = datetime.now(tz=UTC)
     return await _dispatch(
         "filings", ticker.upper(),
-        form_types=form_types, limit=limit, include_excerpts=include_excerpts,
+        form_types=form_types, limit=limit,
+        include_excerpts=include_excerpts, as_of=as_of,
     )
 
 

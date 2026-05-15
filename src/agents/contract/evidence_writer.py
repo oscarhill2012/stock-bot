@@ -11,6 +11,7 @@ pipeline.
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from datetime import UTC, datetime
 from typing import Any
 
 from google.adk.agents import BaseAgent
@@ -70,6 +71,15 @@ class EvidenceWriter(BaseAgent):
         state = ctx.session.state
         tick_id = state.get("tick_id", "unknown")
 
+        # Resolve the evidence timestamp.  Prefer state["as_of"] (set by the
+        # backtest driver) so all evidence rows for a tick share the historical
+        # timestamp and are deterministic in replay.  Fall back to wall-clock
+        # on live runs where as_of is absent.
+        raw_as_of = state.get("as_of")
+        evidence_recorded_at: datetime = (
+            raw_as_of if isinstance(raw_as_of, datetime) else datetime.now(tz=UTC)
+        )
+
         # Persist one AnalystEvidenceRow per evidence item across all analysts.
         for state_key, analyst in _EVIDENCE_KEYS:
             for ev in state.get(state_key, []) or []:
@@ -85,6 +95,7 @@ class EvidenceWriter(BaseAgent):
                     verdict=ev_dict["verdict"],
                     features=ev_dict.get("features", {}),
                     feature_warnings=ev_dict.get("feature_warnings", []),
+                    recorded_at=evidence_recorded_at,
                 )
 
         # Persist one TickerEvidenceRow per ticker's aggregated cross-analyst stance.
@@ -102,6 +113,7 @@ class EvidenceWriter(BaseAgent):
                 # the TickerEvidence dict — len() gives the number of analysts
                 # whose evidence was aggregated into this row.
                 analyst_count=len(te_dict.get("per_analyst", {})),
+                recorded_at=evidence_recorded_at,
             )
 
         # NOTE: no try/except wrapping the saver loop — a mid-loop failure leaves the

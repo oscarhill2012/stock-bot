@@ -33,6 +33,7 @@ appear here; those live in the Fundamental analyst's vocabulary.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 # TYPE_CHECKING guard prevents a circular import at module load time:
@@ -84,7 +85,12 @@ def _amount(filing: Mapping[str, Any]) -> float:
         return 0.0
 
 
-def extract_smart_money_features(raw: Mapping[str, Any], ticker: str) -> dict[str, float]:
+def extract_smart_money_features(
+    raw: Mapping[str, Any],
+    ticker: str,
+    *,
+    as_of: datetime | None = None,
+) -> dict[str, float]:
     """Aggregate congressional filings into counts, dollar totals, and a no-data flag.
 
     Caller is expected to have already filtered to the last 30 days; this

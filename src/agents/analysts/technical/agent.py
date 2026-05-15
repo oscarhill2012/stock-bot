@@ -103,13 +103,17 @@ class TechnicalAnalyst(BaseAgent):
         tickers: list[str] = state.get("tickers", []) or []
         data: dict[str, dict] = state.get("technical_data", {}) or {}
 
+        # Historical clock: backtest sets state["as_of"]; live falls back to None
+        # (the extractor ignores it for clock-free features).
+        as_of = state.get("as_of") or None
+
         # Build as a list of dicts so make_evidence_callback can iterate them
         # and build its ticker → verdict lookup.  Each dict includes a
         # "ticker" key alongside the AnalystVerdict fields.
         verdicts: list[dict[str, Any]] = []
 
         for ticker in tickers:
-            features = extract_technical_features(data.get(ticker, {}), ticker)
+            features = extract_technical_features(data.get(ticker, {}), ticker, as_of=as_of)
             verdict = derive_technical_verdict(features, self.heuristics)
             v_dict = verdict.model_dump(mode="json")
             v_dict["ticker"] = ticker

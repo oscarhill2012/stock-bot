@@ -10,6 +10,7 @@ or the raw dict-shaped payload that the fetch callback stores per-ticker.
 """
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from agents.analysts.heuristics import SocialHeuristics
@@ -43,7 +44,12 @@ def _net(scores: dict[str, Any]) -> float:
     return pos - neg
 
 
-def extract_social_features(raw: dict[str, Any], ticker: str) -> dict[str, float]:
+def extract_social_features(
+    raw: dict[str, Any],
+    ticker: str,
+    *,
+    as_of: datetime | None = None,
+) -> dict[str, float]:
     """Reduce the per-ticker social payload to the Phase-5 feature vector.
 
     Expected ``raw`` shape (one ticker's slice of ``state["social_data"]``):

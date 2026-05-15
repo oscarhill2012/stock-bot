@@ -39,13 +39,15 @@ def _stub_all_domains_with(monkeypatch: pytest.MonkeyPatch, registry_isolation: 
     )
 
     @register("price_history", "fake", upstream="ph_up", rate_per_minute=10_000, burst=10_000)
-    async def _ph(ticker: str, *, period: str = "1y", interval: str = "1d") -> PriceHistory:
+    async def _ph(ticker: str, *, period: str = "1y", interval: str = "1d", **kwargs) -> PriceHistory:
+        # **kwargs absorbs as_of and any future dispatch-level additions.
         if failing_domain == "price_history":
             raise RuntimeError("boom")
         return PriceHistory(ticker=ticker, bars=[])
 
     @register("company_ratios", "fake", upstream="cr_up", rate_per_minute=10_000, burst=10_000)
-    async def _cr(ticker: str, *, period: str = "1y", interval: str = "1d") -> CompanyRatios:
+    async def _cr(ticker: str, *, period: str = "1y", interval: str = "1d", **kwargs) -> CompanyRatios:
+        # **kwargs absorbs as_of and any future dispatch-level additions.
         if failing_domain == "company_ratios":
             raise RuntimeError("boom")
         return CompanyRatios(ticker=ticker)
@@ -57,7 +59,8 @@ def _stub_all_domains_with(monkeypatch: pytest.MonkeyPatch, registry_isolation: 
         return []
 
     @register("social_sentiment", "fake", upstream="social_up", rate_per_minute=10_000, burst=10_000)
-    async def _soc(ticker: str) -> SocialSentiment | None:
+    async def _soc(ticker: str, **kwargs) -> SocialSentiment | None:
+        # **kwargs absorbs as_of and any future dispatch-level additions.
         return None
 
     @register("insider_trades", "fake", upstream="ins_up", rate_per_minute=10_000, burst=10_000)

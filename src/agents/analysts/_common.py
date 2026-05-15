@@ -83,7 +83,10 @@ def make_evidence_callback(
 
         # Single timestamp for the whole batch — avoids microsecond skew
         # between records that belong to the same tick.
-        recorded_at = datetime.now(tz=UTC)
+        # In a backtest, state["as_of"] holds the historical tick time so
+        # evidence records are stamped with the replayed clock rather than
+        # wall-clock now.  Live sessions have no "as_of" → wall-clock fallback.
+        recorded_at = state.get("as_of") or datetime.now(tz=UTC)
 
         # Per-ticker raw data dict keyed by ticker symbol.
         data: dict = state.get(f"{analyst}_data", {}) or {}
@@ -108,7 +111,12 @@ def make_evidence_callback(
         for ticker in tickers:
             # Run the deterministic feature extractor for this ticker.
             # The extractor receives the per-ticker slice, not the full dict.
-            features: dict[str, float] = extractor(data.get(ticker, {}), ticker)
+            # Pass as_of so time-delta features (e.g. days_since_last_filing in
+            # the fundamental extractor) are computed from the replayed historical
+            # clock rather than wall-clock time.
+            features: dict[str, float] = extractor(
+                data.get(ticker, {}), ticker, as_of=recorded_at,
+            )
 
             raw_v = verdicts_by_ticker.get(ticker)
 

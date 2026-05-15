@@ -8,6 +8,7 @@ branch is removed from the news fetch callback).
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import datetime
 from typing import Any
 
 _KEYS = (
@@ -28,7 +29,12 @@ def _zero_features() -> dict[str, float]:
     return {k: 0.0 for k in _KEYS}
 
 
-def extract_news_features(raw: Mapping[str, Any], ticker: str) -> dict[str, float]:
+def extract_news_features(
+    raw: Mapping[str, Any],
+    ticker: str,
+    *,
+    as_of: datetime | None = None,
+) -> dict[str, float]:
     """Compute the news feature catalogue from raw news data.
 
     Caller is expected to have already filtered news_items to the last 7 days

@@ -24,7 +24,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from . import providers as _providers  # noqa: F401  — triggers @register decorators
@@ -95,6 +95,7 @@ async def get_stock_signal_bundle(
     history_interval: str = "1d",
     filings_per_form: int = 3,
     include_filing_excerpts: bool = True,
+    as_of: datetime | None = None,
 ) -> StockSignalBundle:
     """Aggregate every data-source signal for `ticker` into one payload.
 
@@ -127,6 +128,11 @@ async def get_stock_signal_bundle(
         Maximum number of filings to retrieve per form type.
     include_filing_excerpts:
         Whether to include MD&A / risk-factor excerpts in filings.
+    as_of:
+        Historical clock timestamp.  Defaults to ``datetime.now(UTC)``
+        (wall clock) so live callers that omit this argument behave
+        identically to before.  Backtest callers pass the tick timestamp
+        so every downstream provider call sees the correct point-in-time.
 
     Returns
     -------
@@ -134,7 +140,12 @@ async def get_stock_signal_bundle(
         Aggregated payload. ``bundle.errors`` lists any partial failures.
     """
     symbol = ticker.upper()
-    today = date.today()
+
+    # Resolve the historical clock once; all lookback dates derive from it.
+    if as_of is None:
+        as_of = datetime.now(tz=UTC)
+    as_of_date = as_of.date()
+
     errors: list[ProviderError] = []
 
     (
@@ -149,12 +160,20 @@ async def get_stock_signal_bundle(
     ) = await asyncio.gather(
         _safe(
             "price_history",
-            dispatch("price_history", symbol, period=history_period, interval=history_interval),
+            dispatch(
+                "price_history", symbol,
+                period=history_period, interval=history_interval,
+                as_of=as_of,
+            ),
             errors,
         ),
         _safe(
             "company_ratios",
-            dispatch("company_ratios", symbol, period=history_period, interval=history_interval),
+            dispatch(
+                "company_ratios", symbol,
+                period=history_period, interval=history_interval,
+                as_of=as_of,
+            ),
             errors,
         ),
         _safe(
@@ -162,20 +181,33 @@ async def get_stock_signal_bundle(
             dispatch(
                 "news",
                 symbol,
-                from_date=today - timedelta(days=news_lookback_days),
-                to_date=today,
+                from_date=as_of_date - timedelta(days=news_lookback_days),
+                to_date=as_of_date,
+                as_of=as_of,
             ),
             errors,
         ),
-        _safe("social_sentiment", dispatch("social_sentiment", symbol), errors),
+        _safe(
+            "social_sentiment",
+            dispatch("social_sentiment", symbol, as_of=as_of),
+            errors,
+        ),
         _safe(
             "insider_trades",
-            dispatch("insider_trades", symbol, lookback_days=insider_lookback_days),
+            dispatch(
+                "insider_trades", symbol,
+                lookback_days=insider_lookback_days,
+                as_of=as_of,
+            ),
             errors,
         ),
         _safe(
             "politician_trades",
-            dispatch("politician_trades", symbol, lookback_days=politician_lookback_days),
+            dispatch(
+                "politician_trades", symbol,
+                lookback_days=politician_lookback_days,
+                as_of=as_of,
+            ),
             errors,
         ),
         _safe(
@@ -185,6 +217,7 @@ async def get_stock_signal_bundle(
                 symbol,
                 lookback_days=notable_holder_lookback_days,
                 limit=notable_holder_limit,
+                as_of=as_of,
             ),
             errors,
         ),
@@ -195,6 +228,7 @@ async def get_stock_signal_bundle(
                 symbol,
                 limit=filings_per_form,
                 include_excerpts=include_filing_excerpts,
+                as_of=as_of,
             ),
             errors,
         ),
@@ -202,7 +236,7 @@ async def get_stock_signal_bundle(
 
     return StockSignalBundle(
         ticker=symbol,
-        generated_at=datetime.now(tz=UTC),
+        generated_at=as_of,
         price_history=price_history,
         ratios=company_ratios,
         news=news,
