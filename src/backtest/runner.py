@@ -140,153 +140,162 @@ class Runner:
         # Belt-and-braces: scripts.backtest_run also sets this, but defending
         # in depth means a programmatic Runner.run caller can't accidentally
         # leak wall-clock time into the dataset.
-        # Save the previous value so we can restore it in the finally block —
-        # this prevents test-environment contamination when Runner is invoked
-        # programmatically (e.g. in integration tests) without a full process exit.
+        # Save the previous value so we can restore it in the outer finally
+        # block — this prevents test-environment contamination when Runner is
+        # invoked programmatically (e.g. in integration tests) without a full
+        # process exit.  The capture and set are inside the try so that *any*
+        # exception during pre-flight (cache open, provider swap, broker init,
+        # engine setup) still triggers the restore, not just exceptions that
+        # occur during the tick-loop itself.
         _prev_strict = os.environ.get("STOCKBOT_STRICT_AS_OF")
-        os.environ["STOCKBOT_STRICT_AS_OF"] = "1"
+        try:
+            os.environ["STOCKBOT_STRICT_AS_OF"] = "1"
 
-        window  = self._windows[window_key]
-        wl      = list(watchlist or self._watchlist)
-        run_id  = f"{window_key}-{_git_sha7()}"
-        run_dir = Path(self._settings["runs_root"]) / run_id
-        run_dir.mkdir(parents=True, exist_ok=True)
+            window  = self._windows[window_key]
+            wl      = list(watchlist or self._watchlist)
+            run_id  = f"{window_key}-{_git_sha7()}"
+            run_dir = Path(self._settings["runs_root"]) / run_id
+            run_dir.mkdir(parents=True, exist_ok=True)
 
-        # ── SIGINT / SIGTERM handler ────────────────────────────────────────
-        # Registered here so we have ``run_dir`` in scope.  The handler writes
-        # ``manifest.status = "interrupted"`` and re-raises ``KeyboardInterrupt``
-        # so the process exits non-zero.  Previous handlers are restored in the
-        # ``finally`` block below, whether the run completes normally or not.
-        _interrupted: list[bool] = [False]  # mutable container for closure
+            # ── SIGINT / SIGTERM handler ────────────────────────────────────────
+            # Registered here so we have ``run_dir`` in scope.  The handler writes
+            # ``manifest.status = "interrupted"`` and re-raises ``KeyboardInterrupt``
+            # so the process exits non-zero.  Previous handlers are restored in the
+            # ``finally`` block below, whether the run completes normally or not.
+            _interrupted: list[bool] = [False]  # mutable container for closure
 
-        def _signal_handler(signum: int, frame: object) -> None:  # noqa: ANN001
-            """Write interrupted manifest and propagate the interrupt signal."""
-            if _interrupted[0]:
-                # Second signal — skip manifest update and raise immediately.
+            def _signal_handler(signum: int, frame: object) -> None:  # noqa: ANN001
+                """Write interrupted manifest and propagate the interrupt signal."""
+                if _interrupted[0]:
+                    # Second signal — skip manifest update and raise immediately.
+                    raise KeyboardInterrupt(f"signal {signum}")
+
+                _interrupted[0] = True
+                logger.warning(
+                    "Run %s interrupted by signal %s — writing manifest", run_id, signum
+                )
+                try:
+                    manifest_path = run_dir / "manifest.json"
+                    manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
+                    manifest["status"]         = "interrupted"
+                    manifest["interrupted_at"] = datetime.now(tz=UTC).isoformat()
+                    manifest_path.write_text(json.dumps(manifest, indent=2, default=str))
+                except Exception:
+                    logger.exception("Failed to write interrupted manifest for %s", run_id)
                 raise KeyboardInterrupt(f"signal {signum}")
 
-            _interrupted[0] = True
-            logger.warning(
-                "Run %s interrupted by signal %s — writing manifest", run_id, signum
+            _prev_sigint  = signal.signal(signal.SIGINT,  _signal_handler)
+            _prev_sigterm = signal.signal(signal.SIGTERM, _signal_handler)
+
+            # ── open the golden cache store ─────────────────────────────────────
+            store = CachedDataStore(Path(self._settings["cache_path"]))
+            _store_handle.set_store(store)
+
+            # ── pre-flight: drop tickers with no OHLCV in the window ───────────
+            skipped:     list[str] = []
+            wl_filtered: list[str] = []
+            for ticker in wl:
+                if store.read_ohlcv(ticker, window.start, window.end):
+                    wl_filtered.append(ticker)
+                else:
+                    logger.warning(
+                        "Skipping %s — no OHLCV bars in window [%s, %s]",
+                        ticker, window.start, window.end,
+                    )
+                    skipped.append(ticker)
+
+            # ── swap all domains to their cache providers ───────────────────────
+            # Collect restore callables so a crashed run does not leak state into
+            # a later live invocation or test that runs in the same process.
+            restores: list = []
+            for domain in DOMAINS:
+                restores.append(set_active_provider(domain, "cache"))
+
+            # ── broker, DB, decision logger ─────────────────────────────────────
+            broker = FakeBroker(
+                starting_cash=self._settings["fake_broker_starting_cash"],
+                prices={ticker: 0.0 for ticker in wl_filtered},
             )
+
+            # Each run gets its own SQLite file — never touches data/stockbot.db.
+            engine     = make_engine(f"sqlite:///{run_dir / 'db.sqlite'}")
+            create_all(engine)
+            from sqlalchemy.orm import sessionmaker
+            Session    = sessionmaker(bind=engine)
+            db_session = Session()
+
+            dl = DecisionLogger(
+                output_dir=run_dir / "decisions",
+                window_key=window_key,
+            )
+
+            # ── write initial manifest ──────────────────────────────────────────
+            manifest: dict = {
+                "run_id":           run_id,
+                "window_key":       window_key,
+                "window":           {"start": str(window.start), "end": str(window.end)},
+                "watchlist":        wl_filtered,
+                "skipped_tickers":  skipped,
+                "git_sha":          _git_sha_full(),
+                "started_at":       datetime.now(tz=UTC).isoformat(),
+                "status":           "running",
+            }
+            (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
+
+            # ── build and run the driver ────────────────────────────────────────
+            driver = Driver(
+                broker=broker,
+                run_id=run_id,
+                run_dir=run_dir,
+                window_key=window_key,
+                db_session=db_session,
+                decision_logger=dl,
+                failure_abort_ratio=self._settings["failed_tick_abort_ratio"],
+            )
+            schedule = generate_ticks(window.start, window.end)
+
+            # Seed the same initial state keys that ``orchestrator/tick.py``
+            # provides on live runs.  The strategist prompt template references
+            # ``{portfolio}`` directly (resolved by ADK's instruction-variable
+            # machinery), and several before-callbacks read ``portfolio``,
+            # ``positions``, ``memory_buffer``, ``day_digest``, and ``thesis``
+            # at the start of each tick.  Without these keys the ADK runner
+            # raises ``KeyError: 'Context variable not found: portfolio'``
+            # before the pipeline can execute even one agent.
+            portfolio = await broker.get_portfolio()
+            state: dict = {
+                "tickers":       wl_filtered,
+                "watchlist":     wl_filtered,
+                "portfolio":     portfolio.model_dump(mode="json"),
+                "positions":     {},
+                "memory_buffer": [],
+                "day_digest":    "",
+                "thesis":        "",
+            }
+
+            status = "completed"
             try:
-                manifest_path = run_dir / "manifest.json"
-                manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
-                manifest["status"]         = "interrupted"
-                manifest["interrupted_at"] = datetime.now(tz=UTC).isoformat()
-                manifest_path.write_text(json.dumps(manifest, indent=2, default=str))
-            except Exception:
-                logger.exception("Failed to write interrupted manifest for %s", run_id)
-            raise KeyboardInterrupt(f"signal {signum}")
+                await driver.run(state, schedule)
+            except RuntimeError as exc:
+                logger.error("run %s aborted: %s", run_id, exc)
+                status = "aborted"
+            finally:
+                # Restore live domain mappings and signal handlers regardless of
+                # success, abort, or interrupt.  Always runs even if KeyboardInterrupt
+                # propagates — the caller (CLI / asyncio.run) will exit non-zero.
+                for restore in restores:
+                    restore()
+                _store_handle.clear_store()
+                db_session.close()
+                # Restore the signal handlers registered before this run started.
+                signal.signal(signal.SIGINT,  _prev_sigint)
+                signal.signal(signal.SIGTERM, _prev_sigterm)
 
-        _prev_sigint  = signal.signal(signal.SIGINT,  _signal_handler)
-        _prev_sigterm = signal.signal(signal.SIGTERM, _signal_handler)
-
-        # ── open the golden cache store ─────────────────────────────────────
-        store = CachedDataStore(Path(self._settings["cache_path"]))
-        _store_handle.set_store(store)
-
-        # ── pre-flight: drop tickers with no OHLCV in the window ───────────
-        skipped:     list[str] = []
-        wl_filtered: list[str] = []
-        for ticker in wl:
-            if store.read_ohlcv(ticker, window.start, window.end):
-                wl_filtered.append(ticker)
-            else:
-                logger.warning(
-                    "Skipping %s — no OHLCV bars in window [%s, %s]",
-                    ticker, window.start, window.end,
-                )
-                skipped.append(ticker)
-
-        # ── swap all domains to their cache providers ───────────────────────
-        # Collect restore callables so a crashed run does not leak state into
-        # a later live invocation or test that runs in the same process.
-        restores: list = []
-        for domain in DOMAINS:
-            restores.append(set_active_provider(domain, "cache"))
-
-        # ── broker, DB, decision logger ─────────────────────────────────────
-        broker = FakeBroker(
-            starting_cash=self._settings["fake_broker_starting_cash"],
-            prices={ticker: 0.0 for ticker in wl_filtered},
-        )
-
-        # Each run gets its own SQLite file — never touches data/stockbot.db.
-        engine     = make_engine(f"sqlite:///{run_dir / 'db.sqlite'}")
-        create_all(engine)
-        from sqlalchemy.orm import sessionmaker
-        Session    = sessionmaker(bind=engine)
-        db_session = Session()
-
-        dl = DecisionLogger(
-            output_dir=run_dir / "decisions",
-            window_key=window_key,
-        )
-
-        # ── write initial manifest ──────────────────────────────────────────
-        manifest: dict = {
-            "run_id":           run_id,
-            "window_key":       window_key,
-            "window":           {"start": str(window.start), "end": str(window.end)},
-            "watchlist":        wl_filtered,
-            "skipped_tickers":  skipped,
-            "git_sha":          _git_sha_full(),
-            "started_at":       datetime.now(tz=UTC).isoformat(),
-            "status":           "running",
-        }
-        (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
-
-        # ── build and run the driver ────────────────────────────────────────
-        driver = Driver(
-            broker=broker,
-            run_id=run_id,
-            run_dir=run_dir,
-            window_key=window_key,
-            db_session=db_session,
-            decision_logger=dl,
-            failure_abort_ratio=self._settings["failed_tick_abort_ratio"],
-        )
-        schedule = generate_ticks(window.start, window.end)
-
-        # Seed the same initial state keys that ``orchestrator/tick.py``
-        # provides on live runs.  The strategist prompt template references
-        # ``{portfolio}`` directly (resolved by ADK's instruction-variable
-        # machinery), and several before-callbacks read ``portfolio``,
-        # ``positions``, ``memory_buffer``, ``day_digest``, and ``thesis``
-        # at the start of each tick.  Without these keys the ADK runner
-        # raises ``KeyError: 'Context variable not found: portfolio'``
-        # before the pipeline can execute even one agent.
-        portfolio = await broker.get_portfolio()
-        state: dict = {
-            "tickers":       wl_filtered,
-            "watchlist":     wl_filtered,
-            "portfolio":     portfolio.model_dump(mode="json"),
-            "positions":     {},
-            "memory_buffer": [],
-            "day_digest":    "",
-            "thesis":        "",
-        }
-
-        status = "completed"
-        try:
-            await driver.run(state, schedule)
-        except RuntimeError as exc:
-            logger.error("run %s aborted: %s", run_id, exc)
-            status = "aborted"
         finally:
-            # Restore live domain mappings and signal handlers regardless of
-            # success, abort, or interrupt.  Always runs even if KeyboardInterrupt
-            # propagates — the caller (CLI / asyncio.run) will exit non-zero.
-            for restore in restores:
-                restore()
-            _store_handle.clear_store()
-            db_session.close()
-            # Restore the signal handlers registered before this run started.
-            signal.signal(signal.SIGINT,  _prev_sigint)
-            signal.signal(signal.SIGTERM, _prev_sigterm)
             # Restore strict-mode env var to its pre-run value so that
             # programmatic callers (e.g. test suites) don't inherit it.
+            # This outer finally fires even if pre-flight raises before the
+            # inner try/finally is reached, closing the coverage gap.
             if _prev_strict is None:
                 os.environ.pop("STOCKBOT_STRICT_AS_OF", None)
             else:
