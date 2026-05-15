@@ -87,8 +87,30 @@ def _fetch_trades(symbol: str | None, api_key: str) -> list[dict]:
 async def fetch(
     ticker: str | None = None,
     *,
+    as_of: datetime,
     lookback_days: int = 90,
+    **_unused,
 ) -> list[PoliticianTrade]:
+    """Congressional trades for ``ticker`` reported within ``(as_of - lookback_days, as_of]``.
+
+    Anchored on ``as_of`` so backfill never returns trades that did not yet
+    exist at the historical moment.  Soft-fails to ``[]`` when
+    ``QUIVER_QUANT_API_KEY`` is unset (free tier unavailable).
+
+    Parameters
+    ----------
+    ticker:
+        Stock ticker symbol to filter trades by; ``None`` returns all tickers.
+    as_of:
+        The historical reference point.  Replaces ``date.today()`` so that
+        replays see only trades disclosed at or before this moment.
+    lookback_days:
+        How many calendar days before ``as_of`` to include.
+    **_unused:
+        Absorbs extra keyword arguments forwarded by the provider registry
+        (e.g. ``window_start``, ``window_end``) so callers need not know the
+        exact signature of each registered provider.
+    """
     api_key = os.getenv("QUIVER_QUANT_API_KEY")
     if not api_key:
         # Soft-fail: free tier unavailable. EDGAR's notable_holders carries
@@ -96,14 +118,17 @@ async def fetch(
         logger.debug("QUIVER_QUANT_API_KEY unset — fetch returning []")
         return []
 
-    symbol = ticker.upper() if ticker else None
+    symbol  = ticker.upper() if ticker else None
     payload = await asyncio.to_thread(_fetch_trades, symbol, api_key)
 
-    cutoff = date.today() - timedelta(days=lookback_days)
+    # Use as_of rather than date.today() so replays see the correct window.
+    cutoff = as_of.date() - timedelta(days=lookback_days)
+    upper  = as_of.date()
+
     trades: list[PoliticianTrade] = []
     for item in payload:
         txn_date = _parse_date(item.get("TransactionDate") or item.get("Traded"))
-        if txn_date is None or txn_date < cutoff:
+        if txn_date is None or txn_date <= cutoff or txn_date > upper:
             continue
         amount_min, amount_max = _parse_amount_range(
             item.get("Range") or item.get("Amount") or item.get("Trade_Size_USD")
