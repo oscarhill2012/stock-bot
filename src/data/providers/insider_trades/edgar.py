@@ -104,18 +104,36 @@ def _coerce_date(v: Any) -> date | None:
         return None
 
 
-def _coerce_filed_at(v: Any, fallback_date: date) -> datetime:
-    """Coerce `v` to a timezone-aware datetime for `filed_at`.
+def _coerce_filed_at(v: Any) -> datetime:
+    """Coerce `v` to a timezone-aware datetime for ``filed_at``.
 
-    Accepts datetime objects or ISO strings. Falls back to midnight UTC
-    on `fallback_date` if parsing fails or `v` is None.
+    Accepts datetime objects or ISO strings.  Returns
+    :data:`~data.models.missing.MISSING_TIMESTAMP` when ``v`` is ``None``
+    or unparseable so the cache writer can skip the row deliberately rather
+    than fabricating a wall-clock substitution.
+
+    Parameters
+    ----------
+    v:
+        Raw ``filed_at`` value from the upstream parser (datetime, str, or
+        ``None``).
+
+    Returns
+    -------
+    datetime
+        A timezone-aware datetime, or ``MISSING_TIMESTAMP`` for absent /
+        unparseable values.
     """
+    from data.models.missing import MISSING_TIMESTAMP
+
     if v is None:
-        return datetime.combine(fallback_date, datetime.min.time(), tzinfo=UTC)
+        return MISSING_TIMESTAMP
+
     if isinstance(v, datetime):
         if v.tzinfo is None:
             return v.replace(tzinfo=UTC)
         return v
+
     # Try to parse as ISO string — strip trailing 'Z' for Python < 3.11 compat.
     try:
         s = str(v).replace("Z", "+00:00")
@@ -124,7 +142,7 @@ def _coerce_filed_at(v: Any, fallback_date: date) -> datetime:
             dt = dt.replace(tzinfo=UTC)
         return dt
     except ValueError:
-        return datetime.combine(fallback_date, datetime.min.time(), tzinfo=UTC)
+        return MISSING_TIMESTAMP
 
 
 def _extract_footnote(row: Any, form4: object) -> str | None:
@@ -241,8 +259,7 @@ def _parse_form4(form4: Any) -> Form4Bundle:
     # XML; the model no longer carries a default so we supply one here.
     form_type: str = str(getattr(form4, "form_type", "4") or "4")
     filed_at_raw = getattr(form4, "filed_at", None)
-    today = date.today()
-    filed_at: datetime = _coerce_filed_at(filed_at_raw, today)
+    filed_at: datetime = _coerce_filed_at(filed_at_raw)
     filed_date: date = filed_at.date()
 
     # Insider identity may be on the form object or on each row.

@@ -58,11 +58,11 @@ async def fetch(
     articles: list[NewsArticle] = []
     for item in raw:
         ts = item.get("datetime")
-        published = (
-            datetime.fromtimestamp(ts, tz=UTC)
-            if isinstance(ts, (int, float)) and ts > 0
-            else datetime.now(UTC)
-        )
+        if isinstance(ts, (int, float)) and ts > 0:
+            published = datetime.fromtimestamp(ts, tz=UTC)
+        else:
+            from data.models.missing import MISSING_TIMESTAMP
+            published = MISSING_TIMESTAMP
         articles.append(
             NewsArticle(
                 ticker=symbol,

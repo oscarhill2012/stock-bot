@@ -57,8 +57,15 @@ def _build(filing: Any, symbol: str) -> NotableHolder | None:
     if not form_type:
         return None
 
-    filed_date = _coerce_date(getattr(filing, "filing_date", None)) or date.today()
-    filed_at = datetime.combine(filed_date, datetime.min.time(), tzinfo=UTC)
+    # A 13D/G filing with no parseable date is an upstream gap — surface it
+    # as a deliberate skip via MISSING_TIMESTAMP rather than substituting
+    # wall-clock.
+    raw_date = _coerce_date(getattr(filing, "filing_date", None))
+    if raw_date is None:
+        from data.models.missing import MISSING_TIMESTAMP
+        filed_at = MISSING_TIMESTAMP
+    else:
+        filed_at = datetime.combine(raw_date, datetime.min.time(), tzinfo=UTC)
 
     # The filer of an SC 13D/G is the holder, not the issuer — that's
     # exactly the name we want for `holder`.

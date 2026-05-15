@@ -30,6 +30,7 @@ Adaptation notes (vs plan's original store.py):
 from __future__ import annotations
 
 import hashlib
+import logging
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -58,6 +59,9 @@ from data.models import (
     OHLCBar,
     PoliticianTrade,
 )
+from data.models.missing import is_missing_timestamp
+
+logger = logging.getLogger(__name__)
 
 
 class CachedDataStore:
@@ -252,6 +256,10 @@ class CachedDataStore:
     def write_news(self, ticker: str, articles: list[NewsArticle]) -> None:
         """Upsert news articles for ``ticker``.
 
+        Rows whose ``published_at`` is :data:`~data.models.missing.MISSING_TIMESTAMP`
+        are skipped with a structured log line so the audit layer can surface
+        the count of unstamped upstream rows.
+
         Parameters
         ----------
         ticker:
@@ -261,6 +269,14 @@ class CachedDataStore:
         """
         with Session(self._engine) as s:
             for a in articles:
+                if is_missing_timestamp(a.published_at):
+                    logger.warning(
+                        "store.write_news: skipping row with missing timestamp "
+                        "(ticker=%s, url=%s, source=%s)",
+                        ticker, a.url, a.source,
+                    )
+                    continue
+
                 stmt = sqlite_insert(NewsArticleRow).values(
                     ticker=ticker,
                     url=a.url,
@@ -321,6 +337,10 @@ class CachedDataStore:
         ``Filing.ticker`` carries the ticker, but it is also stored in the row
         to allow the ``WHERE ticker = ?`` index scan.
 
+        Rows whose ``filed_at`` is :data:`~data.models.missing.MISSING_TIMESTAMP`
+        are skipped with a structured log line so the audit layer can surface
+        the count of unstamped upstream rows.
+
         Parameters
         ----------
         ticker:
@@ -331,6 +351,14 @@ class CachedDataStore:
         """
         with Session(self._engine) as s:
             for f in filings:
+                if is_missing_timestamp(f.filed_at):
+                    logger.warning(
+                        "store.write_filings: skipping row with missing timestamp "
+                        "(ticker=%s, accession_no=%s, form_type=%s)",
+                        ticker, f.accession_no, f.form_type,
+                    )
+                    continue
+
                 stmt = sqlite_insert(FilingRow).values(
                     accession_no=f.accession_no,
                     ticker=ticker,
@@ -393,6 +421,10 @@ class CachedDataStore:
         ``(ticker, insider_name, transaction_date, side, shares, filed_at)`` is
         used as the surrogate PK so writes are idempotent across re-runs.
 
+        Rows whose ``filed_at`` is :data:`~data.models.missing.MISSING_TIMESTAMP`
+        are skipped with a structured log line so the audit layer can surface
+        the count of unstamped upstream rows.
+
         Parameters
         ----------
         ticker:
@@ -402,6 +434,14 @@ class CachedDataStore:
         """
         with Session(self._engine) as s:
             for t in trades:
+                if is_missing_timestamp(t.filed_at):
+                    logger.warning(
+                        "store.write_insider_trades: skipping row with missing "
+                        "timestamp (ticker=%s, insider=%s, transaction_date=%s)",
+                        ticker, t.insider_name, t.transaction_date,
+                    )
+                    continue
+
                 key = "|".join([
                     ticker,
                     t.insider_name,
@@ -591,6 +631,10 @@ class CachedDataStore:
     ) -> None:
         """Upsert SC 13D / 13G / 13F filings for ``ticker``.
 
+        Rows whose ``filed_at`` is :data:`~data.models.missing.MISSING_TIMESTAMP`
+        are skipped with a structured log line so the audit layer can surface
+        the count of unstamped upstream rows.
+
         Parameters
         ----------
         ticker:
@@ -600,6 +644,14 @@ class CachedDataStore:
         """
         with Session(self._engine) as s:
             for h in holders:
+                if is_missing_timestamp(h.filed_at):
+                    logger.warning(
+                        "store.write_notable_holders: skipping row with missing "
+                        "timestamp (ticker=%s, holder=%s, accession_no=%s)",
+                        ticker, h.holder, h.accession_no,
+                    )
+                    continue
+
                 stmt = sqlite_insert(NotableHolderRow).values(
                     accession_no=h.accession_no,
                     ticker=ticker,
