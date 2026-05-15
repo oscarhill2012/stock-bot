@@ -227,6 +227,14 @@ class Runner:
         manifest["finished_at"] = datetime.now(tz=UTC).isoformat()
         (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
+        # Generate the report unconditionally — if the run aborted, the report
+        # still tells us what *did* happen up to the abort point.
+        try:
+            from backtest.reporting import report
+            report(run_dir, self._settings)
+        except Exception:
+            logger.exception("report generation failed for %s", run_id)
+
         return RunResult(
             run_id=run_id,
             run_dir=run_dir,
