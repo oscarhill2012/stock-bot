@@ -111,7 +111,12 @@ def make_evidence_callback(
         for ticker in tickers:
             # Run the deterministic feature extractor for this ticker.
             # The extractor receives the per-ticker slice, not the full dict.
-            features: dict[str, float] = extractor(data.get(ticker, {}), ticker)
+            # Pass as_of so time-delta features (e.g. days_since_last_filing in
+            # the fundamental extractor) are computed from the replayed historical
+            # clock rather than wall-clock time.
+            features: dict[str, float] = extractor(
+                data.get(ticker, {}), ticker, as_of=recorded_at,
+            )
 
             raw_v = verdicts_by_ticker.get(ticker)
 

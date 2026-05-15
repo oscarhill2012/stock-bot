@@ -17,6 +17,7 @@ sub-keys.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import datetime
 from math import copysign
 from typing import TYPE_CHECKING, Any
 
@@ -78,7 +79,12 @@ def _df_from_history(history: list[Mapping[str, Any]]) -> pd.DataFrame | None:
     return df
 
 
-def extract_technical_features(raw: Mapping[str, Any], ticker: str) -> dict[str, float]:
+def extract_technical_features(
+    raw: Mapping[str, Any],
+    ticker: str,
+    *,
+    as_of: datetime | None = None,
+) -> dict[str, float]:
     """Compute the locked technical feature catalogue from raw OHLCV history.
 
     Accepts the per-ticker data slice from ``state["technical_data"][ticker]``.

@@ -338,7 +338,12 @@ def _extract_insider_features(
 # Public API
 # ---------------------------------------------------------------------------
 
-def extract_fundamental_features(raw: Mapping[str, Any], ticker: str) -> dict[str, float]:
+def extract_fundamental_features(
+    raw: Mapping[str, Any],
+    ticker: str,
+    *,
+    as_of: datetime | None = None,
+) -> dict[str, float]:
     """Pull the locked fundamental feature catalogue from a raw payload dict.
 
     Accepts the Phase 5 triad payload shape (post data-model split)::
@@ -373,7 +378,10 @@ def extract_fundamental_features(raw: Mapping[str, Any], ticker: str) -> dict[st
     if not raw:
         return out
 
-    now = datetime.now(tz=UTC)
+    # Use the caller-supplied historical clock so backtest replays produce the
+    # same time-delta features as the original run.  Live callers that omit
+    # ``as_of`` fall back to wall-clock now — identical behaviour to before.
+    now = as_of if as_of is not None else datetime.now(tz=UTC)
 
     # --- ratios (Phase 5: renamed from "stats" key at the fetch-callback level) ---
     stats_sub = raw.get("ratios") or {}

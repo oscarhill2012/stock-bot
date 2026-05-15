@@ -19,8 +19,12 @@ from contract.extractors.technical import extract_technical_features
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _fake_extractor(raw, ticker) -> dict[str, float]:
-    """Toy extractor: always returns one feature key for simple assertions."""
+def _fake_extractor(raw, ticker, *, as_of=None) -> dict[str, float]:
+    """Toy extractor: always returns one feature key for simple assertions.
+
+    The ``as_of`` kwarg is accepted (and ignored) to match the uniform
+    extractor signature required by ``make_evidence_callback`` after C4.
+    """
     return {"toy_feature": 1.0}
 
 
@@ -116,7 +120,8 @@ def test_extractor_called_with_per_ticker_slice():
     """The extractor receives the per-ticker dict, not the whole data dict."""
     seen: list = []
 
-    def _spy(raw, ticker) -> dict[str, float]:
+    def _spy(raw, ticker, *, as_of=None) -> dict[str, float]:
+        # Accept as_of to match the uniform extractor signature (C4).
         seen.append((ticker, raw))
         return {"spy": 0.0}
 

@@ -31,7 +31,8 @@ async def test_social_fetch_writes_state_dict(monkeypatch):
         aggregate_score=0.2,
     )
 
-    async def fake_get_social_sentiment(ticker):
+    async def fake_get_social_sentiment(ticker, *, as_of=None):
+        # Accept as_of kwarg added in C2/C3 — ignored in the fake.
         assert ticker == "AAPL"
         return fake_result
 
@@ -82,7 +83,8 @@ async def test_social_fetch_writes_per_platform_shape(monkeypatch):
         aggregate_score=0.4,
     )
 
-    async def fake_get_social_sentiment(ticker):
+    async def fake_get_social_sentiment(ticker, *, as_of=None):
+        # Accept as_of kwarg added in C2/C3 — ignored in the fake.
         return fake_result
 
     monkeypatch.setattr(fetch_mod, "get_social_sentiment", fake_get_social_sentiment)
@@ -105,7 +107,8 @@ async def test_social_fetch_empty_on_provider_failure(monkeypatch):
     """When the provider raises, social_data[ticker] is set to {} (no crash)."""
     from agents.analysts.social import fetch as fetch_mod
 
-    async def failing_get_social_sentiment(ticker):
+    async def failing_get_social_sentiment(ticker, *, as_of=None):
+        # Accept as_of kwarg added in C2/C3; raises before using it.
         raise RuntimeError("provider down")
 
     monkeypatch.setattr(fetch_mod, "get_social_sentiment", failing_get_social_sentiment)
