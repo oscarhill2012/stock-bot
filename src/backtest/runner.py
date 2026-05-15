@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import signal
 import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -141,6 +142,36 @@ class Runner:
         run_dir = Path(self._settings["runs_root"]) / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
 
+        # ── SIGINT / SIGTERM handler ────────────────────────────────────────
+        # Registered here so we have ``run_dir`` in scope.  The handler writes
+        # ``manifest.status = "interrupted"`` and re-raises ``KeyboardInterrupt``
+        # so the process exits non-zero.  Previous handlers are restored in the
+        # ``finally`` block below, whether the run completes normally or not.
+        _interrupted: list[bool] = [False]  # mutable container for closure
+
+        def _signal_handler(signum: int, frame: object) -> None:  # noqa: ANN001
+            """Write interrupted manifest and propagate the interrupt signal."""
+            if _interrupted[0]:
+                # Second signal — skip manifest update and raise immediately.
+                raise KeyboardInterrupt(f"signal {signum}")
+
+            _interrupted[0] = True
+            logger.warning(
+                "Run %s interrupted by signal %s — writing manifest", run_id, signum
+            )
+            try:
+                manifest_path = run_dir / "manifest.json"
+                manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
+                manifest["status"]         = "interrupted"
+                manifest["interrupted_at"] = datetime.now(tz=UTC).isoformat()
+                manifest_path.write_text(json.dumps(manifest, indent=2, default=str))
+            except Exception:
+                logger.exception("Failed to write interrupted manifest for %s", run_id)
+            raise KeyboardInterrupt(f"signal {signum}")
+
+        _prev_sigint  = signal.signal(signal.SIGINT,  _signal_handler)
+        _prev_sigterm = signal.signal(signal.SIGTERM, _signal_handler)
+
         # ── open the golden cache store ─────────────────────────────────────
         store = CachedDataStore(Path(self._settings["cache_path"]))
         _store_handle.set_store(store)
@@ -234,11 +265,16 @@ class Runner:
             logger.error("run %s aborted: %s", run_id, exc)
             status = "aborted"
         finally:
-            # Restore live domain mappings regardless of success or failure.
+            # Restore live domain mappings and signal handlers regardless of
+            # success, abort, or interrupt.  Always runs even if KeyboardInterrupt
+            # propagates — the caller (CLI / asyncio.run) will exit non-zero.
             for restore in restores:
                 restore()
             _store_handle.clear_store()
             db_session.close()
+            # Restore the signal handlers registered before this run started.
+            signal.signal(signal.SIGINT,  _prev_sigint)
+            signal.signal(signal.SIGTERM, _prev_sigterm)
 
         # Re-read manifest (driver wrote the final status) and add finished_at.
         manifest = json.loads((run_dir / "manifest.json").read_text())
