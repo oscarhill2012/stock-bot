@@ -105,6 +105,28 @@ class Runner:
         self._windows   = load_windows(Path(windows_path))
         self._watchlist = json.loads(Path(watchlist_path).read_text())["tickers"]
 
+    @staticmethod
+    def _runs_root_from_config(
+        settings_path: Path = Path("config/backtest_settings.json"),
+    ) -> Path:
+        """Read ``runs_root`` from the settings file and return it as a Path.
+
+        Convenience helper for scripts that need to locate an existing run
+        directory without constructing a full ``Runner`` instance.
+
+        Parameters
+        ----------
+        settings_path:
+            Path to ``config/backtest_settings.json``.
+
+        Returns
+        -------
+        Path
+            The configured ``runs_root`` directory (not guaranteed to exist).
+        """
+        settings = json.loads(Path(settings_path).read_text())
+        return Path(settings["runs_root"])
+
     def run(
         self,
         window_key: str,

@@ -1,0 +1,138 @@
+"""CLI: re-run one tick with the AuditingStore wrapper and produce a deep dump.
+
+Usage::
+
+    PYTHONPATH=src python -m scripts.backtest_audit_tick \\
+        --run-id svb-stress-2023-03-<sha7> \\
+        --window svb-stress-2023-03 \\
+        --tick   2023-03-10T09:30:00-05:00 \\
+        --phase  open
+
+The script replays a single tick against the existing run's golden cache
+with ``AuditingStore`` wrapping ``CachedDataStore``.  Every row delivered
+to any analyst is captured, then the ``upstream_verifier`` checks each row
+against its upstream source.  Output is two files under
+``<run-dir>/audit/``:
+
+- ``<tick-slug>.full.jsonl`` — one JSON line per (analyst, ticker, row)
+- ``<tick-slug>.summary.md`` — human-readable tripwire counts
+
+This is a Layer-2 audit tool, intended for on-demand investigation rather
+than routine runs.
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import os
+import sys
+from datetime import datetime
+from pathlib import Path
+
+from backtest.audit.auditing_store import AuditingStore
+from backtest.audit.deep_dump import build_deep_rows, write_deep_dump
+from backtest.cache.store import CachedDataStore
+from backtest.driver import Driver, _slug
+from backtest.providers._store_handle import set_store
+from backtest.runner import Runner
+from backtest.schedule import Tick
+
+
+def main() -> None:
+    """CLI entrypoint — re-audit a single tick from a completed run.
+
+    Reads the run directory, wraps the golden cache in an ``AuditingStore``,
+    replays the single tick through the full pipeline, then writes the deep
+    JSONL + summary markdown under ``<run-dir>/audit/``.
+    """
+    # Strict mode prevents wall-clock leakage through timeguard even inside
+    # this replay script.
+    os.environ["STOCKBOT_STRICT_AS_OF"] = "1"
+
+    parser = argparse.ArgumentParser(
+        description="Replay one backtest tick with deep audit capture.",
+    )
+    parser.add_argument(
+        "--run-id",
+        required=True,
+        help="Existing run directory under runs_root (e.g. svb-stress-2023-03-abc1234)",
+    )
+    parser.add_argument(
+        "--window",
+        required=True,
+        help="Window key matching a key in config/backtest_windows.json",
+    )
+    parser.add_argument(
+        "--tick",
+        required=True,
+        help="ISO timestamp of the tick to replay (e.g. 2023-03-10T09:30:00-05:00)",
+    )
+    parser.add_argument(
+        "--phase",
+        required=True,
+        choices=["open", "close"],
+        help="Tick phase",
+    )
+    args = parser.parse_args()
+
+    # Locate the run directory using the configured runs_root.
+    runs_root = Runner._runs_root_from_config()
+    run_dir   = runs_root / args.run_id
+    if not run_dir.exists():
+        print(f"run dir not found: {run_dir}", file=sys.stderr)
+        sys.exit(2)
+
+    # Wrap the golden cache store with the auditing decorator so every
+    # cache-read row is intercepted and recorded.
+    import json
+    settings   = json.loads(Path("config/backtest_settings.json").read_text())
+    cache_path = Path(settings["cache_path"])
+
+    inner = CachedDataStore(cache_path)
+    store = AuditingStore(inner=inner)
+
+    # Register the auditing store as the active store for this process.
+    # Providers call get_store() to read from it during the tick replay.
+    set_store(store)  # type: ignore[arg-type]  # AuditingStore delegates all methods
+
+    tick = Tick(as_of=datetime.fromisoformat(args.tick), phase=args.phase)
+
+    # Replay this single tick through the live pipeline.
+    driver = Driver(
+        broker=None,   # reads only during audit replay; broker writes are no-ops
+        run_dir=run_dir,
+        window_key=args.window,
+        run_id=args.run_id,
+    )
+
+    # Seed minimal state — a proper replay would restore the tick's snapshot
+    # from the run's db.sqlite; for v1 we accept the minimal seed.
+    state: dict = {
+        "watchlist": [],
+        "tickers":   [],
+        "portfolio":       {},
+        "positions":       {},
+        "memory_buffer":   [],
+        "day_digest":      "",
+        "thesis":          {},
+    }
+
+    asyncio.run(driver.run(state, [tick]))
+
+    # Drain the captured reads and write the deep dump.
+    captured = store.drain_captured()
+    rows     = build_deep_rows(captured=captured, tick_as_of=tick.as_of)
+
+    audit_dir = run_dir / "audit"
+    full, summary = write_deep_dump(
+        audit_dir=audit_dir,
+        tick_slug=_slug(tick.as_of) + "-" + tick.phase,
+        rows=rows,
+    )
+
+    print(f"wrote {full}")
+    print(f"wrote {summary}")
+
+
+if __name__ == "__main__":  # pragma: no cover
+    main()
