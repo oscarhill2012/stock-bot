@@ -11,6 +11,8 @@ and reference these files by relative path (resolved from the project root).
 | `analysts.json` | Per-analyst input caps + LLM output caps + report cache toggle | `src/config/analysts.py` (`get_analysts_config()`) |
 | `schedule.json` | Tick cadence — how many ticks per day and their ET times | `src/config/schedule.py` (`get_schedule_config()`) |
 | `strategist.json` | Character caps on strategist LLM free-text fields | `src/config/strategist.py` (`get_strategist_config()`) |
+| `backtest_windows.json` | Era-keyed historical date windows for the backtest harness | `src/backtest/windows.py` (`load_windows()`) |
+| `backtest_settings.json` | Cache path, run root, tick schedule, and lookback defaults for backtesting | `src/backtest/settings.py` (planned) |
 
 When adding or changing a config value: update the JSON file, then update the
 relevant section in this README.
@@ -305,3 +307,38 @@ load, so the prompt-facing caps the LLM is told are always the values from
 this file. The schema's `Field(max_length=...)` is then derived from those
 values via `StrategistConfig.schema_cap()` (see `slack_percent` above) —
 the two-tier gap is intentional and load-bearing; do not "fix" it.
+
+---
+
+## `backtest_windows.json` — era-window definitions
+
+Era-keyed historical windows for the backtest harness. Each entry:
+
+- `start` / `end`: ISO date strings (inclusive); tick schedule covers NYSE business days in the range.
+- `notes`: free-form description of the regime this window captures.
+
+Add new windows by editing this file — no code changes needed.
+
+---
+
+## `backtest_settings.json` — backtest runtime settings
+
+Runtime defaults for the backtest harness. All path settings are relative to
+the project root.
+
+| Setting | Type | Meaning |
+|---|---|---|
+| `cache_path` | string | SQLite file used by the backtest cache store (PIT-safe evidence snapshots). |
+| `runs_root` | string | Directory root under which per-run output folders are created. |
+| `ticks_per_day` | list[string] | Named tick phases emitted each NYSE session (e.g. `["open", "close"]`). |
+| `tz` | string | IANA timezone for all tick timestamps (must be `"America/New_York"`). |
+| `open_time` | string | `HH:MM` wall-clock time for the `"open"` tick in `tz`. |
+| `close_time` | string | `HH:MM` wall-clock time for the `"close"` tick in `tz`. |
+| `failed_tick_abort_ratio` | float [0–1] | Fraction of ticks allowed to fail before the harness aborts the run. |
+| `fake_broker_starting_cash` | float | Starting cash balance (USD) for the in-memory fake broker used in backtests. |
+| `forward_return_horizons_days` | list[int] | Horizons (in calendar days) over which forward returns are computed for scoring. |
+| `default_lookback_days.news` | int | Default lookback window (days) for news evidence fetched during replay. |
+| `default_lookback_days.insider_trades` | int | Default lookback window (days) for insider-trade evidence fetched during replay. |
+| `default_lookback_days.politician_trades` | int | Default lookback window (days) for politician-trade evidence fetched during replay. |
+| `default_lookback_days.notable_holders` | int | Default lookback window (days) for notable-holder snapshots fetched during replay. |
+| `default_lookback_days.filings` | int | Default lookback window (days) for SEC filings fetched during replay. |
