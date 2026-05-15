@@ -66,12 +66,16 @@ logger = logging.getLogger(__name__)
 
 
 def _promote_date_only(value: date | datetime) -> datetime:
-    """Promote a date-only value to ``next_business_day @ 00:00 UTC``.
+    """Promote a date-only value to ``next_trading_day @ 00:00 UTC``.
 
     Conservative rule: if the row has no intraday time, the cache assumes
     the disclosure could have been made any time during ``value`` and
-    therefore only becomes "publicly knowable" at the next-business-day
+    therefore only becomes "publicly knowable" at the next-*trading*-day
     open.  Already-timestamped datetimes pass through unchanged.
+
+    Weekends *and* NYSE holidays are skipped, so a disclosure filed on
+    Christmas Eve (Wednesday) is promoted to the next market-open day, not
+    just the next weekday.
 
     Parameters
     ----------
@@ -81,21 +85,37 @@ def _promote_date_only(value: date | datetime) -> datetime:
     Returns
     -------
     datetime
-        A timezone-aware UTC datetime.
+        A timezone-aware UTC datetime whose date is the first NYSE trading
+        day strictly after ``value``.
     """
-    from datetime import timedelta
-
     # isinstance check must come BEFORE date because datetime is a subclass of date.
     if isinstance(value, datetime):
         if value.tzinfo is None:
             return value.replace(tzinfo=UTC)
         return value
 
-    # Pure ``date`` — bump to next business day @ 00:00 UTC.
+    # Pure ``date`` — bump to next NYSE trading day @ 00:00 UTC.
+    # Lazy import to avoid widening the import surface for live code paths
+    # that never touch this function.
+    import pandas_market_calendars as mcal  # noqa: PLC0415
+
+    nyse = mcal.get_calendar("NYSE")
+
+    # Look ahead up to 10 calendar days — enough to cover any holiday run.
     nxt = value + timedelta(days=1)
-    while nxt.weekday() >= 5:   # 5 = Saturday, 6 = Sunday
+    for _ in range(10):
+        # valid_days returns a DatetimeIndex; an empty result means no session.
+        sessions = nyse.valid_days(start_date=nxt, end_date=nxt)
+        if len(sessions) > 0:
+            return datetime(nxt.year, nxt.month, nxt.day, tzinfo=UTC)
         nxt += timedelta(days=1)
-    return datetime(nxt.year, nxt.month, nxt.day, tzinfo=UTC)
+
+    # Fallback: should be unreachable under any realistic calendar, but avoids
+    # an infinite loop if the calendar data is missing or corrupted.
+    raise RuntimeError(
+        f"_promote_date_only: could not find a NYSE trading day within "
+        f"10 calendar days of {value!r}.  Check pandas_market_calendars data."
+    )
 
 
 class CachedDataStore:
@@ -123,15 +143,43 @@ class CachedDataStore:
     # ── schema version ────────────────────────────────────────────────────────
 
     def _ensure_meta(self) -> None:
-        """Insert the schema-version row if the meta table is empty."""
+        """Insert the schema-version row if new, or raise if versions diverge.
+
+        Two outcomes:
+        - Cache file is brand-new (meta table empty): insert the current
+          ``SCHEMA_VERSION`` row and continue.
+        - Cache file already has a meta row: compare its ``schema_version``
+          against the running code's ``SCHEMA_VERSION``.  Any mismatch is a
+          hard error — a stale v1 file flowing through v2 code would produce
+          the old leaky semantics with no warning.
+
+        Raises
+        ------
+        RuntimeError
+            If the cached schema version does not match ``SCHEMA_VERSION``.
+            The error message names both versions and points the user to the
+            refetch command.
+        """
         with Session(self._engine) as s:
             existing = s.execute(select(MetaRow)).scalar_one_or_none()
+
             if existing is None:
+                # Fresh cache — stamp it with the current schema version.
                 s.add(MetaRow(
                     schema_version=SCHEMA_VERSION,
                     created_at=datetime.now(tz=UTC),
                 ))
                 s.commit()
+                return
+
+            # Existing cache — enforce version agreement.
+            if existing.schema_version != SCHEMA_VERSION:
+                raise RuntimeError(
+                    f"Cache schema version mismatch: file has v{existing.schema_version}, "
+                    f"code expects v{SCHEMA_VERSION}.  "
+                    f"Re-fill this domain with: "
+                    f"python -m scripts.backtest_fetch --refetch-domain <domain>"
+                )
 
     # ── OHLCV ─────────────────────────────────────────────────────────────────
 

@@ -29,10 +29,17 @@ from __future__ import annotations
 from datetime import date, datetime
 
 from sqlalchemy import (
-    Boolean, Column, Date, DateTime, Float, Index, Integer, String, Text,
+    Boolean,
+    Column,
+    Date,
+    DateTime,
+    Float,
+    Index,
+    Integer,
+    String,
+    Text,
 )
 from sqlalchemy.orm import DeclarativeBase
-
 
 # Bump this when the DDL changes in a backwards-incompatible way.
 # 2026-Q2 bump: politician_trades Date → DateTime (intraday PIT enforcement).
