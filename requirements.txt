@@ -13,6 +13,9 @@ numpy>=1.26.0
 pydantic>=2.6.0                 # typed models for every data source
 pydantic-settings>=2.2.0        # load .env into typed config
 
+# === Persistence ===
+sqlalchemy>=2.0.0               # ORM for orchestrator/persistence.py + backtest cache store
+
 # === Baselines (SPY benchmark + PyTorch MLP) ===
 torch>=2.2.0                    # MLP baseline network
 scikit-learn>=1.4.0             # scalers, metrics, train/test split
@@ -22,6 +25,7 @@ TA-Lib>=0.6.8                   # canonical TA-Lib bindings for Phase 4 technica
 # === Backtesting + reporting ===
 matplotlib>=3.8.0
 plotly>=5.20.0
+pandas-market-calendars>=4.4.0  # NYSE holiday/session schedule for backtest tick generator
 
 # === Resilience / async ===
 tenacity>=8.2.0                 # retry flaky API calls
