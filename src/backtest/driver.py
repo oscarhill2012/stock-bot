@@ -203,9 +203,12 @@ class Driver:
                 new_message=message,
             ):
                 pass
-        except (AttributeError, BaseException) as exc:
+        except (AttributeError, Exception) as exc:
             # ADK 1.32 runner-cleanup bug — see tick.py for details.  The
             # pipeline has already completed at this point; read state below.
+            # NOTE: deliberately catches ``Exception`` (not ``BaseException``)
+            # so that ``KeyboardInterrupt``, ``SystemExit``, and ``MemoryError``
+            # propagate normally and are not silently swallowed here.
             logger.warning(
                 "ADK runner raised after tick %s (pipeline likely completed): "
                 "%s: %s",
