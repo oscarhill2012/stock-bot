@@ -83,7 +83,10 @@ def make_evidence_callback(
 
         # Single timestamp for the whole batch — avoids microsecond skew
         # between records that belong to the same tick.
-        recorded_at = datetime.now(tz=UTC)
+        # In a backtest, state["as_of"] holds the historical tick time so
+        # evidence records are stamped with the replayed clock rather than
+        # wall-clock now.  Live sessions have no "as_of" → wall-clock fallback.
+        recorded_at = state.get("as_of") or datetime.now(tz=UTC)
 
         # Per-ticker raw data dict keyed by ticker symbol.
         data: dict = state.get(f"{analyst}_data", {}) or {}

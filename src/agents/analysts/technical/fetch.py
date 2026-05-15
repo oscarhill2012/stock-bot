@@ -16,6 +16,7 @@ sharing the same underlying yfinance round-trip via an LRU cache.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 
 from google.adk.agents.callback_context import CallbackContext
 from google.genai import types as genai_types
@@ -52,13 +53,16 @@ async def technical_fetch_callback(
     state = callback_context.state
     tickers: list[str] = state.get("tickers", [])
 
+    # Pull the historical clock from session state; default to wall-clock for live.
+    as_of: datetime = state.get("as_of") or datetime.now(tz=UTC)
+
     technical_data: dict[str, dict] = {}
 
     for ticker in tickers:
 
         # --- price history ---
         try:
-            ph = await get_price_history(ticker)
+            ph = await get_price_history(ticker, as_of=as_of)
             ph_payload = ph.model_dump() if hasattr(ph, "model_dump") else ph
         except Exception as exc:
             logger.warning("price_history fetch failed for %s: %s", ticker, exc)
@@ -66,7 +70,7 @@ async def technical_fetch_callback(
 
         # --- ratios ---
         try:
-            cr = await get_company_ratios(ticker)
+            cr = await get_company_ratios(ticker, as_of=as_of)
             cr_payload = cr.model_dump() if hasattr(cr, "model_dump") else cr
         except Exception as exc:
             logger.warning("company_ratios fetch failed for %s: %s", ticker, exc)
