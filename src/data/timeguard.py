@@ -64,7 +64,13 @@ def _get_counter() -> int:
 
 
 def _set_counter(value: int) -> None:
-    """Overwrite the thread-local fallback count."""
+    """Overwrite the thread-local fallback count.
+
+    Parameters
+    ----------
+    value : int
+        New value for the counter.
+    """
 
     _FALLBACK_STATE.count = value
 

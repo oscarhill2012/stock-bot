@@ -8,11 +8,20 @@ fragment in isolation by simulating one tick's drain.
 
 from __future__ import annotations
 
-from datetime import UTC
+import pytest
 
 from backtest.audit.telemetry import build_telemetry_record
 from backtest.schedule import Tick
 from data import timeguard
+
+
+@pytest.fixture(autouse=True)
+def _drain_counter():
+    """Ensure each test starts with a clean fallback counter."""
+
+    timeguard.drain_wallclock_fallback_count()
+    yield
+    timeguard.drain_wallclock_fallback_count()
 
 
 def _make_tick():
@@ -21,7 +30,7 @@ def _make_tick():
     # Try the convenience factory first; fall back to constructor.
     if hasattr(Tick, "from_as_of_phase"):
         return Tick.from_as_of_phase("2024-01-02T13:30:00+00:00", "open")
-    from datetime import datetime
+    from datetime import UTC, datetime
     return Tick(as_of=datetime(2024, 1, 2, 13, 30, tzinfo=UTC), phase="open")
 
 
@@ -49,9 +58,6 @@ def test_telemetry_reports_fallback_when_timeguard_counter_nonzero():
 
 def test_telemetry_reports_no_fallback_when_counter_zero():
     """Cold drain → flag is False (regression guard for B1)."""
-
-    # Ensure counter is clean.
-    timeguard.drain_wallclock_fallback_count()
 
     count = timeguard.drain_wallclock_fallback_count()
     tick = _make_tick()
