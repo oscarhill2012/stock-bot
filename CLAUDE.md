@@ -45,7 +45,7 @@ src/
 ├── data/           # Data ingestion layer (providers, models, registry)
 ├── orchestrator/   # Pipeline wiring + persistence + tick entrypoint
 └── observability/  # TraceWriter
-scripts/            # CLI entrypoints (backtest_fill, backtest_run, backtest_report)
+scripts/            # CLI entrypoints (backtest_fetch, backtest_run, backtest_report)
 config/             # JSON config files (one concern per file)
 tests/              # pytest suite
 ```
@@ -62,7 +62,7 @@ All scripts are invoked as `PYTHONPATH=src python -m scripts.<name>`:
 
 | Script | Purpose |
 |---|---|
-| `scripts.backtest_fill` | One-time cache fill — downloads and freezes market data for a date window |
+| `scripts.backtest_fetch` | One-time cache fill — downloads and freezes market data for a date window |
 | `scripts.backtest_run` | Execute a backtest window; writes `<runs_root>/<run-id>/` |
 | `scripts.backtest_report` | Regenerate the report for an existing run directory |
 
@@ -123,7 +123,7 @@ PYTHONPATH=src .venv/bin/python -m pytest tests/integration/backtest/test_end_to
 PYTHONPATH=src .venv/bin/python -m ruff check src/ tests/
 
 # Fill the backtest cache for a window
-PYTHONPATH=src python -m scripts.backtest_fill --window svb-stress-2023-03
+PYTHONPATH=src python -m scripts.backtest_fetch --window svb-stress-2023-03
 
 # Run a backtest
 PYTHONPATH=src python -m scripts.backtest_run --window svb-stress-2023-03
