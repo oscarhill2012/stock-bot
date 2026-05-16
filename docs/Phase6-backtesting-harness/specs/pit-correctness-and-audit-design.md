@@ -10,7 +10,7 @@ live pipeline would have seen at that moment. This spec closes that gap.
 The deliverable has two halves, tightly coupled:
 
 1. **Structural fixes** — eliminate every confirmed leak surface uncovered
-   in the deep audit (see `docs/Phase7-post-backtest-fixing/` review notes).
+   in the deep audit (see `docs/Phase7-pre-backtest-cleanup/` review notes).
 2. **A two-layer audit log** that lets a human reviewer independently
    verify, after the run, that no row delivered to any analyst was sourced
    from after the tick's `as_of`. The log is the acceptance test: leak-fix
@@ -38,8 +38,9 @@ The deliverable has two halves, tightly coupled:
 
 This spec is written before the first real backtest is run. The first
 backtest will surface findings that change priorities. Treat §3 (fix list)
-and §4 (audit log) as a **v1 baseline** — both will be extended in a v2
-revision of this spec after the first backtest's audit log is reviewed.
+and §4 (audit log) as a **v1 baseline**; the v2 follow-up lives in
+`docs/Phase8-post-backtest-fixing/specs/pit-correctness-and-audit-v2.md`
+and is fleshed out after the first audit log is reviewed.
 
 
 ## 2 — Execution model
@@ -115,12 +116,16 @@ Three independent additions to the existing harness:
 |---|---|---|---|---|
 | 1 | CRITICAL | `src/data/timeguard.py` (new) + every wall-clock fallback site | **New + Patch** | Introduce `resolve_as_of(*, allow_wallclock: bool) -> datetime`. In strict mode, raises `AsOfRequiredError` instead of falling back. Replace all 13 confirmed `state.get("as_of") or datetime.now(...)` and `if as_of is None: as_of = datetime.now(...)` sites with calls into the guard. Live entrypoints pass `allow_wallclock=True`. |
 | 2 | CRITICAL | `src/backtest/providers/price_history_cache.py` | **Patch** | Accept `phase` (or read it from state via a thread-local) and trim the same-day bar when `phase == "open"`. Default behaviour for missing `phase` is the conservative one (trim). Bar at close phase stays — the close price is public at 16:00. |
-| 3 | HIGH | `src/data/providers/stats/yfinance.py::fetch_price_history` + the cache-fill path | **Patch** | Pass `auto_adjust=False` to `yf.download`/`yf.Ticker.history`; cache OHLCV plus a separate split-event table; apply adjustments at read time bounded by `as_of`. Or assert at fill time that the most-recent split date for every ticker is **before** the first split date that would alter any cached bar — fail the fill if violated. Choice deferred to plan stage. |
-| 4 | HIGH | `src/data/providers/company_ratios/pit_composite.py` (planned by Phase 6 spec) | **Patch (during implementation)** | Stamp `as_of_date` with the SEC `acceptedDateTime` of the underlying 10-K/10-Q, not the fiscal period-end. The Phase 6 spec describes the provider but not the timestamp semantics; this spec pins them. |
 | 5 | HIGH | `src/backtest/cache/schema.py::PoliticianTradeRow` + `store.py::read_politician_trades` | **Patch** | Migrate `disclosure_date` and `transaction_date` from `Date` to `DateTime`. Update `read_politician_trades` filter to compare timestamps. Provider-side: keep date-only values stored as midnight UTC. Cache reader adds a "next-business-day visibility" rule for date-only-stamped rows so an unknown intraday time can't leak same-day. |
 | 6 | HIGH | `src/backtest/cache/fetcher.py::_already_ok` | **Patch** | Include `source_provider` in the `(window_key, ticker, domain)` skip predicate. After a `config/data.json` flip, rows written by the previous provider are no longer considered cached. Add `--refetch-domain <list>` flag to `scripts.backtest_fetch` for forced re-fill. |
 | 7 | MEDIUM | `src/data/providers/{news/finnhub,news/tiingo}.py`, `src/data/providers/{insider_trades,notable_holders,filings}/edgar.py` | **Patch** | Replace silent wall-clock substitution for missing timestamps with an explicit `MissingTimestamp` marker on the row plus a structured log line. Cache writers convert the marker into a deliberate "exclude until manually reviewed" record. Audit log surfaces the count of such markers per fetch. |
 | 8 | MEDIUM | `src/agents/analysts/report_cache.py` | **Patch** | Store the originating tick's `as_of` (not just `stored_at`) alongside each cache record. Cache reads still hit on `(input_hash, prompt_version)`; the originating `as_of` is **logged** in the per-tick telemetry so a reviewer can see when a hit served a verdict computed under a different `as_of`. Not a hard filter — same inputs ⇒ same verdict is still correct. |
+
+> **Numbering note.** Rows 3 (yfinance `auto_adjust`) and 4 (`pit_composite`
+> `acceptedDateTime`) are intentionally absent — they were deferred to the
+> v2 spec at
+> `docs/Phase8-post-backtest-fixing/specs/pit-correctness-and-audit-v2.md`.
+> The original numbering is preserved there so cross-references stay readable.
 
 ### Plumbing pattern: `resolve_as_of`
 
@@ -443,19 +448,12 @@ configured.
 ### Deferred to v2 (after first backtest)
 
 Two items are intentionally **not** in this spec because their priority
-depends on what the first backtest's audit log surfaces:
-
-- **yfinance auto_adjust handling (§3 row 3).** The plan stage will
-  choose between (a) cache unadjusted + maintain splits separately, or
-  (b) assert fill-date < first-split-date. The first audit log will
-  show whether retroactive adjustment is actually affecting the SVB-2023
-  window.
-- **`pit_composite` SEC `acceptedDateTime` semantics (§3 row 4).** The
-  Phase 6 data-fill spec is still being implemented; this fix lands
-  during that implementation or immediately after.
-
-Both will be promoted into a v2 of this spec once the first audit log
-exists to inform priorities.
+depends on what the first backtest's audit log surfaces — yfinance
+`auto_adjust` handling and `pit_composite` SEC `acceptedDateTime`
+semantics. They live in
+`docs/Phase8-post-backtest-fixing/specs/pit-correctness-and-audit-v2.md`
+and are fleshed out (mitigation chosen, regression tests defined) after
+the first audit log is reviewed.
 
 
 ## 7 — Future work / known unfixables

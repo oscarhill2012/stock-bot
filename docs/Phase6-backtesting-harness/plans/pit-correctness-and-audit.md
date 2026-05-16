@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, SQLAlchemy/SQLite, pandas_market_calendars, edgartools, yfinance, httpx, requests, pytest (with `asyncio` + `slow` markers), Google ADK 1.32.
 
-**Reference spec:** `docs/Phase7-post-backtest-fixing/specs/pit-correctness-and-audit-design.md`.
+**Reference spec:** `docs/Phase6-backtesting-harness/specs/pit-correctness-and-audit-design.md`.
 
 **Shell convention:** Bash tool runs in the project root. Never prepend `cd <root> &&`. Run pytest as `PYTHONPATH=src .venv/bin/python -m pytest …`, ruff as `PYTHONPATH=src .venv/bin/python -m ruff check …`.
 
@@ -1769,7 +1769,7 @@ def compute_tripwires(
 """Per-tick telemetry record — built and written by the driver.
 
 The record schema is documented in
-``docs/Phase7-post-backtest-fixing/specs/pit-correctness-and-audit-design.md``
+``docs/Phase6-backtesting-harness/specs/pit-correctness-and-audit-design.md``
 §4.1.  Each record is ~5 KB; a 20-trading-day, two-ticks/day window
 produces ~200 KB total.
 """
@@ -3323,13 +3323,13 @@ After Task 8 lands, walk the spec's §3 fix list one more time:
 |---|---|---|
 | 1 | timeguard + 13 wall-clock sites | Tasks 1–2 |
 | 2 | same-day OHLCV at open | Task 3 |
-| 3 | yfinance auto_adjust | **Deferred to v2 (spec §6)** — first audit log informs the choice |
-| 4 | pit_composite acceptedDateTime | **Deferred to v2 (spec §6)** — lands during/after Phase 6 data-fill |
 | 5 | politician_trades Date → DateTime | Task 8 |
 | 6 | cache skip + source_provider + --refetch-domain | Task 5 |
 | 7 | missing-timestamp markers | Task 4 |
 | 8 | report_cache originating-as_of | Task 8 |
 
+> Rows 3 (yfinance `auto_adjust`) and 4 (`pit_composite` `acceptedDateTime`) are intentionally absent — both are deferred to the v2 plan at `docs/Phase8-post-backtest-fixing/plans/pit-correctness-and-audit-v2.md`. Spec row numbers are preserved there so cross-references stay readable.
+
 Spec §4 (audit log) is covered by Tasks 6 + 7. Spec §5 (testing strategy) is covered by the per-task regression tests under `tests/backtest/leak_regressions/` and `tests/backtest/audit/`. The §5.4 smoke-test extension (assert `manifest.audit_complete=true`) is implicit in Task 6 Step 10 — explicit assertion can be added as a follow-up.
 
-After this plan lands and the first real backtest is run, the audit log surfaces what to prioritise in the v2 spec extension: yfinance auto_adjust mitigation, `pit_composite` `acceptedDateTime` semantics, and any new leaks the audit reveals.
+After this plan lands and the first real backtest is run, the audit log informs the Phase 8 v2 plan: yfinance `auto_adjust` mitigation, `pit_composite` `acceptedDateTime` semantics, and any new leaks the audit reveals.
