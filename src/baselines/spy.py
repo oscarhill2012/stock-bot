@@ -1,8 +1,13 @@
-"""SPY buy-and-hold metrics."""
+"""SPY buy-and-hold metrics.
+
+Public surface: ``_metrics_from_series`` (used by tests and the reporting
+layer) and ``SPYMetrics`` (the return dataclass).  The former public
+``spy_metrics`` function was removed in Phase 7 — it had zero callers;
+reporting.py computes its own SPY delta directly from the golden cache.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
 
 import numpy as np
 import pandas as pd
@@ -45,13 +50,3 @@ def _metrics_from_series(close: pd.Series) -> SPYMetrics:
         max_drawdown=float(max_dd),
         calmar=float(calmar),
     )
-
-
-def spy_metrics(start: date, end: date) -> SPYMetrics:
-    """Pull SPY OHLCV and compute baseline metrics."""
-    import yfinance as yf
-    df = yf.download("SPY", start=start, end=end, progress=False, auto_adjust=True)
-    if df.empty:
-        return SPYMetrics(0.0, 0.0, 0.0, 0.0, 0.0)
-    close = df["Close"].squeeze()
-    return _metrics_from_series(close)

@@ -140,6 +140,11 @@ class CachedDataStore:
         create_all(self._engine)
         self._ensure_meta()
 
+        # Per-domain count of rows dropped at write-time because their
+        # primary timestamp is MISSING_TIMESTAMP.  Drained by the fetcher
+        # to surface shrinkage in fill_audit.json (Phase 7 B3).
+        self._writes_skipped_missing_ts: dict[str, int] = {}
+
     # ── schema version ────────────────────────────────────────────────────────
 
     def _ensure_meta(self) -> None:
@@ -180,6 +185,25 @@ class CachedDataStore:
                     f"Re-fill this domain with: "
                     f"python -m scripts.backtest_fetch --refetch-domain <domain>"
                 )
+
+    # ── skipped-write counter ─────────────────────────────────────────────────
+
+    def drain_skipped_writes(self) -> dict[str, int]:
+        """Return the per-domain skipped-write counts and reset to empty.
+
+        Each value is the number of rows handed to ``write_<domain>``
+        whose canonical timestamp was ``MISSING_TIMESTAMP`` and which
+        were therefore dropped before persistence.  Called once per fill
+        by the fetcher; returns ``{}`` if no skips occurred.
+
+        Returns
+        -------
+        dict[str, int]
+            Per-domain skip counts; empty after this call returns.
+        """
+        counts = dict(self._writes_skipped_missing_ts)
+        self._writes_skipped_missing_ts.clear()
+        return counts
 
     # ── OHLCV ─────────────────────────────────────────────────────────────────
 
@@ -361,6 +385,9 @@ class CachedDataStore:
                         "(ticker=%s, url=%s, source=%s)",
                         ticker, a.url, a.source,
                     )
+                    self._writes_skipped_missing_ts["news"] = (
+                        self._writes_skipped_missing_ts.get("news", 0) + 1
+                    )
                     continue
 
                 stmt = sqlite_insert(NewsArticleRow).values(
@@ -444,6 +471,9 @@ class CachedDataStore:
                         "store.write_filings: skipping row with missing timestamp "
                         "(ticker=%s, accession_no=%s, form_type=%s)",
                         ticker, f.accession_no, f.form_type,
+                    )
+                    self._writes_skipped_missing_ts["filings"] = (
+                        self._writes_skipped_missing_ts.get("filings", 0) + 1
                     )
                     continue
 
@@ -529,6 +559,9 @@ class CachedDataStore:
                         "store.write_insider_trades: skipping row with missing "
                         "timestamp (ticker=%s, insider=%s, transaction_date=%s)",
                         ticker, t.insider_name, t.transaction_date,
+                    )
+                    self._writes_skipped_missing_ts["insider_trades"] = (
+                        self._writes_skipped_missing_ts.get("insider_trades", 0) + 1
                     )
                     continue
 
@@ -753,6 +786,9 @@ class CachedDataStore:
                         "store.write_notable_holders: skipping row with missing "
                         "timestamp (ticker=%s, holder=%s, accession_no=%s)",
                         ticker, h.holder, h.accession_no,
+                    )
+                    self._writes_skipped_missing_ts["notable_holders"] = (
+                        self._writes_skipped_missing_ts.get("notable_holders", 0) + 1
                     )
                     continue
 

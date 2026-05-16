@@ -6,18 +6,17 @@ Fixtures use tmp_path (pytest built-in) and synthetic in-memory data.
 from __future__ import annotations
 
 import json
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
 
 from backtest.reporting import (
-    _write_metrics,
     _backfill_forward_returns,
     _compute_vs_spy_delta,
     _parse_date,
+    _write_metrics,
 )
-
 
 # ── _write_metrics ────────────────────────────────────────────────────────────
 
@@ -157,6 +156,7 @@ class TestBackfillForwardReturns:
     def test_backfill_writes_forward_returns(self, tmp_path: Path) -> None:
         """When the cache has bars, forward_returns is patched into the JSON."""
         from unittest.mock import MagicMock
+
         from data.models import OHLCBar
 
         decisions_dir = tmp_path / "decisions"
@@ -166,6 +166,8 @@ class TestBackfillForwardReturns:
         # Fake cache: always returns a single bar with close = 165.0 (+10%)
         fake_bar = MagicMock(spec=OHLCBar)
         fake_bar.close = 165.0
+        # timestamp is now read by the backfill to record actual-bar dates (B8).
+        fake_bar.timestamp = datetime(2023, 3, 7, 14, 30, tzinfo=UTC)
 
         mock_cache = MagicMock()
         mock_cache.read_ohlcv.return_value = [fake_bar]
@@ -195,15 +197,25 @@ class TestBackfillForwardReturns:
     def test_backfill_multiple_horizons(self, tmp_path: Path) -> None:
         """Multiple horizons are all patched in a single pass."""
         from unittest.mock import MagicMock
+
         from data.models import OHLCBar
 
         decisions_dir = tmp_path / "decisions"
         decisions_dir.mkdir()
         path = self._write_decision(decisions_dir, fill_price=100.0)
 
-        bar_plus1  = MagicMock(spec=OHLCBar); bar_plus1.close  = 102.0
-        bar_plus5  = MagicMock(spec=OHLCBar); bar_plus5.close  = 105.0
-        bar_plus20 = MagicMock(spec=OHLCBar); bar_plus20.close = 110.0
+        # timestamp is now read by the backfill to record actual-bar dates (B8).
+        bar_plus1  = MagicMock(spec=OHLCBar)
+        bar_plus1.close     = 102.0
+        bar_plus1.timestamp = datetime(2023, 3,  7, tzinfo=UTC)
+
+        bar_plus5  = MagicMock(spec=OHLCBar)
+        bar_plus5.close     = 105.0
+        bar_plus5.timestamp = datetime(2023, 3, 11, tzinfo=UTC)
+
+        bar_plus20 = MagicMock(spec=OHLCBar)
+        bar_plus20.close     = 110.0
+        bar_plus20.timestamp = datetime(2023, 3, 26, tzinfo=UTC)
 
         mock_cache = MagicMock()
         mock_cache.read_ohlcv.side_effect = [
@@ -349,10 +361,13 @@ class TestComputeVsSpyDelta:
     def test_delta_computed_when_spy_present(self) -> None:
         """When SPY bars are in the cache, the delta is bot_return − spy_return."""
         from unittest.mock import MagicMock
+
         from data.models import OHLCBar
 
-        spy_open  = MagicMock(spec=OHLCBar); spy_open.open  = 400.0
-        spy_close = MagicMock(spec=OHLCBar); spy_close.close = 404.0  # +1% SPY
+        spy_open = MagicMock(spec=OHLCBar)
+        spy_open.open = 400.0
+        spy_close = MagicMock(spec=OHLCBar)
+        spy_close.close = 404.0  # +1% SPY
 
         mock_cache = MagicMock()
         # read_ohlcv returns a list: first bar for open, last bar for close.

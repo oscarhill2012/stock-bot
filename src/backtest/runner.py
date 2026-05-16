@@ -60,6 +60,46 @@ from orchestrator.persistence import create_all, make_engine
 logger = logging.getLogger(__name__)
 
 
+def _seed_initial_prices(
+    *,
+    store,
+    tickers: list[str],
+    window_start: datetime,
+    window_end: datetime,
+) -> dict[str, float]:
+    """Return a ``{ticker: price}`` map for FakeBroker bootstrap.
+
+    For each ticker we read the OHLCV slice for the full backtest window
+    and take the *first* bar's close price.  Tickers with no bar in the
+    window keep ``0.0`` — this preserves the previous behaviour for
+    genuinely-absent symbols but eliminates the artefact at tick 1 for
+    every ticker that does have data.
+
+    Parameters
+    ----------
+    store :
+        Any object exposing ``read_ohlcv(ticker, start, end) -> list[bar]``
+        where each ``bar`` has a ``close`` attribute.
+    tickers :
+        Watchlist tickers to seed.
+    window_start, window_end :
+        Inclusive backtest window bounds.
+
+    Returns
+    -------
+    dict[str, float]
+        Seed prices for FakeBroker construction.
+    """
+
+    prices: dict[str, float] = {}
+
+    for ticker in tickers:
+        bars = store.read_ohlcv(ticker, window_start, window_end)
+        prices[ticker] = float(bars[0].close) if bars else 0.0
+
+    return prices
+
+
 @dataclass
 class RunResult:
     """Summary of one backtest run, returned to the CLI.
@@ -234,9 +274,17 @@ class Runner:
                 restores.append(set_active_provider(domain, "cache"))
 
             # ── broker, DB, decision logger ─────────────────────────────────────
+            # Seed the broker with real close prices from the first available
+            # OHLCV bar so tick-1 equity metrics are not artefactual.
+            seed_prices = _seed_initial_prices(
+                store=store,
+                tickers=wl_filtered,
+                window_start=window.start,
+                window_end=window.end,
+            )
             broker = FakeBroker(
                 starting_cash=self._settings["fake_broker_starting_cash"],
-                prices={ticker: 0.0 for ticker in wl_filtered},
+                prices=seed_prices,
             )
 
             # Each run gets its own SQLite file — never touches data/stockbot.db.
