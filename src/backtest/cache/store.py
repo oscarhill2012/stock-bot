@@ -30,8 +30,10 @@ Adaptation notes (vs plan's original store.py):
 from __future__ import annotations
 
 import hashlib
+import logging
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -58,6 +60,62 @@ from data.models import (
     OHLCBar,
     PoliticianTrade,
 )
+from data.models.missing import is_missing_timestamp
+
+logger = logging.getLogger(__name__)
+
+
+def _promote_date_only(value: date | datetime) -> datetime:
+    """Promote a date-only value to ``next_trading_day @ 00:00 UTC``.
+
+    Conservative rule: if the row has no intraday time, the cache assumes
+    the disclosure could have been made any time during ``value`` and
+    therefore only becomes "publicly knowable" at the next-*trading*-day
+    open.  Already-timestamped datetimes pass through unchanged.
+
+    Weekends *and* NYSE holidays are skipped, so a disclosure filed on
+    Christmas Eve (Wednesday) is promoted to the next market-open day, not
+    just the next weekday.
+
+    Parameters
+    ----------
+    value:
+        Either a ``date`` (date-only) or a ``datetime`` (full timestamp).
+
+    Returns
+    -------
+    datetime
+        A timezone-aware UTC datetime whose date is the first NYSE trading
+        day strictly after ``value``.
+    """
+    # isinstance check must come BEFORE date because datetime is a subclass of date.
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value
+
+    # Pure ``date`` — bump to next NYSE trading day @ 00:00 UTC.
+    # Lazy import to avoid widening the import surface for live code paths
+    # that never touch this function.
+    import pandas_market_calendars as mcal  # noqa: PLC0415
+
+    nyse = mcal.get_calendar("NYSE")
+
+    # Look ahead up to 10 calendar days — enough to cover any holiday run.
+    nxt = value + timedelta(days=1)
+    for _ in range(10):
+        # valid_days returns a DatetimeIndex; an empty result means no session.
+        sessions = nyse.valid_days(start_date=nxt, end_date=nxt)
+        if len(sessions) > 0:
+            return datetime(nxt.year, nxt.month, nxt.day, tzinfo=UTC)
+        nxt += timedelta(days=1)
+
+    # Fallback: should be unreachable under any realistic calendar, but avoids
+    # an infinite loop if the calendar data is missing or corrupted.
+    raise RuntimeError(
+        f"_promote_date_only: could not find a NYSE trading day within "
+        f"10 calendar days of {value!r}.  Check pandas_market_calendars data."
+    )
 
 
 class CachedDataStore:
@@ -85,15 +143,43 @@ class CachedDataStore:
     # ── schema version ────────────────────────────────────────────────────────
 
     def _ensure_meta(self) -> None:
-        """Insert the schema-version row if the meta table is empty."""
+        """Insert the schema-version row if new, or raise if versions diverge.
+
+        Two outcomes:
+        - Cache file is brand-new (meta table empty): insert the current
+          ``SCHEMA_VERSION`` row and continue.
+        - Cache file already has a meta row: compare its ``schema_version``
+          against the running code's ``SCHEMA_VERSION``.  Any mismatch is a
+          hard error — a stale v1 file flowing through v2 code would produce
+          the old leaky semantics with no warning.
+
+        Raises
+        ------
+        RuntimeError
+            If the cached schema version does not match ``SCHEMA_VERSION``.
+            The error message names both versions and points the user to the
+            refetch command.
+        """
         with Session(self._engine) as s:
             existing = s.execute(select(MetaRow)).scalar_one_or_none()
+
             if existing is None:
+                # Fresh cache — stamp it with the current schema version.
                 s.add(MetaRow(
                     schema_version=SCHEMA_VERSION,
                     created_at=datetime.now(tz=UTC),
                 ))
                 s.commit()
+                return
+
+            # Existing cache — enforce version agreement.
+            if existing.schema_version != SCHEMA_VERSION:
+                raise RuntimeError(
+                    f"Cache schema version mismatch: file has v{existing.schema_version}, "
+                    f"code expects v{SCHEMA_VERSION}.  "
+                    f"Re-fill this domain with: "
+                    f"python -m scripts.backtest_fetch --refetch-domain <domain>"
+                )
 
     # ── OHLCV ─────────────────────────────────────────────────────────────────
 
@@ -163,7 +249,7 @@ class CachedDataStore:
             ).scalars().all()
 
             # OHLCBar.timestamp ≠ row.ts in name — map explicitly.
-            return [
+            bars = [
                 OHLCBar(
                     timestamp=row.ts,
                     open=row.open,
@@ -174,6 +260,8 @@ class CachedDataStore:
                 )
                 for row in rows
             ]
+            self._audit_record("price_history", ticker, bars)
+            return bars
 
     # ── company ratios ────────────────────────────────────────────────────────
 
@@ -245,12 +333,18 @@ class CachedDataStore:
             # ``as_of_date`` is not a CompanyRatios field — excluded implicitly
             # because CompanyRatios doesn't forbid extra attributes (Pydantic
             # ignores unknown source attributes in from_attributes mode).
-            return CompanyRatios.model_validate(row, from_attributes=True)
+            ratios = CompanyRatios.model_validate(row, from_attributes=True)
+            self._audit_record("company_ratios", ticker, [ratios])
+            return ratios
 
     # ── news ──────────────────────────────────────────────────────────────────
 
     def write_news(self, ticker: str, articles: list[NewsArticle]) -> None:
         """Upsert news articles for ``ticker``.
+
+        Rows whose ``published_at`` is :data:`~data.models.missing.MISSING_TIMESTAMP`
+        are skipped with a structured log line so the audit layer can surface
+        the count of unstamped upstream rows.
 
         Parameters
         ----------
@@ -261,6 +355,14 @@ class CachedDataStore:
         """
         with Session(self._engine) as s:
             for a in articles:
+                if is_missing_timestamp(a.published_at):
+                    logger.warning(
+                        "store.write_news: skipping row with missing timestamp "
+                        "(ticker=%s, url=%s, source=%s)",
+                        ticker, a.url, a.source,
+                    )
+                    continue
+
                 stmt = sqlite_insert(NewsArticleRow).values(
                     ticker=ticker,
                     url=a.url,
@@ -308,10 +410,12 @@ class CachedDataStore:
                 .order_by(NewsArticleRow.published_at.desc())
             ).scalars().all()
 
-            return [
+            articles = [
                 NewsArticle.model_validate(r, from_attributes=True)
                 for r in rows
             ]
+            self._audit_record("news", ticker, articles)
+            return articles
 
     # ── filings ───────────────────────────────────────────────────────────────
 
@@ -320,6 +424,10 @@ class CachedDataStore:
 
         ``Filing.ticker`` carries the ticker, but it is also stored in the row
         to allow the ``WHERE ticker = ?`` index scan.
+
+        Rows whose ``filed_at`` is :data:`~data.models.missing.MISSING_TIMESTAMP`
+        are skipped with a structured log line so the audit layer can surface
+        the count of unstamped upstream rows.
 
         Parameters
         ----------
@@ -331,6 +439,14 @@ class CachedDataStore:
         """
         with Session(self._engine) as s:
             for f in filings:
+                if is_missing_timestamp(f.filed_at):
+                    logger.warning(
+                        "store.write_filings: skipping row with missing timestamp "
+                        "(ticker=%s, accession_no=%s, form_type=%s)",
+                        ticker, f.accession_no, f.form_type,
+                    )
+                    continue
+
                 stmt = sqlite_insert(FilingRow).values(
                     accession_no=f.accession_no,
                     ticker=ticker,
@@ -379,7 +495,9 @@ class CachedDataStore:
                 .order_by(FilingRow.filed_at.desc())
             ).scalars().all()
 
-            return [Filing.model_validate(r, from_attributes=True) for r in rows]
+            filings = [Filing.model_validate(r, from_attributes=True) for r in rows]
+            self._audit_record("filings", ticker, filings)
+            return filings
 
     # ── insider trades ────────────────────────────────────────────────────────
 
@@ -393,6 +511,10 @@ class CachedDataStore:
         ``(ticker, insider_name, transaction_date, side, shares, filed_at)`` is
         used as the surrogate PK so writes are idempotent across re-runs.
 
+        Rows whose ``filed_at`` is :data:`~data.models.missing.MISSING_TIMESTAMP`
+        are skipped with a structured log line so the audit layer can surface
+        the count of unstamped upstream rows.
+
         Parameters
         ----------
         ticker:
@@ -402,6 +524,14 @@ class CachedDataStore:
         """
         with Session(self._engine) as s:
             for t in trades:
+                if is_missing_timestamp(t.filed_at):
+                    logger.warning(
+                        "store.write_insider_trades: skipping row with missing "
+                        "timestamp (ticker=%s, insider=%s, transaction_date=%s)",
+                        ticker, t.insider_name, t.transaction_date,
+                    )
+                    continue
+
                 key = "|".join([
                     ticker,
                     t.insider_name,
@@ -469,7 +599,7 @@ class CachedDataStore:
 
             # InsiderTrade has extra="forbid" — construct explicitly to avoid
             # Pydantic rejecting the row's extra column (row_hash).
-            return [
+            trades = [
                 InsiderTrade(
                     ticker=row.ticker,
                     insider_name=row.insider_name,
@@ -486,6 +616,8 @@ class CachedDataStore:
                 )
                 for row in rows
             ]
+            self._audit_record("insider_trades", ticker, trades)
+            return trades
 
     # ── politician trades ─────────────────────────────────────────────────────
 
@@ -498,6 +630,11 @@ class CachedDataStore:
         side, amount_min_usd, amount_max_usd)`` because the upstream feed has
         no natural identifier.
 
+        Date-only upstream values (no intraday time) are stored as midnight
+        UTC of the *next business day*.  This conservative promotion prevents
+        same-day leakage because the STOCK Act allows disclosure any time of
+        day on the recorded disclosure_date.
+
         Parameters
         ----------
         ticker:
@@ -507,10 +644,13 @@ class CachedDataStore:
         """
         with Session(self._engine) as s:
             for t in trades:
+                disc_dt = _promote_date_only(t.disclosure_date) if t.disclosure_date else None
+                txn_dt  = _promote_date_only(t.transaction_date)
+
                 key = "|".join([
                     ticker,
                     t.politician,
-                    str(t.transaction_date),
+                    str(txn_dt),
                     t.side,
                     str(t.amount_min_usd),
                     str(t.amount_max_usd),
@@ -524,8 +664,8 @@ class CachedDataStore:
                     chamber=t.chamber,
                     party=t.party,
                     side=t.side,
-                    transaction_date=t.transaction_date,
-                    disclosure_date=t.disclosure_date,
+                    transaction_date=txn_dt,
+                    disclosure_date=disc_dt,
                     amount_min_usd=t.amount_min_usd,
                     amount_max_usd=t.amount_max_usd,
                 ).on_conflict_do_nothing(index_elements=["row_hash"])
@@ -544,22 +684,24 @@ class CachedDataStore:
         used as the fallback (conservative — likely an older record without
         disclosure metadata).
 
+        Comparison is on full ``DateTime`` values — a 16:00 disclosure on
+        day D is invisible at the 09:30 same-day open.
+
         Parameters
         ----------
         ticker:
             Ticker symbol.
         as_of:
-            Upper bound (inclusive) on the PIT date.
+            Upper bound (inclusive) on the PIT datetime.
         lookback_days:
             How many calendar days back to look.
 
         Returns
         -------
         list[PoliticianTrade]
-            Matching trades, most-recent by PIT date first.
+            Matching trades, most-recent by PIT datetime first.
         """
-        lower = (as_of - timedelta(days=lookback_days)).date()
-        as_of_date = as_of.date()
+        lower = as_of - timedelta(days=lookback_days)
 
         pit = func.coalesce(
             PoliticianTradeRow.disclosure_date,
@@ -571,7 +713,7 @@ class CachedDataStore:
                 select(PoliticianTradeRow)
                 .where(
                     PoliticianTradeRow.ticker == ticker,
-                    pit <= as_of_date,
+                    pit <= as_of,
                     pit >  lower,
                 )
                 .order_by(pit.desc())
@@ -579,10 +721,12 @@ class CachedDataStore:
 
             # row_hash is not a PoliticianTrade field — from_attributes works
             # because PoliticianTrade doesn't have extra="forbid".
-            return [
+            pol_trades = [
                 PoliticianTrade.model_validate(r, from_attributes=True)
                 for r in rows
             ]
+            self._audit_record("politician_trades", ticker, pol_trades)
+            return pol_trades
 
     # ── notable holders ───────────────────────────────────────────────────────
 
@@ -590,6 +734,10 @@ class CachedDataStore:
         self, ticker: str, holders: list[NotableHolder],
     ) -> None:
         """Upsert SC 13D / 13G / 13F filings for ``ticker``.
+
+        Rows whose ``filed_at`` is :data:`~data.models.missing.MISSING_TIMESTAMP`
+        are skipped with a structured log line so the audit layer can surface
+        the count of unstamped upstream rows.
 
         Parameters
         ----------
@@ -600,6 +748,14 @@ class CachedDataStore:
         """
         with Session(self._engine) as s:
             for h in holders:
+                if is_missing_timestamp(h.filed_at):
+                    logger.warning(
+                        "store.write_notable_holders: skipping row with missing "
+                        "timestamp (ticker=%s, holder=%s, accession_no=%s)",
+                        ticker, h.holder, h.accession_no,
+                    )
+                    continue
+
                 stmt = sqlite_insert(NotableHolderRow).values(
                     accession_no=h.accession_no,
                     ticker=ticker,
@@ -647,7 +803,55 @@ class CachedDataStore:
                 .order_by(NotableHolderRow.filed_at.desc())
             ).scalars().all()
 
-            return [
+            holders = [
                 NotableHolder.model_validate(r, from_attributes=True)
                 for r in rows
             ]
+            self._audit_record("notable_holders", ticker, holders)
+            return holders
+
+    # ── Audit hook ────────────────────────────────────────────────────────────
+    #
+    # The driver enables read capture once per tick; every ``read_*`` method
+    # appends its rows into ``self._audit_reads``.  At end-of-tick the driver
+    # calls ``_audit_drain_reads`` to retrieve and reset the captured set.
+    #
+    # When capture is disabled (the default — live runs) the methods skip
+    # the append for zero overhead.
+
+    def _audit_capture_enabled(self) -> bool:
+        """Return ``True`` iff per-tick read capture is currently on."""
+        return getattr(self, "_audit_reads", None) is not None
+
+    def _audit_record(self, domain: str, ticker: str, rows: list[Any]) -> None:
+        """Append ``rows`` into the per-tick capture if enabled.
+
+        Parameters
+        ----------
+        domain:
+            Domain key (e.g. ``"news"``, ``"price_history"``).
+        ticker:
+            Ticker symbol.
+        rows:
+            Model instances returned by the read method.
+        """
+        if not self._audit_capture_enabled():
+            return
+        self._audit_reads.setdefault(domain, {}).setdefault(ticker, []).extend(rows)
+
+    def _audit_enable_capture(self) -> None:
+        """Begin per-tick read capture.  Idempotent — clears any prior state."""
+        self._audit_reads: dict = {}
+
+    def _audit_drain_reads(self) -> dict:
+        """Return and reset the per-tick capture log.
+
+        Returns
+        -------
+        dict
+            ``{domain: {ticker: [rows]}}`` — empty when capture was never
+            enabled.
+        """
+        captured = getattr(self, "_audit_reads", {}) or {}
+        self._audit_reads = {}
+        return captured

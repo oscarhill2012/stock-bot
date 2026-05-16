@@ -71,6 +71,8 @@ data/raw/
 cache/
 # Exception: the backtest cache *source package* must be tracked.
 !src/backtest/cache/
+# Exception: unit tests for the cache module must also be tracked.
+!tests/unit/backtest/cache/
 
 # Local dev SQLite — persistence tests write into it on every run; should
 # not be tracked. Schema is owned by SQLAlchemy ORM in orchestrator/persistence.py.

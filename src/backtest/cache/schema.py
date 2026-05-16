@@ -29,13 +29,21 @@ from __future__ import annotations
 from datetime import date, datetime
 
 from sqlalchemy import (
-    Boolean, Column, Date, DateTime, Float, Index, Integer, String, Text,
+    Boolean,
+    Column,
+    Date,
+    DateTime,
+    Float,
+    Index,
+    Integer,
+    String,
+    Text,
 )
 from sqlalchemy.orm import DeclarativeBase
 
-
 # Bump this when the DDL changes in a backwards-incompatible way.
-SCHEMA_VERSION = 1
+# 2026-Q2 bump: politician_trades Date → DateTime (intraday PIT enforcement).
+SCHEMA_VERSION = 2
 
 
 class CacheBase(DeclarativeBase):
@@ -181,16 +189,21 @@ class PoliticianTradeRow(CacheBase):
 
     __tablename__ = "politician_trades"
 
-    row_hash:         str   = Column(String, primary_key=True)
-    ticker:           str   = Column(String, index=True)
-    politician:       str   = Column(String)
-    chamber:          str   = Column(String)   # nullable
-    party:            str   = Column(String)   # nullable
-    side:             str   = Column(String)
-    transaction_date: date  = Column(Date)
-    disclosure_date:  date  = Column(Date)     # nullable
-    amount_min_usd:   float = Column(Float)    # nullable
-    amount_max_usd:   float = Column(Float)    # nullable
+    row_hash:         str      = Column(String, primary_key=True)
+    ticker:           str      = Column(String, index=True)
+    politician:       str      = Column(String)
+    chamber:          str      = Column(String)    # nullable
+    party:            str      = Column(String)    # nullable
+    side:             str      = Column(String)
+    # NOTE: 2026-Q2 — migrated from Date to DateTime so the cache can
+    # represent the intraday "next business day" disclosure visibility
+    # rule.  Date-only upstream rows are stored as 00:00:00 UTC of the
+    # next business day to prevent same-day leakage (STOCK Act allows
+    # disclosure any time on the disclosure_date).
+    transaction_date: datetime = Column(DateTime)
+    disclosure_date:  datetime = Column(DateTime)  # nullable
+    amount_min_usd:   float    = Column(Float)     # nullable
+    amount_max_usd:   float    = Column(Float)     # nullable
 
     __table_args__ = (
         Index("ix_pol_ticker_disc", "ticker", "disclosure_date"),

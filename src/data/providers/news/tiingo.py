@@ -43,15 +43,19 @@ def _parse_published(raw: Any) -> datetime:
     Returns
     -------
     datetime
-        A timezone-aware datetime; falls back to ``now(UTC)`` if parsing fails.
+        A timezone-aware datetime; returns ``MISSING_TIMESTAMP`` when the
+        value is missing or unparseable so the cache writer can skip the
+        row deliberately rather than fabricating wall-clock substitution.
     """
+    from data.models.missing import MISSING_TIMESTAMP
+
     if raw is None:
-        return datetime.now(tz=UTC)
+        return MISSING_TIMESTAMP
 
     try:
         dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
     except ValueError:
-        return datetime.now(tz=UTC)
+        return MISSING_TIMESTAMP
 
     # Ensure the datetime is always timezone-aware.
     if dt.tzinfo is None:

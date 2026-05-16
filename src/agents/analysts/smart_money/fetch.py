@@ -24,7 +24,7 @@ no-data verdict via ``derive_smart_money_verdict`` when ``is_no_data=1.0``.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import datetime
 
 from google.adk.agents.callback_context import CallbackContext
 
@@ -32,6 +32,7 @@ from data import (
     get_notable_holders,
     get_public_figure_trades,
 )
+from data.timeguard import resolve_as_of
 from observability.trace import _trace_maybe
 
 POLITICIAN_LOOKBACK_DAYS = 30
@@ -73,7 +74,9 @@ async def smart_money_fetch_callback(
     tickers: list[str] = state.get("tickers", [])
 
     # Pull the historical clock from session state; default to wall-clock for live.
-    as_of: datetime = state.get("as_of") or datetime.now(tz=UTC)
+    as_of: datetime = resolve_as_of(
+        state.get("as_of"), allow_wallclock=True, site="smart_money/fetch",
+    )
 
     smart_money_data: dict = {
         "politicians": {},

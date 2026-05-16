@@ -257,6 +257,7 @@ Invocation:
 ```bash
 PYTHONPATH=src python -m scripts.backtest_audit_tick \
   --run-id  svb-stress-2023-03-<sha7> \
+  --window  svb-stress-2023-03 \
   --tick    2023-03-10T09:30:00-05:00 \
   --phase   open
 ```

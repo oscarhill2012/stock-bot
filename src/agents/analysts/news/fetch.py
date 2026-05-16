@@ -15,13 +15,14 @@ formatted text (``news_context``) so the prompt stays compact.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import datetime
 
 from google.adk.agents.callback_context import CallbackContext
 from google.genai import types as genai_types
 
 from config.analysts import NewsCaps, get_analysts_config
 from data import get_stock_news
+from data.timeguard import resolve_as_of
 from observability.trace import _trace_maybe
 
 logger = logging.getLogger(__name__)
@@ -126,7 +127,9 @@ async def news_fetch_callback(
     tickers: list[str] = state.get("tickers", [])
 
     # Pull the historical clock from session state; default to wall-clock for live.
-    as_of: datetime = state.get("as_of") or datetime.now(tz=UTC)
+    as_of: datetime = resolve_as_of(
+        state.get("as_of"), allow_wallclock=True, site="news/fetch",
+    )
 
     news_data: dict[str, dict] = {}
     context_blocks: list[str] = []

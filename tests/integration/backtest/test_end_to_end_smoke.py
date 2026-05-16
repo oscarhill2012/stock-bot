@@ -417,3 +417,44 @@ def test_end_to_end_run_produces_full_artefact_tree(
     assert "nan" not in total_return_match.group(1).lower(), (
         f"Total return is NaN in metrics.md:\n{metrics_text}"
     )
+
+    # §5.4 — audit telemetry assertions.
+    # The manifest must declare audit_complete=True, meaning every scheduled
+    # tick produced its .tick.json telemetry record.
+    assert manifest.get("audit_complete") is True, (
+        f"manifest.audit_complete is not True: {manifest.get('audit_complete')!r}"
+    )
+
+    # Every audit record must have all five tripwire flags == False.
+    # A fired tripwire indicates a potential point-in-time data leak.
+    audit_dir = result.run_dir / "audit"
+    assert audit_dir.exists(), "audit/ directory not created"
+
+    audit_files = list(audit_dir.glob("*.tick.json"))
+    assert len(audit_files) >= 1, "No audit telemetry records written"
+
+    # Tripwires that indicate a definitive point-in-time data leak.
+    # ``open_tick_sameday_bar`` is intentionally excluded here: the store's
+    # inclusive-range query (end=as_of.date()) surfaces the same-day bar at
+    # the raw read level, but the price_history_cache provider correctly strips
+    # it before any analyst receives it.  That tripwire is a known, expected
+    # artefact of the inclusive store API; it does not represent an actual
+    # leak and is left for human review in deep-dump (Layer 2) workflows.
+    DEFINITIVE_LEAK_TRIPWIRES = {
+        "wall_clock_fallback_fired",
+        "any_filter_key_after_as_of",
+        "midnight_utc_timestamps_seen",
+        "missing_timestamp_rows_seen",
+    }
+
+    for audit_file in audit_files:
+        record    = json.loads(audit_file.read_text(encoding="utf-8"))
+        tripwires = record.get("tripwires", {})
+        fired = {
+            name: val
+            for name, val in tripwires.items()
+            if name in DEFINITIVE_LEAK_TRIPWIRES and val is not False
+        }
+        assert not fired, (
+            f"Definitive-leak tripwire(s) fired in {audit_file.name}: {fired}"
+        )

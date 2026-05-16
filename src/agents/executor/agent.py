@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from google.adk.agents import BaseAgent
@@ -10,6 +10,7 @@ from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event
 
 from broker.protocol import Broker, BrokerRejection
+from data.timeguard import resolve_as_of
 from observability.trace import _trace_maybe
 from orchestrator.state import Execution, Order
 
@@ -99,9 +100,10 @@ class ExecutorAgent(BaseAgent):
                         # holding_hours is deterministic against historical ticks.
                         # Fall back to wall-clock on live runs.
                         raw_as_of = state.get("as_of")
-                        closed_at = (
-                            raw_as_of if isinstance(raw_as_of, datetime)
-                            else datetime.now(tz=UTC)
+                        closed_at = resolve_as_of(
+                            raw_as_of if isinstance(raw_as_of, datetime) else None,
+                            allow_wallclock=True,
+                            site="executor/agent",
                         )
                         holding_hours = int(
                             (closed_at - opened_at_dt).total_seconds() / 3600

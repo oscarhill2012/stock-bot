@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime
+from datetime import datetime
 
 from google.adk.agents import LlmAgent
 from google.adk.agents.callback_context import CallbackContext
@@ -19,6 +19,7 @@ from contract.digest_defaults import DEFAULT_ANALYST_WEIGHTS
 from contract.evidence import AnalystEvidence
 from contract.strategist_prompt import render_all_ticker_blocks
 from contract.ticker_evidence import TickerEvidence
+from data.timeguard import resolve_as_of
 from observability.trace import _trace_maybe, make_llm_trace_callbacks
 
 
@@ -90,17 +91,24 @@ def _evidence_view_before_callback(
     #      timestamp; guarantees deterministic replay.
     #   2. state["recorded_at"] — set by some live-path callers as an ISO string
     #      or datetime.
-    #   3. datetime.now(tz=UTC) — live fallback when neither key is present.
+    #   3. resolve_as_of wall-clock fallback — live fallback when neither key is
+    #      present.  Strict mode vetoes this if STOCKBOT_STRICT_AS_OF=1.
     as_of_raw = state.get("as_of")
     if isinstance(as_of_raw, datetime):
+        # Backtest path — deterministic replay timestamp is available.
         recorded_at = as_of_raw
     else:
         recorded_at_raw = state.get("recorded_at")
-        recorded_at = (
-            datetime.fromisoformat(recorded_at_raw)
-            if isinstance(recorded_at_raw, str)
-            else (recorded_at_raw or datetime.now(tz=UTC))
-        )
+        if isinstance(recorded_at_raw, str):
+            # Live path where recorded_at was serialised as an ISO string.
+            recorded_at = datetime.fromisoformat(recorded_at_raw)
+        else:
+            # Fall through to timeguard — walls clock or strict-mode abort.
+            recorded_at = resolve_as_of(
+                recorded_at_raw if isinstance(recorded_at_raw, datetime) else None,
+                allow_wallclock=True,
+                site="strategist/agent._evidence_view",
+            )
 
     def _index(key: str) -> dict[str, AnalystEvidence]:
         """Index a per-analyst evidence list by ticker.
@@ -280,8 +288,10 @@ def _strategist_validation_callback(
     # replay path) so PositionThesis.opened_at is deterministic.  Fall back to
     # wall-clock on live runs where as_of is absent.
     raw_as_of = state.get("as_of")
-    derivation_now = (
-        raw_as_of if isinstance(raw_as_of, datetime) else datetime.now(tz=UTC)
+    derivation_now = resolve_as_of(
+        raw_as_of if isinstance(raw_as_of, datetime) else None,
+        allow_wallclock=True,
+        site="strategist/agent._after_validation",
     )
     ctx = TickContext(
         tick_id=str(tick_id),

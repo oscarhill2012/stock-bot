@@ -66,7 +66,7 @@ from pathlib import Path
 from google.adk.models import LlmResponse
 from google.genai import types as genai_types
 
-from agents.analysts.report_cache import read_cache, write_cache
+from agents.analysts.report_cache import log_cache_hit_to_state, read_cache, write_cache
 from config.analysts import get_analysts_config
 from contract.evidence import VerdictBatch
 from observability.trace import TraceWriter
@@ -181,6 +181,17 @@ def make_report_cache_callbacks(
                 # Any single miss forces a full LLM call — do not partial-load
                 # a mixed cache/LLM batch (the LLM would then re-score everyone).
                 return None
+
+            # Log the cache hit for audit telemetry — records which tick the
+            # verdict was originally computed under so reviewers can see when
+            # a cached result spans multiple ticks.
+            log_cache_hit_to_state(
+                state,
+                analyst=analyst_name,
+                ticker=ticker,
+                input_hash=input_hash,
+                originating_as_of=hit.get("originating_as_of"),
+            )
 
             # Merge the report blob back into the verdict dict if one was stored
             # — caches can omit the report on analysts that don't emit reports.
@@ -333,6 +344,9 @@ def make_report_cache_callbacks(
                     prompt_version=prompt_version,
                     verdict=verdict_payload,
                     report=report_payload,
+                    # Pass the tick's as_of so future cache hits can surface the
+                    # originating tick in the audit telemetry.
+                    originating_as_of=state.get("as_of"),
                 )
             except OSError:
                 # Disk errors after a paid LLM call must not crash the agent

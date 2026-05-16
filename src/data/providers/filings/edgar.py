@@ -60,8 +60,14 @@ def _section_text(obj: Any, key: str) -> str | None:
 def _build_filing(filing: Any, symbol: str, include_excerpts: bool) -> Filing:
     form_type = str(getattr(filing, "form", ""))
 
-    filed_date = _coerce_date(getattr(filing, "filing_date", None)) or date.today()
-    filed_at = datetime.combine(filed_date, datetime.min.time(), tzinfo=UTC)
+    # A filing with no parseable date is an upstream gap — surface it as a
+    # deliberate skip via MISSING_TIMESTAMP rather than substituting wall-clock.
+    raw_date = _coerce_date(getattr(filing, "filing_date", None))
+    if raw_date is None:
+        from data.models.missing import MISSING_TIMESTAMP
+        filed_at = MISSING_TIMESTAMP
+    else:
+        filed_at = datetime.combine(raw_date, datetime.min.time(), tzinfo=UTC)
 
     accession = (
         getattr(filing, "accession_no", None)

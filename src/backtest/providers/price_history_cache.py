@@ -14,7 +14,7 @@ Deviation from the plan's ``stats_cache.py``:
 """
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from backtest.providers._store_handle import get_store
 from data.models import PriceHistory
@@ -46,14 +46,15 @@ async def fetch(
     as_of: datetime,
     period: str = "1y",
     interval: str = "1d",
+    phase: str | None = None,
     **_unused,
 ) -> PriceHistory:
     """Return OHLCV bars for ``ticker`` up to and including ``as_of``.
 
     ``period`` is converted to an approximate calendar-day lookback so the
-    query matches the window the live provider would return.  ``interval`` is
-    accepted for signature compatibility but ignored — the cache stores daily
-    bars exclusively.
+    query matches the window the live provider would return.  ``interval``
+    is accepted for signature compatibility but ignored — the cache stores
+    daily bars exclusively.
 
     Parameters
     ----------
@@ -66,16 +67,29 @@ async def fetch(
         back to 365 days.
     interval:
         Accepted for call-site compatibility; unused.
+    phase:
+        Tick phase — ``"open"`` (09:30) or ``"close"`` (16:00).  At
+        ``"open"`` the bar dated ``as_of.date()`` is **trimmed** because
+        today's close is not yet public.  At ``"close"`` today's bar is
+        kept.  When ``phase`` is ``None`` (e.g. a live call between
+        scheduled ticks) the conservative open-phase rule applies — fail
+        closed rather than fabricate.
 
     Returns
     -------
     PriceHistory
-        Bars in ascending date order.  Empty list when no cached bars exist.
+        Bars in ascending date order.  Empty list when no cached bars
+        match the window.
     """
     lookback_days = _PERIOD_DAYS.get(period, 365)
-    end: date   = as_of.date()
-    start: date = end - timedelta(days=lookback_days)
+    end: date     = as_of.date()
+    start: date   = end - timedelta(days=lookback_days)
 
     bars = get_store().read_ohlcv(ticker, start=start, end=end)
+
+    # At the open phase (or unknown phase) today's bar leaks the close
+    # price.  Strip it.
+    if phase != "close":
+        bars = [b for b in bars if b.timestamp.date() < end]
 
     return PriceHistory(ticker=ticker, bars=bars)

@@ -59,6 +59,10 @@ def _validate_active_providers_are_registered() -> None:
 
 _validate_active_providers_are_registered()
 
+from datetime import datetime
+
+from data.timeguard import resolve_as_of
+
 from .aggregator import get_stock_signal_bundle, get_stock_signal_bundle_blocking
 from .models import (
     CompanyRatios,
@@ -78,8 +82,6 @@ from .rate_limit import AsyncRateLimiter
 from .registry import dispatch as _dispatch  # noqa: F401  (re-export)
 from .registry import min_decision_interval_seconds
 
-from datetime import UTC, datetime
-
 
 async def get_price_history(
     ticker: str,
@@ -87,6 +89,7 @@ async def get_price_history(
     interval: str = "1d",
     *,
     as_of: datetime | None = None,
+    phase: str | None = None,
 ) -> PriceHistory:
     """Fetch OHLCV history for ``ticker`` via the active price-history provider.
 
@@ -103,17 +106,21 @@ async def get_price_history(
         clock) so live callers that omit this argument behave identically to
         before.  Backtest callers pass the tick timestamp so providers see the
         correct point-in-time.
+    phase:
+        Tick phase — ``"open"`` or ``"close"``.  Forwarded so cache
+        providers can trim the same-day bar at the open tick.  When the
+        caller is the live pipeline between scheduled ticks, ``None`` is
+        acceptable.
 
     Returns
     -------
     PriceHistory
         OHLCV bars ordered oldest -> newest.
     """
-    if as_of is None:
-        as_of = datetime.now(tz=UTC)
+    as_of = resolve_as_of(as_of, allow_wallclock=True, site="data.get_price_history")
     return await _dispatch(
         "price_history", ticker.upper(),
-        period=period, interval=interval, as_of=as_of,
+        period=period, interval=interval, as_of=as_of, phase=phase,
     )
 
 
@@ -142,8 +149,7 @@ async def get_company_ratios(
     CompanyRatios
         Scalar fundamentals + summary stats.
     """
-    if as_of is None:
-        as_of = datetime.now(tz=UTC)
+    as_of = resolve_as_of(as_of, allow_wallclock=True, site="data.get_company_ratios")
     return await _dispatch(
         "company_ratios", ticker.upper(),
         period=period, interval=interval, as_of=as_of,
@@ -174,8 +180,7 @@ async def get_stock_news(
         Historical clock timestamp.  Defaults to ``datetime.now(UTC)``.
     """
     from datetime import timedelta as _td
-    if as_of is None:
-        as_of = datetime.now(tz=UTC)
+    as_of = resolve_as_of(as_of, allow_wallclock=True, site="data.get_stock_news")
     as_of_date = as_of.date()
     return await _dispatch(
         "news",
@@ -201,8 +206,7 @@ async def get_social_sentiment(
     as_of:
         Historical clock timestamp.  Defaults to ``datetime.now(UTC)``.
     """
-    if as_of is None:
-        as_of = datetime.now(tz=UTC)
+    as_of = resolve_as_of(as_of, allow_wallclock=True, site="data.get_social_sentiment")
     return await _dispatch("social_sentiment", ticker.upper(), as_of=as_of)
 
 
@@ -223,8 +227,7 @@ async def get_insider_trades(
     as_of:
         Historical clock timestamp.  Defaults to ``datetime.now(UTC)``.
     """
-    if as_of is None:
-        as_of = datetime.now(tz=UTC)
+    as_of = resolve_as_of(as_of, allow_wallclock=True, site="data.get_insider_trades")
     return await _dispatch(
         "insider_trades", ticker.upper(),
         lookback_days=lookback_days, as_of=as_of,
@@ -248,8 +251,7 @@ async def get_public_figure_trades(
     as_of:
         Historical clock timestamp.  Defaults to ``datetime.now(UTC)``.
     """
-    if as_of is None:
-        as_of = datetime.now(tz=UTC)
+    as_of = resolve_as_of(as_of, allow_wallclock=True, site="data.get_public_figure_trades")
     return await _dispatch(
         "politician_trades",
         ticker.upper() if ticker else None,
@@ -278,8 +280,7 @@ async def get_notable_holders(
     as_of:
         Historical clock timestamp.  Defaults to ``datetime.now(UTC)``.
     """
-    if as_of is None:
-        as_of = datetime.now(tz=UTC)
+    as_of = resolve_as_of(as_of, allow_wallclock=True, site="data.get_notable_holders")
     return await _dispatch(
         "notable_holders", ticker.upper(),
         lookback_days=lookback_days, limit=limit, as_of=as_of,
@@ -309,8 +310,7 @@ async def get_company_filings(
     as_of:
         Historical clock timestamp.  Defaults to ``datetime.now(UTC)``.
     """
-    if as_of is None:
-        as_of = datetime.now(tz=UTC)
+    as_of = resolve_as_of(as_of, allow_wallclock=True, site="data.get_company_filings")
     return await _dispatch(
         "filings", ticker.upper(),
         form_types=form_types, limit=limit,

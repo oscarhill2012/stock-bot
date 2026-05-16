@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import uuid
 from pathlib import Path
 from typing import Any
@@ -89,11 +90,24 @@ class Driver:
         self._traces_dir         = self._run_dir / "traces"
         self._traces_dir.mkdir(parents=True, exist_ok=True)
 
+        # Audit artefacts go alongside traces under runs/<id>/audit/.
+        self._audit_dir = self._run_dir / "audit"
+        self._audit_dir.mkdir(parents=True, exist_ok=True)
+
         # Build the live pipeline once per run — same pipeline, fresh runner
         # per tick (ADK InMemorySessionService is per-runner).
         self._pipeline   = build_pipeline(broker, db_session)
         self._failed:    list[dict] = []
         self._total:     int = 0
+
+        # Enable per-tick read capture on the shared cache store so the audit
+        # telemetry layer can summarise what the analysts saw.
+        try:
+            from backtest.providers._store_handle import get_store
+            get_store()._audit_enable_capture()
+        except RuntimeError:
+            # No store wired (unit tests) — telemetry will be empty.
+            pass
 
     # ── public API ─────────────────────────────────────────────────────────────
 
@@ -145,6 +159,43 @@ class Driver:
                     ) from exc
 
             tw.finalise(self._traces_dir / f"{_slug(tick.as_of)}.json")
+
+            # ── per-tick audit telemetry ──────────────────────────────────────
+            # Drain the store's read-capture buffer, summarise into per_domain,
+            # compute tripwires, and write the JSON record unconditionally.
+            from backtest.audit.telemetry import (
+                build_telemetry_record,
+                per_domain_from_store_reads,
+                write_telemetry_record,
+            )
+            from backtest.providers._store_handle import get_store as _get_store
+
+            try:
+                _store       = _get_store()
+                cache_reads  = _store._audit_drain_reads()
+            except RuntimeError:
+                # Store not wired in isolated unit tests — produce empty telemetry.
+                cache_reads = {}
+
+            per_domain = per_domain_from_store_reads(
+                cache_reads=cache_reads,
+                as_of=tick.as_of,
+                phase=tick.phase,
+            )
+
+            telemetry = build_telemetry_record(
+                tick=tick,
+                run_id=self._run_id,
+                strict_mode=os.environ.get("STOCKBOT_STRICT_AS_OF") == "1",
+                per_domain=per_domain,
+                report_cache_hits=state.get("_report_cache_hits_for_audit", []),
+                db_writes_recorded_at={},
+                wall_clock_fallback_fired=False,
+            )
+            write_telemetry_record(self._audit_dir, telemetry)
+
+            # Reset the per-tick report-cache-hits capture for the next tick.
+            state.pop("_report_cache_hits_for_audit", None)
 
         self._write_manifest_status(
             "completed_with_failures" if self._failed else "completed",
@@ -273,6 +324,12 @@ class Driver:
         manifest["failed_ticks"] = self._failed
         manifest["ticks_total"]  = self._total
         manifest["ticks_failed"] = len(self._failed)
+
+        # Audit completeness: one .tick.json per scheduled tick is expected.
+        audit_files = list(self._audit_dir.glob("*.tick.json"))
+        manifest["audit_complete"]     = len(audit_files) == self._total
+        manifest["audit_record_count"] = len(audit_files)
+
         path.write_text(json.dumps(manifest, indent=2, default=str))
 
 
