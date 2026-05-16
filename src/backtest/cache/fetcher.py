@@ -15,10 +15,12 @@ Adaptation note — domain names vs Phase B store:
 """
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
@@ -108,6 +110,11 @@ class Fetcher:
         in ``cache_runs``, calls the provider and writes the result into the
         store.  An audit row is inserted for every attempted fetch, whether
         it succeeds or fails.
+
+        After all fetches complete, drains the store's skipped-write counter
+        and writes ``fill_audit.json`` beside the cache file if any rows were
+        dropped due to ``MISSING_TIMESTAMP``.  The audit file is only written
+        when shrinkage actually occurred — a clean fill leaves no file.
         """
         for ticker in self._watchlist:
             for domain, fn in self._provider_fns.items():
@@ -116,6 +123,35 @@ class Fetcher:
                     continue
 
                 await self._fetch_one(ticker, domain, fn)
+
+        # ── shrinkage audit ───────────────────────────────────────────────────
+        # Surface any rows dropped at write-time due to MISSING_TIMESTAMP.
+        # A non-empty value here means the upstream provider's payload is
+        # losing rows silently; investigate before treating the fill as
+        # authoritative for a backtest.
+        skipped = self._store.drain_skipped_writes()
+
+        if skipped:
+            # Resolve a sensible path for the audit file: sit beside the
+            # SQLite file so it is easy to find alongside the cache.
+            db_path = self._store._engine.url.database
+            audit_path = Path(db_path).parent / "fill_audit.json"
+            audit_path.write_text(
+                json.dumps(
+                    {
+                        "window": self._window_key,
+                        "wrote_at": datetime.now(tz=UTC).isoformat(),
+                        "writes_skipped_missing_ts": skipped,
+                    },
+                    indent=2,
+                )
+            )
+            logger.warning(
+                "fetcher: %d row(s) dropped due to MISSING_TIMESTAMP — "
+                "see %s",
+                sum(skipped.values()),
+                audit_path,
+            )
 
     # ── internals ──────────────────────────────────────────────────────────────
 
