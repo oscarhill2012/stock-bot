@@ -28,7 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import statistics
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import matplotlib
@@ -179,7 +179,7 @@ def _write_metrics(
     # ── Sharpe ───────────────────────────────────────────────────────────────
     # Per-tick returns: assumes ticks are evenly spaced.
     rets = []
-    for (_, v0), (_, v1) in zip(series, series[1:]):
+    for (_, v0), (_, v1) in zip(series, series[1:], strict=False):
         if v0 != 0:
             rets.append((v1 - v0) / v0)
 
@@ -313,18 +313,29 @@ def _backfill_forward_returns(
 
             entry_date = _parse_date(tick_as_of)
 
-            forwards: dict[str, float | None] = {}
+            forwards:      dict[str, float | None] = {}
+            actual_dates:  dict[str, str | None]   = {}
+
             for h in horizons_days:
                 target = entry_date + timedelta(days=h)
                 # Look up to 4 calendar days forward to skip weekends / holidays.
                 bars = cache.read_ohlcv(ticker, target, target + timedelta(days=4))
                 if not bars:
-                    forwards[f"+{h}d"] = None
+                    forwards[f"+{h}d"]     = None
+                    # Record None so the two dicts always have identical key sets.
+                    actual_dates[f"+{h}d"] = None
                     continue
-                # Use the first available bar's close as the horizon price.
-                forwards[f"+{h}d"] = (bars[0].close - entry_price) / entry_price
 
-            snapshot["forward_returns"] = forwards
+                # Use the first available bar's close as the horizon price.
+                bar = bars[0]
+                forwards[f"+{h}d"]     = (bar.close - entry_price) / entry_price
+                # Record the actual calendar date of the bar used.  When a target
+                # date is a holiday, the bar lands on a later date; supervision
+                # tooling can detect the gap by comparing this against the target.
+                actual_dates[f"+{h}d"] = bar.timestamp.date().isoformat()
+
+            snapshot["forward_returns"]             = forwards
+            snapshot["forward_returns_actual_date"] = actual_dates
             path.write_text(
                 json.dumps(snapshot, indent=2, default=str),
                 encoding="utf-8",
