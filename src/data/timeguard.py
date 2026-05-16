@@ -27,6 +27,7 @@ silently fabricated during a backtest.
 from __future__ import annotations
 
 import os
+import threading
 from datetime import UTC, datetime
 
 
@@ -42,6 +43,42 @@ class AsOfRequiredError(RuntimeError):
 
 _STRICT_ENV_VAR  = "STOCKBOT_STRICT_AS_OF"
 _STRICT_ENABLED  = "1"
+
+
+# ── per-tick wall-clock fallback counter ──────────────────────────────────────
+#
+# When a backtest tick runs with strict mode OFF, ``resolve_as_of`` may return
+# the wall clock as a defensive fallback.  Phase 6 audit telemetry needs to
+# know whether *any* fallback fired during the tick so it can surface the
+# ``wall_clock_fallback_fired`` tripwire.  We use a thread-local because the
+# ADK invocation runs on a single asyncio loop within one thread per backtest
+# run; the counter is read+reset by the driver immediately after each tick.
+
+_FALLBACK_STATE = threading.local()
+
+
+def _get_counter() -> int:
+    """Return the current thread-local fallback count (default ``0``)."""
+
+    return getattr(_FALLBACK_STATE, "count", 0)
+
+
+def _set_counter(value: int) -> None:
+    """Overwrite the thread-local fallback count."""
+
+    _FALLBACK_STATE.count = value
+
+
+def drain_wallclock_fallback_count() -> int:
+    """Return the current count of wall-clock fallbacks and reset to zero.
+
+    The backtest driver calls this once per tick.  Returns ``0`` on first
+    use of the current thread.
+    """
+
+    count = _get_counter()
+    _set_counter(0)
+    return count
 
 
 def resolve_as_of(
@@ -93,5 +130,7 @@ def resolve_as_of(
             f"(strict_env={strict}, allow_wallclock={allow_wallclock})"
         )
 
-    # Live path — caller has explicitly opted in.
+    # Live path — caller has explicitly opted in.  Bump the per-tick counter
+    # so the backtest driver can surface this on the audit tripwire.
+    _set_counter(_get_counter() + 1)
     return datetime.now(tz=UTC)

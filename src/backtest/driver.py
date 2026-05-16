@@ -29,6 +29,7 @@ from google.adk.sessions import InMemorySessionService
 from google.genai import types as genai_types
 
 from backtest.schedule import Tick
+from data.timeguard import drain_wallclock_fallback_count
 from observability.trace import TraceWriter
 from orchestrator.pipeline import build_pipeline
 
@@ -183,6 +184,11 @@ class Driver:
                 phase=tick.phase,
             )
 
+            # Drain the timeguard's per-tick wall-clock fallback counter.
+            # Any value > 0 means at least one site fell back to the wall
+            # clock during this tick — surfaces directly on the tripwire.
+            wallclock_fallback_count = drain_wallclock_fallback_count()
+
             telemetry = build_telemetry_record(
                 tick=tick,
                 run_id=self._run_id,
@@ -190,7 +196,7 @@ class Driver:
                 per_domain=per_domain,
                 report_cache_hits=state.get("_report_cache_hits_for_audit", []),
                 db_writes_recorded_at={},
-                wall_clock_fallback_fired=False,
+                wall_clock_fallback_fired=wallclock_fallback_count > 0,
             )
             write_telemetry_record(self._audit_dir, telemetry)
 
