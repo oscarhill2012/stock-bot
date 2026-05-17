@@ -3,6 +3,10 @@
 Exercises the BaseAgent body in isolation (without ADK's in-process runner)
 and confirms that social_verdicts is correctly populated with per-ticker
 verdict dicts that are compatible with make_evidence_callback.
+
+Phase 7 (Task 2.11 / Fix K): social_data now carries the typed snapshot list
+shape ``{"snapshots": [...], "aggregate_score": ...}``.  Tests updated to
+use the new canonical shape.
 """
 from __future__ import annotations
 
@@ -38,18 +42,36 @@ def _make_ctx(state: dict) -> MagicMock:
     return ctx
 
 
+def _aapl_social_payload() -> dict:
+    """Phase 7 canonical social payload for AAPL — typed snapshot list."""
+    return {
+        "snapshots": [
+            {
+                "platform": "reddit",
+                "mention_count": 50,
+                "positive_score": 0.4,
+                "negative_score": 0.1,
+                "score": 0.3,
+            },
+            {
+                "platform": "twitter",
+                "mention_count": 30,
+                "positive_score": 0.3,
+                "negative_score": 0.2,
+                "score": 0.1,
+            },
+        ],
+        "aggregate_score": 0.2,
+    }
+
+
 @pytest.mark.asyncio
 async def test_run_async_impl_writes_social_verdicts():
     """_run_async_impl reads social_data and writes social_verdicts as a list."""
     analyst = SocialAnalyst(heuristics=_make_heuristics())
     state = {
         "tickers": ["AAPL"],
-        "social_data": {
-            "AAPL": {
-                "reddit":  {"mention_count": 50, "positive_score": 0.4, "negative_score": 0.1},
-                "twitter": {"mention_count": 30, "positive_score": 0.3, "negative_score": 0.2},
-            },
-        },
+        "social_data": {"AAPL": _aapl_social_payload()},
     }
     ctx = _make_ctx(state)
 
@@ -68,7 +90,16 @@ async def test_run_async_impl_verdict_has_ticker_key():
     state = {
         "social_data": {
             "MSFT": {
-                "reddit":  {"mention_count": 100, "positive_score": 0.5, "negative_score": 0.0},
+                "snapshots": [
+                    {
+                        "platform": "reddit",
+                        "mention_count": 100,
+                        "positive_score": 0.5,
+                        "negative_score": 0.0,
+                        "score": 0.5,
+                    }
+                ],
+                "aggregate_score": 0.5,
             },
         },
     }
@@ -106,7 +137,8 @@ async def test_run_async_impl_no_data_ticker():
     analyst = SocialAnalyst(heuristics=_make_heuristics())
     state = {
         "social_data": {
-            "GOOG": {},  # empty — provider failed
+            # Phase 7 no-data shape from the updated fetch callback.
+            "GOOG": {"snapshots": [], "aggregate_score": None},
         },
     }
     ctx = _make_ctx(state)
@@ -135,12 +167,7 @@ async def test_after_callback_fires_and_writes_evidence():
     state = {
         "tick_id": "test-tick-001",
         "tickers": ["AAPL"],
-        "social_data": {
-            "AAPL": {
-                "reddit":  {"mention_count": 80, "positive_score": 0.5, "negative_score": 0.1},
-                "twitter": {"mention_count": 20, "positive_score": 0.4, "negative_score": 0.2},
-            },
-        },
+        "social_data": {"AAPL": _aapl_social_payload()},
     }
     ctx = _make_ctx(state)
 

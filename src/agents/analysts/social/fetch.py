@@ -60,19 +60,17 @@ async def social_fetch_callback(
             logger.warning("social_sentiment fetch failed for %s: %s", ticker, exc)
             sentiment = None
 
-        # Convert the structured SocialSentiment model to the dict shape that
-        # extract_social_features expects: {"reddit": {...}, "twitter": {...}}.
+        # Pass the typed snapshots through as a list — the extractor reads
+        # raw["snapshots"] (list of SocialSentimentSnapshot.model_dump()) and
+        # raw["aggregate_score"].  The old per-platform dict-of-dict shape has
+        # been removed (Phase 7, Fix K / Task 2.11).
         if sentiment is not None:
-            per_platform: dict[str, dict] = {}
-            for snap in sentiment.snapshots:
-                per_platform[snap.platform] = {
-                    "mention_count":   snap.mention_count,
-                    "positive_score":  snap.positive_score,
-                    "negative_score":  snap.negative_score,
-                }
-            social_data[ticker] = per_platform
+            social_data[ticker] = {
+                "snapshots":       [s.model_dump() for s in sentiment.snapshots],
+                "aggregate_score": sentiment.aggregate_score,
+            }
         else:
-            social_data[ticker] = {}
+            social_data[ticker] = {"snapshots": [], "aggregate_score": None}
 
     state["social_data"] = social_data
 

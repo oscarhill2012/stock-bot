@@ -5,6 +5,10 @@ under ``state["social_data"]``.  Verdict derivation is handled by
 ``SocialAnalyst._run_async_impl`` — the callback must NOT derive verdicts and
 must NOT return a skip-Content (doing so would prevent the after-callback from
 ever firing).
+
+Phase 7 (Task 2.11 / Fix K): the callback now emits a typed-snapshot list
+shape (``{"snapshots": [...], "aggregate_score": ...}``) instead of the old
+per-platform dict-of-dict.
 """
 from __future__ import annotations
 
@@ -32,7 +36,6 @@ async def test_social_fetch_writes_state_dict(monkeypatch):
     )
 
     async def fake_get_social_sentiment(ticker, *, as_of=None):
-        # Accept as_of kwarg added in C2/C3 — ignored in the fake.
         assert ticker == "AAPL"
         return fake_result
 
@@ -57,8 +60,12 @@ async def test_social_fetch_writes_state_dict(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_social_fetch_writes_per_platform_shape(monkeypatch):
-    """Fetched data is stored as {platform: {mention_count, positive_score, negative_score}}."""
+async def test_social_fetch_writes_typed_snapshot_shape(monkeypatch):
+    """Phase 7 (Fix K): fetched data is stored as {'snapshots': [...], 'aggregate_score': ...}.
+
+    The old per-platform dict-of-dict shape has been removed; the extractor now
+    consumes the typed snapshot list.
+    """
     from agents.analysts.social import fetch as fetch_mod
     from data.models import SocialSentiment, SocialSentimentSnapshot
 
@@ -84,7 +91,6 @@ async def test_social_fetch_writes_per_platform_shape(monkeypatch):
     )
 
     async def fake_get_social_sentiment(ticker, *, as_of=None):
-        # Accept as_of kwarg added in C2/C3 — ignored in the fake.
         return fake_result
 
     monkeypatch.setattr(fetch_mod, "get_social_sentiment", fake_get_social_sentiment)
@@ -96,19 +102,23 @@ async def test_social_fetch_writes_per_platform_shape(monkeypatch):
     await fetch_mod.social_fetch_callback(ctx)
 
     data = ctx.state["social_data"]["MSFT"]
-    assert "reddit" in data
-    assert "twitter" in data
-    assert data["reddit"]["mention_count"] == 5
-    assert data["twitter"]["mention_count"] == 15
+    # New shape: typed snapshot list.
+    assert "snapshots" in data
+    assert "aggregate_score" in data
+    assert len(data["snapshots"]) == 2
+    assert data["aggregate_score"] == pytest.approx(0.4)
+    # Platform still accessible via snapshot list.
+    platforms = {s["platform"] for s in data["snapshots"]}
+    assert "reddit" in platforms
+    assert "twitter" in platforms
 
 
 @pytest.mark.asyncio
 async def test_social_fetch_empty_on_provider_failure(monkeypatch):
-    """When the provider raises, social_data[ticker] is set to {} (no crash)."""
+    """When the provider raises, social_data[ticker] is a no-data sentinel dict (no crash)."""
     from agents.analysts.social import fetch as fetch_mod
 
     async def failing_get_social_sentiment(ticker, *, as_of=None):
-        # Accept as_of kwarg added in C2/C3; raises before using it.
         raise RuntimeError("provider down")
 
     monkeypatch.setattr(fetch_mod, "get_social_sentiment", failing_get_social_sentiment)
@@ -119,5 +129,8 @@ async def test_social_fetch_empty_on_provider_failure(monkeypatch):
     ctx.state = {"tickers": ["GOOG"]}
     result = await fetch_mod.social_fetch_callback(ctx)
 
-    assert ctx.state["social_data"]["GOOG"] == {}
+    # Phase 7 shape: no-data path emits {"snapshots": [], "aggregate_score": None}.
+    goog_data = ctx.state["social_data"]["GOOG"]
+    assert goog_data.get("snapshots") == []
+    assert goog_data.get("aggregate_score") is None
     assert result is None

@@ -4,6 +4,11 @@ Phase 5 scope: smart_money consumes **external-observer flows only** —
 congressional / public-figure trades (Quiver) and notable 13F holders.
 Insider trades (Form 4) are now part of the Fundamental analyst's domain.
 
+Phase 7 (providers-and-silent-gaps-v1, Task 2.12): adds notable-holder
+aggregates from SC 13D / 13G filings.  The politician features remain
+unchanged — Quiver is the sole feed and continues to soft-fail to an empty
+list for most tickers.
+
 Sparseness is the rule, not the exception — most tickers will have zero filings.
 The ``is_no_data`` feature is the signal to the aggregator that this analyst's
 verdict should be ignored for this ticker (``fill_missing`` semantics in
@@ -32,8 +37,9 @@ appear here; those live in the Fundamental analyst's vocabulary.
 """
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 # TYPE_CHECKING guard prevents a circular import at module load time:
@@ -45,6 +51,9 @@ if TYPE_CHECKING:
     from agents.analysts.heuristics import SmartMoneyHeuristics
     from contract.evidence import AnalystVerdict
 
+# How many days back the notable-holder window extends.
+_HOLDER_WINDOW_DAYS = 30
+
 # The complete, locked set of feature keys this extractor always returns.
 _KEYS = (
     "n_politicians",
@@ -53,6 +62,13 @@ _KEYS = (
     "total_dollar_value_buys",
     "total_dollar_value_sells",
     "net_flow_dollar",
+    # Phase 7 notable-holder aggregates (Fix: Task 2.12).
+    "n_active_13d_30d",
+    "n_passive_13g_30d",
+    "n_amendments_30d",
+    "notable_holder_present",
+    "max_percent_of_class_30d",
+    "total_shares_held_30d",
     "is_no_data",
 )
 
@@ -85,27 +101,163 @@ def _amount(filing: Mapping[str, Any]) -> float:
         return 0.0
 
 
+def _parse_dt(raw_filed: Any) -> datetime | None:
+    """Parse a filed_at value (datetime object or ISO string) to a UTC datetime.
+
+    Parameters
+    ----------
+    raw_filed:
+        A ``datetime`` object or ISO 8601 string.
+
+    Returns
+    -------
+    datetime | None
+        UTC-aware datetime, or ``None`` if parsing fails.
+    """
+    if raw_filed is None:
+        return None
+    if isinstance(raw_filed, datetime):
+        return raw_filed if raw_filed.tzinfo else raw_filed.replace(tzinfo=UTC)
+    try:
+        dt = datetime.fromisoformat(str(raw_filed))
+        return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+    except (ValueError, TypeError):
+        return None
+
+
+def _notable_holder_aggregates(
+    holders: list[dict],
+    as_of_date: date,
+) -> dict[str, float]:
+    """Aggregate SC 13D / 13G notable-holder features within the 30-day window.
+
+    Emits six features:
+    - ``n_active_13d_30d`` — count of SC 13D filings with ``intent="active"``
+    - ``n_passive_13g_30d`` — count of SC 13G filings (intent ``"passive"``)
+    - ``n_amendments_30d`` — count of ``is_amendment=True``
+    - ``notable_holder_present`` — ``1.0`` if any holder rows in window else ``0.0``
+    - ``max_percent_of_class_30d`` — max non-null ``percent_of_class``
+    - ``total_shares_held_30d`` — sum of non-null ``shares_held``
+
+    Parameters
+    ----------
+    holders:
+        List of ``NotableHolder.model_dump()`` dicts.
+    as_of_date:
+        Reference date for the 30-day cutoff.
+
+    Returns
+    -------
+    dict[str, float]
+        Six notable-holder aggregate features.
+    """
+    cutoff = as_of_date - timedelta(days=_HOLDER_WINDOW_DAYS)
+
+    n_active     = 0
+    n_passive    = 0
+    n_amendments = 0
+    max_pct      = 0.0
+    total_shares = 0.0
+    any_in_window = False
+
+    for h in holders:
+        filed_dt = _parse_dt(h.get("filed_at"))
+        if filed_dt is None or filed_dt.date() < cutoff:
+            continue
+
+        any_in_window = True
+
+        form_type = (h.get("form_type") or "").upper()
+        intent    = (h.get("intent") or "").lower()
+
+        # Count 13D (active) vs 13G (passive) filings.
+        if "13D" in form_type and intent == "active":
+            n_active += 1
+        elif "13G" in form_type:
+            n_passive += 1
+
+        # Amendment counter — covers both 13D/A and 13G/A.
+        if h.get("is_amendment"):
+            n_amendments += 1
+
+        # Accumulate percent_of_class and shares_held where present.
+        pct = h.get("percent_of_class")
+        if pct is not None:
+            with contextlib.suppress(TypeError, ValueError):
+                max_pct = max(max_pct, float(pct))
+
+        shares = h.get("shares_held")
+        if shares is not None:
+            with contextlib.suppress(TypeError, ValueError):
+                total_shares += float(shares)
+
+    return {
+        "n_active_13d_30d":       float(n_active),
+        "n_passive_13g_30d":      float(n_passive),
+        "n_amendments_30d":       float(n_amendments),
+        "notable_holder_present": 1.0 if any_in_window else 0.0,
+        "max_percent_of_class_30d": max_pct,
+        "total_shares_held_30d":    total_shares,
+    }
+
+
+def _resolve_as_of(state: Mapping[str, Any] | None) -> date:
+    """Resolve the reference date from the pipeline state dict.
+
+    Parameters
+    ----------
+    state:
+        Pipeline state dict (may be ``None``).  Reads ``state["as_of"]``
+        as an ISO date or datetime string.
+
+    Returns
+    -------
+    date
+        Resolved reference date, defaulting to today (UTC) when absent.
+    """
+    if state is None:
+        return datetime.now(tz=UTC).date()
+    raw = state.get("as_of")
+    if raw is None:
+        return datetime.now(tz=UTC).date()
+    if isinstance(raw, datetime):
+        return raw.date()
+    if isinstance(raw, date) and not isinstance(raw, datetime):
+        return raw
+    try:
+        dt = datetime.fromisoformat(str(raw))
+        return dt.date()
+    except (ValueError, TypeError):
+        return datetime.now(tz=UTC).date()
+
+
 def extract_smart_money_features(
     raw: Mapping[str, Any],
-    ticker: str,
+    ticker: str = "",
     *,
     as_of: datetime | None = None,
+    state: dict[str, Any] | None = None,
 ) -> dict[str, float]:
-    """Aggregate congressional filings into counts, dollar totals, and a no-data flag.
+    """Aggregate congressional filings and notable-holder records into features.
 
-    Caller is expected to have already filtered to the last 30 days; this
-    function just summarises whatever it is given.
+    Phase 7 adds ``notable_holders`` aggregation (SC 13D / 13G) to the
+    existing congressional-trade features.
 
     Parameters
     ----------
     raw:
-        Raw ticker data dict. Expected to contain a ``filings`` key
-        (list of congressional-filing dicts with ``filer_id``, ``side``,
-        and ``amount`` fields). An empty dict or empty filings list sets
-        ``is_no_data = 1.0`` and returns zeroed counts.
+        Raw ticker data dict.  May contain:
+        - ``"filings"`` or ``"transactions"`` — congressional filing dicts.
+        - ``"politician_trades"`` — alias for congressional filings.
+        - ``"notable_holders"`` — list of ``NotableHolder.model_dump()`` dicts.
     ticker:
-        Ticker symbol — accepted for logging/tracing purposes, not used in
-        computation currently.
+        Ticker symbol — accepted for logging/tracing; not used in computation.
+        Defaults to ``""`` so callers can pass ``state=`` as the only keyword.
+    as_of:
+        Legacy historical clock parameter.
+    state:
+        Phase 7 pipeline state dict.  ``state["as_of"]`` is used for the
+        notable-holder 30-day window.
 
     Returns
     -------
@@ -119,42 +271,61 @@ def extract_smart_money_features(
     if not raw:
         return out
 
-    # Support both 'filings' (canonical) and 'transactions' (alternative alias).
-    filings = raw.get("filings") or raw.get("transactions") or []
+    # Resolve the reference date for the notable-holder window.
+    as_of_date = _resolve_as_of(state) if state is not None else (
+        as_of.date() if as_of is not None else datetime.now(tz=UTC).date()
+    )
 
-    if not filings:
-        return out
+    # --- Congressional / politician trades ---
+    # Support 'filings' (canonical), 'transactions', or 'politician_trades' alias.
+    filings = (
+        raw.get("filings")
+        or raw.get("transactions")
+        or raw.get("politician_trades")
+        or []
+    )
 
-    # At least one filing present — clear the no-data flag.
-    out["is_no_data"] = 0.0
+    if filings:
+        # At least one filing present — clear the no-data flag.
+        out["is_no_data"] = 0.0
 
-    filers: set[str] = set()
-    n_buys = 0
-    n_sells = 0
-    total_buys = 0.0
-    total_sells = 0.0
+        filers: set[str] = set()
+        n_buys = 0
+        n_sells = 0
+        total_buys = 0.0
+        total_sells = 0.0
 
-    for f in filings:
-        filer = f.get("filer_id") or f.get("filer") or ""
-        if filer:
-            filers.add(str(filer))
+        for f in filings:
+            filer = f.get("filer_id") or f.get("filer") or ""
+            if filer:
+                filers.add(str(filer))
 
-        side = (f.get("side") or "").upper()
-        amt = _amount(f)
+            side = (f.get("side") or "").upper()
+            amt = _amount(f)
 
-        if side == "BUY":
-            n_buys += 1
-            total_buys += amt
-        elif side == "SELL":
-            n_sells += 1
-            total_sells += amt
+            if side == "BUY":
+                n_buys += 1
+                total_buys += amt
+            elif side == "SELL":
+                n_sells += 1
+                total_sells += amt
 
-    out["n_politicians"]            = float(len(filers))
-    out["n_buys_30d"]               = float(n_buys)
-    out["n_sells_30d"]              = float(n_sells)
-    out["total_dollar_value_buys"]  = total_buys
-    out["total_dollar_value_sells"] = total_sells
-    out["net_flow_dollar"]          = total_buys - total_sells
+        out["n_politicians"]            = float(len(filers))
+        out["n_buys_30d"]               = float(n_buys)
+        out["n_sells_30d"]              = float(n_sells)
+        out["total_dollar_value_buys"]  = total_buys
+        out["total_dollar_value_sells"] = total_sells
+        out["net_flow_dollar"]          = total_buys - total_sells
+
+    # --- Notable holders (Phase 7, Fix: Task 2.12) ---
+    holders = raw.get("notable_holders") or []
+    if holders:
+        holder_aggs = _notable_holder_aggregates(holders, as_of_date)
+        out.update(holder_aggs)
+        # Clear the no-data flag if we have notable-holder data even without
+        # politician filings — they're independent signals.
+        if holder_aggs["notable_holder_present"] > 0:
+            out["is_no_data"] = 0.0
 
     return out
 

@@ -7,24 +7,36 @@ Phase 5 extends the extractor to consume the triad payload shape (post-split):
     raw = {
         "ratios":  dict | None,          # scalar company fundamentals (P/E, beta, …)
         "filings": list[dict],            # serialised Filing objects
-        "insider": Form4Bundle | None,   # typed Form 4 bundle
+        "insider": Form4Bundle | None,   # typed Form 4 bundle (legacy path)
     }
 
+Phase 7 (providers-and-silent-gaps-v1) adds a flat-list path:
+
+.. code-block:: python
+
+    raw = {
+        "ratios":                  dict | None,
+        "filings":                 list[dict],
+        "insider_trades":          list[dict],   # InsiderTrade.model_dump() rows
+        "insider_derivative_trades": list[dict], # InsiderDerivativeTrade.model_dump() rows
+    }
+
+Both paths are accepted.  When ``insider_trades`` is present, the flat-list
+helpers take precedence over the ``Form4Bundle`` path.
+
 The ``"ratios"`` key replaces the old ``"stats"`` key from before the Phase 5
-data-model split. Field names *inside* the ratios dict are unchanged
-(``trailing_pe``, ``market_cap``, etc.) so downstream digest/strategist logic
-is unaffected.
+data-model split.  Field names *inside* the ratios dict are unchanged so
+downstream digest/strategist logic is unaffected.
 
 The function returns a ``dict[str, float]`` with exactly the keys in ``_KEYS``
 (all floats, never NaN, never missing).
 """
 from __future__ import annotations
 
+import importlib
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
-
-from data.models import Form4Bundle
 
 # ---------------------------------------------------------------------------
 # Locked feature catalogue
@@ -40,37 +52,38 @@ _KEYS = (
     "debt_to_equity",
     "fcf_yield_pct",
     "roe",
+    "free_cash_flow",
     "analyst_rating_avg",
+    "number_of_analyst_opinions",
     # Filings-derived numerics.
     "days_since_last_filing",
     "n_filings_30d",
-    # Insider trade columns (Form 4 common-stock table).
-    "insider_net_dollars_30d",
+    # 8-K item counters (Phase 7, Fix H).
+    "n_item_502_30d",
+    "n_item_202_30d",
+    "n_item_101_30d",
+    # Insider trade columns — per-transaction-code aggregates (Phase 7, Fix E).
+    "insider_net_dollars_30d",        # kept for back-compat: P buys − P/S sells
     "insider_n_buys_30d",
     "insider_n_sells_30d",
     "insider_cluster_buy_flag",
     "insider_cluster_sell_flag",
     "insider_planned_sale_ratio",
-    "insider_max_filer_role_rank",
-    # Insider derivative columns (Form 4 derivatives table).
+    # Phase 7 per-code breakdown (Fix E).
+    "insider_open_market_buy_dollars_30d",
+    "insider_open_market_sell_dollars_30d",
+    "insider_tax_withholding_dollars_30d",
+    "insider_gift_count_30d",
+    # Phase 7 senior-officer aggregate (Fix F — replaces _role_rank).
+    "senior_officer_buy_dollars_30d",
+    # Insider derivative columns (Phase 7, Fix G).
+    "insider_option_exercise_value_30d",
+    "insider_derivative_planned_ratio_30d",
+    "senior_officer_derivative_grant_shares_30d",
+    # Legacy derivative counts (kept for back-compat).
     "insider_derivative_exercise_count",
     "insider_derivative_grant_count",
 )
-
-# ---------------------------------------------------------------------------
-# Officer role → numeric rank mapping.
-# Higher rank = more informative signal (a CEO buy carries more weight than
-# a Director buy).  Titles are matched case-insensitively via upper-case
-# normalisation in _role_rank().
-# ---------------------------------------------------------------------------
-_ROLE_RANK: dict[str, int] = {
-    "CEO": 5,
-    "CFO": 4,
-    "PRESIDENT": 4,
-    "SVP": 3,
-    "VP": 2,
-    "DIRECTOR": 1,
-}
 
 # Number of distinct officer-level buyers/sellers required to trigger the
 # cluster flag.
@@ -117,31 +130,29 @@ def _f(value: Any) -> float:
     return f
 
 
-def _role_rank(title: str | None) -> int:
-    """Map an ``insider_title`` string to a numeric rank in ``_ROLE_RANK``.
-
-    Matching is performed on the uppercased title so that capitalisation
-    differences from different data providers don't affect the result.  An
-    unrecognised title, or ``None``, returns 0.
+def _parse_dt(raw_filed: Any) -> datetime | None:
+    """Parse a filed_at value (datetime object or ISO string) into a UTC datetime.
 
     Parameters
     ----------
-    title:
-        Raw insider title string (may be ``None``).
+    raw_filed:
+        A ``datetime`` object or ISO 8601 string.
 
     Returns
     -------
-    int
-        The rank from ``_ROLE_RANK``, or 0 for unknown titles.
+    datetime | None
+        UTC-aware datetime, or ``None`` if parsing fails.
     """
-    if title is None:
-        return 0
-    upper = title.upper()
-    # Check each known key as a substring so "EVP & CFO" still maps to CFO.
-    for keyword, rank in _ROLE_RANK.items():
-        if keyword in upper:
-            return rank
-    return 0
+    if raw_filed is None:
+        return None
+    if isinstance(raw_filed, datetime):
+        # Ensure timezone-aware; assume UTC if naive.
+        return raw_filed if raw_filed.tzinfo else raw_filed.replace(tzinfo=UTC)
+    try:
+        dt = datetime.fromisoformat(str(raw_filed))
+        return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+    except (ValueError, TypeError):
+        return None
 
 
 def _extract_stats_features(stats: Mapping[str, Any] | None) -> dict[str, float]:
@@ -159,20 +170,22 @@ def _extract_stats_features(stats: Mapping[str, Any] | None) -> dict[str, float]
     Returns
     -------
     dict[str, float]
-        Partial feature dict covering the stats columns only.
+        Partial feature dict covering the stats columns.
     """
     out: dict[str, float] = {}
     if not stats:
         return out
 
-    out["pe_trailing"]        = _f(stats.get("trailing_pe") or stats.get("pe_trailing"))
-    out["pe_forward"]         = _f(stats.get("forward_pe") or stats.get("pe_forward"))
-    out["peg"]                = _f(stats.get("peg"))
-    out["revenue_growth_yoy"] = _f(stats.get("revenue_growth_yoy") or stats.get("revenue_growth"))
-    out["profit_margin"]      = _f(stats.get("profit_margin"))
-    out["debt_to_equity"]     = _f(stats.get("debt_to_equity"))
-    out["roe"]                = _f(stats.get("return_on_equity") or stats.get("roe"))
-    out["analyst_rating_avg"] = _f(stats.get("analyst_rating_avg"))
+    out["pe_trailing"]               = _f(stats.get("trailing_pe") or stats.get("pe_trailing"))
+    out["pe_forward"]                = _f(stats.get("forward_pe") or stats.get("pe_forward"))
+    out["peg"]                       = _f(stats.get("peg"))
+    out["revenue_growth_yoy"]        = _f(stats.get("revenue_growth_yoy") or stats.get("revenue_growth"))
+    out["profit_margin"]             = _f(stats.get("profit_margin"))
+    out["debt_to_equity"]            = _f(stats.get("debt_to_equity"))
+    out["roe"]                       = _f(stats.get("return_on_equity") or stats.get("roe"))
+    out["analyst_rating_avg"]        = _f(stats.get("analyst_rating_avg"))
+    out["free_cash_flow"]            = _f(stats.get("free_cash_flow") or stats.get("fcf"))
+    out["number_of_analyst_opinions"]= _f(stats.get("number_of_analyst_opinions"))
 
     # FCF yield = (free cash flow / market cap) × 100.
     # Guard against zero market cap to avoid ZeroDivisionError.
@@ -240,14 +253,240 @@ def _extract_filings_features(
     }
 
 
-def _extract_insider_features(
-    bundle: Form4Bundle | None,
+def _item_counters_30d(filings: list[dict], as_of: date) -> dict[str, float]:
+    """Count 8-K item appearances in the trailing 30 days.
+
+    Maps the three items most relevant to fundamental signals:
+    - 5.02 executive departure
+    - 2.02 earnings release
+    - 1.01 material agreement
+
+    Parameters
+    ----------
+    filings:
+        List of ``Filing.model_dump()`` dicts.
+    as_of:
+        Reference date for the 30-day cutoff.
+
+    Returns
+    -------
+    dict[str, float]
+        ``n_item_502_30d``, ``n_item_202_30d``, ``n_item_101_30d``.
+    """
+    cutoff = as_of - timedelta(days=_WINDOW_DAYS)
+    counters = {"n_item_502_30d": 0, "n_item_202_30d": 0, "n_item_101_30d": 0}
+
+    for f in filings:
+        if f.get("form_type") != "8-K":
+            continue
+        filed_dt = _parse_dt(f.get("filed_at"))
+        if filed_dt is None or filed_dt.date() < cutoff:
+            continue
+        items = f.get("items_8k") or []
+        if "5.02" in items:
+            counters["n_item_502_30d"] += 1
+        if "2.02" in items:
+            counters["n_item_202_30d"] += 1
+        if "1.01" in items:
+            counters["n_item_101_30d"] += 1
+
+    return {k: float(v) for k, v in counters.items()}
+
+
+def _insider_per_code_aggregates(trades: list[dict]) -> dict[str, float]:
+    """Split insider trades by transaction_code so the strategist can
+    distinguish open-market activity (P/S) from administrative codes (F/G).
+
+    Also computes the ``senior_officer_buy_dollars_30d`` feature using the
+    reporter flag ``is_officer`` rather than the old ``_role_rank()`` regex
+    heuristic.
+
+    Parameters
+    ----------
+    trades:
+        List of ``InsiderTrade.model_dump()`` dicts (already window-filtered
+        to the 30-day look-back by the caller).
+
+    Returns
+    -------
+    dict[str, float]
+        Per-code aggregate features.
+    """
+    out = {
+        "insider_open_market_buy_dollars_30d":  0.0,
+        "insider_open_market_sell_dollars_30d": 0.0,
+        "insider_tax_withholding_dollars_30d":  0.0,
+        "insider_gift_count_30d":               0.0,
+        "senior_officer_buy_dollars_30d":       0.0,
+    }
+
+    for t in trades:
+        code    = t.get("transaction_code") or ""
+        shares  = float(t.get("shares") or 0.0)
+        price   = float(t.get("price_per_share") or 0.0)
+        dollars = shares * price
+
+        if code == "P":
+            out["insider_open_market_buy_dollars_30d"] += dollars
+            # Open-market buy by a named officer → senior-officer aggregate.
+            if t.get("is_officer"):
+                out["senior_officer_buy_dollars_30d"] += dollars
+        elif code == "S":
+            out["insider_open_market_sell_dollars_30d"] += dollars
+        elif code == "F":
+            out["insider_tax_withholding_dollars_30d"] += dollars
+        elif code == "G":
+            out["insider_gift_count_30d"] += 1
+
+    return out
+
+
+def _insider_aggregates_from_flat(
+    trades: list[dict],
+    as_of_date: date,
+) -> dict[str, float]:
+    """Compute all insider-trade feature columns from a flat list of trade dicts.
+
+    Parameters
+    ----------
+    trades:
+        List of ``InsiderTrade.model_dump()`` dicts.
+    as_of_date:
+        Reference date for the 30-day window cutoff.
+
+    Returns
+    -------
+    dict[str, float]
+        All insider feature columns.
+    """
+    cutoff = as_of_date - timedelta(days=_WINDOW_DAYS)
+
+    # Filter to window.
+    window_trades: list[dict] = []
+    for t in trades:
+        filed_dt = _parse_dt(t.get("filed_at"))
+        if filed_dt is not None and filed_dt.date() >= cutoff:
+            window_trades.append(t)
+
+    # Count open-market buys/sells by side (all codes, for back-compat counts).
+    buys  = [t for t in window_trades if (t.get("side") or "").lower() == "buy"]
+    sells = [t for t in window_trades if (t.get("side") or "").lower() == "sell"]
+
+    buy_value  = sum(float(t.get("shares") or 0) * float(t.get("price_per_share") or 0) for t in buys)
+    sell_value = sum(float(t.get("shares") or 0) * float(t.get("price_per_share") or 0) for t in sells)
+
+    # Cluster flags — count distinct insider names on each side.
+    buy_names  = {t.get("insider_name") for t in buys if t.get("insider_name")}
+    sell_names = {t.get("insider_name") for t in sells if t.get("insider_name")}
+    cluster_buy  = 1.0 if len(buy_names)  >= _CLUSTER_THRESHOLD else 0.0
+    cluster_sell = 1.0 if len(sell_names) >= _CLUSTER_THRESHOLD else 0.0
+
+    # Planned sale ratio — proportion of sells that carry the 10b5-1 flag.
+    n_sells_total = len(sells)
+    planned_ratio = (
+        sum(1 for t in sells if t.get("is_10b5_1")) / n_sells_total
+        if n_sells_total > 0
+        else 0.0
+    )
+
+    # Per-code breakdown (Fix E) and senior-officer aggregate (Fix F).
+    per_code = _insider_per_code_aggregates(window_trades)
+
+    result = {
+        "insider_net_dollars_30d": buy_value - sell_value,
+        "insider_n_buys_30d":  float(len(buys)),
+        "insider_n_sells_30d": float(len(sells)),
+        "insider_cluster_buy_flag":  cluster_buy,
+        "insider_cluster_sell_flag": cluster_sell,
+        "insider_planned_sale_ratio": planned_ratio,
+    }
+    result.update(per_code)
+    return result
+
+
+def _derivative_aggregates(
+    derivs: list[dict],
+    last_price: float,
+    as_of_date: date,
+) -> dict[str, float]:
+    """Aggregate Phase 7 derivative-trade features from a flat list of dicts.
+
+    Emits three features:
+    - ``insider_option_exercise_value_30d`` — intrinsic value of option exercises
+      (code ``M``) in the window: ``underlying_shares × (last_price − strike_price)``.
+    - ``insider_derivative_planned_ratio_30d`` — fraction of derivative shares
+      covered by a 10b5-1 plan.
+    - ``senior_officer_derivative_grant_shares_30d`` — grant shares (code ``A``)
+      from officer-level insiders.
+
+    Parameters
+    ----------
+    derivs:
+        List of ``InsiderDerivativeTrade.model_dump()`` dicts.
+    last_price:
+        Most recent share price from the ``ratios`` sub-dict; used to compute
+        intrinsic exercise value.
+    as_of_date:
+        Reference date for the 30-day window cutoff.
+
+    Returns
+    -------
+    dict[str, float]
+        Three derivative aggregate features.
+    """
+    cutoff = as_of_date - timedelta(days=_WINDOW_DAYS)
+
+    exercise_value = 0.0
+    total_deriv_shares = 0.0
+    planned_deriv_shares = 0.0
+    officer_grant_shares = 0.0
+
+    for d in derivs:
+        filed_dt = _parse_dt(d.get("filed_at"))
+        if filed_dt is not None and filed_dt.date() < cutoff:
+            continue
+
+        code    = d.get("transaction_code") or ""
+        shares  = float(d.get("underlying_shares") or 0.0)
+        strike  = float(d.get("strike_price") or 0.0)
+
+        total_deriv_shares += shares
+
+        if d.get("is_10b5_1"):
+            planned_deriv_shares += shares
+
+        if code == "M":
+            # Exercise value: intrinsic value × number of shares.
+            intrinsic = last_price - strike
+            if intrinsic > 0:
+                exercise_value += shares * intrinsic
+
+        if code == "A" and d.get("is_officer"):
+            # Grant to a senior officer — potential alignment signal.
+            officer_grant_shares += shares
+
+    planned_ratio = (
+        planned_deriv_shares / total_deriv_shares
+        if total_deriv_shares > 0
+        else 0.0
+    )
+
+    return {
+        "insider_option_exercise_value_30d":        exercise_value,
+        "insider_derivative_planned_ratio_30d":      planned_ratio,
+        "senior_officer_derivative_grant_shares_30d": officer_grant_shares,
+    }
+
+
+def _extract_insider_features_legacy(
+    bundle: Any,
     now: datetime,
 ) -> dict[str, float]:
-    """Compute all insider-trade feature columns from a ``Form4Bundle``.
+    """Compute insider feature columns from a ``Form4Bundle`` (legacy path).
 
-    Only trades within the 30-day window (relative to *now*) contribute to
-    count and value metrics.
+    Kept for backward-compatibility with callers that still pass the typed
+    ``Form4Bundle`` object.  New callers should use the flat-list path
+    (``raw["insider_trades"]``).
 
     Parameters
     ----------
@@ -260,22 +499,32 @@ def _extract_insider_features(
     Returns
     -------
     dict[str, float]
-        All insider feature columns — never missing, never NaN.
+        Insider feature columns — never missing, never NaN.
     """
-    zero = {
+    # Import here to avoid circular dependency at module load time.
+    Form4Bundle = importlib.import_module("data.models").Form4Bundle
+
+    zero_insider = {
         "insider_net_dollars_30d": 0.0,
         "insider_n_buys_30d": 0.0,
         "insider_n_sells_30d": 0.0,
         "insider_cluster_buy_flag": 0.0,
         "insider_cluster_sell_flag": 0.0,
         "insider_planned_sale_ratio": 0.0,
-        "insider_max_filer_role_rank": 0.0,
+        "insider_open_market_buy_dollars_30d": 0.0,
+        "insider_open_market_sell_dollars_30d": 0.0,
+        "insider_tax_withholding_dollars_30d": 0.0,
+        "insider_gift_count_30d": 0.0,
+        "senior_officer_buy_dollars_30d": 0.0,
+        "insider_option_exercise_value_30d": 0.0,
+        "insider_derivative_planned_ratio_30d": 0.0,
+        "senior_officer_derivative_grant_shares_30d": 0.0,
         "insider_derivative_exercise_count": 0.0,
         "insider_derivative_grant_count": 0.0,
     }
 
-    if bundle is None:
-        return zero
+    if bundle is None or not isinstance(bundle, Form4Bundle):
+        return zero_insider
 
     cutoff_ts = now.timestamp() - _WINDOW_DAYS * 86400
 
@@ -288,49 +537,38 @@ def _extract_insider_features(
     buys  = [t for t in window_trades if t.side == "buy"]
     sells = [t for t in window_trades if t.side == "sell"]
 
-    # --- dollar values ---
-    # Use start=0.0 to keep the type as float even when the list is empty.
+    # Dollar values.
     buy_value  = sum((_f(t.shares) * _f(t.price_per_share) for t in buys), 0.0)
     sell_value = sum((_f(t.shares) * _f(t.price_per_share) for t in sells), 0.0)
 
-    # --- cluster flags ---
-    # Count distinct filer names (one person making multiple transactions
-    # counts as one).
+    # Cluster flags.
     buy_officers  = {t.insider_name for t in buys}
     sell_officers = {t.insider_name for t in sells}
     cluster_buy  = 1.0 if len(buy_officers)  >= _CLUSTER_THRESHOLD else 0.0
     cluster_sell = 1.0 if len(sell_officers) >= _CLUSTER_THRESHOLD else 0.0
 
-    # --- planned sale ratio ---
+    # Planned sale ratio.
     n_sells_total = len(sells)
-    if n_sells_total > 0:
-        planned_ratio = sum(1 for t in sells if t.is_10b5_1) / n_sells_total
-    else:
-        planned_ratio = 0.0
-
-    # --- max role rank ---
-    all_window_titles = [t.insider_title for t in window_trades]
-    max_rank = max((_role_rank(title) for title in all_window_titles), default=0)
-
-    # --- derivative counts (all time, not window-filtered — these are
-    #     point-in-time disclosures rather than trailing-window metrics) ---
-    exercise_count = sum(
-        1 for d in bundle.derivatives if d.transaction_code == "M"
+    planned_ratio = (
+        sum(1 for t in sells if t.is_10b5_1) / n_sells_total
+        if n_sells_total > 0
+        else 0.0
     )
-    grant_count = sum(
-        1 for d in bundle.derivatives if d.transaction_code == "A"
-    )
+
+    # Derivative counts (legacy — point-in-time, not window-filtered).
+    exercise_count = sum(1 for d in bundle.derivatives if d.transaction_code == "M")
+    grant_count    = sum(1 for d in bundle.derivatives if d.transaction_code == "A")
 
     return {
+        **zero_insider,
         "insider_net_dollars_30d": buy_value - sell_value,
-        "insider_n_buys_30d": float(len(buys)),
+        "insider_n_buys_30d":  float(len(buys)),
         "insider_n_sells_30d": float(len(sells)),
-        "insider_cluster_buy_flag": cluster_buy,
+        "insider_cluster_buy_flag":  cluster_buy,
         "insider_cluster_sell_flag": cluster_sell,
         "insider_planned_sale_ratio": planned_ratio,
-        "insider_max_filer_role_rank": float(max_rank),
         "insider_derivative_exercise_count": float(exercise_count),
-        "insider_derivative_grant_count": float(grant_count),
+        "insider_derivative_grant_count":    float(grant_count),
     }
 
 
@@ -340,13 +578,29 @@ def _extract_insider_features(
 
 def extract_fundamental_features(
     raw: Mapping[str, Any],
-    ticker: str,
+    ticker: str = "",
     *,
     as_of: datetime | None = None,
+    state: dict[str, Any] | None = None,
 ) -> dict[str, float]:
     """Pull the locked fundamental feature catalogue from a raw payload dict.
 
-    Accepts the Phase 5 triad payload shape (post data-model split)::
+    Accepts two payload shapes:
+
+    **Phase 7 flat-list shape** (preferred for new providers):
+
+    .. code-block:: python
+
+        {
+            "ratios":                  dict | None,
+            "filings":                 list[dict],
+            "insider_trades":          list[dict],   # InsiderTrade.model_dump()
+            "insider_derivative_trades": list[dict], # InsiderDerivativeTrade.model_dump()
+        }
+
+    **Legacy Phase 5 shape**:
+
+    .. code-block:: python
 
         {
             "ratios":  dict | None,
@@ -354,18 +608,23 @@ def extract_fundamental_features(
             "insider": Form4Bundle | None,
         }
 
-    The ``"ratios"`` key replaces the old ``"stats"`` key. Field names inside
-    the dict (``trailing_pe``, ``market_cap``, etc.) are unchanged.
-
-    All ratios field aliases from different data providers are normalised
-    (e.g. both ``trailing_pe`` and ``pe_trailing`` are accepted).
+    When ``insider_trades`` is present, the flat-list path is used.  Otherwise
+    falls back to the ``Form4Bundle`` path for backward compatibility.
 
     Parameters
     ----------
     raw:
-        Phase 5 triad payload for a single ticker.
+        Payload for a single ticker.
     ticker:
-        Ticker symbol — used for future logging / error context.
+        Ticker symbol — used for future logging / error context.  Defaults to
+        ``""`` so callers can pass ``state=`` as the only keyword argument.
+    as_of:
+        Legacy historical clock parameter.  Prefer ``state={"as_of": "..."}``
+        for Phase 7 callers.
+    state:
+        Phase 7 pipeline state dict.  If ``state["as_of"]`` is present, it is
+        used as the reference time for window computations.  Overrides ``as_of``
+        when both are provided.
 
     Returns
     -------
@@ -378,10 +637,24 @@ def extract_fundamental_features(
     if not raw:
         return out
 
-    # Use the caller-supplied historical clock so backtest replays produce the
-    # same time-delta features as the original run.  Live callers that omit
-    # ``as_of`` fall back to wall-clock now — identical behaviour to before.
-    now = as_of if as_of is not None else datetime.now(tz=UTC)
+    # Resolve the historical clock.  State takes priority over the legacy kwarg.
+    if state is not None and state.get("as_of"):
+        raw_as_of = state["as_of"]
+        # Accept ISO string or datetime.
+        if isinstance(raw_as_of, str):
+            now = datetime.fromisoformat(raw_as_of)
+            if now.tzinfo is None:
+                now = now.replace(tzinfo=UTC)
+        elif isinstance(raw_as_of, datetime):
+            now = raw_as_of if raw_as_of.tzinfo else raw_as_of.replace(tzinfo=UTC)
+        else:
+            now = datetime.now(tz=UTC)
+    elif as_of is not None:
+        now = as_of if as_of.tzinfo else as_of.replace(tzinfo=UTC)
+    else:
+        now = datetime.now(tz=UTC)
+
+    as_of_date = now.date()
 
     # --- ratios (Phase 5: renamed from "stats" key at the fetch-callback level) ---
     stats_sub = raw.get("ratios") or {}
@@ -391,12 +664,28 @@ def extract_fundamental_features(
     filings_sub = raw.get("filings") or []
     out.update(_extract_filings_features(filings_sub, now))
 
-    # --- insider ---
-    insider_sub = raw.get("insider")
-    # Accept either a Form4Bundle instance or None.
-    if isinstance(insider_sub, Form4Bundle):
-        out.update(_extract_insider_features(insider_sub, now))
+    # --- 8-K item counters (Fix H) ---
+    out.update(_item_counters_30d(filings_sub, as_of_date))
+
+    # --- insider trades ---
+    # Phase 7 flat-list path takes priority; fall back to Form4Bundle.
+    if "insider_trades" in raw:
+        trades_flat   = raw.get("insider_trades") or []
+        derivs_flat   = raw.get("insider_derivative_trades") or []
+        last_price_for_derivs = _f((stats_sub or {}).get("last_price"))
+
+        out.update(_insider_aggregates_from_flat(trades_flat, as_of_date))
+        out.update(_derivative_aggregates(derivs_flat, last_price_for_derivs, as_of_date))
+
+        # Legacy derivative counts from the flat deriv list (for _KEYS back-compat).
+        out["insider_derivative_exercise_count"] = float(
+            sum(1 for d in derivs_flat if (d.get("transaction_code") or "") == "M")
+        )
+        out["insider_derivative_grant_count"] = float(
+            sum(1 for d in derivs_flat if (d.get("transaction_code") or "") == "A")
+        )
     else:
-        out.update(_extract_insider_features(None, now))
+        insider_sub = raw.get("insider")
+        out.update(_extract_insider_features_legacy(insider_sub, now))
 
     return out

@@ -10,9 +10,15 @@ Two public entry points:
   for table-driven unit tests (no I/O, no globals).
 
 Input for the extractor: the dict that lives under
-``state["technical_data"][ticker]``.  Accepted shape: a dict with
-``price_history`` (PriceHistory.model_dump()) and optional ``ratios``
-sub-keys.
+``state["technical_data"][ticker]``.  Accepted shapes:
+
+- Phase 7 (canonical): ``{"bars": [...], "ratios": dict}``
+- Phase 5 legacy: ``{"price_history": {"bars": [...]}}`` or ``{"price_history": [...]}``
+- Very old legacy: ``{"history": [...]}``
+
+The extractor accepts ``state`` as a keyword argument (Phase 7) or ``ticker``
+as a positional argument (legacy Phase 5); both are optional so existing call
+sites continue to work unchanged.
 """
 from __future__ import annotations
 
@@ -43,6 +49,10 @@ _KEYS = (
     "atr_pct_14",
     "dist_from_high_52w_pct",
     "dist_from_low_52w_pct",
+    # Phase 7 additions: moving-average crossover + beta-aware confidence.
+    "golden_cross",
+    "death_cross",
+    "beta_confidence_damping",
 )
 
 
@@ -79,26 +89,107 @@ def _df_from_history(history: list[Mapping[str, Any]]) -> pd.DataFrame | None:
     return df
 
 
+def _emit_ratios_features(raw: dict) -> dict[str, float]:
+    """Read ``raw['ratios']`` (already stowed by the fetch callback) and emit
+    moving-average crossover + beta-aware features.
+
+    Parameters
+    ----------
+    raw:
+        The full per-ticker raw dict. Reads the ``"ratios"`` sub-dict.
+
+    Returns
+    -------
+    dict[str, float]
+        Any of: ``golden_cross``, ``death_cross``, ``beta_confidence_damping``.
+        Empty dict when ratios are absent.
+    """
+    ratios = raw.get("ratios") or {}
+    if not ratios:
+        return {}
+
+    last  = ratios.get("last_price")
+    ma50  = ratios.get("fifty_day_average")
+    ma200 = ratios.get("two_hundred_day_average")
+    beta  = ratios.get("beta")
+
+    out: dict[str, float] = {}
+
+    if last is not None and ma50 is not None and ma200 is not None:
+        # Golden cross: 50-day above 200-day AND price above 50-day MA.
+        out["golden_cross"] = 1.0 if ma50 > ma200 and last > ma50 else 0.0
+        # Death cross: 50-day below 200-day AND price below 50-day MA.
+        out["death_cross"]  = 1.0 if ma50 < ma200 and last < ma50 else 0.0
+
+    if beta is not None:
+        # Damping factor applied to confidence in the verdict layer; surfaced
+        # as a feature so the strategist can audit it.
+        # Value is 1.0 for beta==1, falling off symmetrically for betas above/below 1.
+        out["beta_confidence_damping"] = 1.0 / (1.0 + abs(beta - 1.0))
+
+    return out
+
+
+def _resolve_bars(raw: Mapping[str, Any]) -> list:
+    """Resolve the OHLCV bar list from any of the supported raw dict shapes.
+
+    Checks three locations in priority order:
+    1. ``raw["bars"]`` — Phase 7 canonical.
+    2. ``raw["price_history"]["bars"]`` — Phase 5 nested dict.
+    3. ``raw["price_history"]`` or ``raw["history"]`` — legacy flat list.
+
+    Parameters
+    ----------
+    raw:
+        Per-ticker raw data dict.
+
+    Returns
+    -------
+    list
+        The bar list (may be empty).
+    """
+    # Phase 7 canonical: bars directly on the raw dict.
+    if "bars" in raw:
+        return raw.get("bars") or []
+
+    # Phase 5: bars inside a price_history sub-dict.
+    ph_payload = raw.get("price_history")
+    if isinstance(ph_payload, dict):
+        return ph_payload.get("bars") or []
+
+    # Legacy flat list.
+    return ph_payload or raw.get("history") or []
+
+
 def extract_technical_features(
     raw: Mapping[str, Any],
-    ticker: str,
+    ticker: str = "",
     *,
     as_of: datetime | None = None,
+    state: dict[str, Any] | None = None,
 ) -> dict[str, float]:
     """Compute the locked technical feature catalogue from raw OHLCV history.
 
-    Accepts the per-ticker data slice from ``state["technical_data"][ticker]``.
+    Accepts either the Phase 7 canonical shape ``{"bars": [...], "ratios": dict}``
+    or the Phase 5 legacy shape ``{"price_history": {"bars": [...]}}``.
+
     All features are returned as plain Python ``float`` values.
 
     Parameters
     ----------
     raw:
-        Raw ticker data dict. Expected to contain a ``price_history`` key
-        (list of OHLCV bar dicts) plus optional ``high_52w`` / ``low_52w`` floats.
-        An empty dict returns all-zero features without raising.
+        Raw ticker data dict.  An empty dict returns all-zero features
+        without raising.
     ticker:
         Ticker symbol — accepted for logging/tracing purposes, not used in
-        computation currently.
+        computation.  Defaults to ``""`` so callers can pass ``state=`` as the
+        only keyword argument.
+    as_of:
+        Legacy historical clock parameter — reserved, currently unused.
+    state:
+        Phase 7 pipeline state dict — currently unused but accepted so callers
+        can pass it without error (Fix C / relative-strength will wire it in
+        Phase 5).
 
     Returns
     -------
@@ -111,18 +202,12 @@ def extract_technical_features(
     if not raw:
         return out
 
-    # Phase 5 redesign: technical_data[ticker]["price_history"] is now a dict
-    # from PriceHistory.model_dump() — bars live under the ``"bars"`` sub-key.
-    # Legacy ``"history"`` top-level key falls back for any unmigrated caller.
-    ph_payload = raw.get("price_history")
-    if isinstance(ph_payload, dict):
-        history = ph_payload.get("bars") or []
-    else:
-        history = ph_payload or raw.get("history") or []
-
-    df = _df_from_history(history)
+    bars = _resolve_bars(raw)
+    df   = _df_from_history(bars)
 
     if df is None or len(df) < 2:
+        # No usable bar data — still run ratios-derived features.
+        out.update(_emit_ratios_features(raw))
         return out
 
     close = df["close"]
@@ -171,21 +256,36 @@ def extract_technical_features(
         if v50 > 0:
             out["vol_ratio_20d"] = v20 / v50
 
-    # --- Distance from 52-week high / low (in percent) ---
-    # Negative dist_from_high means the stock is trading below its annual peak.
-    # Note: ``high_52w`` / ``low_52w`` were never present on the old ``StockStats``
-    # model and are not carried by the new ``CompanyRatios`` model either.  These
-    # keys always resolve to None via the raw dict lookup; the fallback paths below
-    # compute approximate 52-week extremes from the bar history directly.
-    high_52w = raw.get("high_52w")
-    low_52w = raw.get("low_52w")
+    # --- 52-week distance (Fix B) ---
+    # Priority order:
+    # 1. ratios["fifty_two_week_high/low"] — populated by stats/yfinance provider.
+    # 2. top-level raw["high_52w"] / raw["low_52w"] — legacy fixture shape.
+    # 3. Computed from the last 252 bars — final fallback.
+    ratios_dict = raw.get("ratios") or {}
+    high52 = ratios_dict.get("fifty_two_week_high") or raw.get("high_52w")
+    low52  = ratios_dict.get("fifty_two_week_low")  or raw.get("low_52w")
+
+    if (high52 is None or low52 is None) and bars:
+        closes = [b["close"] for b in bars[-252:] if b.get("close") is not None]
+        if closes:
+            if high52 is None:
+                high52 = max(closes)
+            if low52 is None:
+                low52 = min(closes)
+
     last_close = float(close.iloc[-1])
 
-    if high_52w and high_52w > 0:
-        out["dist_from_high_52w_pct"] = float((last_close / high_52w - 1.0) * 100.0)
+    # Distances expressed as signed percentages (e.g. -3.25 = 3.25 % below high).
+    # This convention matches the verdict heuristic which compares against
+    # ``near_52w_extreme_pct`` (config default: 5.0).
+    if last_close > 0 and high52 and high52 > 0:
+        out["dist_from_high_52w_pct"] = float((last_close / high52 - 1.0) * 100.0)
 
-    if low_52w and low_52w > 0:
-        out["dist_from_low_52w_pct"] = float((last_close / low_52w - 1.0) * 100.0)
+    if last_close > 0 and low52 and low52 > 0:
+        out["dist_from_low_52w_pct"] = float((last_close / low52 - 1.0) * 100.0)
+
+    # --- Ratios-based features (Fix A): crossovers + beta damping ---
+    out.update(_emit_ratios_features(raw))
 
     return out
 

@@ -93,6 +93,12 @@ class InsiderDerivativeTrade(BaseModel):
     is_indirect_ownership: bool = False   # DirectOrIndirect == "I"
     is_late_filed: bool = False           # filed past the 2-business-day window
 
+    # Reporter flags — mirrors InsiderTrade.is_officer (Phase 7 audit 2.6 gap
+    # fix). Populated from the same reportingOwnerRelationship XML block.
+    # Defaults False so existing cached data round-trips without error.
+    is_officer: bool = False
+    is_director: bool = False
+
 
 class Form4Bundle(BaseModel):
     """One ticker's parsed Form 4 contents — both transaction tables.

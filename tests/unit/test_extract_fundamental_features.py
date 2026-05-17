@@ -72,7 +72,12 @@ def _raw_with_ratios(**extra) -> dict:
 # ---------------------------------------------------------------------------
 
 def test_extractor_emits_insider_columns():
-    """The extractor now produces every Phase 5 insider feature column."""
+    """The extractor now produces every Phase 5/7 insider feature column.
+
+    Note: ``insider_max_filer_role_rank`` was removed in Phase 7 (Fix F) in
+    favour of the ``is_officer`` reporter flag.  ``senior_officer_buy_dollars_30d``
+    is the replacement aggregate.
+    """
     raw = {
         "ratios": {"pe_trailing": 25.0, "revenue_growth_yoy": 0.08},
         "filings": [],
@@ -87,13 +92,16 @@ def test_extractor_emits_insider_columns():
         "insider_cluster_buy_flag",
         "insider_cluster_sell_flag",
         "insider_planned_sale_ratio",
-        "insider_max_filer_role_rank",
         "insider_derivative_exercise_count",
         "insider_derivative_grant_count",
         "days_since_last_filing",
         "n_filings_30d",
     ):
         assert key in features, f"missing feature column: {key}"
+
+    # Phase 7 Fix F: role-rank removed; senior-officer aggregate is the replacement.
+    assert "senior_officer_buy_dollars_30d" in features
+    assert "insider_max_filer_role_rank" not in features
 
 
 def test_all_features_are_floats():
@@ -192,32 +200,25 @@ def test_planned_sale_ratio_zero_when_no_sells():
 # Role ranking
 # ---------------------------------------------------------------------------
 
-def test_max_filer_role_rank_ceo_scores_highest():
-    """A CEO buy must produce the maximum role rank (5)."""
-    bundle = Form4Bundle(
-        trades=[
-            InsiderTrade(**_BASE_BUY, insider_name="Tim Cook", insider_title="CEO"),
-        ],
-        derivatives=[],
-    )
-    features = extract_fundamental_features(
-        {"ratios": {}, "filings": [], "insider": bundle}, "AAPL"
-    )
-    assert features["insider_max_filer_role_rank"] == 5.0
+def test_senior_officer_aggregate_via_flat_list():
+    """Phase 7 Fix F: is_officer=True on a P-code trade → senior_officer_buy_dollars_30d.
 
+    Replaces the removed ``insider_max_filer_role_rank`` tests. The flat-list
+    path is used because Form4Bundle cannot carry the is_officer flag.
+    """
+    from datetime import datetime
 
-def test_max_filer_role_rank_unknown_title_scores_zero():
-    """An unrecognised title maps to rank 0."""
-    bundle = Form4Bundle(
-        trades=[
-            InsiderTrade(**_BASE_BUY, insider_name="Foo Bar", insider_title="Chief Snack Officer"),
-        ],
-        derivatives=[],
-    )
-    features = extract_fundamental_features(
-        {"ratios": {}, "filings": [], "insider": bundle}, "AAPL"
-    )
-    assert features["insider_max_filer_role_rank"] == 0.0
+    officer_trade = {
+        "ticker": "AAPL", "side": "buy", "shares": 1000.0, "price_per_share": 150.0,
+        "form_type": "4", "insider_name": "Tim Cook", "insider_title": "CEO",
+        "transaction_code": "P", "is_officer": True,
+        "transaction_date": date(2026, 5, 1).isoformat(),
+        "filed_at": datetime(2026, 5, 2, tzinfo=UTC).isoformat(),
+    }
+    raw = {"ratios": {}, "filings": [], "insider_trades": [officer_trade]}
+    features = extract_fundamental_features(raw, "AAPL")
+    # 1000 × 150 = 150,000 officer buy.
+    assert features["senior_officer_buy_dollars_30d"] == pytest.approx(150_000.0)
 
 
 # ---------------------------------------------------------------------------
@@ -300,7 +301,8 @@ def test_extractor_returns_zero_columns_when_no_insider_data():
     assert features["insider_cluster_sell_flag"] == 0.0
     assert features["insider_net_dollars_30d"] == 0.0
     assert features["insider_planned_sale_ratio"] == 0.0
-    assert features["insider_max_filer_role_rank"] == 0.0
+    # Phase 7 Fix F: insider_max_filer_role_rank removed; check its replacement.
+    assert features["senior_officer_buy_dollars_30d"] == 0.0
     assert features["insider_derivative_exercise_count"] == 0.0
     assert features["insider_derivative_grant_count"] == 0.0
 
