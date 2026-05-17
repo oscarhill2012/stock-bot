@@ -389,6 +389,31 @@ Two narrative-prose sources remain unread after Phase 5:
 
 ---
 
+### B25. Backtest-vs-live data fidelity matrix  *(pre-live readiness gate)*
+
+**Origin:** Phase -1 verification pass (2026-05-17) on the providers-and-silent-gaps-v1 plan. Confirmed Alpha Vantage NEWS_SENTIMENT returns 9–25 articles per ticker per week on the free tier, while plausible future live news providers (paid AV, Polygon, Finnhub paid, NewsAPI) would deliver 100+/day. Comparable density / coverage / latency gaps almost certainly exist for fundamentals (free-tier XBRL coverage vs paid analyst feeds like FactSet or S&P Capital IQ), short interest (FINRA `regShoDaily` synthesised proxy vs the real biweekly NYSE/Nasdaq snapshot), and politician trades (Quiver soft-failing today vs FMP `/senate-disclosure` on a paid plan). The provider-switching architecture already enables one-line config swaps, but no one has audited *what changes about the data* when the swap happens.
+
+**The goal:** produce a per-domain matrix documenting "what the v1 backtest-fill provider returns" vs "what the live provider will return", calling out which agents may need re-calibration once the swap lands. Deliverable: a single document with one row per Section 7 domain showing: cache-fill provider, expected live provider candidates, key shape / density / latency / field-coverage deltas, and a flag (agent-by-agent) for "will need re-calibration on swap" / "shape-compatible" / "drift acceptable".
+
+**Why it matters:** "almost identical backtest vs live" is only true if the data going into the agents is shape-compatible. If backtest cache contains 21 news articles for a critical event but live cache will contain 200, the News analyst's threshold-based features ("≥3 stories in 24h triggers high relevance") will fire on completely different distributions in the two regimes. Backtest results then over-predict (or under-predict) live behaviour by an unknown amount. The matrix makes that unknown visible so it can be priced into go-live decisions.
+
+**Key questions:**
+- Which domains have qualitatively different shapes (article density, field coverage breadth, latency to publication)? Quantitative thresholds are stricter than "they differ" — need ratios.
+- Which agents are most sensitive to which deltas? News analyst on article density; Fundamental on field coverage; SmartMoney on short-interest stock-vs-flow distinction.
+- Re-calibration vs accept-the-drift threshold: what magnitude of distributional shift is small enough to ignore? (Possibly per-agent — News may tolerate 10× density, SmartMoney may not tolerate 2× short-interest semantic shift.)
+- Should we run a parallel "live-fidelity backtest" once a live provider is selected — i.e., re-fill the SVB cache from the live provider's archive (if it has one) and compare verdict distributions to the v1 fill?
+- Where does this document live: `docs/data-and-providers.md` appendix, a fresh `docs/decisions/data-fidelity-matrix.md`, or absorbed into the live-deployment plan?
+- Granularity: per-provider or per-domain? Per-domain is more decision-relevant; per-provider is more action-relevant.
+
+**Overlaps:**
+- [[B19]] (historical social-sentiment ingestion) — same family of "backtest data shape vs live data shape" concern, but B19 is one specific domain (social). B25 is the cross-domain audit that decides whether other domains need their own B19-equivalents.
+
+**Dependencies:** providers-and-silent-gaps-v1 PR merged (gives us the v1 backtest-fill stack to audit against). Live provider candidates short-listed for at least news + fundamentals (otherwise we have nothing to compare to). Probably gated on the first real backtest completing — until we know which agents drive verdict variance, we don't know which deltas matter.
+
+**Likely outcome of the brainstorm:** decide whether the matrix is a one-off document or an ongoing per-domain checklist run before every provider swap. Likely the latter.
+
+---
+
 ## Tier 3 — Small follow-ups & easy wins
 
 ### B6. Persist `risk_clamps_applied`

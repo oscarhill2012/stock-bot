@@ -164,11 +164,20 @@ def _build_provider_fns() -> dict:
         return await get_company_filings(ticker, as_of=_as_of_close(end))
 
     async def _insider_trades(ticker: str, *, start, end) -> list:
-        """Fetch Form 4 insider trades for the window period."""
+        """Fetch Form 4 insider trades for the window period.
+
+        The edgar provider returns a ``Form4Bundle`` containing both
+        ``trades`` and ``derivatives``, but the cache's
+        ``write_insider_trades`` writer only persists the trades list —
+        there is no cache writer for derivatives yet.  Unwrap the bundle
+        here so the fetcher hands the writer the expected
+        ``list[InsiderTrade]`` shape.
+        """
         lookback = (end - start).days + 14
-        return await get_insider_trades(
+        bundle = await get_insider_trades(
             ticker, lookback_days=lookback, as_of=_as_of_close(end),
         )
+        return bundle.trades
 
     async def _politician_trades(ticker: str, *, start, end) -> list:
         """Fetch congressional/politician trades disclosed during the window."""
