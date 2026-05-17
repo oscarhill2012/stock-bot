@@ -5,11 +5,14 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from .analyst_consensus import AnalystRating, AnalystRevision
 from .company_ratios import CompanyRatios
+from .earnings import EarningsHistory, EarningsReport  # noqa: F401 — re-exported
 from .filings import Filing
 from .news import NewsArticle
 from .price_history import PriceHistory
 from .sentiment import SocialSentiment
+from .short_interest import ShortInterestSnapshot
 from .trades import InsiderTrade, NotableHolder, PoliticianTrade
 
 
@@ -52,6 +55,30 @@ class StockSignalBundle(BaseModel):
     politician_trades: list[PoliticianTrade] = Field(default_factory=list)
     notable_holders: list[NotableHolder] = Field(default_factory=list)
     filings: list[Filing] = Field(default_factory=list)
+
+    # --- Phase 7 extensions — new data domains ---
+    # All default to None / [] so existing cached trace data round-trips
+    # without modification (additive-only change).
+    earnings: list[EarningsReport] = Field(
+        default_factory=list,
+        description="Recent quarterly earnings reports from the Finnhub provider.",
+    )
+    analyst_consensus: AnalystRating | None = Field(
+        default=None,
+        description="Latest analyst consensus price-target + recommendation snapshot.",
+    )
+    analyst_revisions: list[AnalystRevision] = Field(
+        default_factory=list,
+        description="Recent upgrade / downgrade / target-change events.",
+    )
+    short_interest: ShortInterestSnapshot | None = Field(
+        default=None,
+        description=(
+            "Most recent short-interest snapshot (or v1 synthesis proxy). "
+            "None when the FINRA provider is absent or returned no data."
+        ),
+    )
+
     min_decision_interval_seconds: float = Field(
         default=0.0,
         description=(

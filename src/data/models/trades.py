@@ -30,6 +30,10 @@ class InsiderTrade(BaseModel):
     and the narrative supplement (footnote + transaction code + 10b5-1 flag)
     that lets the Fundamental LLM separate mechanical sales from
     discretionary ones.
+
+    Phase 7 additions (audit 2.5): reporter-flag booleans parsed directly
+    from the Form 4 ``reportingOwnerRelationship`` XML block, replacing the
+    fragile ``_role_rank()`` title-regex heuristic.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -49,6 +53,12 @@ class InsiderTrade(BaseModel):
     is_10b5_1: bool = False               # From the form-level flag or footnote regex
     footnote: str | None = None           # Free-text footnote on the row (prose)
 
+    # Reporter flags from Form 4 reportingOwner.reportingOwnerRelationship XML
+    # (audit 2.5). Authoritative replacement for the _role_rank() title regex.
+    is_officer: bool = False
+    is_director: bool = False
+    is_ten_percent_owner: bool = False
+
 
 class InsiderDerivativeTrade(BaseModel):
     """One Form 4 derivative-securities transaction row.
@@ -57,6 +67,10 @@ class InsiderDerivativeTrade(BaseModel):
     Strike + underlying-shares + footnote together describe whether a
     transaction is dilutive vesting, an in-the-money exercise, an
     exercise-and-hold (bullish), or an exercise-and-dump.
+
+    Phase 7 additions (audit 2.6): Table II extras parsed from the
+    derivativeTransaction XML — expiration date, indirect-ownership flag,
+    and a late-filed flag computed from the 2-business-day filing window.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -73,6 +87,11 @@ class InsiderDerivativeTrade(BaseModel):
     transaction_code: str | None = None
     is_10b5_1: bool = False
     footnote: str | None = None
+
+    # Table II extras (audit 2.6) parsed from Form 4 derivativeTransaction XML.
+    expiration_date: date | None = None
+    is_indirect_ownership: bool = False   # DirectOrIndirect == "I"
+    is_late_filed: bool = False           # filed past the 2-business-day window
 
 
 class Form4Bundle(BaseModel):
@@ -111,3 +130,9 @@ class NotableHolder(BaseModel):
     filed_at: datetime
     accession_no: str
     url: str | None = None
+
+    # Body-parsed cover-page fields (audit 2.9) — Phase 4 notable_holders/edgar
+    # extends to populate these from the SC 13D/G cover page and Item 4 prose.
+    percent_of_class: float | None = None
+    shares_held: float | None = None
+    purpose_excerpt: str | None = None    # 13D Item 4 prose; ≤ 2,000 chars
