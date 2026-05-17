@@ -117,8 +117,17 @@ def make_evidence_callback(
             # Pass as_of so time-delta features (e.g. days_since_last_filing in
             # the fundamental extractor) are computed from the replayed historical
             # clock rather than wall-clock time.
+            # Pass state so extractors that need pipeline-wide context
+            # (e.g. the technical extractor reading state["reference_prices"]
+            # for relative_strength_vs_spy_* — Fix C) can access it.
+            # callback_context.state is an ADK State proxy (no __iter__), so
+            # call .to_dict() to get a plain dict.  Fall back to dict() for
+            # plain-dict state objects in unit tests.
+            _to_dict = getattr(state, "to_dict", None)
+            state_snapshot: dict = _to_dict() if callable(_to_dict) else dict(state)
             features: dict[str, float] = extractor(
                 data.get(ticker, {}), ticker, as_of=recorded_at,
+                state=state_snapshot,
             )
 
             raw_v = verdicts_by_ticker.get(ticker)

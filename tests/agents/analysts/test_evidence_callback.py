@@ -19,11 +19,13 @@ from contract.extractors.technical import extract_technical_features
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _fake_extractor(raw, ticker, *, as_of=None) -> dict[str, float]:
+def _fake_extractor(raw, ticker, *, as_of=None, state=None, **_unused) -> dict[str, float]:
     """Toy extractor: always returns one feature key for simple assertions.
 
-    The ``as_of`` kwarg is accepted (and ignored) to match the uniform
-    extractor signature required by ``make_evidence_callback`` after C4.
+    Accepts ``as_of``, ``state``, and ``**_unused`` for uniform extractor
+    signature parity — ``make_evidence_callback`` now passes ``state=`` so
+    extractors that need pipeline-wide context (e.g. reference_prices for
+    relative_strength_vs_spy_*) can access it.
     """
     return {"toy_feature": 1.0}
 
@@ -120,8 +122,8 @@ def test_extractor_called_with_per_ticker_slice():
     """The extractor receives the per-ticker dict, not the whole data dict."""
     seen: list = []
 
-    def _spy(raw, ticker, *, as_of=None) -> dict[str, float]:
-        # Accept as_of to match the uniform extractor signature (C4).
+    def _spy(raw, ticker, *, as_of=None, state=None, **_unused) -> dict[str, float]:
+        # Accept as_of, state, **_unused for uniform extractor signature parity.
         seen.append((ticker, raw))
         return {"spy": 0.0}
 

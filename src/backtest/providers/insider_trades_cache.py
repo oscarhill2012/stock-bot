@@ -7,13 +7,20 @@ PIT filter: the store filters on ``filed_at`` (Form 4 filing date), never on
 ``transaction_date``.  Trades can be transacted days before their SEC filing;
 using ``transaction_date`` as the filter would expose future-filed data to a
 backtest running at ``as_of``, introducing lookahead bias.
+
+Shape note: the cache store persists only common-stock rows (Table I of Form 4);
+derivative-securities rows (Table II) are not cached.  The live EDGAR provider
+returns a ``Form4Bundle`` containing both tables.  To match live pipeline parity
+this provider wraps the flat row list in ``Form4Bundle(trades=...,
+derivatives=[])``, so ``fundamental/fetch.py``'s ``isinstance(bundle,
+Form4Bundle)`` guard passes instead of silently degrading to an empty bundle.
 """
 from __future__ import annotations
 
 from datetime import datetime
 
 from backtest.providers._store_handle import get_store
-from data.models import InsiderTrade
+from data.models import Form4Bundle
 from data.registry import register
 
 
@@ -27,8 +34,15 @@ async def fetch(
     as_of: datetime,
     lookback_days: int = 90,
     **_unused,
-) -> list[InsiderTrade]:
-    """Return insider trades filed at or before ``as_of``.
+) -> Form4Bundle:
+    """Return insider trades filed at or before ``as_of``, wrapped in a Form4Bundle.
+
+    The cache store returns a flat ``list[InsiderTrade]`` (common-stock rows
+    only — derivative rows are not persisted to the golden cache).  This
+    provider re-shapes that list into a ``Form4Bundle`` so it matches the shape
+    the live EDGAR provider returns, allowing ``fundamental/fetch.py`` to pass
+    the bundle through its ``isinstance(bundle, Form4Bundle)`` guard without
+    silently falling back to an empty bundle.
 
     Parameters
     ----------
@@ -41,9 +55,15 @@ async def fetch(
 
     Returns
     -------
-    list[InsiderTrade]
-        Matching trades, most-recently-filed first.
+    Form4Bundle
+        Bundle with ``trades`` populated from cache rows and ``derivatives``
+        set to an empty list (derivative rows are not cached).
     """
-    return get_store().read_insider_trades(
+    trades = get_store().read_insider_trades(
         ticker, as_of=as_of, lookback_days=lookback_days,
     )
+
+    # Wrap the flat list in Form4Bundle to match the live provider's return
+    # shape.  The live EDGAR provider returns a bundle with both tables; the
+    # cache only stores Table I (common-stock rows), so derivatives=[].
+    return Form4Bundle(trades=trades, derivatives=[])

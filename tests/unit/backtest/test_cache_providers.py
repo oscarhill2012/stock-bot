@@ -201,9 +201,15 @@ async def test_insider_trades_cache_returns_pydantic_list(
         "AAPL", as_of=datetime(2023, 3, 15, tzinfo=UTC),
     )
 
-    assert len(result) == 1
-    assert isinstance(result[0], InsiderTrade)
-    assert result[0].insider_name == "Tim Cook"
+    # The cache provider wraps rows in a Form4Bundle to match the live
+    # pipeline's expected shape (smart_money agent dispatch requires a bundle).
+    from data.models.trades import Form4Bundle  # noqa: PLC0415
+    assert isinstance(result, Form4Bundle), (
+        f"Expected Form4Bundle, got {type(result).__name__}"
+    )
+    assert len(result.trades) == 1
+    assert isinstance(result.trades[0], InsiderTrade)
+    assert result.trades[0].insider_name == "Tim Cook"
 
 
 # ── politician trades ──────────────────────────────────────────────────────────

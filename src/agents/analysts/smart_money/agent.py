@@ -113,13 +113,28 @@ class SmartMoneyAnalyst(BaseAgent):
         # (the extractor ignores it for clock-free features).
         as_of = state.get("as_of") or None
 
+        # ``smart_money_data`` is structured as:
+        #   {"politicians":     {ticker: [filing_dict, ...]},
+        #    "notable_holders": {ticker: [holder_dict, ...]}}
+        #
+        # The extractor expects a per-ticker flat dict with keys
+        # "politician_trades" and "notable_holders".  We build that here rather
+        # than passing the outer dict directly (which would cause the ticker
+        # lookup to always return {} and silently degrade to is_no_data=True).
+        politicians_by_ticker:     dict[str, list] = data.get("politicians", {})
+        notable_holders_by_ticker: dict[str, list] = data.get("notable_holders", {})
+
         # Build as a list of dicts so make_evidence_callback can iterate them
         # and build its ticker → verdict lookup.  Each dict includes a
         # "ticker" key alongside the AnalystVerdict fields.
         verdicts: list[dict[str, Any]] = []
 
         for ticker in tickers:
-            features = extract_smart_money_features(data.get(ticker, {}), ticker, as_of=as_of)
+            raw = {
+                "politician_trades": politicians_by_ticker.get(ticker, []),
+                "notable_holders":   notable_holders_by_ticker.get(ticker, []),
+            }
+            features = extract_smart_money_features(raw, ticker, as_of=as_of)
             verdict  = derive_smart_money_verdict(features, self.heuristics)
             v_dict   = verdict.model_dump(mode="json")
             v_dict["ticker"] = ticker

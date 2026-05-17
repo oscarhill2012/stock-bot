@@ -113,7 +113,13 @@ class TechnicalAnalyst(BaseAgent):
         verdicts: list[dict[str, Any]] = []
 
         for ticker in tickers:
-            features = extract_technical_features(data.get(ticker, {}), ticker, as_of=as_of)
+            # Pass the full session state so the extractor can read
+            # state["reference_prices"] for relative_strength_vs_spy_* (Fix C).
+            # In _run_async_impl, ctx.session.state is a plain dict, so a
+            # simple dict() copy is safe here (no ADK State proxy involved).
+            features = extract_technical_features(
+                data.get(ticker, {}), ticker, as_of=as_of, state=dict(state),
+            )
             verdict = derive_technical_verdict(features, self.heuristics)
             v_dict = verdict.model_dump(mode="json")
             v_dict["ticker"] = ticker

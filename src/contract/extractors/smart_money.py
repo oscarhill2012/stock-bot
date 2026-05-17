@@ -52,7 +52,13 @@ if TYPE_CHECKING:
     from contract.evidence import AnalystVerdict
 
 # How many days back the notable-holder window extends.
-_HOLDER_WINDOW_DAYS = 30
+#
+# Set to 90 days to match the ``notable_holders`` provider's lookback semantics.
+# SC 13D / 13G filings describe ongoing ownership positions that remain
+# meaningful well past their filing date; a 30-day cutoff was over-aggressive
+# and caused false ``is_no_data`` on tickers whose most recent filing was
+# 31–89 days old, even though the position itself was still current.
+_HOLDER_WINDOW_DAYS = 90
 
 # The complete, locked set of feature keys this extractor always returns.
 _KEYS = (
@@ -129,7 +135,12 @@ def _notable_holder_aggregates(
     holders: list[dict],
     as_of_date: date,
 ) -> dict[str, float]:
-    """Aggregate SC 13D / 13G notable-holder features within the 30-day window.
+    """Aggregate SC 13D / 13G notable-holder features within the 90-day window.
+
+    The window width is controlled by ``_HOLDER_WINDOW_DAYS`` (90 days).
+    Feature keys use the ``_30d`` suffix for backwards compatibility with the
+    pipeline's feature-key contract; the suffix reflects the original design
+    intent, not the current window width.
 
     Emits six features:
     - ``n_active_13d_30d`` — count of SC 13D filings with ``intent="active"``
@@ -144,7 +155,7 @@ def _notable_holder_aggregates(
     holders:
         List of ``NotableHolder.model_dump()`` dicts.
     as_of_date:
-        Reference date for the 30-day cutoff.
+        Reference date for the 90-day cutoff (``_HOLDER_WINDOW_DAYS``).
 
     Returns
     -------
@@ -257,7 +268,7 @@ def extract_smart_money_features(
         Legacy historical clock parameter.
     state:
         Phase 7 pipeline state dict.  ``state["as_of"]`` is used for the
-        notable-holder 30-day window.
+        notable-holder window (90 days; see ``_HOLDER_WINDOW_DAYS``).
 
     Returns
     -------

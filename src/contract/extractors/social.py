@@ -8,9 +8,10 @@ is *forward-readiness work*: when a Row #13 follow-up provider lands and the
 analyst comes back to life, the extractor must already consume the typed
 snapshot list shape (not the legacy flattened per-platform dict).
 
-The extractor's call signature is **preserved unchanged**:
-``extract_social_features(raw, ticker, *, as_of=None)``
-so call-site churn is zero.
+The extractor's call signature accepts ``state=`` and ``**_unused`` for
+parity with the other extractors (so ``make_evidence_callback`` can pass
+``state=`` uniformly without branching per analyst), but neither is used
+here — social features are fully self-contained in ``raw``.
 
 New ``raw`` shape (emitted by the updated ``social_fetch_callback``):
 
@@ -61,6 +62,8 @@ def extract_social_features(
     ticker: str,
     *,
     as_of: datetime | None = None,
+    state: dict[str, Any] | None = None,  # accepted for call-site parity; unused here
+    **_unused: Any,
 ) -> dict[str, float | bool]:
     """Reduce the per-ticker social payload to the Phase-7 feature vector.
 

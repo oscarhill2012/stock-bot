@@ -358,3 +358,4 @@ the project root.
 | `default_lookback_days.politician_trades` | int | Default lookback window (days) for politician-trade evidence fetched during replay. |
 | `default_lookback_days.notable_holders` | int | Default lookback window (days) for notable-holder snapshots fetched during replay. |
 | `default_lookback_days.filings` | int | Default lookback window (days) for SEC filings fetched during replay. |
+| `ohlcv_warmup_days` | int | Extra calendar days of OHLCV history fetched before the window start during cache fill, so rolling indicators (RSI(14), ATR(14), pct_change_20d) have enough bars to compute on the first tick. |

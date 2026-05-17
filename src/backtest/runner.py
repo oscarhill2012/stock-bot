@@ -60,6 +60,52 @@ from orchestrator.persistence import create_all, make_engine
 logger = logging.getLogger(__name__)
 
 
+def _seed_reference_prices(
+    *,
+    store,
+    window_start,
+    window_end,
+) -> dict:
+    """Build ``state["reference_prices"]`` from cached SPY + sector ETF bars.
+
+    Mirrors what ``orchestrator.tick._fetch_reference_prices`` does on live
+    runs — returns a ``{symbol: PriceHistory}`` dict so the technical
+    extractor can compute ``relative_strength_vs_spy_*`` and
+    ``relative_strength_vs_sector_*`` features during backtest replay.
+
+    Bars are read over the full window (including warm-up bars that were
+    written by ``scripts.backtest_fetch._fill_reference_ohlcv``).  Symbols
+    absent from the cache are silently omitted — the extractor already
+    handles a missing ``"SPY"`` key by skipping those features.
+
+    Parameters
+    ----------
+    store:
+        Open ``CachedDataStore`` instance.
+    window_start, window_end:
+        Inclusive date bounds for the backtest window.
+
+    Returns
+    -------
+    dict[str, PriceHistory]
+        One ``PriceHistory`` per reference symbol found in the cache.
+    """
+    from data.models import PriceHistory
+
+    # Import the canonical reference-symbol list from the fetch script so
+    # the two lists can never drift apart.
+    from scripts.backtest_fetch import _REFERENCE_SYMBOLS
+
+    ref: dict = {}
+
+    for symbol in _REFERENCE_SYMBOLS:
+        bars = store.read_ohlcv(symbol, window_start, window_end)
+        if bars:
+            ref[symbol] = PriceHistory(ticker=symbol, bars=bars)
+
+    return ref
+
+
 def _seed_initial_prices(
     *,
     store,
@@ -333,14 +379,29 @@ class Runner:
             # raises ``KeyError: 'Context variable not found: portfolio'``
             # before the pipeline can execute even one agent.
             portfolio = await broker.get_portfolio()
+
+            # Populate reference_prices from the cache so the technical extractor
+            # can compute relative_strength_vs_spy_* and
+            # relative_strength_vs_sector_* features.  On live runs this is
+            # done by orchestrator.tick._fetch_reference_prices (a yfinance
+            # bulk-download); here we read from the golden-cache store instead.
+            # SPY/ETF bars must have been written by backtest_fetch's
+            # _fill_reference_ohlcv pass — absent symbols are silently omitted.
+            reference_prices = _seed_reference_prices(
+                store=store,
+                window_start=window.start,
+                window_end=window.end,
+            )
+
             state: dict = {
-                "tickers":       wl_filtered,
-                "watchlist":     wl_filtered,
-                "portfolio":     portfolio.model_dump(mode="json"),
-                "positions":     {},
-                "memory_buffer": [],
-                "day_digest":    "",
-                "thesis":        "",
+                "tickers":          wl_filtered,
+                "watchlist":        wl_filtered,
+                "portfolio":        portfolio.model_dump(mode="json"),
+                "positions":        {},
+                "memory_buffer":    [],
+                "day_digest":       "",
+                "thesis":           "",
+                "reference_prices": reference_prices,
             }
 
             status = "completed"

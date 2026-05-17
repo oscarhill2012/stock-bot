@@ -29,7 +29,7 @@ import argparse
 import asyncio
 import json
 import logging
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -120,13 +120,22 @@ async def _fill_quarterly_ratios(ticker: str, start, end) -> list:
     return out
 
 
-def _build_provider_fns() -> dict:
+def _build_provider_fns(warmup_days: int = 30) -> dict:
     """Return the domain → public-wrapper fetch-function map for the Fetcher.
 
     Each function has the signature ``async fn(ticker, *, start, end)`` and
     delegates to the matching ``data.get_*`` wrapper.  Whatever provider is
     active in ``config/data.json`` is used automatically — switching is a
     config-only operation.
+
+    Parameters
+    ----------
+    warmup_days:
+        Number of extra calendar days of OHLCV history to include *before*
+        the window start.  Rolling indicators such as RSI(14), ATR(14), and
+        pct_change_20d need at least this many bars of prior history to
+        produce valid values on the first tick; without them the technical
+        extractor's no-data heuristic fires for the whole window.
 
     Returns
     -------
@@ -143,11 +152,21 @@ def _build_provider_fns() -> dict:
     )
 
     async def _ohlcv(ticker: str, *, start, end) -> list:
-        """Pull max-period history through the active price-history provider, then slice."""
+        """Pull max-period history through the active price-history provider, then slice.
+
+        The lower bound is extended by ``warmup_days`` so that rolling
+        indicators (RSI(14), ATR(14), pct_change_20d) have enough bars of
+        prior history to compute correctly on the first replay tick.  Without
+        this buffer the technical extractor trips its no-data heuristic for
+        the entire window.
+        """
+        warmup_start = start - timedelta(days=warmup_days)
         history = await get_price_history(
             ticker, period="max", interval="1d", as_of=_as_of_close(end),
         )
-        return [bar for bar in history.bars if start <= bar.timestamp.date() <= end]
+        # Include warm-up bars (before `start`) so indicators can initialise,
+        # but cap at the window end — bars after `end` are not PIT-safe.
+        return [bar for bar in history.bars if warmup_start <= bar.timestamp.date() <= end]
 
     async def _company_ratios(ticker: str, *, start, end) -> list:
         """Fan out quarter-end as_ofs across the window for PIT-correct snapshots."""
@@ -230,6 +249,80 @@ def _build_provider_name_map() -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# Reference-symbol OHLCV fill
+# ---------------------------------------------------------------------------
+
+# Mirrors orchestrator.tick._REFERENCE_SYMBOLS exactly.  SPY is the broad-market
+# benchmark; the 11 SPDR sector ETFs cover every S&P 500 constituent sector.
+# Kept as a module-level constant so tests and runner.py can import it if needed.
+_REFERENCE_SYMBOLS: tuple[str, ...] = (
+    "SPY",                                            # broad market
+    "XLK", "XLF", "XLE", "XLV", "XLY", "XLP",       # SPDR sector ETFs (batch 1)
+    "XLI", "XLB", "XLRE", "XLU", "XLC",              # SPDR sector ETFs (batch 2)
+)
+
+
+async def _fill_reference_ohlcv(
+    *,
+    store,
+    window,
+    warmup_days: int,
+) -> None:
+    """Fetch and cache OHLCV bars for SPY and SPDR sector ETFs.
+
+    These symbols are not in the watchlist but are required by the technical
+    extractor to compute ``relative_strength_vs_spy_*`` and
+    ``relative_strength_vs_sector_*`` features.  They need OHLCV only — no
+    other domains.  Bars are written via ``store.write_ohlcv`` using the same
+    warm-up extension applied to watchlist tickers.
+
+    Errors per symbol are logged and skipped so a delisted ETF does not abort
+    the entire fill.
+
+    Parameters
+    ----------
+    store:
+        Open ``CachedDataStore`` instance (already has the DB connection).
+    window:
+        Resolved ``BacktestWindow`` with ``.start`` and ``.end`` date attrs.
+    warmup_days:
+        Extra calendar days before ``window.start`` to include for indicator
+        warm-up (same value used for the main watchlist fill).
+    """
+    from data import get_price_history
+
+    warmup_start = window.start - timedelta(days=warmup_days)
+
+    for symbol in _REFERENCE_SYMBOLS:
+        try:
+            history = await get_price_history(
+                symbol,
+                period="max",
+                interval="1d",
+                as_of=_as_of_close(window.end),
+            )
+            bars = [
+                b for b in history.bars
+                if warmup_start <= b.timestamp.date() <= window.end
+            ]
+            if bars:
+                store.write_ohlcv(symbol, bars)
+                logging.info(
+                    "Reference OHLCV: %s — %d bars written (warmup from %s to %s)",
+                    symbol, len(bars), warmup_start, window.end,
+                )
+            else:
+                logging.warning(
+                    "Reference OHLCV: %s — no bars found in [%s, %s]",
+                    symbol, warmup_start, window.end,
+                )
+        except Exception:
+            logging.exception(
+                "Reference OHLCV fetch failed for %s — skipping", symbol,
+            )
+
+
+# ---------------------------------------------------------------------------
 # Async main
 # ---------------------------------------------------------------------------
 
@@ -257,6 +350,10 @@ async def _main_async(args: argparse.Namespace) -> None:
         )
     window = windows[args.window]
 
+    # Read warm-up days from settings; fall back to 30 if absent (safe default
+    # that covers RSI(14), ATR(14), and pct_change_20d's longest lookback).
+    warmup_days: int = settings.get("ohlcv_warmup_days", 30)
+
     store = CachedDataStore(Path(settings["cache_path"]))
 
     fetcher = Fetcher(
@@ -264,7 +361,7 @@ async def _main_async(args: argparse.Namespace) -> None:
         window_key=args.window,
         window=window,
         watchlist=watchlist,
-        provider_fns=_build_provider_fns(),
+        provider_fns=_build_provider_fns(warmup_days=warmup_days),
         live_providers_for_domain=_build_provider_name_map(),
         refetch_domains=set(args.refetch_domain),
     )
@@ -277,6 +374,18 @@ async def _main_async(args: argparse.Namespace) -> None:
     )
 
     await fetcher.run()
+
+    # ── Reference-symbol OHLCV fill ────────────────────────────────────────────
+    # SPY and the 11 SPDR sector ETFs are not in the watchlist, but the
+    # technical extractor needs their price history to compute
+    # relative_strength_vs_spy_* and relative_strength_vs_sector_* features.
+    # Fetch and cache them now using the same warm-up extension as the main fill.
+    # Only OHLCV is needed — no other domains.
+    await _fill_reference_ohlcv(
+        store=store,
+        window=window,
+        warmup_days=warmup_days,
+    )
 
     logging.info("Cache fill complete.")
 

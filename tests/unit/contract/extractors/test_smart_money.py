@@ -81,7 +81,7 @@ def test_is_no_data_one_when_empty_dict():
 # ---------------------------------------------------------------------------
 
 def test_smart_money_emits_holder_aggregates():
-    """Holder aggregates must be computed correctly from the 30-day window."""
+    """Holder aggregates must be computed correctly from the 90-day window."""
     holders = [
         NotableHolder(
             ticker="AAPL", holder="H1", form_type="SC 13D",
@@ -132,7 +132,7 @@ def test_smart_money_holder_clears_no_data_flag():
 
 
 def test_smart_money_holder_outside_window_excluded():
-    """Holders filed before the 30-day cutoff must not be counted."""
+    """Holders filed before the 90-day cutoff must not be counted."""
     holders = [
         NotableHolder(
             ticker="AAPL", holder="OldFund", form_type="SC 13D",

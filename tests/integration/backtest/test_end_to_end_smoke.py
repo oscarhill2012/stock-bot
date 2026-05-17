@@ -45,6 +45,7 @@ import pytest
 
 from backtest.cache.store import CachedDataStore
 from data.models import CompanyRatios, OHLCBar
+from datetime import timedelta
 
 
 # ---------------------------------------------------------------------------
@@ -164,19 +165,35 @@ def fixture_cache(tmp_path: Path) -> Path:
     cache_path = tmp_path / "cache" / "store.sqlite"
     store = CachedDataStore(cache_path)
 
-    # Write one OHLCV bar per day for AAPL.
-    for d_str in ("2023-03-13", "2023-03-14", "2023-03-15"):
-        ts = datetime.fromisoformat(f"{d_str}T00:00:00+00:00")
-        store.write_ohlcv("AAPL", [
-            OHLCBar(
-                timestamp=ts,
-                open=150.0,
-                high=151.0,
-                low=149.0,
-                close=150.5,
-                volume=1_000_000,
-            ),
-        ])
+    # Write 25 warm-up bars (2023-02-06 to 2023-03-10) plus the 3 window
+    # days (2023-03-13, 2023-03-14, 2023-03-15) for AAPL.
+    #
+    # RSI(14) and ATR(14) each need at least 15 bars; pct_change_20d needs
+    # 21.  With only the 3 window bars the technical extractor's no-data
+    # guard fires and is_no_data=True.  The warm-up bars give the extractor
+    # enough history to compute at least rsi_14 and atr_pct_14, ensuring the
+    # Phase 7 is_no_data assertion passes on this fixture cache.
+    #
+    # Close prices step up by 0.10 per bar so pct_change_5d is non-zero.
+    _aapl_bars = []
+    _warm_start = datetime.fromisoformat("2023-02-06T00:00:00+00:00")
+    _window_days = [
+        datetime.fromisoformat("2023-03-13T00:00:00+00:00"),
+        datetime.fromisoformat("2023-03-14T00:00:00+00:00"),
+        datetime.fromisoformat("2023-03-15T00:00:00+00:00"),
+    ]
+    _all_days = [_warm_start + timedelta(days=i) for i in range(25)] + _window_days
+    for i, ts in enumerate(_all_days):
+        _close = 145.0 + i * 0.10   # gently trending so momentum features are non-zero
+        _aapl_bars.append(OHLCBar(
+            timestamp=ts,
+            open=_close - 0.5,
+            high=_close + 1.0,
+            low=_close - 1.0,
+            close=_close,
+            volume=1_000_000,
+        ))
+    store.write_ohlcv("AAPL", _aapl_bars)
 
     # Write one CompanyRatios snapshot so the fundamental cache provider
     # can satisfy point-in-time reads during the backtest window.
@@ -458,3 +475,44 @@ def test_end_to_end_run_produces_full_artefact_tree(
         assert not fired, (
             f"Definitive-leak tripwire(s) fired in {audit_file.name}: {fired}"
         )
+
+    # Phase 7 — non-Social analysts that can produce signal from the minimal
+    # fixture must emit a non-is_no_data verdict.  Social explicitly soft-fails
+    # per spec decision 9.3.  SmartMoney is also excluded here: the fixture
+    # cache has no filing data (politician_trades / notable_holders), so
+    # is_no_data=True is correct behaviour for that analyst on this fixture.
+    # The full four-analyst assertion (including SmartMoney) lives in
+    # test_no_silent_zero_features, which runs against the real SVB cache.
+    #
+    # Verdicts are not stored in the manifest; they live in trace files under
+    # the "04_digest" section (ticker_evidence_objects).  We sample the middle
+    # trace tick — the same strategy as test_no_silent_zero_features.
+    non_social_analysts = {"technical", "fundamental", "news"}
+
+    trace_files_sorted = sorted(trace_files)
+    sample_trace_file  = trace_files_sorted[len(trace_files_sorted) // 2]
+    sample_trace       = json.loads(sample_trace_file.read_text(encoding="utf-8"))
+    digest_section     = sample_trace.get("04_digest") or {}
+    digest_data: list  = digest_section.get("data") or []
+
+    # Only assert if the digest was produced — the 3-day micro-window with a
+    # single AAPL ticker should always produce one.
+    if digest_data:
+        for ticker_evidence in digest_data:
+            ticker      = ticker_evidence.get("ticker", "<unknown>")
+            per_analyst = ticker_evidence.get("per_analyst") or {}
+
+            for analyst in non_social_analysts:
+                evidence = per_analyst.get(analyst)
+                if evidence is None:
+                    # Analyst absent from pool — skip rather than hard-fail
+                    # so the smoke test is not brittle against pool composition
+                    # changes during development.
+                    continue
+
+                verdict = (evidence.get("verdict") or {})
+                assert verdict.get("is_no_data") is not True, (
+                    f"ticker={ticker}: '{analyst}' silently degraded to "
+                    f"is_no_data=True in {sample_trace_file.name} — "
+                    "Phase 2/4 gap detected by smoke test."
+                )
