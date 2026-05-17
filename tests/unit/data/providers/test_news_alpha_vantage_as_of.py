@@ -21,18 +21,24 @@ import pytest
 class _AsyncCM:
     """Minimal async context-manager that yields a stub httpx response.
 
-    Wraps a pre-built ``MagicMock`` response so that
-    ``async with httpx.AsyncClient(...) as client`` resolves to an object
-    whose ``get()`` coroutine returns the stub.
+    Wraps a pre-built ``MagicMock`` response (or a list of responses for
+    multi-call scenarios) so that ``async with httpx.AsyncClient(...) as client``
+    resolves to an object whose ``get()`` coroutine returns the stub(s).
 
     Parameters
     ----------
     resp:
-        The ``MagicMock`` that represents the HTTP response.
+        Either a single ``MagicMock`` response (returned for every ``get``
+        call), or a list of ``MagicMock`` responses returned in order
+        (one per call).  If a list is exhausted, the last item is repeated.
     """
 
-    def __init__(self, resp: MagicMock) -> None:
-        self._resp = resp
+    def __init__(self, resp: MagicMock | list[MagicMock]) -> None:
+        if isinstance(resp, list):
+            self._resps = resp
+        else:
+            self._resps = [resp]
+        self._call_index = 0
 
     async def __aenter__(self) -> _AsyncCM:
         return self
@@ -41,11 +47,13 @@ class _AsyncCM:
         return False
 
     async def get(self, *args, **kwargs) -> MagicMock:
-        """Simulate ``AsyncClient.get(...)`` returning the stub response."""
-        return self._resp
+        """Simulate ``AsyncClient.get(...)`` returning the next stub response."""
+        idx = min(self._call_index, len(self._resps) - 1)
+        self._call_index += 1
+        return self._resps[idx]
 
 
-def _make_fake_client(payload: dict) -> MagicMock:
+def _make_fake_resp(payload: dict) -> MagicMock:
     """Return a MagicMock response whose ``.json()`` yields ``payload``."""
     fake_resp = MagicMock()
     fake_resp.json.return_value = payload
@@ -89,7 +97,7 @@ async def test_alpha_vantage_populates_sentiment_and_relevance(monkeypatch):
     monkeypatch.setattr(mod, "require_key", lambda _: "test-token")
     monkeypatch.setattr(
         mod.httpx, "AsyncClient",
-        lambda *a, **k: _AsyncCM(_make_fake_client(payload)),
+        lambda *a, **k: _AsyncCM(_make_fake_resp(payload)),
     )
 
     out = await mod.fetch("AAPL", as_of=date(2023, 3, 12), lookback_days=7)
@@ -120,7 +128,7 @@ async def test_alpha_vantage_returns_correct_article_fields(monkeypatch):
     monkeypatch.setattr(mod, "require_key", lambda _: "test-token")
     monkeypatch.setattr(
         mod.httpx, "AsyncClient",
-        lambda *a, **k: _AsyncCM(_make_fake_client(payload)),
+        lambda *a, **k: _AsyncCM(_make_fake_resp(payload)),
     )
 
     out = await mod.fetch("AAPL", as_of=date(2023, 3, 12), lookback_days=7)
@@ -144,7 +152,7 @@ async def test_alpha_vantage_empty_feed_returns_empty_list(monkeypatch):
     monkeypatch.setattr(mod, "require_key", lambda _: "test-token")
     monkeypatch.setattr(
         mod.httpx, "AsyncClient",
-        lambda *a, **k: _AsyncCM(_make_fake_client({"feed": []})),
+        lambda *a, **k: _AsyncCM(_make_fake_resp({"feed": []})),
     )
 
     out = await mod.fetch("AAPL", as_of=date(2023, 3, 12), lookback_days=7)
@@ -160,7 +168,7 @@ async def test_alpha_vantage_missing_feed_key_returns_empty_list(monkeypatch):
     monkeypatch.setattr(mod, "require_key", lambda _: "test-token")
     monkeypatch.setattr(
         mod.httpx, "AsyncClient",
-        lambda *a, **k: _AsyncCM(_make_fake_client({"Information": "rate limit hit"})),
+        lambda *a, **k: _AsyncCM(_make_fake_resp({"Information": "rate limit hit"})),
     )
 
     out = await mod.fetch("AAPL", as_of=date(2023, 3, 12), lookback_days=7)
@@ -195,7 +203,7 @@ async def test_alpha_vantage_ticker_absent_from_sentiment_list(monkeypatch):
     monkeypatch.setattr(mod, "require_key", lambda _: "test-token")
     monkeypatch.setattr(
         mod.httpx, "AsyncClient",
-        lambda *a, **k: _AsyncCM(_make_fake_client(payload)),
+        lambda *a, **k: _AsyncCM(_make_fake_resp(payload)),
     )
 
     out = await mod.fetch("AAPL", as_of=date(2023, 3, 12), lookback_days=7)
@@ -234,7 +242,7 @@ async def test_alpha_vantage_multiple_articles_returned(monkeypatch):
     monkeypatch.setattr(mod, "require_key", lambda _: "test-token")
     monkeypatch.setattr(
         mod.httpx, "AsyncClient",
-        lambda *a, **k: _AsyncCM(_make_fake_client(payload)),
+        lambda *a, **k: _AsyncCM(_make_fake_resp(payload)),
     )
 
     out = await mod.fetch("AAPL", as_of=date(2023, 3, 12), lookback_days=7)
@@ -262,7 +270,7 @@ async def test_alpha_vantage_ticker_uppercased(monkeypatch):
     monkeypatch.setattr(mod, "require_key", lambda _: "test-token")
     monkeypatch.setattr(
         mod.httpx, "AsyncClient",
-        lambda *a, **k: _AsyncCM(_make_fake_client(payload)),
+        lambda *a, **k: _AsyncCM(_make_fake_resp(payload)),
     )
 
     # Pass lower-case ticker to verify normalisation.
@@ -289,13 +297,208 @@ async def test_alpha_vantage_missing_sentiment_score_is_none(monkeypatch):
     monkeypatch.setattr(mod, "require_key", lambda _: "test-token")
     monkeypatch.setattr(
         mod.httpx, "AsyncClient",
-        lambda *a, **k: _AsyncCM(_make_fake_client(payload)),
+        lambda *a, **k: _AsyncCM(_make_fake_resp(payload)),
     )
 
     out = await mod.fetch("AAPL", as_of=date(2023, 3, 12), lookback_days=7)
 
     assert len(out) == 1
     assert out[0].sentiment is None
+
+
+# ---------------------------------------------------------------------------
+# Monthly chunking tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_alpha_vantage_chunk_window_unit():
+    """``_chunk_window`` splits a 75-day window into exactly 3 slices of ≤ 30 days."""
+    from data.providers.news.alpha_vantage import _chunk_window
+
+    start = date(2023, 1, 1)
+    end = date(2023, 3, 16)   # 75 days inclusive (Jan 31 + Feb 28 + 16 = 75)
+    chunks = _chunk_window(start, end, chunk_days=30)
+
+    assert len(chunks) == 3
+
+    # Each chunk must be ≤ 30 days in length.
+    for chunk_start, chunk_end in chunks:
+        span = (chunk_end - chunk_start).days + 1
+        assert span <= 30, f"Chunk span {span} exceeds 30 days"
+
+    # Chunks must be contiguous — no gaps, no overlaps.
+    for i in range(len(chunks) - 1):
+        _, prev_end = chunks[i]
+        next_start, _ = chunks[i + 1]
+        assert next_start == prev_end + __import__("datetime").timedelta(days=1)
+
+    # Full window must be covered.
+    assert chunks[0][0] == start
+    assert chunks[-1][1] == end
+
+
+@pytest.mark.asyncio
+async def test_alpha_vantage_75_day_window_issues_3_calls(monkeypatch):
+    """A 75-day ``lookback_days`` window results in exactly 3 AV API calls.
+
+    Each chunk produces one ``client.get()`` invocation.  We assert the call
+    count by recording every ``get`` call via a tracking list.
+    """
+    from data.providers.news import alpha_vantage as mod
+
+    # Return an empty feed for every chunk — we care only about call count.
+    empty_payload = {"feed": []}
+
+    call_log: list[dict] = []
+
+    class _TrackingCM:
+        """Records every ``get`` call and returns an empty-feed response."""
+
+        async def __aenter__(self) -> _TrackingCM:
+            return self
+
+        async def __aexit__(self, *exc) -> bool:
+            return False
+
+        async def get(self, url: str, params: dict | None = None, **kwargs) -> MagicMock:
+            """Log the call and return a stub empty-feed response."""
+            call_log.append({"url": url, "params": params or {}})
+            return _make_fake_resp(empty_payload)
+
+    monkeypatch.setattr(mod, "require_key", lambda _: "test-token")
+    monkeypatch.setattr(
+        mod.httpx, "AsyncClient",
+        lambda *a, **k: _TrackingCM(),
+    )
+
+    # 75 days → ceil(75 / 30) = 3 chunks.
+    await mod.fetch("AAPL", as_of=date(2023, 3, 16), lookback_days=75)
+
+    assert len(call_log) == 3, (
+        f"Expected 3 AV API calls for a 75-day window, got {len(call_log)}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_alpha_vantage_30_day_window_issues_1_call(monkeypatch):
+    """A window of exactly 30 days results in a single AV API call (no splitting needed).
+
+    ``lookback_days=29`` produces a 30-day window (``[as_of - 29, as_of]``
+    inclusive), which fits exactly in one ≤ 30-day chunk.  Note that
+    ``lookback_days=30`` yields a 31-day window and would produce two chunks.
+    """
+    from data.providers.news import alpha_vantage as mod
+
+    call_log: list = []
+
+    class _TrackingCM:
+        async def __aenter__(self) -> _TrackingCM:
+            return self
+
+        async def __aexit__(self, *exc) -> bool:
+            return False
+
+        async def get(self, *args, **kwargs) -> MagicMock:
+            call_log.append(True)
+            return _make_fake_resp({"feed": []})
+
+    monkeypatch.setattr(mod, "require_key", lambda _: "test-token")
+    monkeypatch.setattr(mod.httpx, "AsyncClient", lambda *a, **k: _TrackingCM())
+
+    # lookback_days=29 → window [as_of-29, as_of] = 30 days inclusive → 1 chunk.
+    await mod.fetch("AAPL", as_of=date(2023, 3, 12), lookback_days=29)
+
+    assert len(call_log) == 1
+
+
+@pytest.mark.asyncio
+async def test_alpha_vantage_chunking_deduplicates_by_url(monkeypatch):
+    """Articles with the same URL appearing in two chunks are de-duplicated.
+
+    This guards against boundary-straddle duplicates if AV returns articles
+    near a chunk boundary in both the preceding and following chunk.
+    """
+    from data.providers.news import alpha_vantage as mod
+
+    shared_article = {
+        "title": "Boundary article",
+        "url": "https://duplicate",
+        "summary": "Appears in two chunks",
+        "time_published": "20230130T120000",
+        "source": "Reuters",
+        "overall_sentiment_score": 0.10,
+        "ticker_sentiment": [
+            {"ticker": "AAPL", "relevance_score": "0.50",
+             "ticker_sentiment_score": "0.10"},
+        ],
+    }
+    unique_article = {
+        "title": "Unique article",
+        "url": "https://unique",
+        "summary": "Only in chunk 2",
+        "time_published": "20230215T080000",
+        "source": "CNBC",
+        "overall_sentiment_score": 0.20,
+        "ticker_sentiment": [
+            {"ticker": "AAPL", "relevance_score": "0.60",
+             "ticker_sentiment_score": "0.20"},
+        ],
+    }
+
+    # Chunk 1 returns the shared article; chunk 2 returns both (duplicate + unique).
+    chunk_responses = [
+        _make_fake_resp({"feed": [shared_article]}),
+        _make_fake_resp({"feed": [shared_article, unique_article]}),
+    ]
+
+    monkeypatch.setattr(mod, "require_key", lambda _: "test-token")
+    monkeypatch.setattr(
+        mod.httpx, "AsyncClient",
+        lambda *a, **k: _AsyncCM(chunk_responses),
+    )
+
+    # Use exactly 60 days to guarantee 2 chunks.
+    out = await mod.fetch("AAPL", as_of=date(2023, 3, 1), lookback_days=60)
+
+    urls = [a.url for a in out]
+    assert len(out) == 2, f"Expected 2 de-duplicated articles, got {len(out)}: {urls}"
+    assert urls.count("https://duplicate") == 1
+    assert "https://unique" in urls
+
+
+@pytest.mark.asyncio
+async def test_alpha_vantage_timestamp_format_uses_hhmmss(monkeypatch):
+    """``time_to`` in AV params ends with ``T235959``, not ``T2359``.
+
+    This is the M4 fix — the old format ``%Y%m%dT2359`` produced a
+    malformed literal; the correct format ``%Y%m%dT235959`` matches the AV
+    documented format and the ``_parse_ts`` format string.
+    """
+    from data.providers.news import alpha_vantage as mod
+
+    call_params: list[dict] = []
+
+    class _TrackingCM:
+        async def __aenter__(self) -> _TrackingCM:
+            return self
+
+        async def __aexit__(self, *exc) -> bool:
+            return False
+
+        async def get(self, url: str, params: dict | None = None, **kwargs) -> MagicMock:
+            call_params.append(params or {})
+            return _make_fake_resp({"feed": []})
+
+    monkeypatch.setattr(mod, "require_key", lambda _: "test-token")
+    monkeypatch.setattr(mod.httpx, "AsyncClient", lambda *a, **k: _TrackingCM())
+
+    await mod.fetch("AAPL", as_of=date(2023, 3, 12), lookback_days=7)
+
+    assert len(call_params) == 1
+    time_to = call_params[0].get("time_to", "")
+    assert time_to.endswith("T235959"), (
+        f"Expected time_to to end with T235959, got: {time_to!r}"
+    )
 
 
 # ---------------------------------------------------------------------------

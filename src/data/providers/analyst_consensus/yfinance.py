@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import warnings
 from datetime import date, timedelta
 from typing import Any
@@ -355,7 +356,6 @@ def _to_float(value: Any) -> float | None:
     """
     try:
         f = float(value)
-        import math
         return None if math.isnan(f) or math.isinf(f) else f
     except (TypeError, ValueError):
         return None
