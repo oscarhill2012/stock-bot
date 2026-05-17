@@ -4,9 +4,57 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 logger = logging.getLogger(__name__)
+
+# Symbols fetched once per tick as market and sector benchmarks.
+# SPY is the broad-market reference; the 11 SPDR sector ETFs cover every
+# S&P 500 constituent sector.  These are fetched in a single bulk yfinance
+# call (one round-trip) and stored under ``state["reference_prices"]`` so
+# the technical extractor can compute relative-strength features without
+# issuing any additional network calls.
+_REFERENCE_SYMBOLS: tuple[str, ...] = (
+    "SPY",                                            # broad market benchmark
+    "XLK", "XLF", "XLE", "XLV", "XLY", "XLP",       # SPDR sector ETFs (batch 1)
+    "XLI", "XLB", "XLRE", "XLU", "XLC",              # SPDR sector ETFs (batch 2)
+)
+
+
+async def _fetch_reference_prices(
+    symbols: tuple[str, ...],
+    *,
+    as_of: date,
+    period: str = "1y",
+    interval: str = "1d",
+) -> dict:
+    """Fetch SPY + 11 SPDR sector ETFs in one bulk yfinance call.
+
+    Delegates to ``_bulk_download`` in the yfinance stats provider, which
+    issues a single ``yf.download`` round-trip rather than 12 sequential
+    per-ticker calls.  This keeps the per-tick yfinance budget low and
+    avoids queueing delays in the analyst pool.
+
+    Parameters
+    ----------
+    symbols:
+        Tuple of ticker symbols to fetch (default: ``_REFERENCE_SYMBOLS``).
+    as_of:
+        Point-in-time date — forwarded to the bulk downloader for interface
+        parity; yfinance uses wall-clock anchored periods internally.
+    period:
+        yfinance history period string (default ``"1y"``).
+    interval:
+        yfinance history interval string (default ``"1d"``).
+
+    Returns
+    -------
+    dict[str, PriceHistory]
+        One ``PriceHistory`` per requested symbol, keyed by symbol string.
+    """
+    from data.providers.stats.yfinance import _bulk_download
+
+    return await _bulk_download(symbols, period=period, interval=interval, as_of=as_of)
 
 
 async def _build_initial_state(broker, tick_id: str, tickers: list[str]) -> dict:
@@ -26,6 +74,14 @@ async def _build_initial_state(broker, tick_id: str, tickers: list[str]) -> dict
         a JSON-serialisable portfolio snapshot under ``"portfolio"``.
     """
     portfolio = await broker.get_portfolio()
+
+    # Fetch SPY + sector ETF price histories in one bulk call so the technical
+    # extractor can compute relative-strength features without issuing any
+    # additional network calls during the analyst pool phase.
+    reference_prices = await _fetch_reference_prices(
+        _REFERENCE_SYMBOLS, as_of=date.today(),
+    )
+
     return {
         "tick_id": tick_id,
         "tickers": tickers,
@@ -34,6 +90,7 @@ async def _build_initial_state(broker, tick_id: str, tickers: list[str]) -> dict
         "thesis": "",
         "positions": {},
         "portfolio": portfolio.model_dump(mode="json"),
+        "reference_prices": reference_prices,
     }
 
 

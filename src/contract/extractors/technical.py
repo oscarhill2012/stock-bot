@@ -31,6 +31,8 @@ import numpy as np
 import pandas as pd
 import talib  # canonical TA-Lib bindings — pandas-ta was rejected in Plan A § Task A5
 
+from contract.extractors._sector_map import SECTOR_TO_ETF
+
 # TYPE_CHECKING guard prevents a circular import at module load time:
 # contract.extractors.technical ← agents.analysts.heuristics ←
 #   agents.analysts.__init__ ← technical.agent ← contract.extractors.technical.
@@ -54,6 +56,76 @@ _KEYS = (
     "death_cross",
     "beta_confidence_damping",
 )
+
+
+def _pct_change(prices: list[float], window: int) -> float | None:
+    """Compute percentage change over ``window`` bars from the end of ``prices``.
+
+    Returns ``None`` when there are not enough bars to form a complete window
+    (i.e. fewer than ``window + 1`` prices).
+
+    Parameters
+    ----------
+    prices:
+        Ordered list of closing prices (oldest first).
+    window:
+        Number of bars for the lookback window.
+
+    Returns
+    -------
+    float | None
+        ``(prices[-1] / prices[-window-1]) - 1`` or ``None`` on insufficient data.
+    """
+    if len(prices) <= window:
+        return None
+    start = prices[-(window + 1)]
+    end   = prices[-1]
+    if not start:
+        return None
+    return (end - start) / start
+
+
+def _relative_strength(
+    own_bars: list[Any],
+    ref_ph: Any,
+    *,
+    window: int,
+) -> float | None:
+    """Own-ticker percentage change minus reference-series percentage change.
+
+    Positive values indicate the ticker outperformed the reference series over
+    the given window; negative values indicate underperformance.
+
+    Parameters
+    ----------
+    own_bars:
+        List of bar dicts for the target ticker — each must have a ``"close"``
+        key (Phase 7 canonical shape).
+    ref_ph:
+        A ``PriceHistory``-like object with a ``bars`` attribute; each bar
+        must expose a ``.close`` attribute.  ``None`` or empty bars → returns
+        ``None``.
+    window:
+        Lookback window in bars (e.g. 5 or 20).
+
+    Returns
+    -------
+    float | None
+        Relative-strength value, or ``None`` when data is insufficient.
+    """
+    if ref_ph is None or not getattr(ref_ph, "bars", None):
+        return None
+
+    own_closes = [b["close"] for b in own_bars if b.get("close") is not None]
+    ref_closes = [b.close   for b in ref_ph.bars]
+
+    own_chg = _pct_change(own_closes, window)
+    ref_chg = _pct_change(ref_closes, window)
+
+    if own_chg is None or ref_chg is None:
+        return None
+
+    return own_chg - ref_chg
 
 
 def _zero_features() -> dict[str, float]:
@@ -286,6 +358,32 @@ def extract_technical_features(
 
     # --- Ratios-based features (Fix A): crossovers + beta damping ---
     out.update(_emit_ratios_features(raw))
+
+    # --- Fix C: relative-strength vs SPY + sector ETF (Phase 5) ---
+    # Only computed when ``state["reference_prices"]`` is populated (i.e. on a
+    # live tick or a fully-wired backtest replay).  Emitted as *extra* keys
+    # beyond ``_KEYS`` — the caller must not assume they are always present.
+    ref_prices: dict[str, Any] = (state or {}).get("reference_prices") or {}
+
+    if ref_prices:
+        spy_ph = ref_prices.get("SPY")
+
+        # Relative strength versus the broad market (SPY).
+        for w in (5, 20):
+            rs_spy = _relative_strength(bars, spy_ph, window=w)
+            if rs_spy is not None:
+                out[f"relative_strength_vs_spy_{w}d"] = rs_spy
+
+        # Relative strength versus the ticker's own SPDR sector ETF.
+        ratios_dict_rs = raw.get("ratios") or {}
+        sector          = ratios_dict_rs.get("sector") if isinstance(ratios_dict_rs, dict) else None
+        sector_etf      = SECTOR_TO_ETF.get(sector) if sector else None
+        sector_ph       = ref_prices.get(sector_etf) if sector_etf else None
+
+        for w in (5, 20):
+            rs_sec = _relative_strength(bars, sector_ph, window=w)
+            if rs_sec is not None:
+                out[f"relative_strength_vs_sector_{w}d"] = rs_sec
 
     return out
 

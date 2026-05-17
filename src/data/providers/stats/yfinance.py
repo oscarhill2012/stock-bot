@@ -236,6 +236,106 @@ def _fetch_company_ratios(
     )
 
 
+def _sync_bulk_download(
+    symbols: tuple[str, ...],
+    period: str,
+    interval: str,
+    as_of: date,
+) -> dict[str, PriceHistory]:
+    """Synchronous core of ``_bulk_download`` — runs in the thread pool.
+
+    Calls ``yf.download`` once for all ``symbols`` and unpacks the returned
+    MultiIndex DataFrame into one ``PriceHistory`` per symbol. Rows where a
+    symbol's fields cannot be parsed (``KeyError`` / ``ValueError``) are
+    silently skipped so a single bad ticker cannot corrupt the whole batch.
+
+    Parameters
+    ----------
+    symbols:
+        Tuple of ticker symbols to fetch in bulk.
+    period:
+        yfinance history period string (e.g. ``"1y"``).
+    interval:
+        yfinance history interval string (e.g. ``"1d"``).
+    as_of:
+        Point-in-time date — accepted for interface parity but unused here
+        because yfinance period queries are wall-clock anchored.
+
+    Returns
+    -------
+    dict[str, PriceHistory]
+        One ``PriceHistory`` per requested symbol, keyed by symbol string.
+        Bars are ordered oldest → newest.
+    """
+    df = yf.download(
+        list(symbols),
+        period=period,
+        interval=interval,
+        auto_adjust=False,
+        progress=False,
+        threads=True,
+    )
+
+    out: dict[str, PriceHistory] = {}
+
+    for sym in symbols:
+        bars: list[OHLCBar] = []
+
+        for ts, row in df.iterrows():
+            try:
+                bars.append(OHLCBar(
+                    timestamp=ts.to_pydatetime(),
+                    open=float(row[("Open", sym)]),
+                    high=float(row[("High", sym)]),
+                    low=float(row[("Low", sym)]),
+                    close=float(row[("Close", sym)]),
+                    volume=int(row[("Volume", sym)]),
+                ))
+            except (KeyError, ValueError):
+                # Missing or non-numeric data for this row — skip silently.
+                continue
+
+        out[sym] = PriceHistory(ticker=sym, bars=bars)
+
+    return out
+
+
+async def _bulk_download(
+    symbols: tuple[str, ...],
+    *,
+    period: str,
+    interval: str,
+    as_of: date,
+) -> dict[str, PriceHistory]:
+    """Bulk yfinance download — single round-trip for multiple symbols.
+
+    Issues exactly one ``yf.download`` call and unpacks the resulting
+    MultiIndex DataFrame into one ``PriceHistory`` per requested symbol.
+    This is significantly faster than 12 sequential per-ticker calls and
+    avoids burning 12 token-bucket slots on the yfinance provider.
+
+    Parameters
+    ----------
+    symbols:
+        Tuple of ticker symbols (e.g. ``("SPY", "XLK", ...)``).
+    period:
+        yfinance history period string (e.g. ``"1y"``).
+    interval:
+        yfinance history interval string (e.g. ``"1d"``).
+    as_of:
+        Point-in-time reference date — accepted for interface parity, not
+        forwarded to yfinance (which uses wall-clock anchored periods).
+
+    Returns
+    -------
+    dict[str, PriceHistory]
+        One ``PriceHistory`` per requested symbol, keyed by symbol string.
+    """
+    return await asyncio.to_thread(
+        _sync_bulk_download, symbols, period, interval, as_of,
+    )
+
+
 @register(
     domain="price_history",
     name="yfinance",

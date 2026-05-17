@@ -162,3 +162,125 @@ def test_technical_52w_ratios_fast_path_takes_priority():
     # (95 / 200 - 1) × 100 = -52.5 %
     expected = (95.0 / 200.0 - 1.0) * 100.0
     assert abs(features["dist_from_high_52w_pct"] - expected) < 1e-4
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 Task 5.3 — Fix C: relative_strength_vs_spy/sector features
+# ---------------------------------------------------------------------------
+
+from data.models.price_history import PriceHistory  # noqa: E402 — after other imports
+
+
+def _ph(ticker: str, prices: list[float]) -> PriceHistory:
+    """Build a minimal ``PriceHistory`` from a list of closing prices.
+
+    Timestamps are synthetic — one bar per day starting 2023-03-01.
+    The ``bars`` attribute holds plain objects (not dicts) matching the
+    ``OHLCBar``-like interface that ``_relative_strength`` accesses via ``.close``.
+    """
+    from data.models.price_history import OHLCBar
+
+    bars = [
+        OHLCBar(
+            timestamp=datetime(2023, 3, d, tzinfo=UTC),
+            open=p, high=p, low=p, close=p, volume=1_000_000,
+        )
+        for d, p in zip(range(1, len(prices) + 1), prices, strict=False)
+    ]
+    return PriceHistory(ticker=ticker, bars=bars)
+
+
+def _make_bars(prices: list[float]) -> list[dict]:
+    """Build a list of OHLCV bar dicts from closing prices — used in ``raw["bars"]``."""
+    return [
+        {
+            "timestamp": datetime(2023, 3, d, tzinfo=UTC).isoformat(),
+            "open": p, "high": p, "low": p,
+            "close": p, "volume": 1_000_000,
+        }
+        for d, p in zip(range(1, len(prices) + 1), prices, strict=False)
+    ]
+
+
+def test_technical_emits_relative_strength_vs_spy_and_sector():
+    """Extractor emits ``relative_strength_vs_spy_5d/20d`` and
+    ``relative_strength_vs_sector_5d/20d`` when ``state["reference_prices"]``
+    contains the relevant ETF series.
+
+    AAPL rises faster than SPY and XLK over 24 days → both RS values positive.
+    """
+    # 24 bars: AAPL +24 %, SPY +12 %, XLK +19.2 % over the full window.
+    aapl_prices = [100 + d for d in range(1, 25)]       # 101 … 124
+    spy_prices  = [100 + d * 0.5 for d in range(1, 25)] # 100.5 … 112
+    xlk_prices  = [100 + d * 0.8 for d in range(1, 25)] # 100.8 … 119.2
+
+    ratios = CompanyRatios(
+        ticker="AAPL", as_of=date(2023, 3, 24), sector="Technology",
+    )
+    raw = {
+        "ticker": "AAPL",
+        "bars": _make_bars(aapl_prices),
+        "ratios": ratios.model_dump(),
+    }
+    state = {
+        "reference_prices": {
+            "SPY": _ph("SPY", spy_prices),
+            "XLK": _ph("XLK", xlk_prices),
+        },
+    }
+
+    features = extract_technical_features(raw, state=state)
+
+    # AAPL outperforms SPY and XLK → both relative-strength values must be > 0.
+    assert "relative_strength_vs_spy_20d" in features, (
+        "Feature 'relative_strength_vs_spy_20d' missing from extractor output"
+    )
+    assert features["relative_strength_vs_spy_20d"] > 0, (
+        f"Expected RS vs SPY > 0, got {features['relative_strength_vs_spy_20d']}"
+    )
+    assert "relative_strength_vs_sector_20d" in features, (
+        "Feature 'relative_strength_vs_sector_20d' missing from extractor output"
+    )
+    assert features["relative_strength_vs_sector_20d"] > 0, (
+        f"Expected RS vs sector > 0, got {features['relative_strength_vs_sector_20d']}"
+    )
+
+
+def test_technical_relative_strength_absent_when_no_state():
+    """When ``state`` is ``None``, no relative-strength keys should appear in output."""
+    bars = _make_bars([100 + d for d in range(1, 25)])
+    ratios = CompanyRatios(ticker="AAPL", as_of=date(2023, 3, 24), sector="Technology")
+    raw = {"ticker": "AAPL", "bars": bars, "ratios": ratios.model_dump()}
+
+    features = extract_technical_features(raw, state=None)
+
+    assert "relative_strength_vs_spy_20d" not in features
+    assert "relative_strength_vs_sector_20d" not in features
+
+
+def test_technical_relative_strength_5d_values_match_expected():
+    """``relative_strength_vs_spy_5d`` is AAPL 5d return minus SPY 5d return."""
+    # 10 bars.  5d window uses bars[-6] to bars[-1] (6th-from-last to last).
+    # AAPL: +10 % over last 5 bars; SPY: +5 % over last 5 bars → RS = +0.05
+    aapl_prices = [100.0] * 4 + [100.0, 105.0, 106.0, 107.0, 108.0, 110.0]
+    spy_prices  = [100.0] * 4 + [100.0, 101.0, 102.0, 103.0, 104.0, 105.0]
+
+    ratios = CompanyRatios(ticker="AAPL", as_of=date(2023, 3, 10), sector="Technology")
+    raw = {
+        "ticker": "AAPL",
+        "bars": _make_bars(aapl_prices),
+        "ratios": ratios.model_dump(),
+    }
+    state = {
+        "reference_prices": {
+            "SPY": _ph("SPY", spy_prices),
+            "XLK": _ph("XLK", spy_prices),  # Irrelevant but must be present for sector lookup.
+        },
+    }
+
+    features = extract_technical_features(raw, state=state)
+
+    # AAPL 5d: (110/100 - 1) = 0.10; SPY 5d: (105/100 - 1) = 0.05 → RS = 0.05.
+    expected_rs_spy_5d = 0.10 - 0.05
+    assert "relative_strength_vs_spy_5d" in features
+    assert abs(features["relative_strength_vs_spy_5d"] - expected_rs_spy_5d) < 1e-9
