@@ -2,7 +2,7 @@
   "providers": {
     "price_history": "yfinance",
     "company_ratios": "pit_composite",
-    "news": "tiingo",
+    "news": "alpha_vantage",
     "social_sentiment": "finnhub",
     "insider_trades": "edgar",
     "politician_trades": "fmp",
@@ -22,7 +22,9 @@
     "history_period": "1y",
     "history_interval": "1d",
     "filings_per_form": 3,
-    "include_filing_excerpts": true
+    "include_filing_excerpts": true,
+    "earnings_lookback_quarters": 4,
+    "short_interest_lookback_days": 90
   },
   "http_timeout_seconds": 15.0
 }
