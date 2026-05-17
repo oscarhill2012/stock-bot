@@ -113,19 +113,30 @@ _TIMEOUT = httpx.Timeout(15.0)
 
 
 def probe_finnhub_earnings(env: dict[str, str]) -> ProbeResult:
-    """GET /calendar/earnings — Row #6 Finnhub earnings provider."""
+    """GET /calendar/earnings — Row #6 Finnhub earnings provider.
+
+    Two-pass probe:
+      1. Recent-history window (past 120 days) — confirms historical data is
+         available and inspects the observed field names.
+      2. Future window (today → today+90d) — asserts the API does NOT
+         auto-filter unannounced events (epsActual=null rows must exist),
+         which validates the PIT dual-filter requirement documented in the
+         Phase -1 verification pass (2026-05-17).
+    """
 
     name = "finnhub /calendar/earnings"
     token = env.get("FINNHUB_API_KEY", "").strip()
     if not token or "your_" in token:
         return ProbeResult(name, "SKIP", "FINNHUB_API_KEY not set")
 
-    end = date.today()
-    start = end - timedelta(days=120)
+    today = date.today()
+
+    # --- Pass 1: recent-history check (past 120 days) ---
+    start = today - timedelta(days=120)
     params = {
         "symbol": "AAPL",
         "from": start.isoformat(),
-        "to": end.isoformat(),
+        "to": today.isoformat(),
         "token": token,
     }
     r = httpx.get(
@@ -138,15 +149,52 @@ def probe_finnhub_earnings(env: dict[str, str]) -> ProbeResult:
     if not rows:
         return ProbeResult(name, "FAIL", "empty earningsCalendar array")
     sample = rows[0]
+
+    # --- Pass 2: future window — verify PIT behaviour ---
+    # The API must include rows with epsActual=null for future (unannounced)
+    # dates.  If it filters them out, the Task 3.1 PIT-dual-filter assumption
+    # breaks and must be re-verified before that code lands.
+    future_params = {
+        "symbol": "AAPL",
+        "from": today.isoformat(),
+        "to": (today + timedelta(days=90)).isoformat(),
+        "token": token,
+    }
+    future_r = httpx.get(
+        "https://finnhub.io/api/v1/calendar/earnings",
+        params=future_params,
+        timeout=_TIMEOUT,
+    )
+    future_r.raise_for_status()
+    future_cal = (future_r.json() or {}).get("earningsCalendar") or []
+
+    # At least one row should have epsActual=None or "" (unannounced quarter).
+    unannounced = [row for row in future_cal if row.get("epsActual") in (None, "")]
+    if not unannounced:
+        return ProbeResult(
+            name, "FAIL",
+            "no unannounced future rows in 90d window — "
+            "API behaviour may have changed; re-verify Task 3.1 PIT filter",
+        )
+
     return ProbeResult(
         name, "OK",
-        f"{len(rows)} rows; latest {sample.get('date')} EPS={sample.get('epsActual')}",
+        f"{len(rows)} rows; latest {sample.get('date')} EPS={sample.get('epsActual')}; "
+        f"{len(unannounced)} unannounced in next-90d (PIT check OK)",
         payload={"sample": sample},
     )
 
 
 def probe_alpha_vantage_news(env: dict[str, str]) -> ProbeResult:
-    """GET NEWS_SENTIMENT bracketed to the SVB window — Row #12."""
+    """AV NEWS_SENTIMENT — verify archive depth across the full 2023 calendar.
+
+    Multi-window probe (Jan / Jun / Dec 2023) provides broader coverage than
+    the single SVB window in the original version.  Confirms there are no
+    seasonal archive gaps that would silently starve the backtest.
+
+    Budget note: free tier allows 25 requests/day — this probe consumes 3
+    of that allowance per smoke run.  Row #12.
+    """
 
     name = "alpha_vantage NEWS_SENTIMENT"
     apikey = env.get("ALPHA_VANTAGE_API_KEY", "").strip()
@@ -156,34 +204,51 @@ def probe_alpha_vantage_news(env: dict[str, str]) -> ProbeResult:
             "ALPHA_VANTAGE_API_KEY not set (free at alphavantage.co)",
         )
 
-    params = {
-        "function": "NEWS_SENTIMENT",
-        "tickers": "AAPL",          # AAPL guaranteed to have SVB-week coverage
-        "time_from": "20230306T0000",
-        "time_to":   "20230313T0000",
-        "limit": 50,
-        "apikey": apikey,
-    }
-    r = httpx.get("https://www.alphavantage.co/query",
-                  params=params, timeout=_TIMEOUT)
-    r.raise_for_status()
-    payload = r.json() or {}
+    # Three representative 2023 windows — spread across the calendar year to
+    # catch any seasonal archive gaps.  AV timestamps are UTC, no TZ suffix.
+    windows = [
+        ("20230110T0000", "20230117T2359"),
+        ("20230610T0000", "20230617T2359"),
+        ("20231210T0000", "20231217T2359"),
+    ]
+    counts: list[int] = []
+    notices: list[str] = []
 
-    # AV returns a free-form `Information` key when rate-limited or
-    # archive-truncated; treat that as FAIL with the upstream message
-    # so we know why.
-    if info := payload.get("Information"):
-        return ProbeResult(name, "FAIL", f"Information: {info[:100]}")
+    for ts_from, ts_to in windows:
+        params = {
+            "function": "NEWS_SENTIMENT",
+            "tickers": "AAPL",
+            "time_from": ts_from,
+            "time_to": ts_to,
+            "limit": 50,
+            "apikey": apikey,
+        }
+        r = httpx.get(
+            "https://www.alphavantage.co/query",
+            params=params,
+            timeout=_TIMEOUT,
+        )
+        r.raise_for_status()
+        body = r.json() or {}
 
-    feed = payload.get("feed") or []
-    if not feed:
-        return ProbeResult(name, "FAIL", "empty feed — SVB archive depth fails")
+        # AV returns `Information` or `Note` when rate-limited or
+        # archive-truncated; both signal a problem we must surface.
+        if msg := body.get("Information") or body.get("Note"):
+            notices.append(str(msg)[:120])
 
-    sample = feed[0]
+        counts.append(len(body.get("feed") or []))
+
+    # Any empty window or rate-limit notice is a hard failure — the backtest
+    # fill would silently produce zero articles for that slice of history.
+    if any(c == 0 for c in counts) or notices:
+        return ProbeResult(
+            name, "FAIL",
+            f"counts={counts} notices={notices}",
+        )
+
     return ProbeResult(
         name, "OK",
-        f"{len(feed)} articles; earliest {feed[-1].get('time_published')}",
-        payload={"sample_title": sample.get("title")},
+        f"per-window articles: {counts}",
     )
 
 
@@ -231,16 +296,52 @@ def probe_finra_short_interest(env: dict[str, str]) -> ProbeResult:
             name, "FAIL",
             f"regShoDaily returned {r.status_code}",
         )
-    # Endpoint returns a JSON array of records directly (not wrapped).
+    # Endpoint returns a JSON array of records directly (not dict-wrapped).
     rows = r.json() or []
-    if not isinstance(rows, list) or not rows:
+
+    # Assert top-level shape — the Phase -1 verification (2026-05-17) confirmed
+    # regShoDaily always returns a bare array; a wrapped dict would indicate an
+    # API schema change that would break the Task 3.3 synthesis path.
+    if not isinstance(rows, list):
+        return ProbeResult(
+            name, "FAIL",
+            "response is not a top-level array",
+        )
+    if not rows:
         return ProbeResult(name, "FAIL", "empty regShoDaily response")
+
+    # Assert field shape against the seven fields confirmed in Phase -1.
+    # Extra fields are informational (FINRA may add columns); missing fields
+    # are a hard failure because the synthesis path depends on all seven.
+    EXPECTED_FIELDS = {
+        "marketCode",
+        "reportingFacilityCode",
+        "securitiesInformationProcessorSymbolIdentifier",
+        "shortExemptParQuantity",
+        "shortParQuantity",
+        "totalParQuantity",
+        "tradeReportDate",
+    }
+    got = set(rows[0].keys())
+    missing = EXPECTED_FIELDS - got
+    extra = got - EXPECTED_FIELDS
+
+    if missing:
+        return ProbeResult(
+            name, "FAIL",
+            f"missing fields: {missing}",
+        )
+
+    # Log extra fields as a note in the result but don't fail — FINRA is
+    # entitled to add columns without breaking our consumers.
+    extra_note = f"; extra fields: {extra}" if extra else ""
+
     sample = rows[0]
     return ProbeResult(
         name, "OK",
         f"{len(rows)} rows; {sample.get('tradeReportDate')} "
         f"{sample.get('securitiesInformationProcessorSymbolIdentifier')} "
-        f"shortPar={sample.get('shortParQuantity')}",
+        f"shortPar={sample.get('shortParQuantity')}{extra_note}",
         payload={"endpoint": url, "sample": sample},
     )
 
