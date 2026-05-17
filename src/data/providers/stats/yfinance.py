@@ -6,12 +6,19 @@ LRU cache keyed on ``(symbol, period, interval)`` so that requesting both
 yfinance hit. This relies on each tick running in a fresh OS process (e.g. Cloud Run Jobs). For
 in-process multi-tick callers — test harnesses, long-running daemon modes — call
 ``_yt_raw.cache_clear()`` between ticks to avoid serving stale data.
+
+Provenance notes
+----------------
+``forward_pe`` and ``analyst_rating_avg`` are flagged as **snapshot-leaky**:
+yfinance serves wall-clock-current values, so these fields carry implicit
+look-ahead when used in historical backtests.  Do not use them as PIT signals
+without first routing through the ``pit_composite`` provider.
 """
 from __future__ import annotations
 
 import asyncio
 import math
-from datetime import datetime
+from datetime import date, datetime
 from functools import lru_cache
 from typing import Any
 
@@ -127,8 +134,36 @@ def _fetch_price_history(symbol: str, period: str, interval: str) -> PriceHistor
     return PriceHistory(ticker=symbol, bars=bars)
 
 
+def _fetch_info_dict(symbol: str, period: str, interval: str) -> dict[str, Any]:
+    """Return the raw yfinance ``info`` dict for ``symbol``.
+
+    Extracted as a separate, monkeypatchable function so that unit tests can
+    inject a synthetic ``info`` payload without touching the LRU-cached
+    ``_yt_raw`` call.
+
+    Parameters
+    ----------
+    symbol:
+        Upper-cased ticker symbol.
+    period, interval:
+        Forwarded to ``_yt_raw`` — determines the cache key for the shared
+        yfinance payload.
+
+    Returns
+    -------
+    dict[str, Any]
+        The ``yt.info`` dict, or ``{}`` when yfinance raises.
+    """
+    return _yt_raw(symbol, period, interval)["info"]
+
+
 @with_retry
-def _fetch_company_ratios(symbol: str, period: str, interval: str) -> CompanyRatios:
+def _fetch_company_ratios(
+    symbol: str,
+    period: str,
+    interval: str,
+    as_of: date | datetime | None = None,
+) -> CompanyRatios:
     """Project the yfinance ``info`` + ``fast_info`` dicts into a ``CompanyRatios``.
 
     Parameters
@@ -137,24 +172,47 @@ def _fetch_company_ratios(symbol: str, period: str, interval: str) -> CompanyRat
         Upper-cased ticker symbol.
     period, interval:
         Passed through to ``_yt_raw`` — keyed by the LRU cache.
+    as_of:
+        The point-in-time date to stamp on the returned ``CompanyRatios``.
+        Accepts either a ``date`` or a ``datetime`` (converted to ``date``).
+        ``None`` leaves ``CompanyRatios.as_of`` unset.
 
     Returns
     -------
     CompanyRatios
         All optional fundamental fields populated where yfinance provides data.
         Non-finite floats are normalised to ``None`` by ``_f``.
+
+    Notes
+    -----
+    ``forward_pe`` and ``analyst_rating_avg`` carry **snapshot-leaky**
+    provenance — yfinance serves wall-clock values, so these fields may embed
+    look-ahead information when used in a historical backtest context.
     """
     raw = _yt_raw(symbol, period, interval)
-    info = raw["info"]
+    info = _fetch_info_dict(symbol, period, interval)
     fast = raw["fast"]
+
+    # Normalise as_of to a plain date for the model field.
+    as_of_date: date | None = None
+    if isinstance(as_of, datetime):
+        as_of_date = as_of.date()
+    elif isinstance(as_of, date):
+        as_of_date = as_of
 
     return CompanyRatios(
         ticker=symbol,
+        as_of=as_of_date,
+
         long_name=info.get("longName") or info.get("shortName"),
         sector=info.get("sector"),
         market_cap=_f(info, "marketCap") or _f(fast, "market_cap", "marketCap"),
         trailing_pe=_f(info, "trailingPE"),
+
+        # snapshot-leaky: forward_pe is a consensus estimate served at wall-clock
+        # time — not a historical point-in-time figure.
         forward_pe=_f(info, "forwardPE"),
+
         beta=_f(info, "beta"),
         dividend_yield=_f(info, "dividendYield"),
         fifty_day_average=_f(info, "fiftyDayAverage")
@@ -163,6 +221,18 @@ def _fetch_company_ratios(symbol: str, period: str, interval: str) -> CompanyRat
         or _f(fast, "two_hundred_day_average", "twoHundredDayAverage"),
         last_price=_f(fast, "last_price", "lastPrice")
         or _f(info, "currentPrice", "regularMarketPrice"),
+
+        # 52-week extremes — added Phase 7 task 4.6.
+        fifty_two_week_high=_f(info, "fiftyTwoWeekHigh"),
+        fifty_two_week_low=_f(info, "fiftyTwoWeekLow"),
+
+        # snapshot-leaky: analyst consensus figures are served at wall-clock time.
+        analyst_rating_avg=_f(info, "recommendationMean"),
+        number_of_analyst_opinions=(
+            int(info["numberOfAnalystOpinions"])
+            if info.get("numberOfAnalystOpinions") is not None
+            else None
+        ),
     )
 
 
@@ -228,10 +298,12 @@ async def fetch_company_ratios(
 ) -> CompanyRatios:
     """Async wrapper for the ratios fetch — runs the blocking call off-thread.
 
-    ``as_of`` is accepted for dispatch parity; yfinance's ``info`` endpoint
-    serves wall-clock-current data, so this provider is unsuitable for
-    historical PIT queries.  Use the ``pit_composite`` provider (added in a
-    later task) for backtests.
+    ``as_of`` is stamped onto the returned ``CompanyRatios.as_of`` field so
+    that cache-backed layers can use it as a PIT gate.  yfinance's ``info``
+    endpoint still serves wall-clock-current data, so **this provider is
+    unsuitable for historical PIT queries** — use ``pit_composite`` for
+    backtests.  ``forward_pe`` and ``analyst_rating_avg`` are snapshot-leaky
+    fields (see module docstring).
 
     Parameters
     ----------
@@ -242,15 +314,16 @@ async def fetch_company_ratios(
     interval:
         yfinance history interval (default ``"1d"``).
     as_of:
-        Required for interface parity with cache-backed providers; ignored here
-        as yfinance's ``info`` endpoint serves wall-clock-current data.
+        Stamped onto ``CompanyRatios.as_of``; does not change the data yfinance
+        fetches (still wall-clock current).
     **_unused:
         Absorbs any additional kwargs passed by the dispatch layer.
 
     Returns
     -------
     CompanyRatios
-        Scalar fundamentals + summary stats.
+        Scalar fundamentals + summary stats, including 52-week extremes and
+        analyst consensus counters.
     """
     symbol = ticker.upper()
-    return await asyncio.to_thread(_fetch_company_ratios, symbol, period, interval)
+    return await asyncio.to_thread(_fetch_company_ratios, symbol, period, interval, as_of)

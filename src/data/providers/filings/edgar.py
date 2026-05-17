@@ -14,6 +14,8 @@ from data.secrets import require_key
 from ...models import Filing
 
 _EXCERPT_CHARS = 2000
+# Maximum chars captured for the 8-K body excerpt (Phase 7 — audit 2.7).
+_BODY_EXCERPT_CHARS = 1500
 
 # Section keys per edgartools naming. 8-Ks have no stable RF/MD&A so
 # they're skipped — we still return the metadata.
@@ -99,6 +101,30 @@ def _build_filing(filing: Any, symbol: str, include_excerpts: bool) -> Filing:
             risk = None
             mda = None
 
+    # --- 8-K specific fields (Phase 7 — audit 2.7) ---
+    body_excerpt: str | None = None
+    items_8k: list[str] = []
+
+    if form_type == "8-K":
+        # Capture a bounded slice of the raw body text so the Fundamental
+        # LLM extractor can classify the event without fetching the full doc.
+        body_text = ""
+        try:
+            body_text = filing.text() or ""
+        except Exception:
+            body_text = ""
+        body_excerpt = body_text[:_BODY_EXCERPT_CHARS] if body_text else None
+
+        # Smoke A6 gotcha: edgartools returns `filing.items` as a
+        # comma-delimited STRING (e.g. "2.02,9.01"), not a Python list.
+        # list(filing.items) would iterate char-by-char — must split on comma.
+        raw_items = getattr(filing, "items", "") or ""
+        items_8k = [
+            part.strip()
+            for part in str(raw_items).split(",")
+            if part.strip()
+        ]
+
     return Filing(
         ticker=symbol,
         form_type=form_type,
@@ -108,6 +134,8 @@ def _build_filing(filing: Any, symbol: str, include_excerpts: bool) -> Filing:
         url=str(url),
         risk_factors_excerpt=risk,
         mda_excerpt=mda,
+        body_excerpt=body_excerpt,
+        items_8k=items_8k,
     )
 
 
@@ -130,10 +158,77 @@ def _list_filings(
     return list(filings.head(max(1, min(limit, 50))))
 
 
+def _iter_filings(
+    symbol: str,
+    form_types: tuple[str, ...],
+    limit: int,
+    as_of: datetime,
+) -> list[Any]:
+    """Thin seam around ``_list_filings`` that tests can monkeypatch.
+
+    Returns the raw edgartools filing objects for ``symbol`` without any
+    model conversion — ``fetch`` handles that loop.  Keeping this as a
+    plain synchronous function (not async) makes monkeypatching trivial.
+
+    Parameters
+    ----------
+    symbol:
+        Uppercase ticker symbol.
+    form_types:
+        Tuple of SEC form types to include, e.g. ``("10-K", "10-Q", "8-K")``.
+    limit:
+        Maximum number of filings to retrieve across all form types.
+    as_of:
+        Upper-bound date — filings after this date are excluded.
+    """
+    return _list_filings(symbol, form_types, limit, as_of)
+
+
 @with_retry
 def _build_filing_with_identity(filing: Any, symbol: str, include_excerpts: bool) -> Filing:
-    _ensure_identity()
+    """Wrap ``_build_filing`` with an EDGAR identity call when excerpts are needed.
+
+    ``_ensure_identity()`` is called only when ``include_excerpts=True`` because
+    that is the only path that makes outbound HTTP requests (via ``filing.obj()``
+    for 10-K/10-Q section parsing).  Skipping the call when excerpts are
+    disabled allows tests to monkeypatch the filings list and build ``Filing``
+    model objects without any real credentials.
+
+    Parameters
+    ----------
+    filing:
+        Raw edgartools filing object.
+    symbol:
+        Uppercase ticker symbol.
+    include_excerpts:
+        When ``True``, authenticate and fetch section excerpts (risk factors,
+        MD&A for 10-K/10-Q; body text for 8-K).
+    """
+    if include_excerpts:
+        # Re-assert the EDGAR user-agent before the per-filing HTTP round-trip.
+        # edgartools sometimes resets identity between requests in a batch.
+        _ensure_identity()
     return _build_filing(filing, symbol, include_excerpts)
+
+
+def _coerce_as_of_to_datetime(as_of: date | datetime) -> datetime:
+    """Normalise ``as_of`` to a timezone-aware ``datetime``.
+
+    ``fetch`` accepts either a plain ``date`` (common in test callers and
+    backtest driver code) or a full ``datetime``.  This helper converts
+    both forms to a UTC-aware ``datetime`` so downstream functions that
+    expect ``datetime`` work correctly.
+
+    Parameters
+    ----------
+    as_of:
+        Either a ``datetime`` (possibly already timezone-aware) or a plain
+        ``date`` that represents end-of-day in UTC.
+    """
+    if isinstance(as_of, datetime):
+        return as_of if as_of.tzinfo is not None else as_of.replace(tzinfo=UTC)
+    # Plain date — treat as midnight UTC on that calendar day.
+    return datetime.combine(as_of, datetime.min.time(), tzinfo=UTC)
 
 
 @register(
@@ -148,17 +243,38 @@ async def fetch(
     form_types: tuple[str, ...] = ("10-K", "10-Q", "8-K"),
     limit: int = 5,
     *,
-    as_of: datetime,
+    as_of: date | datetime,
     include_excerpts: bool = True,
     **_unused,
 ) -> list[Filing]:
-    """Latest ``limit`` filings of ``form_types`` for ``ticker`` filed on or before ``as_of``."""
-    symbol = ticker.upper()
+    """Latest ``limit`` filings of ``form_types`` for ``ticker`` filed on or before ``as_of``.
 
+    Parameters
+    ----------
+    ticker:
+        Stock ticker symbol (case-insensitive).
+    form_types:
+        SEC form types to retrieve.  Defaults to 10-K, 10-Q, and 8-K.
+    limit:
+        Maximum total filings to retrieve.  Also accepted as ``per_form``
+        via ``**_unused`` for callers that use per-form sizing semantics
+        (the underlying SEC query applies the limit globally, not per form).
+    as_of:
+        Upper-bound date or datetime — filings after this point are excluded.
+        Accepts a plain ``date`` for convenience (treated as midnight UTC).
+    include_excerpts:
+        When ``True`` (default), fetch section excerpts for 10-K and 10-Q
+        forms and body text for 8-K forms.
+    """
+    symbol = ticker.upper()
+    as_of_dt = _coerce_as_of_to_datetime(as_of)
+
+    # Delegate to the _iter_filings seam so tests can monkeypatch the raw
+    # edgartools call without needing to mock the entire Company class.
     # The registry's dispatch already acquired one EDGAR token for the
-    # index fetch. Per-filing fetches require additional tokens.
+    # index fetch; per-filing fetches acquire additional tokens below.
     filings = await asyncio.to_thread(
-        _list_filings, symbol, form_types, limit, as_of,
+        _iter_filings, symbol, form_types, limit, as_of_dt,
     )
 
     out: list[Filing] = []

@@ -9,6 +9,13 @@ The ``CompanyRatios`` model carries three classes of field:
   ``trailing_pe``, ``dividend_yield``, ``fifty_day_average``,
   ``two_hundred_day_average``) — derived from yfinance OHLCV history sliced
   to ``as_of``.
+- **Derived XBRL ratios** (``profit_margin``, ``debt_to_equity``, ``roe``,
+  ``revenue_growth_yoy``, ``free_cash_flow``) — computed from SEC-filed
+  concepts via ``_load_xbrl_summary``.  All default to ``None`` when the
+  required concepts are absent or the company has no XBRL data.
+- **PEG ratio** — attempted via yfinance ``pegRatio`` snapshot because forward
+  EPS growth is not in XBRL.  Tagged as ``yfinance_snapshot_leak`` in the
+  provider errors dict when populated this way.
 
 Live behaviour: when ``as_of`` is "now" (the wrapper default), this reduces to
 "use today's OHLCV close + latest XBRL facts" — identical signal to the old
@@ -151,6 +158,130 @@ def _fetch_xbrl_facts(symbol: str, as_of_date: date) -> _Facts:
     )
 
 
+def _load_xbrl_summary(symbol: str, as_of_date: date) -> dict[str, float | None]:
+    """Derive six ratio fields from XBRL ``EntityFacts`` filed at or before ``as_of_date``.
+
+    Each ratio is computed from US-GAAP-taxonomy concepts using trailing
+    twelve-month (TTM) figures where the spec requires it, and a single
+    point-in-time balance-sheet figure where the spec requires that.  If a
+    required concept is missing the field silently defaults to ``None``.
+
+    The function also attempts to populate ``peg`` via yfinance ``pegRatio``
+    because forward EPS growth is broker-sourced, not filed in XBRL.  The
+    returned dict carries a ``"_peg_source"`` sentinel (``"yfinance"`` or
+    ``None``) so the caller can tag the snapshot-leak risk.
+
+    Parameters
+    ----------
+    symbol:
+        Upper-cased ticker symbol.
+    as_of_date:
+        Point-in-time gate — only facts filed on or before this date are used.
+
+    Returns
+    -------
+    dict[str, float | None]
+        Keys: ``profit_margin``, ``debt_to_equity``, ``roe``,
+        ``revenue_growth_yoy``, ``free_cash_flow``, ``peg``, ``_peg_source``.
+        All ratio values are ``float | None``; ``_peg_source`` is ``str | None``.
+    """
+    _ensure_identity()
+
+    # Initialise all output fields to None; we populate what we can.
+    result: dict[str, float | None | str] = {
+        "profit_margin":      None,
+        "debt_to_equity":     None,
+        "roe":                None,
+        "revenue_growth_yoy": None,
+        "free_cash_flow":     None,
+        "peg":                None,
+        "_peg_source":        None,
+    }
+
+    # --- Attempt to pull XBRL facts; ADRs / recent IPOs may have no data ---
+    try:
+        company = Company(symbol)
+        facts   = company.get_facts()
+    except Exception:
+        logger.debug("No XBRL facts available for %s; returning empty summary.", symbol)
+        return result  # type: ignore[return-value]
+
+    def _ttm(concept: str) -> float | None:
+        """Return the trailing-twelve-month value for ``concept`` at ``as_of_date``.
+
+        Uses ``EntityFacts.query().by_concept().as_of()`` and the ``.latest()``
+        result.  Returns ``None`` for any error, including missing concept.
+
+        Parameters
+        ----------
+        concept:
+            US-GAAP concept name without namespace prefix (e.g.
+            ``"NetIncomeLoss"``).
+
+        Returns
+        -------
+        float | None
+            Parsed finite float, or ``None`` on any failure.
+        """
+        try:
+            q   = facts.query().by_concept(concept).as_of(as_of_date)
+            row = q.latest() if hasattr(q, "latest") else None
+            return _safe_float(getattr(row, "value", None)) if row else None
+        except Exception:
+            return None
+
+    # --- profit_margin: NetIncomeLoss / Revenues (both TTM) ---
+    net_income = _ttm("NetIncomeLoss")
+    revenues   = _ttm("Revenues")
+    if net_income is not None and revenues is not None and revenues != 0:
+        result["profit_margin"] = net_income / revenues
+
+    # --- debt_to_equity: total_debt / StockholdersEquity ---
+    # Missing debt addends default to 0; negative equity → None (meaningless).
+    equity           = _ttm("StockholdersEquity")
+    long_term_nc     = _ttm("LongTermDebtNoncurrent")  or 0.0
+    long_term_curr   = _ttm("LongTermDebtCurrent")     or 0.0
+    short_term       = _ttm("ShortTermBorrowings")     or 0.0
+    total_debt       = long_term_nc + long_term_curr + short_term
+    if equity is not None and equity > 0:
+        result["debt_to_equity"] = total_debt / equity
+
+    # --- roe: NetIncomeLoss (TTM) / StockholdersEquity (balance sheet) ---
+    if net_income is not None and equity is not None and equity > 0:
+        result["roe"] = net_income / equity
+
+    # --- revenue_growth_yoy: (rev_now - rev_1y_ago) / rev_1y_ago ---
+    prior_date = as_of_date.replace(year=as_of_date.year - 1)
+    try:
+        q_prior   = facts.query().by_concept("Revenues").as_of(prior_date)
+        row_prior = q_prior.latest() if hasattr(q_prior, "latest") else None
+        rev_prior = _safe_float(getattr(row_prior, "value", None)) if row_prior else None
+    except Exception:
+        rev_prior = None
+
+    if revenues is not None and rev_prior is not None and rev_prior != 0:
+        result["revenue_growth_yoy"] = (revenues - rev_prior) / rev_prior
+
+    # --- free_cash_flow: OperatingCashFlow - CapEx (both TTM) ---
+    operating_cf = _ttm("NetCashProvidedByUsedInOperatingActivities")
+    capex        = _ttm("PaymentsToAcquirePropertyPlantAndEquipment")
+    if operating_cf is not None and capex is not None:
+        result["free_cash_flow"] = operating_cf - capex
+
+    # --- peg: not in XBRL — fall back to yfinance snapshot ---
+    # This is a point-in-time *today* value, not PIT-correct for backtest use.
+    try:
+        peg_val = yf.Ticker(symbol).info.get("pegRatio")
+        peg_f   = _safe_float(peg_val)
+        if peg_f is not None:
+            result["peg"]         = peg_f
+            result["_peg_source"] = "yfinance"
+    except Exception:
+        pass  # PEG stays None — non-fatal
+
+    return result  # type: ignore[return-value]
+
+
 @with_retry
 def _fetch_price_series(symbol: str, as_of: datetime) -> PriceHistory:
     """Pull yfinance ``period="max"`` daily history and slice to ``as_of``.
@@ -215,15 +346,18 @@ def _moving_average(closes: list[float], window: int) -> float | None:
 
 
 def _ratios_from_components(
-    symbol:  str,
-    facts:   _Facts,
-    history: PriceHistory,
+    symbol:      str,
+    facts:       _Facts,
+    history:     PriceHistory,
+    xbrl_ratios: dict[str, float | None],
+    as_of:       date,
 ) -> CompanyRatios:
-    """Combine XBRL ``_Facts`` + sliced ``PriceHistory`` into a ``CompanyRatios``.
+    """Combine XBRL ``_Facts`` + sliced ``PriceHistory`` + derived ratios into a ``CompanyRatios``.
 
     Price-derived fields (market cap, trailing P/E, dividend yield, moving
     averages) are all computed from the sliced OHLCV series so they are
-    point-in-time correct.
+    point-in-time correct.  The six XBRL-derived ratios come from
+    ``xbrl_ratios`` (output of ``_load_xbrl_summary``).
 
     Parameters
     ----------
@@ -233,6 +367,12 @@ def _ratios_from_components(
         XBRL fundamentals snapshot from ``_fetch_xbrl_facts``.
     history:
         PIT-sliced OHLCV bars from ``_fetch_price_series``.
+    xbrl_ratios:
+        Dict from ``_load_xbrl_summary`` with derived ratio fields and the
+        ``_peg_source`` sentinel.
+    as_of:
+        The point-in-time date for this snapshot; stored on the model so
+        the backtest cache can key lookups correctly.
 
     Returns
     -------
@@ -260,11 +400,19 @@ def _ratios_from_components(
         else None
     )
 
-    fifty_day    = _moving_average(closes,  50)
-    two_hundred  = _moving_average(closes, 200)
+    fifty_day   = _moving_average(closes,  50)
+    two_hundred = _moving_average(closes, 200)
+
+    # Log snapshot-leak warning when PEG was sourced from yfinance (not PIT-correct).
+    if xbrl_ratios.get("_peg_source") == "yfinance":
+        logger.debug(
+            "PEG ratio for %s sourced from yfinance snapshot (not PIT-correct for %s).",
+            symbol, as_of,
+        )
 
     return CompanyRatios(
         ticker                  = symbol,
+        as_of                   = as_of,
         long_name               = facts.long_name,
         sector                  = facts.sector,
         market_cap              = market_cap,
@@ -275,6 +423,14 @@ def _ratios_from_components(
         fifty_day_average       = fifty_day,
         two_hundred_day_average = two_hundred,
         last_price              = last,
+        # Six XBRL-derived ratios (None when concepts are absent or company
+        # has no XBRL data — e.g. ADRs, recent IPOs, foreign filers).
+        profit_margin           = xbrl_ratios.get("profit_margin"),
+        debt_to_equity          = xbrl_ratios.get("debt_to_equity"),
+        roe                     = xbrl_ratios.get("roe"),
+        revenue_growth_yoy      = xbrl_ratios.get("revenue_growth_yoy"),
+        free_cash_flow          = xbrl_ratios.get("free_cash_flow"),
+        peg                     = xbrl_ratios.get("peg"),
     )
 
 
@@ -323,11 +479,15 @@ async def fetch(
     CompanyRatios
         Fundamentals + price-derived fields, all PIT-correct as of ``as_of``.
     """
-    symbol = ticker.upper()
+    symbol   = ticker.upper()
+    as_of_d  = as_of.date() if isinstance(as_of, datetime) else as_of
 
-    facts, history = await asyncio.gather(
-        asyncio.to_thread(_fetch_xbrl_facts,   symbol, as_of.date()),
-        asyncio.to_thread(_fetch_price_series, symbol, as_of),
+    # Run all three IO-bound fetches concurrently.  ``_load_xbrl_summary`` makes
+    # its own edgartools + yfinance calls internally; keep it on a thread too.
+    facts, history, xbrl_ratios = await asyncio.gather(
+        asyncio.to_thread(_fetch_xbrl_facts,    symbol, as_of_d),
+        asyncio.to_thread(_fetch_price_series,  symbol, as_of),
+        asyncio.to_thread(_load_xbrl_summary,   symbol, as_of_d),
     )
 
-    return _ratios_from_components(symbol, facts, history)
+    return _ratios_from_components(symbol, facts, history, xbrl_ratios, as_of_d)

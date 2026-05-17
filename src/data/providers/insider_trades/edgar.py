@@ -90,6 +90,94 @@ def _iter_rows(table: Any) -> Iterator[Any]:
             yield row
 
 
+def _business_days_between(a: date, b: date) -> int:
+    """Count the number of NYSE business days between two dates (exclusive of ``a``, inclusive of ``b``).
+
+    A "business day" is any weekday (Mon–Fri).  No holiday calendar is applied —
+    the SEC's 2-business-day window is defined in calendar weekdays, not exchange
+    holidays, so this simpler count is correct for the late-filed heuristic.
+
+    Parameters
+    ----------
+    a:
+        Start date (exclusive).  Typically the transaction date.
+    b:
+        End date (inclusive).  Typically the filing date.
+
+    Returns
+    -------
+    int
+        Number of weekday days in ``(a, b]``.  Returns 0 when ``b <= a``.
+    """
+    if b <= a:
+        return 0
+
+    # Walk forward from a+1 to b (inclusive), counting weekdays.
+    count = 0
+    current = a + timedelta(days=1)
+    while current <= b:
+        if current.weekday() < 5:  # Monday=0 … Friday=4
+            count += 1
+        current += timedelta(days=1)
+    return count
+
+
+def _reporter_flags(form4: Any) -> tuple[bool, bool, bool]:
+    """Extract the three reporter-relationship booleans from a Form 4 object or XML element.
+
+    The SEC Form 4 ``reportingOwnerRelationship`` block carries three flags:
+    ``isOfficer``, ``isDirector``, and ``isTenPercentOwner``.  This helper
+    reads them regardless of whether ``form4`` is an edgartools parsed object
+    (exposing attributes or a dict-like ``relationship`` property) or a raw
+    ``xml.etree.ElementTree.Element`` (used in unit tests).
+
+    Parameters
+    ----------
+    form4:
+        The parsed Form 4 object (edgartools) or an XML ``Element`` root.
+
+    Returns
+    -------
+    tuple[bool, bool, bool]
+        ``(is_officer, is_director, is_ten_percent_owner)`` — all default False
+        when the information is absent.
+    """
+    _TRUTHY = {"1", "true"}
+
+    def _parse_flag(raw: Any) -> bool:
+        """Coerce a raw flag value to bool."""
+        if raw is None:
+            return False
+        return str(raw).strip().lower() in _TRUTHY
+
+    # --- XML Element path (unit-test fixtures and future raw-XML callers) ---
+    # Check for ElementTree Element: has ``find`` but not the edgartools attrs.
+    rel_el = None
+    if hasattr(form4, "find"):
+        rel_el = form4.find(".//reportingOwner/reportingOwnerRelationship")
+
+    if rel_el is not None:
+        is_officer  = _parse_flag(rel_el.findtext("isOfficer"))
+        is_director = _parse_flag(rel_el.findtext("isDirector"))
+        is_ten      = _parse_flag(rel_el.findtext("isTenPercentOwner"))
+        return is_officer, is_director, is_ten
+
+    # --- edgartools object path: may expose relationship as nested attr/dict ---
+    # Try the common edgartools shape: form4.reporting_owner.relationship
+    rel_obj = getattr(form4, "reporting_owner", None)
+    if rel_obj is not None:
+        rel_obj = getattr(rel_obj, "relationship", rel_obj)
+
+    # Fallback: some edgartools builds flatten flags directly onto the form4 obj.
+    if rel_obj is None:
+        rel_obj = form4
+
+    is_officer  = _parse_flag(_row_get(rel_obj, "isOfficer",  "is_officer"))
+    is_director = _parse_flag(_row_get(rel_obj, "isDirector", "is_director"))
+    is_ten      = _parse_flag(_row_get(rel_obj, "isTenPercentOwner", "is_ten_percent_owner"))
+    return is_officer, is_director, is_ten
+
+
 def _coerce_date(v: Any) -> date | None:
     """Coerce `v` to a `date` from datetime, date, or ISO-string."""
     if v is None:
@@ -366,6 +454,10 @@ def _build_trade(
     ) or None
     is_planned = _is_planned_sale(row, form4, footnote)
 
+    # Reporter-relationship flags from Form 4 reportingOwnerRelationship XML.
+    # Replaces the fragile _role_rank() title-string heuristic (audit 2.5).
+    is_officer, is_director, is_ten_percent_owner = _reporter_flags(form4)
+
     out.append(
         InsiderTrade(
             ticker=symbol,
@@ -380,6 +472,9 @@ def _build_trade(
             transaction_code=tx_code,
             is_10b5_1=is_planned,
             footnote=footnote,
+            is_officer=is_officer,
+            is_director=is_director,
+            is_ten_percent_owner=is_ten_percent_owner,
         )
     )
 
@@ -436,6 +531,39 @@ def _build_derivative(
     ) or None
     is_planned = _is_planned_sale(row, form4, footnote)
 
+    # -----------------------------------------------------------------------
+    # Table II extras (audit 2.6): expiration date, ownership nature, late-filed.
+    # -----------------------------------------------------------------------
+
+    # Expiration date — try row-level key first (edgartools row dict / Series),
+    # then fall back to the XML path when ``form4`` is an ET.Element (unit tests
+    # or future raw-XML callers).
+    exp_raw = _row_get(row, "expiration_date", "ExpirationDate")
+    if exp_raw is None and hasattr(form4, "findtext"):
+        exp_raw = form4.findtext(".//derivativeTransaction/expirationDate/value")
+    expiration_date: date | None = _coerce_date(exp_raw)
+
+    # DirectOrIndirect ownership: "D" = direct (default), "I" = indirect.
+    # Same two-stage lookup: row dict first, XML fallback.
+    direct_indirect_raw = _row_get(
+        row,
+        "direct_or_indirect_ownership",
+        "DirectOrIndirectOwnership",
+        "ownership_nature",
+    )
+    if direct_indirect_raw is None and hasattr(form4, "findtext"):
+        direct_indirect_raw = form4.findtext(
+            ".//derivativeTransaction/ownershipNature/directOrIndirectOwnership/value"
+        )
+    direct_indirect_raw = direct_indirect_raw or "D"
+    is_indirect_ownership = str(direct_indirect_raw).strip().upper() == "I"
+
+    # Late-filed: filed more than 2 NYSE business days after the transaction date.
+    is_late_filed = _business_days_between(txn_date, filed_date) > 2
+
+    # Reporter-relationship flags — same XML block as InsiderTrade (audit 2.6).
+    is_officer, is_director, _is_ten = _reporter_flags(form4)
+
     out.append(
         InsiderDerivativeTrade(
             ticker=symbol,
@@ -450,6 +578,11 @@ def _build_derivative(
             transaction_code=tx_code,
             is_10b5_1=is_planned,
             footnote=footnote,
+            expiration_date=expiration_date,
+            is_indirect_ownership=is_indirect_ownership,
+            is_late_filed=is_late_filed,
+            is_officer=is_officer,
+            is_director=is_director,
         )
     )
 

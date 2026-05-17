@@ -65,6 +65,20 @@ def _parse_amount_range(raw: Any) -> tuple[float | None, float | None]:
 
 @with_retry
 def _fetch_trades(symbol: str | None, api_key: str) -> list[dict]:
+    """Fetch raw congressional-trade rows from Quiver Quant's API.
+
+    Parameters
+    ----------
+    symbol:
+        Ticker to filter server-side; ``None`` returns all tickers.
+    api_key:
+        Bearer token for the Quiver Quant API.
+
+    Returns
+    -------
+    list[dict]
+        Raw JSON rows from the upstream response (empty list on empty body).
+    """
     url = f"{_BASE_URL}/live/congresstrading"
     headers = {"Authorization": f"Bearer {api_key}", "Accept": "application/json"}
     params: dict[str, Any] = {}
@@ -75,6 +89,28 @@ def _fetch_trades(symbol: str | None, api_key: str) -> list[dict]:
     resp.raise_for_status()
     payload = resp.json() if resp.content else []
     return payload if isinstance(payload, list) else []
+
+
+def _load_rows(symbol: str | None, api_key: str) -> list[dict]:
+    """Thin wrapper around ``_fetch_trades`` used as the seam for test monkeypatching.
+
+    Keeping the network call behind a named, non-decorated function lets unit
+    tests replace ``_load_rows`` with a fake without having to pierce the
+    ``@with_retry`` decorator on ``_fetch_trades``.
+
+    Parameters
+    ----------
+    symbol:
+        Ticker symbol passed straight through to ``_fetch_trades``.
+    api_key:
+        API key passed straight through to ``_fetch_trades``.
+
+    Returns
+    -------
+    list[dict]
+        Raw rows from the upstream API (or a test stub).
+    """
+    return _fetch_trades(symbol, api_key)
 
 
 @register(
@@ -119,7 +155,7 @@ async def fetch(
         return []
 
     symbol  = ticker.upper() if ticker else None
-    payload = await asyncio.to_thread(_fetch_trades, symbol, api_key)
+    payload = await asyncio.to_thread(_load_rows, symbol, api_key)
 
     # Use as_of rather than date.today() so replays see the correct window.
     cutoff = as_of.date() - timedelta(days=lookback_days)
@@ -128,7 +164,19 @@ async def fetch(
     trades: list[PoliticianTrade] = []
     for item in payload:
         txn_date = _parse_date(item.get("TransactionDate") or item.get("Traded"))
-        if txn_date is None or txn_date <= cutoff or txn_date > upper:
+
+        # PIT correctness: the market only learns of a trade when it is disclosed
+        # (STOCK Act filing), not when the transaction occurred.  Filter on
+        # disclosure_date for the upper bound — a trade transacted before as_of
+        # but disclosed after as_of is invisible at that historical moment.
+        disc_date = _parse_date(
+            item.get("DisclosureDate") or item.get("ReportDate") or item.get("Disclosed")
+        )
+
+        if txn_date is None or txn_date <= cutoff:
+            continue
+        if disc_date is None or disc_date > upper:
+            # No known disclosure date, or disclosed after as_of — not yet public.
             continue
         amount_min, amount_max = _parse_amount_range(
             item.get("Range") or item.get("Amount") or item.get("Trade_Size_USD")
@@ -141,7 +189,7 @@ async def fetch(
                 party=item.get("Party"),
                 side=_coerce_side(item.get("Transaction") or item.get("Type")),
                 transaction_date=txn_date,
-                disclosure_date=_parse_date(item.get("ReportDate") or item.get("Disclosed")),
+                disclosure_date=disc_date,
                 amount_min_usd=amount_min,
                 amount_max_usd=amount_max,
             )
