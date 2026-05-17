@@ -234,7 +234,7 @@ def probe_alpha_vantage_news(env: dict[str, str]) -> ProbeResult:
         # AV returns `Information` or `Note` when rate-limited or
         # archive-truncated; both signal a problem we must surface.
         if msg := body.get("Information") or body.get("Note"):
-            notices.append(str(msg)[:120])
+            notices.append(f"{ts_from}: {str(msg)[:100]}")
 
         counts.append(len(body.get("feed") or []))
 

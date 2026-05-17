@@ -4,8 +4,8 @@ Generated from `scripts/api_smoke.py` on 2026-05-17.
 
 ## A1. Alpha Vantage NEWS_SENTIMENT — SVB-window archive depth
 
-- Probe: `probe_alpha_vantage_news` (AAPL, 20230306T0000 → 20230313T0000)
-- Result: OK — 9 articles returned, earliest `time_published=20230307T021527`.
+- Probe: `probe_alpha_vantage_news` (AAPL; originally SVB window 20230306T0000 → 20230313T0000, extended in §A6 to multi-window Jan / Jun / Dec 2023).
+- Result: OK — 9 articles returned for the SVB window, earliest `time_published=20230307T021527`.
 - Verdict: archive depth covers SVB.  Phase 3 alpha_vantage news provider is unblocked.
 
 ## A2. FINRA short-interest endpoint path
