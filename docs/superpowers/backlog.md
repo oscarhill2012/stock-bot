@@ -183,6 +183,28 @@ The two share retrieval primitives but answer different questions. They likely c
 
 ---
 
+### B26. Provider Protocol return-type unification — eliminate cache-vs-live shape drift  *(architectural cleanup, high priority)*
+
+**Origin:** Surfaced during the providers-and-silent-gaps-v1 PR (commit `900c720`). The backtest's `insider_trades_cache` provider had to wrap a flat `list[InsiderTrade]` in `Form4Bundle(trades=..., derivatives=[])` on the way out because the live EDGAR provider returns the bundle but the cache store persists only the flat rows. The wrap fixed the immediate failure (smart_money silently degrading to `is_no_data`) but the underlying contract drift remains — and will recur every time a future domain has the same mismatch. The current `Provider` protocol declares only the call signature; it does not pin the return *type*.
+
+**The goal in plain English:** every Provider Protocol domain (news, filings, ratios, insider_trades, notable_holders, earnings, analyst_consensus, short_interest, …) should declare ONE canonical return type, and both the live provider and the backtest cache provider must return that exact type. No reconciling wrappers, no "live returns X, cache returns Y, paper over the gap on the way out".
+
+**Why high priority:** the codebase now has 14 provider domains. Each one is a future Form4Bundle-style bug waiting to happen — the model evolves, the live provider returns the new shape, the cache provider returns the old shape (or the flattened SQL shape), an analyst's extractor silently no-data's, and we only catch it via integration tests we don't run on every commit. The fix-each-as-discovered policy compounds; tightening the protocol once is cheaper than fixing the next 13 leaks individually.
+
+**Key questions to brainstorm:**
+- Where does the canonical type live: per-domain Pydantic model exported from `data/models/`, or on the `Provider` protocol itself as a generic parameter (`Provider[Form4Bundle]`)?
+- How is conformance enforced — runtime `isinstance` check in the registry's `register` decorator, or static (mypy / pyright with stricter `Protocol` typing)?
+- The cache store today is schema-shaped (flat tables), not type-shaped. Does the store stay flat with each cache provider doing reconstitution at read-time, or does the store gain a `read_<domain>_bundle` family of methods returning the canonical type directly?
+- Audit the existing 14 domains for current drift: list every domain where cache return shape ≠ live return shape. Form 4 (handled by the v1 wrap) is the known one; the audit step finds the unknowns.
+- Migration: does the cleanup land per-domain (one PR per provider, low risk) or as one bundled refactor (high churn, less ambiguity)?
+- What protects against silent regression — a `tests/contract/test_provider_return_types.py` that exercises every registered provider's `fetch` against both live and cache implementations and asserts type-equality?
+
+**Dependencies:** providers-and-silent-gaps-v1 PR merged (the wrap + the deeper-cause documentation give the cleanup a concrete starting point). No code-level dependencies otherwise. Conceptual overlap with [[B25]] (data-fidelity matrix) — the audit step shares per-domain cataloguing.
+
+**Likely outcome of the brainstorm:** a spec that (a) defines a `ProviderReturn[T]` typing convention or per-domain canonical types, (b) lists the 14 domains with current vs target return shape, (c) sequences per-domain cleanups in dependency order, and (d) wires a contract test that fails CI on the next drift.
+
+---
+
 ## Tier 2 — Medium enhancements
 
 ### B3. Real-time / sub-tick exit evaluation
@@ -414,6 +436,42 @@ Two narrative-prose sources remain unread after Phase 5:
 
 ---
 
+### B27. Normalise `state["smart_money_data"]` shape to the per-ticker convention  *(small-medium refactor)*
+
+**Origin:** Surfaced during the providers-and-silent-gaps-v1 PR (commit `900c720`). Every other analyst's per-ticker raw data lives under `state["<analyst>_data"]` as `{ticker: payload}`. Smart_money breaks this convention — it stores `{"politicians": {ticker: [...]}, "notable_holders": {ticker: [...]}}` (two-level nesting keyed by *category* first, *ticker* second). The Phase 7 work surfaced a slicing bug in `agents/analysts/smart_money/agent.py` where `data.get(ticker, {})` always returned `{}` because the top-level keys were `politicians` / `notable_holders`, not ticker symbols. The fix correctly reshapes per-ticker at dispatch time; the underlying shape inconsistency remains as a footgun for future maintainers.
+
+**The goal:** rewrite `smart_money_fetch_callback` to write `state["smart_money_data"]` as `{ticker: {"politicians": [...], "notable_holders": [...]}}` — same convention as `state["fundamental_data"]`, `state["news_data"]`, etc. Update the agent's `_run_async_impl` and `make_evidence_callback` to drop the reshape shim. Update unit tests.
+
+**Key questions:**
+- Are there other multi-source analysts (today or planned — e.g. Fundamental aggregates ratios + filings + insider; News aggregates Finnhub + AV) where the same `{source: {ticker: ...}}` shape exists? If yes, normalise them in one pass.
+- Does the per-ticker reshape happen once per tick at fetch time (no per-ticker compute hit at extractor time) or per-call? Today's reshape-at-dispatch is mid-tick, called per ticker.
+- Does the typed `SmartMoneyRaw` Pydantic model from Phase 7 settle the question — the model already pins per-ticker shape, the state-key just doesn't follow.
+
+**Effort:** small. One callback, one agent file, two or three unit tests, no API surface change.
+
+**Dependencies:** None hard. Cleanest to land before [[B26]] starts auditing provider return shapes — they overlap on the question "what counts as a canonical extractor input".
+
+---
+
+### B28. Cache Form 4 Table II (derivative-securities) rows  *(hidden capability gap)*
+
+**Origin:** Surfaced during the providers-and-silent-gaps-v1 PR (commit `900c720`). Phase 1 added the `InsiderDerivativeTrade` model; Phase 2 added extractor features over it; Phase 4 had the live EDGAR provider populating it from Form 4 Table II. But the backtest cache store persists only Table I (common-stock) rows. The cache provider's `Form4Bundle(trades=..., derivatives=[])` always passes an empty derivatives list, so any extractor feature derived from option grants / RSU vesting / option exercises is silently zero throughout every backtest run. The wrap looks correct at the type level; it's a capability gap disguised as conformance.
+
+**The goal:** extend the cache schema to persist `InsiderDerivativeTrade` rows from Form 4 Table II, mirror that in `scripts.backtest_fetch._insider_trades` (split the live `Form4Bundle` into both row types before writing), and read them back via the cache provider so `Form4Bundle.derivatives` is populated.
+
+**Key questions:**
+- New SQLite table `insider_derivative_trades`, or extend `insider_trades` with a discriminator column? Separate table is cleaner (different field set: `acquired_disposed_code`, `underlying_shares`, `exercise_price`, `expiration_date`, …).
+- Do existing SVB backtest verdicts under-report any signal we care about? Spot-check by re-running with synthetic derivatives populated vs without — does any extractor's verdict change?
+- Schema migration: backtest is fresh-DB-per-run (`create_all(engine)`), so no migration story needed. Confirm.
+- Cache fill cost: how many derivative rows per ticker per quarter? If high, may want batched writes.
+- Surface a `tests/integration/backtest/test_derivative_trades_present.py` smoke that asserts at least one ticker in a known window has non-empty `Form4Bundle.derivatives` in the cache.
+
+**Effort:** ~one phase. Schema add + fetch-script split + cache-provider read + smoke test.
+
+**Dependencies:** None. Independent of [[B26]] but conceptually related — both are about the cache being honest about what it stores.
+
+---
+
 ## Tier 3 — Small follow-ups & easy wins
 
 ### B6. Persist `risk_clamps_applied`
@@ -545,6 +603,18 @@ Two narrative-prose sources remain unread after Phase 5:
 
 ---
 
+### B29. Extract shared `pipeline_with_mocked_llms` fixture for integration smokes  *(test-only cleanup)*
+
+**Origin:** Surfaced during the providers-and-silent-gaps-v1 PR (commit `900c720`). The new `tests/integration/backtest/test_no_silent_zero_features.py` and the pre-existing `test_end_to_end_smoke.py` each carry ~200 lines of identical LLM-mock scaffolding (synthetic `StrategistDecision` / `VerdictBatch` response builders, pipeline-factory patches for `_build_strategist` / `_build_analyst_pool`, yfinance `MagicMock`, `Runner` wiring). The duplication was a deliberate "keep the file self-contained" choice at the time, but it guarantees drift the next time the strategist's output schema or the analyst-pool builder evolves.
+
+**The goal:** lift the shared scaffolding into a `conftest.py` fixture (e.g. `pipeline_with_mocked_llms`) that both integration tests consume. Collapses each file from ~350 lines to ~150.
+
+**Effort:** small. One new `conftest.py`, two test files thinned, no production-code change.
+
+**Dependencies:** None. Pure tidy-up; only worth doing once a third integration smoke is on the horizon (rule of three).
+
+---
+
 ## How segments interact
 
 ```
@@ -583,9 +653,15 @@ Phase 4 (Goals 1 + 2 — strategist v2 + analyst contract, plans A→B→C→D)
    ├── B4 (trailing stops)       — small extension on top of v2
    ├── B6 (risk clamp persistence) — small follow-up
    ├── B7 (cost observability)   — independent, low priority but feeds B2
-   └── B24 (persistence schema refresh — after first backtest runs; depends on backtest harness completing)
+   ├── B24 (persistence schema refresh — after first backtest runs; depends on backtest harness completing)
+   │
+   └── Provider/cache contract cleanup (from providers-and-silent-gaps-v1):
+         ├── B26 (Provider Protocol return-type unification — HIGH PRIORITY)
+         ├── B27 (smart_money state shape normalisation)
+         ├── B28 (cache Form 4 Table II derivative trades)
+         └── B29 (integration smoke-test scaffolding dedup — test-only)
 ```
 
-**Rough order if doing them in series:** Phase 4 plans A → B → C → D → Phase 5 (analyst re-categorisation) → B16 (ratchet policy operationalised by Phase 5's surface trace) → analyst-surface-redesign (consolidates B9 + half of B14) → B6 → B7 → B11 → B18 (co-specced with B11) → B10 → B2 (long arc) → B5 → B17 (likely folds into B2) → B4 → B3 → B8. B12/B13/B14-deterministic-narrator/B15 fold in only as trace data justifies, ordered ad-hoc against [[B16]]'s checklist.
+**Rough order if doing them in series:** Phase 4 plans A → B → C → D → Phase 5 (analyst re-categorisation) → B16 (ratchet policy operationalised by Phase 5's surface trace) → analyst-surface-redesign (consolidates B9 + half of B14) → **B26** (architectural cleanup — high priority before more providers land) → B27 / B28 (related provider/cache contract follow-ups) → B6 → B7 → B11 → B18 (co-specced with B11) → B10 → B2 (long arc) → B5 → B17 (likely folds into B2) → B4 → B3 → B8 → B29 (test-only cleanup, rule-of-three). B12/B13/B14-deterministic-narrator/B15 fold in only as trace data justifies, ordered ad-hoc against [[B16]]'s checklist.
 
 Most are independent enough to reorder by what hurts most in operation. Two strict orderings hold: **Phase 4 before B2** (the knowledge base needs a clean signal contract and decision telemetry to reason over) and **Phase 5 before B9/B10/B11/B12/B13/B14** (every analyst-side and debate-side experiment assumes the post-Phase 5 5-analyst pack, deterministic baseline, and surface-trace harness).
