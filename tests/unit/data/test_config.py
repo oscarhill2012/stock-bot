@@ -23,6 +23,12 @@ VALID_PAYLOAD: dict = {
         "politician_trades": "quiver",
         "notable_holders": "edgar",
         "filings": "edgar",
+        # Phase 3 (Task 3.0) — four new domains; provider names are placeholders
+        # until the real modules land in Tasks 3.1, 3.3, 3.6, 3.7.
+        "earnings": "finnhub",
+        "analyst_consensus": "yfinance",
+        "short_interest": "finra",
+        "options": "yfinance",
     },
     "defaults": {
         "news_lookback_days": 7,

@@ -24,6 +24,11 @@ DOMAINS: frozenset[str] = frozenset({
     "politician_trades",
     "notable_holders",
     "filings",
+    # Phase 3 additions.
+    "earnings",            # Finnhub earnings calendar / actuals
+    "analyst_consensus",   # yfinance analyst ratings aggregation
+    "short_interest",      # FINRA short-interest (bi-monthly)
+    "options",             # yfinance options chain (live-only shell)
 })
 
 

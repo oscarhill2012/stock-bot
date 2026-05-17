@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field, model_validator
 # Mirrors data.registry.DOMAINS. Defined here too to avoid a circular
 # import (config validates without needing the registry to exist yet).
 # Phase 5: "stats" retired — split into "price_history" and "company_ratios".
+# Phase 3 (Task 3.0): four new domains added; must stay in sync with registry.DOMAINS.
 _DOMAINS: frozenset[str] = frozenset({
     "price_history",
     "company_ratios",
@@ -23,6 +24,10 @@ _DOMAINS: frozenset[str] = frozenset({
     "politician_trades",
     "notable_holders",
     "filings",
+    "earnings",           # Phase 3 — Finnhub earnings calendar / actuals
+    "analyst_consensus",  # Phase 3 — yfinance analyst ratings aggregation
+    "short_interest",     # Phase 3 — FINRA short-interest (bi-monthly)
+    "options",            # Phase 3 — yfinance options chain (live-only shell)
 })
 
 
