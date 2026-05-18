@@ -349,7 +349,15 @@ async def fetch(
     seen_urls: set[str] = set()
     all_articles: list[NewsArticle] = []
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
+    # Identify the client to AV so a bare ``python-httpx/X`` User-Agent does
+    # not look bot-like to upstream throttlers.  Does not affect quota counting
+    # against the free-tier 25/day budget — limits there are enforced on the
+    # source IP regardless of headers — but is cheap insurance against
+    # heuristic blocks elsewhere in the pipeline.
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(15.0),
+        headers={"User-Agent": "StockBot-Backtest/1.0"},
+    ) as client:
 
         for chunk_start, chunk_end in chunks:
             params = {
