@@ -242,19 +242,19 @@ def test_end_to_end_run_produces_full_artefact_tree(
     from backtest.runner import Runner
 
     # ── Write settings + windows + watchlist under tmp_path ──────────────────
-    settings = {
-        "cache_path":                  str(fixture_cache),
-        "runs_root":                   str(tmp_path / "runs"),
-        "ticks_per_day":               ["open", "close"],
-        "tz":                          "America/New_York",
-        "open_time":                   "09:30",
-        "close_time":                  "16:00",
-        "failed_tick_abort_ratio":     1.0,        # never abort in smoke test
-        "fake_broker_starting_cash":   100_000.0,
-        "forward_return_horizons_days": [1],
-    }
-    settings_path = tmp_path / "backtest_settings.json"
-    settings_path.write_text(json.dumps(settings))
+    # Build a typed BacktestSettings directly — Phase 7.5 dropped the
+    # tz/open_time/close_time keys (session times now come from
+    # pandas_market_calendars) and switched Runner to a `settings=` kwarg.
+    from backtest.settings import BacktestSettings
+    settings_obj = BacktestSettings(
+        cache_path                   = str(fixture_cache),
+        runs_root                    = str(tmp_path / "runs"),
+        ticks_per_day                = ["open", "close"],
+        failed_tick_abort_ratio      = 1.0,        # never abort in smoke test
+        fake_broker_starting_cash    = 100_000.0,
+        forward_return_horizons_days = [1],
+        ohlcv_warmup_days            = 30,
+    )
 
     windows = {
         "smoke": {
@@ -376,7 +376,7 @@ def test_end_to_end_run_produces_full_artefact_tree(
         patch("yfinance.Ticker", return_value=mock_yf_ticker),
     ):
         runner = Runner(
-            settings_path=settings_path,
+            settings=settings_obj,
             windows_path=windows_path,
             watchlist_path=watchlist_path,
         )
