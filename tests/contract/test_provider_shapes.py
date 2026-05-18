@@ -421,16 +421,17 @@ async def _call_cache_provider(domain: str, store_path: Path) -> object:
             return await mod.fetch("AAPL", as_of=_as_of, period="1y", phase="close")
 
         # ── company_ratios ────────────────────────────────────────────────────
-        # Cache provider returns ``CompanyRatios | None`` — the drift manifests
-        # when no snapshot exists before ``as_of`` (the provider returns None
-        # instead of raising or returning a sentinel CompanyRatios).  We
-        # intentionally do NOT seed any row so the ``None`` path is exercised,
-        # exposing the shape divergence the xfail is meant to catch.
+        # Cache provider now raises KeyError for missing rows (Task 6 aligned).
+        # Seed one minimal snapshot so the happy path returns CompanyRatios.
         if domain == "company_ratios":
             from backtest.providers import company_ratios_cache as mod  # noqa: PLC0415
 
-            # No write_company_ratios call — empty store means the provider
-            # returns None, which violates the single/CompanyRatios contract.
+            seed_date = date(2023, 3, 10)
+            store.write_company_ratios(
+                "AAPL",
+                CompanyRatios(ticker="AAPL"),
+                as_of_date=seed_date,
+            )
             return await mod.fetch("AAPL", as_of=_as_of)
 
         # ── news ──────────────────────────────────────────────────────────────
@@ -555,7 +556,6 @@ _LIVE_PENDING: set[str] = {
 # Domains whose **cache** provider return type diverges from the canonical
 # DOMAIN_SHAPES entry.  Source: audit column "Drift fix needed = cache".
 _CACHE_PENDING: set[str] = {
-    "company_ratios",   # returns CompanyRatios | None; canonical is single/CompanyRatios
     "social_sentiment", # v1 stub returns None; canonical is single/SocialSentiment
 }
 

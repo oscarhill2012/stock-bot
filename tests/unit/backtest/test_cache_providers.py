@@ -116,7 +116,7 @@ async def test_social_cache_returns_none(_wire_store: CachedDataStore) -> None:
 async def test_company_ratios_cache_returns_pydantic_model(
     _wire_store: CachedDataStore,
 ) -> None:
-    """``company_ratios_cache.fetch`` returns a ``CompanyRatios`` (or ``None``)."""
+    """``company_ratios_cache.fetch`` returns a ``CompanyRatios`` when a snapshot exists."""
     from backtest.providers import company_ratios_cache  # noqa: PLC0415
 
     snapshot = CompanyRatios(
@@ -137,17 +137,23 @@ async def test_company_ratios_cache_returns_pydantic_model(
 
 
 @pytest.mark.asyncio
-async def test_company_ratios_cache_returns_none_when_empty(
+async def test_company_ratios_cache_raises_when_empty(
     _wire_store: CachedDataStore,
 ) -> None:
-    """Returns ``None`` when there is no snapshot before ``as_of``."""
+    """Raises ``KeyError`` when no snapshot exists before ``as_of``.
+
+    The canonical shape for company_ratios is ``single / CompanyRatios``; the
+    cache must not return ``None`` because that would diverge from the live
+    provider which always returns a ``CompanyRatios``.  Callers treat the
+    ``KeyError`` as "no data available for this ticker at this date".
+    """
+    import pytest as _pytest  # noqa: PLC0415
     from backtest.providers import company_ratios_cache  # noqa: PLC0415
 
-    result = await company_ratios_cache.fetch(
-        "AAPL", as_of=datetime(2023, 3, 15, tzinfo=UTC),
-    )
-
-    assert result is None
+    with _pytest.raises(KeyError, match="no company_ratios snapshot"):
+        await company_ratios_cache.fetch(
+            "AAPL", as_of=datetime(2023, 3, 15, tzinfo=UTC),
+        )
 
 
 # ── price history ──────────────────────────────────────────────────────────────
