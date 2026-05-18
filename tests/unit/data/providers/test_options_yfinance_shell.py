@@ -1,16 +1,18 @@
 """Unit tests for ``data.providers.options.yfinance`` (live-only shell).
 
 The options provider is intentionally a live-only stub for v1 — it returns an
-empty dict for any historical ``as_of`` (anything earlier than today), so the
+empty list for any ``as_of`` (anything earlier than or equal to today), so the
 backtest replay never blocks on a missing options cache entry.
 
 Key invariants tested
 ---------------------
-- **Historical soft-fail**: ``fetch`` returns ``{}`` when ``as_of`` is a past
+- **Historical soft-fail**: ``fetch`` returns ``[]`` when ``as_of`` is a past
   date (the normal backtest path).
-- **Today soft-fail**: ``fetch`` also returns ``{}`` for today's date — the
+- **Today soft-fail**: ``fetch`` also returns ``[]`` for today's date — the
   live wiring is deferred to a follow-up spec, so even a same-day call returns
   empty rather than raising.
+- **Shape compliance**: the returned value is always a ``list`` (canonical
+  ``list / OptionContract`` shape) rather than a dict or None.
 - **Signature compliance**: the function accepts ``**kwargs`` and does not
   raise on unexpected keyword arguments (dispatcher compatibility).
 """
@@ -24,23 +26,23 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_options_shell_returns_empty_for_backtest_as_of():
-    """Provider must return ``{}`` for a clearly historical ``as_of`` date.
+    """Provider must return ``[]`` for a clearly historical ``as_of`` date.
 
-    This is the invariant the spec mandates: any call with ``as_of`` in the
-    past must soft-fail rather than raise.  The backtest replay depends on this
-    behaviour — a missing options cache entry must not abort a tick.
+    Any call with ``as_of`` in the past must soft-fail rather than raise.
+    The backtest replay depends on this behaviour — a missing options entry
+    must not abort a tick.  The returned value is an empty list satisfying the
+    canonical ``list / OptionContract`` shape.
     """
     from data.providers.options import yfinance as mod
 
     out = await mod.fetch("AAPL", as_of=date(2023, 3, 10))
 
-    # Accept any of: empty dict, None, or an object with is_no_data=True.
-    assert out == {} or out is None or getattr(out, "is_no_data", False)
+    assert out == []
 
 
 @pytest.mark.asyncio
 async def test_options_shell_returns_empty_for_recent_historical_as_of():
-    """Provider must return ``{}`` even for as_of dates close to today.
+    """Provider must return ``[]`` even for as_of dates close to today.
 
     Exercises the ``as_of < date.today()`` branch with a date only 7 days
     in the past — confirming the guard is on the comparison, not a fixed
@@ -51,23 +53,23 @@ async def test_options_shell_returns_empty_for_recent_historical_as_of():
     recent_past = date.today() - timedelta(days=7)
     out = await mod.fetch("TSLA", as_of=recent_past)
 
-    assert out == {} or out is None or getattr(out, "is_no_data", False)
+    assert out == []
 
 
 # ── Soft-fail for today (live wiring not yet implemented) ─────────────────────
 
 @pytest.mark.asyncio
 async def test_options_shell_returns_empty_for_today():
-    """Provider returns ``{}`` even when ``as_of`` is today.
+    """Provider returns ``[]`` even when ``as_of`` is today.
 
     Live wiring is deferred to a follow-up spec; the shell therefore returns
-    empty for all dates, including same-day calls.
+    an empty list for all dates, including same-day calls.
     """
     from data.providers.options import yfinance as mod
 
     out = await mod.fetch("MSFT", as_of=date.today())
 
-    assert out == {} or out is None or getattr(out, "is_no_data", False)
+    assert out == []
 
 
 # ── Dispatcher compatibility — absorbs extra kwargs ───────────────────────────
@@ -90,4 +92,4 @@ async def test_options_shell_absorbs_extra_kwargs():
         option_type="call",
     )
 
-    assert out == {} or out is None or getattr(out, "is_no_data", False)
+    assert out == []

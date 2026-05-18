@@ -26,6 +26,7 @@ from .models.filings import Filing
 from .models.earnings import EarningsHistory
 from .models.analyst_consensus import AnalystConsensusBundle, AnalystRating, AnalystRevision  # noqa: F401
 from .models.short_interest import ShortInterestSnapshot
+from .models.options import OptionContract
 
 # ---------------------------------------------------------------------------
 # Provider canonical-shape contracts (Phase 7.6)
@@ -76,20 +77,6 @@ class DomainShape:
     payload_type: type
 
 
-# --- Placeholder stub for OptionContract — replaced in Task 12 -------------
-#
-# Inlined here to keep the module importable until the real model lands.
-# Replace with a proper import once Task 12 creates the real model.
-
-@dataclass
-class OptionContract:
-    """Placeholder — replaced in Task 12.
-
-    Task 12 (or a follow-up spec) will define the real ``OptionContract``
-    model and wire up the options provider shell.
-    """
-
-
 # ---------------------------------------------------------------------------
 # DOMAIN_SHAPES — populated from:
 #   docs/Phase7.5-more-cleanup/audit/provider_shapes.md
@@ -107,7 +94,7 @@ DOMAIN_SHAPES: dict[str, DomainShape] = {
     "earnings":          DomainShape("single", EarningsHistory),
     "analyst_consensus": DomainShape("bundle", AnalystConsensusBundle),  # TODO: confirm type in Task 5
     "short_interest":    DomainShape("list",   ShortInterestSnapshot),
-    "options":           DomainShape("list",   OptionContract),           # TODO: confirm type in Task 12
+    "options":           DomainShape("list",   OptionContract),
 }
 
 

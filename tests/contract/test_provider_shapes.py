@@ -348,8 +348,8 @@ async def _call_live_provider(domain: str, monkeypatch: pytest.MonkeyPatch) -> o
         return await mod.fetch("AAPL", as_of=_as_of_date, lookback_days=30)
 
     # ── options ───────────────────────────────────────────────────────────────
-    # Shell provider returns ``{}``; no mocking needed — it never touches the
-    # network.  The xfail mark catches the dict ≠ list[OptionContract] mismatch.
+    # Shell provider returns ``[]`` (Task 12 aligned); no mocking needed —
+    # it never touches the network.
     if domain == "options":
         from data.providers.options import yfinance as mod
 
@@ -549,9 +549,7 @@ _LIVE_ONLY: set[str] = {"earnings", "analyst_consensus", "short_interest", "opti
 # Domains whose **live** provider return type diverges from the canonical
 # DOMAIN_SHAPES entry.  Source: audit column "Drift fix needed = live".
 # Each Phase B alignment task removes the relevant entry.
-_LIVE_PENDING: set[str] = {
-    "options",              # shell returns dict; OptionContract model not yet defined
-}
+_LIVE_PENDING: set[str] = set()
 
 # Domains whose **cache** provider return type diverges from the canonical
 # DOMAIN_SHAPES entry.  Source: audit column "Drift fix needed = cache".
