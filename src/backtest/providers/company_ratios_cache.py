@@ -31,7 +31,7 @@ async def fetch(
     period: str = "1y",
     interval: str = "1d",
     **_unused,
-) -> CompanyRatios | None:
+) -> CompanyRatios:
     """Return the latest ``CompanyRatios`` snapshot at or before ``as_of``.
 
     The cache materialises a daily snapshot, so ``period`` and ``interval``
@@ -51,7 +51,25 @@ async def fetch(
 
     Returns
     -------
-    CompanyRatios | None
-        The most recent snapshot, or ``None`` if none exists before ``as_of``.
+    CompanyRatios
+        The most recent snapshot captured on or before ``as_of``.
+
+    Raises
+    ------
+    KeyError
+        When no snapshot for ``ticker`` exists at or before ``as_of`` in the
+        cache store.  Callers should treat this as "no data available" and
+        either skip the ticker or use a fallback — consistent with how other
+        cache providers signal a missing row.
     """
-    return get_store().read_company_ratios(ticker, as_of=as_of)
+    result = get_store().read_company_ratios(ticker, as_of=as_of)
+
+    # The store returns None when no snapshot predates as_of.  Raise rather
+    # than propagate None, so the return type stays CompanyRatios (not
+    # CompanyRatios | None) and matches the canonical DOMAIN_SHAPES entry.
+    if result is None:
+        raise KeyError(
+            f"no company_ratios snapshot for {ticker!r} at or before {as_of}"
+        )
+
+    return result

@@ -3,15 +3,12 @@
 
 Public surface for agents:
 
-    from data import get_stock_signal_bundle, min_decision_interval_seconds
-
-    bundle = await get_stock_signal_bundle("AAPL")
-    # bundle.min_decision_interval_seconds == min_decision_interval_seconds()
-    # — do not re-decide for this ticker faster than that.
+    from data import get_price_history, get_company_ratios, min_decision_interval_seconds
 
 Per `docs/data-sources.md`, agents should not import provider modules
-directly — go through `get_stock_signal_bundle` so the orchestrator
-can swap real calls for cached fixtures during tests.
+directly — use the individual domain wrappers (``get_price_history``,
+``get_stock_news``, etc.) so the orchestrator can swap real calls for
+cached fixtures during tests.
 
 # Rate-limit budgets
 
@@ -63,7 +60,6 @@ from datetime import datetime
 
 from data.timeguard import resolve_as_of
 
-from .aggregator import get_stock_signal_bundle, get_stock_signal_bundle_blocking
 from .models import (
     CompanyRatios,
     Filing,
@@ -73,10 +69,8 @@ from .models import (
     OHLCBar,
     PoliticianTrade,
     PriceHistory,
-    ProviderError,
     SocialSentiment,
     SocialSentimentSnapshot,
-    StockSignalBundle,
 )
 from .rate_limit import AsyncRateLimiter
 from .registry import dispatch as _dispatch  # noqa: F401  (re-export)
@@ -333,10 +327,7 @@ async def get_company_filings(
 
 
 __all__ = [
-    # Bundle endpoint
-    "get_stock_signal_bundle",
-    "get_stock_signal_bundle_blocking",
-    # Individual providers (prefer the bundle)
+    # Domain wrappers
     "get_price_history",
     "get_company_ratios",
     "get_stock_news",
@@ -354,10 +345,8 @@ __all__ = [
     "OHLCBar",
     "PoliticianTrade",
     "PriceHistory",
-    "ProviderError",
     "SocialSentiment",
     "SocialSentimentSnapshot",
-    "StockSignalBundle",
     # Rate limits
     "AsyncRateLimiter",
     "min_decision_interval_seconds",

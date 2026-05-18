@@ -5,8 +5,8 @@ run-loop is split cleanly across three hooks:
 
 1. ``smart_money_fetch_callback`` (``before_agent_callback``) — fetches
    congressional-filing data for each ticker and writes
-   ``state["smart_money_data"]``.  Returns ``None`` so the agent body runs
-   normally.
+   ``state["smart_money_data"]`` as a ticker-first dict of ``SmartMoneyRaw``
+   instances.  Returns ``None`` so the agent body runs normally.
 
 2. ``_run_async_impl`` — reads ``state["smart_money_data"]``, runs
    ``extract_smart_money_features`` + ``derive_smart_money_verdict``
@@ -45,8 +45,9 @@ from .fetch import smart_money_fetch_callback
 class SmartMoneyAnalyst(BaseAgent):
     """Deterministic SmartMoney analyst — no LLM calls; all verdicts from heuristics.
 
-    Reads ``state["smart_money_data"]`` (populated by the fetch callback),
-    runs ``extract_smart_money_features`` + ``derive_smart_money_verdict``
+    Reads ``state["smart_money_data"]`` (a ticker-first dict of
+    ``SmartMoneyRaw`` instances populated by the fetch callback), runs
+    ``extract_smart_money_features`` + ``derive_smart_money_verdict``
     for each ticker, and writes ``state["smart_money_verdicts"]``.  The
     registered ``after_agent_callback`` (``make_evidence_callback``) then
     converts those verdicts into ``AnalystEvidence`` records under
@@ -90,8 +91,9 @@ class SmartMoneyAnalyst(BaseAgent):
     ) -> AsyncGenerator[Event, None]:
         """Compute per-ticker smart-money verdicts deterministically and write to state.
 
-        Reads ``state["smart_money_data"]`` (written by the fetch callback),
-        runs ``extract_smart_money_features`` + ``derive_smart_money_verdict``
+        Reads ``state["smart_money_data"]`` (a ticker-first dict of
+        ``SmartMoneyRaw`` instances written by the fetch callback), runs
+        ``extract_smart_money_features`` + ``derive_smart_money_verdict``
         for every ticker, and writes the resulting verdict dicts to
         ``state["smart_money_verdicts"]``.  The after-callback
         (``make_evidence_callback``) then converts those verdicts into
@@ -107,22 +109,16 @@ class SmartMoneyAnalyst(BaseAgent):
         """
         state = ctx.session.state
         tickers: list[str] = state.get("tickers", []) or []
-        data: dict[str, dict] = state.get("smart_money_data", {}) or {}
+
+        # Phase 7.6 Task 17: smart_money_data is now ticker-first:
+        #   state["smart_money_data"][ticker] → SmartMoneyRaw instance.
+        # The dict itself may be absent (e.g. fetch callback was skipped) so
+        # we default to {}.  Each per-ticker lookup then falls back to None.
+        smart_money_data: dict = state.get("smart_money_data") or {}
 
         # Historical clock: backtest sets state["as_of"]; live falls back to None
         # (the extractor ignores it for clock-free features).
         as_of = state.get("as_of") or None
-
-        # ``smart_money_data`` is structured as:
-        #   {"politicians":     {ticker: [filing_dict, ...]},
-        #    "notable_holders": {ticker: [holder_dict, ...]}}
-        #
-        # The extractor expects a per-ticker flat dict with keys
-        # "politician_trades" and "notable_holders".  We build that here rather
-        # than passing the outer dict directly (which would cause the ticker
-        # lookup to always return {} and silently degrade to is_no_data=True).
-        politicians_by_ticker:     dict[str, list] = data.get("politicians", {})
-        notable_holders_by_ticker: dict[str, list] = data.get("notable_holders", {})
 
         # Build as a list of dicts so make_evidence_callback can iterate them
         # and build its ticker → verdict lookup.  Each dict includes a
@@ -130,9 +126,22 @@ class SmartMoneyAnalyst(BaseAgent):
         verdicts: list[dict[str, Any]] = []
 
         for ticker in tickers:
+            # Retrieve the SmartMoneyRaw aggregate for this ticker.  When the
+            # ticker is absent (e.g. fetch failed or the provider is disabled),
+            # fall back to empty lists so the extractor emits is_no_data=True.
+            ticker_raw = smart_money_data.get(ticker)
+            if ticker_raw is None:
+                politicians_list: list = []
+                holders_list:     list = []
+            else:
+                politicians_list = ticker_raw.politicians
+                holders_list     = ticker_raw.notable_holders
+
+            # The extractor expects a flat dict with "politician_trades" and
+            # "notable_holders" keys.  Build it here from the typed attributes.
             raw = {
-                "politician_trades": politicians_by_ticker.get(ticker, []),
-                "notable_holders":   notable_holders_by_ticker.get(ticker, []),
+                "politician_trades": politicians_list,
+                "notable_holders":   holders_list,
             }
             features = extract_smart_money_features(raw, ticker, as_of=as_of)
             verdict  = derive_smart_money_verdict(features, self.heuristics)

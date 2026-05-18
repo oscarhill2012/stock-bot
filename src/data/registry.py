@@ -9,10 +9,94 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal, Protocol, TypeVar
 
 from .config import get_config
 from .rate_limit import AsyncRateLimiter
+
+# ---------------------------------------------------------------------------
+# Payload-type imports — each canonical model used in DOMAIN_SHAPES below.
+# ---------------------------------------------------------------------------
+from .models.price_history import PriceHistory
+from .models.company_ratios import CompanyRatios
+from .models.news import NewsArticle
+from .models.sentiment import SocialSentiment
+from .models.trades import Form4Bundle, PoliticianTrade, NotableHolder
+from .models.filings import Filing
+from .models.earnings import EarningsHistory
+from .models.analyst_consensus import AnalystConsensusBundle
+from .models.short_interest import ShortInterestSnapshot
+from .models.options import OptionContract
+
+# ---------------------------------------------------------------------------
+# Provider canonical-shape contracts (Phase 7.6)
+# ---------------------------------------------------------------------------
+#
+# Every registered provider for a given domain must return the same type as
+# its peers.  DOMAIN_SHAPES is the single source of truth — the behavioural
+# contract test in tests/contract/test_provider_shapes.py iterates this
+# table and asserts each live + cache pair returns the canonical shape.
+
+T = TypeVar("T")
+
+
+class Provider(Protocol[T]):
+    """A registered data provider — async callable returning the
+    canonical shape for its domain.
+
+    Type parameter
+    --------------
+    T:
+        The canonical return type for this provider's domain (as
+        declared in ``DOMAIN_SHAPES``).
+    """
+
+    async def __call__(self, *args: Any, **kwargs: Any) -> T:
+        """Invoke the provider and return the canonical domain payload."""
+        ...
+
+
+@dataclass(frozen=True)
+class DomainShape:
+    """Canonical return-shape for a registered provider domain.
+
+    Attributes
+    ----------
+    container:
+        One of:
+        - ``"single"``  — one model instance (e.g. ``PriceHistory``).
+        - ``"list"``    — ``list[payload_type]`` (e.g. ``list[NewsArticle]``).
+        - ``"bundle"``  — a wrapper model containing multiple distinct
+          sublists (e.g. ``Form4Bundle``).
+    payload_type:
+        For ``"list"``, the element model class; for ``"single"`` and
+        ``"bundle"``, the model class itself.
+    """
+
+    container: Literal["single", "list", "bundle"]
+    payload_type: type
+
+
+# ---------------------------------------------------------------------------
+# DOMAIN_SHAPES — populated from:
+#   docs/Phase7.5-more-cleanup/audit/provider_shapes.md
+# ---------------------------------------------------------------------------
+
+DOMAIN_SHAPES: dict[str, DomainShape] = {
+    "price_history":     DomainShape("single", PriceHistory),
+    "company_ratios":    DomainShape("single", CompanyRatios),
+    "news":              DomainShape("list",   NewsArticle),
+    "social_sentiment":  DomainShape("single", SocialSentiment),
+    "insider_trades":    DomainShape("bundle", Form4Bundle),
+    "politician_trades": DomainShape("list",   PoliticianTrade),
+    "notable_holders":   DomainShape("list",   NotableHolder),
+    "filings":           DomainShape("list",   Filing),
+    "earnings":          DomainShape("single", EarningsHistory),
+    "analyst_consensus": DomainShape("bundle", AnalystConsensusBundle),
+    "short_interest":    DomainShape("list",   ShortInterestSnapshot),
+    "options":           DomainShape("list",   OptionContract),
+}
+
 
 DOMAINS: frozenset[str] = frozenset({
     # Phase 5: "stats" retired — split into two purpose-scoped domains.

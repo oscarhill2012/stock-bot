@@ -219,7 +219,10 @@ class DecisionLogger:
                 "technical": state.get("technical_data", {}).get(ticker) if state.get("technical_data") else None,
                 "fundamental": state.get("fundamental_data", {}).get(ticker) if state.get("fundamental_data") else None,
                 "news": state.get("news_data", {}).get(ticker) if state.get("news_data") else None,
-                "smart_money": state.get("smart_money_data", {}).get(ticker) if state.get("smart_money_data") else None,
+                # smart_money_data values are SmartMoneyRaw model instances
+                # (Phase 7.6) — coerce to dict so JSON dump gets structured
+                # fields rather than the model repr.
+                "smart_money": _coerce(state.get("smart_money_data", {}).get(ticker)) if state.get("smart_money_data") else None,
                 "social": state.get("social_data", {}).get(ticker) if state.get("social_data") else None,
             },
 

@@ -55,10 +55,28 @@ async def test_fetch_returns_none_when_no_activity():
 
 @pytest.mark.asyncio
 async def test_gate_passes_with_politician_trade():
-    """Gate does not fire when at least one politician trade is present."""
+    """Gate does not fire when at least one politician trade is present.
+
+    After Phase 7.6 Task 17, the result is a ticker-first SmartMoneyRaw
+    instance.  Uses a real PoliticianTrade so Pydantic's type validation on
+    SmartMoneyRaw.politicians passes without errors.
+    """
+    from datetime import date
+
+    from data.models.smart_money import SmartMoneyRaw
+    from data.models.trades import PoliticianTrade
+
     ctx = _make_ctx(["AAPL"])
-    politician = MagicMock()
-    politician.model_dump = lambda: {"side": "BUY", "amount": 50_000}
+    politician = PoliticianTrade(
+        ticker="AAPL",
+        politician="Jane Doe",
+        chamber="House",
+        party="D",
+        side="buy",
+        transaction_date=date(2024, 1, 15),
+        amount_min_usd=15_000,
+        amount_max_usd=50_000,
+    )
     with (
         patch(
             "agents.analysts.smart_money.fetch.get_public_figure_trades",
@@ -72,15 +90,36 @@ async def test_gate_passes_with_politician_trade():
         result = await smart_money_fetch_callback(ctx)
 
     assert result is None  # Gate did NOT fire.
-    assert "AAPL" in ctx.state["smart_money_data"]["politicians"]
+
+    # Ticker-first: AAPL key holds a SmartMoneyRaw with one politician trade.
+    payload = ctx.state["smart_money_data"]["AAPL"]
+    assert isinstance(payload, SmartMoneyRaw)
+    assert len(payload.politicians) == 1
 
 
 @pytest.mark.asyncio
 async def test_gate_passes_with_notable_holder():
-    """Gate does not fire when at least one notable holder is present."""
+    """Gate does not fire when at least one notable holder is present.
+
+    After Phase 7.6 Task 17, the result is a ticker-first SmartMoneyRaw
+    instance.  Uses a real NotableHolder so Pydantic's type validation on
+    SmartMoneyRaw.notable_holders passes without errors.
+    """
+    from datetime import datetime, timezone
+
+    from data.models.smart_money import SmartMoneyRaw
+    from data.models.trades import NotableHolder
+
     ctx = _make_ctx(["MSFT"])
-    holder = MagicMock()
-    holder.model_dump = lambda: {}
+    holder = NotableHolder(
+        ticker="MSFT",
+        holder="BigFund LLC",
+        form_type="SC 13G",
+        intent="passive",
+        is_amendment=False,
+        filed_at=datetime(2024, 2, 1, tzinfo=timezone.utc),
+        accession_no="0001234567-24-000001",
+    )
     with (
         patch(
             "agents.analysts.smart_money.fetch.get_public_figure_trades",
@@ -94,4 +133,8 @@ async def test_gate_passes_with_notable_holder():
         result = await smart_money_fetch_callback(ctx)
 
     assert result is None
-    assert "MSFT" in ctx.state["smart_money_data"]["notable_holders"]
+
+    # Ticker-first: MSFT key holds a SmartMoneyRaw with one notable holder.
+    payload = ctx.state["smart_money_data"]["MSFT"]
+    assert isinstance(payload, SmartMoneyRaw)
+    assert len(payload.notable_holders) == 1

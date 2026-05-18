@@ -44,7 +44,7 @@ from typing import Any
 
 import yfinance as yf
 
-from data.models.analyst_consensus import AnalystRating, AnalystRevision
+from data.models.analyst_consensus import AnalystConsensusBundle, AnalystRating, AnalystRevision
 from data.registry import register
 
 log = logging.getLogger(__name__)
@@ -142,7 +142,7 @@ async def fetch(
     as_of: date,
     max_revisions: int = 20,
     **_: Any,
-) -> tuple[AnalystRating, list[AnalystRevision]]:
+) -> AnalystConsensusBundle:
     """Fetch the analyst consensus snapshot and recent revisions for ``ticker``.
 
     All data is sourced from ``yfinance.Ticker`` synchronously then wrapped in
@@ -165,9 +165,10 @@ async def fetch(
 
     Returns
     -------
-    tuple[AnalystRating, list[AnalystRevision]]
-        ``(rating_snapshot, revisions)`` where ``revisions`` is ordered
-        newest-first and capped at ``max_revisions``.
+    AnalystConsensusBundle
+        Bundle containing ``rating`` (consensus snapshot) and ``revisions``
+        (list of recent upgrades/downgrades), ordered newest-first and capped
+        at ``max_revisions``.
 
     Warns
     -----
@@ -194,7 +195,9 @@ async def fetch(
     rating, revisions = await asyncio.to_thread(
         _fetch_sync, symbol, as_of, max_revisions
     )
-    return rating, revisions
+
+    # Wrap the tuple into the canonical bundle shape (DOMAIN_SHAPES[analyst_consensus]).
+    return AnalystConsensusBundle(rating=rating, revisions=revisions)
 
 
 def _fetch_sync(

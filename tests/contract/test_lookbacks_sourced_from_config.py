@@ -10,8 +10,6 @@ Currently two tests are xfail-marked.  Tasks 7 and 8 each remove one:
 - Task 7 removes the smart_money xfail (after migrating that module).
 - Task 8 removes the fundamental xfail (after migrating that module).
 
-The aggregator (get_stock_signal_bundle) is deliberately not tested
-here — Phase 7.6 deletes the function entirely.
 """
 from __future__ import annotations
 

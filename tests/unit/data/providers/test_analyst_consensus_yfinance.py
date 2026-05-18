@@ -4,9 +4,9 @@ All yfinance calls are monkeypatched — no real network traffic occurs.
 
 Key invariants tested
 ---------------------
-- **Happy path**: ``fetch`` returns ``(AnalystRating, list[AnalystRevision])``
-  with ``target_mean`` and ``recommendation_mean`` populated, and at least one
-  revision mapped to a controlled action literal.
+- **Happy path**: ``fetch`` returns an ``AnalystConsensusBundle`` with
+  ``rating.target_mean`` and ``rating.recommendation_mean`` populated, and at
+  least one revision mapped to a controlled action literal.
 - **Action mapping**: known action strings (``"up"``, ``"down"``, ``"init"``,
   ``"main"``) resolve to the correct ``AnalystRevision.action`` literal;
   unrecognised strings map to ``"unknown"``.
@@ -159,7 +159,14 @@ async def test_fetch_returns_rating_and_revisions(monkeypatch):
 
     # Use a recent as_of to avoid the snapshot-only UserWarning.
     as_of = date.today() - timedelta(days=3)
-    rating, revisions = await mod.fetch("aapl", as_of=as_of)
+    bundle = await mod.fetch("aapl", as_of=as_of)
+
+    # Returned value must be an AnalystConsensusBundle, not a bare tuple.
+    from data.models.analyst_consensus import AnalystConsensusBundle
+    assert isinstance(bundle, AnalystConsensusBundle)
+
+    rating    = bundle.rating
+    revisions = bundle.revisions
 
     # ── AnalystRating assertions ───────────────────────────────────────────────
     assert rating.ticker == "AAPL"
@@ -241,15 +248,15 @@ async def test_fetch_warns_when_as_of_is_stale(monkeypatch):
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        rating, revisions = await mod.fetch("AAPL", as_of=stale_as_of)
+        bundle = await mod.fetch("AAPL", as_of=stale_as_of)
 
     user_warnings = [w for w in caught if issubclass(w.category, UserWarning)]
     assert len(user_warnings) >= 1
     assert "more than 7 days in the past" in str(user_warnings[0].message)
 
     # Data is still returned despite the warning.
-    assert rating.ticker == "AAPL"
-    assert revisions == []
+    assert bundle.rating.ticker == "AAPL"
+    assert bundle.revisions == []
 
 
 # ── Sparse data graceful-handling test ────────────────────────────────────────
@@ -274,16 +281,16 @@ async def test_fetch_handles_empty_yfinance_data(monkeypatch):
     monkeypatch.setattr(mod.yf, "Ticker", lambda _sym: mock_ticker)
 
     as_of = date.today() - timedelta(days=1)
-    rating, revisions = await mod.fetch("TSLA", as_of=as_of)
+    bundle = await mod.fetch("TSLA", as_of=as_of)
 
-    assert rating.ticker == "TSLA"
-    assert rating.target_mean         is None
-    assert rating.target_high         is None
-    assert rating.target_low          is None
-    assert rating.target_median       is None
-    assert rating.recommendation_mean is None
-    assert rating.number_of_analysts  is None
-    assert revisions == []
+    assert bundle.rating.ticker == "TSLA"
+    assert bundle.rating.target_mean         is None
+    assert bundle.rating.target_high         is None
+    assert bundle.rating.target_low          is None
+    assert bundle.rating.target_median       is None
+    assert bundle.rating.recommendation_mean is None
+    assert bundle.rating.number_of_analysts  is None
+    assert bundle.revisions == []
 
 
 # ── max_revisions cap test ────────────────────────────────────────────────────
@@ -312,12 +319,12 @@ async def test_fetch_caps_revisions_at_max_revisions(monkeypatch):
     monkeypatch.setattr(mod.yf, "Ticker", lambda _sym: mock_ticker)
 
     as_of = date.today() - timedelta(days=1)
-    _, revisions = await mod.fetch("MSFT", as_of=as_of, max_revisions=2)
+    bundle = await mod.fetch("MSFT", as_of=as_of, max_revisions=2)
 
-    assert len(revisions) == 2
+    assert len(bundle.revisions) == 2
     # Newest-first: 2023-03-05, then 2023-03-04
-    assert revisions[0].event_date == date(2023, 3, 5)
-    assert revisions[1].event_date == date(2023, 3, 4)
+    assert bundle.revisions[0].event_date == date(2023, 3, 5)
+    assert bundle.revisions[1].event_date == date(2023, 3, 4)
 
 
 # ── Integration smoke (slow / network) ───────────────────────────────────────
@@ -332,13 +339,13 @@ async def test_analyst_consensus_integration_real_network():
 
     Asserts
     -------
-    - Returns ``(AnalystRating, list[AnalystRevision])`` without raising.
-    - ``rating.ticker`` == ``"AAPL"``.
+    - Returns an ``AnalystConsensusBundle`` without raising.
+    - ``bundle.rating.ticker`` == ``"AAPL"``.
     - If revisions are returned, each has a valid ``action`` literal.
     """
     from typing import get_args
 
-    from data.models.analyst_consensus import AnalystRevision
+    from data.models.analyst_consensus import AnalystConsensusBundle, AnalystRevision
     from data.providers.analyst_consensus import yfinance as mod
 
     # Extract the valid action literals from the Pydantic model's type annotation.
@@ -351,12 +358,13 @@ async def test_analyst_consensus_integration_real_network():
 
     with warnings.catch_warnings(record=True):
         warnings.simplefilter("always")
-        rating, revisions = await mod.fetch("AAPL", as_of=as_of)
+        bundle = await mod.fetch("AAPL", as_of=as_of)
 
-    assert rating.ticker == "AAPL"
-    assert rating.as_of == as_of
+    assert isinstance(bundle, AnalystConsensusBundle)
+    assert bundle.rating.ticker == "AAPL"
+    assert bundle.rating.as_of == as_of
 
-    for rev in revisions:
+    for rev in bundle.revisions:
         assert rev.action in valid_actions, (
             f"Unexpected action {rev.action!r} for {rev.firm}"
         )
