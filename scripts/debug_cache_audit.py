@@ -527,7 +527,8 @@ def main() -> int:
     repo_root  = Path(__file__).resolve().parents[1]
     config_dir = Path(args.config_dir) if args.config_dir else (repo_root / "config")
 
-    settings  = _load_json(config_dir / "backtest_settings.json")
+    from backtest.settings import load_backtest_settings_from
+    settings  = load_backtest_settings_from(config_dir / "backtest_settings.json")
     windows   = _load_json(config_dir / "backtest_windows.json")
     watch_p   = Path(args.watchlist) if args.watchlist else (config_dir / "watchlist.json")
     watchlist = _load_json(watch_p)
@@ -546,7 +547,7 @@ def main() -> int:
 
     cache_path = (
         Path(args.cache_path) if args.cache_path
-        else (repo_root / settings["cache_path"])
+        else (repo_root / settings.cache_path)
     )
     if not cache_path.exists():
         print(f"cache file not found: {cache_path}", file=sys.stderr)

@@ -43,14 +43,12 @@ from google.genai import types as genai_types
 
 from config.analysts import FundamentalCaps, get_analysts_config
 from data import get_company_filings, get_company_ratios, get_insider_trades
+from data.config import get_config
 from data.models import Form4Bundle, InsiderTrade
 from data.timeguard import resolve_as_of
 from observability.trace import _trace_maybe
 
 logger = logging.getLogger(__name__)
-
-# Lookback window for Form 4 insider trades passed to the provider.
-_INSIDER_LOOKBACK_DAYS = 30
 
 
 def _caps() -> FundamentalCaps:
@@ -72,6 +70,7 @@ def _build_ticker_context(
     ticker: str,
     filings_payload: list[dict],
     insider_bundle: Form4Bundle,
+    insider_lookback_days: int,
 ) -> str:
     """Build the LLM-readable context block for a single ticker.
 
@@ -120,7 +119,9 @@ def _build_ticker_context(
         lines.append("  (no filings available)")
 
     # --- Insider activity (structured numerics) ---
-    lines.append("-- INSIDER ACTIVITY (30d, structured) --")
+    # Window label reflects the *configured* lookback (defaults.insider_lookback_days),
+    # not a hardcoded "30d" — those days flow from config/data.json and can drift.
+    lines.append(f"-- INSIDER ACTIVITY ({insider_lookback_days}d, structured) --")
 
     trades = insider_bundle.trades if insider_bundle else []
     buys   = [t for t in trades if t.side == "buy"]
@@ -241,6 +242,10 @@ async def fundamental_fetch_callback(
         state.get("as_of"), allow_wallclock=True, site="fundamental/fetch",
     )
 
+    # Source lookback from config once per callback invocation — config/data.json
+    # owns the value so all call sites agree and there is no parallel constant.
+    insider_lookback_days = get_config().defaults.insider_lookback_days
+
     fundamental_data: dict[str, dict] = {}
     context_blocks: list[str] = []
 
@@ -271,7 +276,7 @@ async def fundamental_fetch_callback(
         # --- insider trades (Form 4) ---
         try:
             insider_bundle = await get_insider_trades(
-                ticker, lookback_days=_INSIDER_LOOKBACK_DAYS, as_of=as_of
+                ticker, lookback_days=insider_lookback_days, as_of=as_of
             )
             # Store the raw Form4Bundle so the extractor can access typed fields
             # directly without re-parsing a dict.
@@ -295,7 +300,10 @@ async def fundamental_fetch_callback(
 
         # Build the LLM-readable context block for this ticker and accumulate.
         context_blocks.append(
-            _build_ticker_context(ticker, filings_payload, insider_bundle)
+            _build_ticker_context(
+                ticker, filings_payload, insider_bundle,
+                insider_lookback_days=insider_lookback_days,
+            )
         )
 
     state["fundamental_data"] = fundamental_data

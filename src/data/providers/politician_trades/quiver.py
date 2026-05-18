@@ -9,13 +9,13 @@ from typing import Any
 
 import requests
 
+from data.config import get_config
 from data.registry import register
 from data.retry import with_retry
 
 from ...models import PoliticianTrade, TradeSide
 
 _BASE_URL = "https://api.quiverquant.com/beta"
-_HTTP_TIMEOUT = 15.0  # mirrors today's settings.http_timeout_seconds default
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +85,10 @@ def _fetch_trades(symbol: str | None, api_key: str) -> list[dict]:
     if symbol:
         params["ticker"] = symbol
 
-    resp = requests.get(url, headers=headers, params=params, timeout=_HTTP_TIMEOUT)
+    # Read the timeout from centralised config rather than a module constant,
+    # so config/data.json is the single source of truth for this value.
+    timeout = get_config().quiver_http_timeout_seconds
+    resp = requests.get(url, headers=headers, params=params, timeout=timeout)
     resp.raise_for_status()
     payload = resp.json() if resp.content else []
     return payload if isinstance(payload, list) else []

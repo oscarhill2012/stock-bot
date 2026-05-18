@@ -32,7 +32,7 @@ async def fetch(
     ticker: str,
     *,
     as_of: datetime,
-    lookback_days: int = 90,
+    lookback_days: int,   # required — defaults now flow from get_config() in caller
     **_unused,
 ) -> Form4Bundle:
     """Return insider trades filed at or before ``as_of``, wrapped in a Form4Bundle.
@@ -51,7 +51,8 @@ async def fetch(
     as_of:
         Point-in-time upper bound (inclusive) on ``filed_at``.
     lookback_days:
-        How many calendar days before ``as_of`` to include (default 90).
+        How many calendar days before ``as_of`` to include.  Required — the
+        caller is responsible for supplying the value from ``get_config()``.
 
     Returns
     -------

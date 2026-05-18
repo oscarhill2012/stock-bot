@@ -35,9 +35,6 @@ from data import (
 from data.timeguard import resolve_as_of
 from observability.trace import _trace_maybe
 
-POLITICIAN_LOOKBACK_DAYS = 30
-HOLDER_LOOKBACK_DAYS = 90
-
 logger = logging.getLogger(__name__)
 
 
@@ -78,6 +75,16 @@ async def smart_money_fetch_callback(
         state.get("as_of"), allow_wallclock=True, site="smart_money/fetch",
     )
 
+    # Source lookback windows from config — Phase 7.5 makes config/data.json
+    # the single source of truth for these values.  Reading inside the
+    # callback rather than at module load keeps the import cheap and lets
+    # tests monkey-patch the config singleton.
+    from data.config import get_config
+
+    defaults = get_config().defaults
+    politician_lookback_days = defaults.politician_lookback_days
+    holder_lookback_days     = defaults.notable_holder_lookback_days
+
     smart_money_data: dict = {
         "politicians": {},
         "notable_holders": {},
@@ -86,7 +93,7 @@ async def smart_money_fetch_callback(
     for ticker in tickers:
         try:
             politicians = await get_public_figure_trades(
-                ticker, lookback_days=POLITICIAN_LOOKBACK_DAYS, as_of=as_of
+                ticker, lookback_days=politician_lookback_days, as_of=as_of
             )
         except Exception as exc:
             logger.warning("politician_trades fetch failed for %s: %s", ticker, exc)
@@ -94,7 +101,7 @@ async def smart_money_fetch_callback(
 
         try:
             holders = await get_notable_holders(
-                ticker, lookback_days=HOLDER_LOOKBACK_DAYS, as_of=as_of
+                ticker, lookback_days=holder_lookback_days, as_of=as_of
             )
         except Exception as exc:
             logger.warning("notable_holders fetch failed for %s: %s", ticker, exc)

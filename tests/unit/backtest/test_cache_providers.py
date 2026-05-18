@@ -66,7 +66,7 @@ async def test_news_cache_returns_pydantic_articles(_wire_store: CachedDataStore
     ])
 
     result = await news_cache.fetch(
-        "AAPL", as_of=datetime(2023, 3, 15, tzinfo=UTC),
+        "AAPL", as_of=datetime(2023, 3, 15, tzinfo=UTC), lookback_days=30,
     )
 
     assert len(result) == 1
@@ -90,7 +90,7 @@ async def test_news_cache_excludes_future_articles(_wire_store: CachedDataStore)
     ])
 
     result = await news_cache.fetch(
-        "AAPL", as_of=datetime(2023, 3, 15, tzinfo=UTC),
+        "AAPL", as_of=datetime(2023, 3, 15, tzinfo=UTC), lookback_days=30,
     )
 
     assert result == []
@@ -198,7 +198,7 @@ async def test_insider_trades_cache_returns_pydantic_list(
     _wire_store.write_insider_trades("AAPL", [trade])
 
     result = await insider_trades_cache.fetch(
-        "AAPL", as_of=datetime(2023, 3, 15, tzinfo=UTC),
+        "AAPL", as_of=datetime(2023, 3, 15, tzinfo=UTC), lookback_days=90,
     )
 
     # The cache provider wraps rows in a Form4Bundle to match the live
@@ -235,7 +235,7 @@ async def test_politician_trades_cache_returns_pydantic_list(
     _wire_store.write_politician_trades("AAPL", [trade])
 
     result = await politician_trades_cache.fetch(
-        "AAPL", as_of=datetime(2023, 3, 15, tzinfo=UTC),
+        "AAPL", as_of=datetime(2023, 3, 15, tzinfo=UTC), lookback_days=90,
     )
 
     assert len(result) == 1
@@ -265,7 +265,7 @@ async def test_notable_holders_cache_returns_pydantic_list(
     _wire_store.write_notable_holders("AAPL", [holder])
 
     result = await notable_holders_cache.fetch(
-        "AAPL", as_of=datetime(2023, 3, 15, tzinfo=UTC),
+        "AAPL", as_of=datetime(2023, 3, 15, tzinfo=UTC), lookback_days=180,
     )
 
     assert len(result) == 1
@@ -293,7 +293,7 @@ async def test_filings_cache_returns_pydantic_list(
     _wire_store.write_filings("AAPL", [filing])
 
     result = await filings_cache.fetch(
-        "AAPL", as_of=datetime(2023, 3, 15, tzinfo=UTC),
+        "AAPL", as_of=datetime(2023, 3, 15, tzinfo=UTC), lookback_days=365,
     )
 
     assert len(result) == 1

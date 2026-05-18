@@ -44,7 +44,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from backtest.cache.store import CachedDataStore
-from data.models import CompanyRatios, OHLCBar
+from data.models import CompanyRatios, Filing, NewsArticle, OHLCBar
 from datetime import timedelta
 
 
@@ -197,6 +197,33 @@ def fixture_cache(tmp_path: Path) -> Path:
 
     # Write one CompanyRatios snapshot so the fundamental cache provider
     # can satisfy point-in-time reads during the backtest window.
+    # Seed one news article + one filing so the cache wrappers
+    # (get_stock_news / get_company_filings) have something to return.
+    # Without these rows, a silent TypeError inside the wrapper — like the
+    # Phase 7.5 regression where lookback_days was not forwarded — would go
+    # undetected because empty bundles are equivalent to "no rows in store".
+    store.write_news("AAPL", [
+        NewsArticle(
+            ticker       = "AAPL",
+            headline     = "Apple closes flat amid SVB contagion fears",
+            summary      = "Smoke-test fixture row.",
+            url          = "https://example.invalid/aapl-svb",
+            source       = "fixture",
+            published_at = datetime.fromisoformat("2023-03-14T15:00:00+00:00"),
+        ),
+    ])
+    store.write_filings("AAPL", [
+        Filing(
+            ticker       = "AAPL",
+            form_type    = "8-K",
+            filed_at     = datetime.fromisoformat("2023-03-13T20:00:00+00:00"),
+            accession_no = "0000320193-23-fixture",
+            title        = "Fixture 8-K",
+            url          = "https://example.invalid/aapl-8k",
+            body_excerpt = "Smoke-test fixture filing.",
+        ),
+    ])
+
     store.write_company_ratios(
         "AAPL",
         CompanyRatios(
@@ -242,19 +269,19 @@ def test_end_to_end_run_produces_full_artefact_tree(
     from backtest.runner import Runner
 
     # ── Write settings + windows + watchlist under tmp_path ──────────────────
-    settings = {
-        "cache_path":                  str(fixture_cache),
-        "runs_root":                   str(tmp_path / "runs"),
-        "ticks_per_day":               ["open", "close"],
-        "tz":                          "America/New_York",
-        "open_time":                   "09:30",
-        "close_time":                  "16:00",
-        "failed_tick_abort_ratio":     1.0,        # never abort in smoke test
-        "fake_broker_starting_cash":   100_000.0,
-        "forward_return_horizons_days": [1],
-    }
-    settings_path = tmp_path / "backtest_settings.json"
-    settings_path.write_text(json.dumps(settings))
+    # Build a typed BacktestSettings directly — Phase 7.5 dropped the
+    # tz/open_time/close_time keys (session times now come from
+    # pandas_market_calendars) and switched Runner to a `settings=` kwarg.
+    from backtest.settings import BacktestSettings
+    settings_obj = BacktestSettings(
+        cache_path                   = str(fixture_cache),
+        runs_root                    = str(tmp_path / "runs"),
+        ticks_per_day                = ["open", "close"],
+        failed_tick_abort_ratio      = 1.0,        # never abort in smoke test
+        fake_broker_starting_cash    = 100_000.0,
+        forward_return_horizons_days = [1],
+        ohlcv_warmup_days            = 30,
+    )
 
     windows = {
         "smoke": {
@@ -376,7 +403,7 @@ def test_end_to_end_run_produces_full_artefact_tree(
         patch("yfinance.Ticker", return_value=mock_yf_ticker),
     ):
         runner = Runner(
-            settings_path=settings_path,
+            settings=settings_obj,
             windows_path=windows_path,
             watchlist_path=watchlist_path,
         )
@@ -387,6 +414,47 @@ def test_end_to_end_run_produces_full_artefact_tree(
     # Terminal status (completed or completed_with_failures — never aborted).
     assert result.status in {"completed", "completed_with_failures"}, (
         f"Unexpected run status: {result.status!r}"
+    )
+
+    # ── Cache-wrapper round-trip probe ───────────────────────────────────────
+    # Regression guard for the Phase 7.5 bug where ``get_stock_news`` /
+    # ``get_company_filings`` failed to forward ``lookback_days`` to the
+    # cache provider, raising a TypeError that the analyst fetch layer
+    # silently swallowed.  An empty fixture would mask the issue (empty
+    # list == "TypeError caught"); the fixture now seeds one news row and
+    # one filing, so a non-empty round trip proves the wrapper path is
+    # intact end-to-end.
+    import asyncio as _asyncio
+
+    from backtest.providers import _store_handle as _sh
+    from backtest.providers import filings_cache as _fc  # noqa: F401 — register
+    from backtest.providers import news_cache as _nc     # noqa: F401 — register
+    from data import get_company_filings, get_stock_news
+    from data.registry import set_active_provider as _set_p
+
+    # The Runner restores the original providers on exit (so a crashed run
+    # doesn't leak cache state into later calls).  Re-pin to cache for the
+    # probe, restoring afterward.  Also re-wire the store handle since the
+    # Runner clears it during teardown.
+    _sh.set_store(CachedDataStore(fixture_cache))
+    _restores = [_set_p("news", "cache"), _set_p("filings", "cache")]
+
+    try:
+        _probe_as_of = datetime.fromisoformat("2023-03-15T20:00:00+00:00")
+        _news_probe  = _asyncio.run(get_stock_news("AAPL", as_of=_probe_as_of))
+        _files_probe = _asyncio.run(get_company_filings("AAPL", as_of=_probe_as_of))
+    finally:
+        for _restore in _restores:
+            _restore()
+
+    assert _news_probe, (
+        "get_stock_news returned empty for AAPL inside the smoke window — "
+        "the cache wrapper path is broken (likely a missing lookback_days "
+        "forward, swallowed by the analyst fetch try/except)."
+    )
+    assert _files_probe, (
+        "get_company_filings returned empty for AAPL inside the smoke window — "
+        "see above; cache wrapper path is broken."
     )
 
     # Manifest exists and has the right run_id.
