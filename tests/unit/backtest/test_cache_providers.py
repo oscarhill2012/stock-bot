@@ -99,15 +99,25 @@ async def test_news_cache_excludes_future_articles(_wire_store: CachedDataStore)
 # ── social sentiment ───────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_social_cache_returns_none(_wire_store: CachedDataStore) -> None:
-    """Social sentiment is deliberately unavailable in v1 backtest — return ``None``."""
+async def test_social_cache_returns_empty_model(_wire_store: CachedDataStore) -> None:
+    """Social sentiment cache returns an empty ``SocialSentiment`` in v1.
+
+    Real ingestion is deferred to backlog B19.  Until then the provider
+    returns a well-typed empty model rather than ``None``, satisfying the
+    canonical ``single / SocialSentiment`` contract.
+    """
+    from data.models.sentiment import SocialSentiment  # noqa: PLC0415
+
     from backtest.providers import social_sentiment_cache  # noqa: PLC0415
 
     result = await social_sentiment_cache.fetch(
         "AAPL", as_of=datetime(2023, 3, 15, tzinfo=UTC),
     )
 
-    assert result is None
+    assert isinstance(result, SocialSentiment)
+    assert result.ticker == "AAPL"
+    assert result.snapshots == []
+    assert result.aggregate_score == 0.0
 
 
 # ── company ratios ─────────────────────────────────────────────────────────────

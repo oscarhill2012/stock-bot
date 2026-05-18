@@ -451,11 +451,12 @@ async def _call_cache_provider(domain: str, store_path: Path) -> object:
             return await mod.fetch("AAPL", as_of=_as_of, lookback_days=30)
 
         # ── social_sentiment ──────────────────────────────────────────────────
-        # v1 stub always returns None — known drift; xfail catches it.
+        # Cache now returns empty SocialSentiment (Task 16 aligned).
+        # No seeding required: the stub constructs the model without querying
+        # the store — backlog B19 will add real ingestion later.
         if domain == "social_sentiment":
             from backtest.providers import social_sentiment_cache as mod  # noqa: PLC0415
 
-            # No seeding required: the v1 stub ignores the store entirely.
             return await mod.fetch("AAPL", as_of=_as_of)
 
         # ── insider_trades ────────────────────────────────────────────────────
@@ -553,9 +554,7 @@ _LIVE_PENDING: set[str] = set()
 
 # Domains whose **cache** provider return type diverges from the canonical
 # DOMAIN_SHAPES entry.  Source: audit column "Drift fix needed = cache".
-_CACHE_PENDING: set[str] = {
-    "social_sentiment", # v1 stub returns None; canonical is single/SocialSentiment
-}
+_CACHE_PENDING: set[str] = set()
 
 
 def _live_params() -> list:
