@@ -2,13 +2,21 @@
 
 Re-exported flat for convenience: ``from data.models import CompanyRatios``.
 """
+from .analyst_consensus import (
+    AnalystConsensusBundle,
+    AnalystRating,
+    AnalystRevision,
+)
 from .company_ratios import CompanyRatios
+from .earnings import EarningsHistory, EarningsReport
 from .filings import Filing
 from .market import OHLCBar
 from .missing import MISSING_TIMESTAMP, is_missing_timestamp  # noqa: F401
 from .news import NewsArticle
+from .options import OptionContract
 from .price_history import PriceHistory
 from .sentiment import SocialSentiment, SocialSentimentSnapshot
+from .short_interest import ShortInterestSnapshot
 from .trades import (
     Form4Bundle,
     InsiderDerivativeTrade,
@@ -19,7 +27,12 @@ from .trades import (
 )
 
 __all__ = [
+    "AnalystConsensusBundle",
+    "AnalystRating",
+    "AnalystRevision",
     "CompanyRatios",
+    "EarningsHistory",
+    "EarningsReport",
     "Filing",
     "Form4Bundle",
     "InsiderDerivativeTrade",
@@ -28,8 +41,10 @@ __all__ = [
     "NewsArticle",
     "NotableHolder",
     "OHLCBar",
+    "OptionContract",
     "PoliticianTrade",
     "PriceHistory",
+    "ShortInterestSnapshot",
     "SocialSentiment",
     "SocialSentimentSnapshot",
     "TradeSide",
