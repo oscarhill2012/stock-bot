@@ -41,8 +41,15 @@ def test_build_initial_state_populates_reference_prices(monkeypatch):
     )
 
 
-def test_build_initial_state_reference_prices_are_price_history_objects(monkeypatch):
-    """Each value in ``state["reference_prices"]`` must be a ``PriceHistory`` instance."""
+def test_build_initial_state_reference_prices_are_json_safe_dicts(monkeypatch):
+    """Each value in ``state["reference_prices"]`` must be a JSON-safe dict.
+
+    Pydantic objects can't be persisted via the ADK SqlSessionService (its
+    DynamicJSON type calls plain ``json.dumps`` on state without a custom
+    encoder), so ``_build_initial_state`` dumps each PriceHistory before it
+    enters the state dict.  The technical extractor re-validates back to a
+    PriceHistory on the read side.
+    """
     from orchestrator import tick as mod
 
     fake = {sym: PriceHistory(ticker=sym, bars=[]) for sym in _REFERENCE_SYMBOLS}
@@ -55,7 +62,15 @@ def test_build_initial_state_reference_prices_are_price_history_objects(monkeypa
     broker = FakeBroker(starting_cash=1_000.0, prices={})
     state = asyncio.run(mod._build_initial_state(broker, "tick-ref2", ["AAPL"]))
 
+    import json
+
     for sym, ph in state["reference_prices"].items():
-        assert isinstance(ph, PriceHistory), (
-            f"Expected PriceHistory for {sym}, got {type(ph).__name__}"
+        assert isinstance(ph, dict), (
+            f"Expected dict for {sym}, got {type(ph).__name__}"
         )
+        assert ph.get("ticker") == sym, (
+            f"Expected dumped ticker={sym}, got {ph.get('ticker')!r}"
+        )
+        # Round-trip through json.dumps to prove the value is JSON-safe — i.e.
+        # the ADK SqlSessionService persistence path will not raise.
+        json.dumps(ph)

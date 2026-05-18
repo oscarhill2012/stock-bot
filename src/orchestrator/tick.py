@@ -90,7 +90,13 @@ async def _build_initial_state(broker, tick_id: str, tickers: list[str]) -> dict
         "thesis": "",
         "positions": {},
         "portfolio": portfolio.model_dump(mode="json"),
-        "reference_prices": reference_prices,
+        # Dump each PriceHistory to a JSON-safe dict so the ADK SqlSessionService
+        # (which serialises state via plain json.dumps) doesn't choke on Pydantic
+        # objects.  The technical extractor coerces dicts back to PriceHistory
+        # on the consumer side — see src/contract/extractors/technical.py.
+        "reference_prices": {
+            sym: ph.model_dump(mode="json") for sym, ph in reference_prices.items()
+        },
     }
 
 

@@ -365,7 +365,18 @@ def extract_technical_features(
     # beyond ``_KEYS`` — the caller must not assume they are always present.
     ref_prices: dict[str, Any] = (state or {}).get("reference_prices") or {}
 
+    # Reference prices arrive as PriceHistory instances on the smoke-test path
+    # (in-memory session) and as JSON-dumped dicts on the persisted path (ADK
+    # SqlSessionService).  Coerce dicts back so `_relative_strength`'s
+    # attribute-access contract holds regardless of the upstream source.
     if ref_prices:
+        from data.models import PriceHistory
+
+        ref_prices = {
+            sym: PriceHistory.model_validate(ph) if isinstance(ph, dict) else ph
+            for sym, ph in ref_prices.items()
+        }
+
         spy_ph = ref_prices.get("SPY")
 
         # Relative strength versus the broad market (SPY).

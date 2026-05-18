@@ -412,7 +412,14 @@ class Runner:
                 "memory_buffer":    [],
                 "day_digest":       "",
                 "thesis":           "",
-                "reference_prices": reference_prices,
+                # Dump each PriceHistory to a JSON-safe dict so the ADK
+                # SqlSessionService (plain json.dumps under the hood) doesn't
+                # choke on Pydantic objects.  Mirrors orchestrator.tick.  The
+                # technical extractor coerces dicts back to PriceHistory on
+                # read — see src/contract/extractors/technical.py.
+                "reference_prices": {
+                    sym: ph.model_dump(mode="json") for sym, ph in reference_prices.items()
+                },
             }
 
             status = "completed"
