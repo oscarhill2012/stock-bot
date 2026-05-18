@@ -23,6 +23,7 @@
     "history_interval": "1d",
     "filings_per_form": 3,
     "include_filing_excerpts": true,
+    "filings_lookback_days": 90,
     "earnings_lookback_quarters": 4,
     "short_interest_lookback_days": 90
   },

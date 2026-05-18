@@ -48,6 +48,7 @@ shared by all providers. Adding a new provider is a one-file drop in
 | `defaults.history_interval` | string | yfinance-style interval for stats history (e.g. `"1d"`). |
 | `defaults.filings_per_form` | int | Max filings returned per SEC form type. |
 | `defaults.include_filing_excerpts` | bool | Whether to attach filing excerpts to the bundle. |
+| `defaults.filings_lookback_days` | int | Lookback window honoured by the backtest filings cache provider. Live EDGAR ignores it. Default 90. |
 | `defaults.earnings_lookback_quarters` | int | Number of historical quarters fetched by the earnings provider. Default 4. |
 | `defaults.short_interest_lookback_days` | int | Lookback window (days) for FINRA short-interest snapshots. Default 90. |
 | `quiver_http_timeout_seconds` | float | HTTP timeout (seconds) for the Quiver Quant congressional-trades provider. |

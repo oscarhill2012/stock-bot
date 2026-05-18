@@ -41,6 +41,11 @@ class FetchDefaults(BaseModel):
     history_interval:             str  = "1d"
     filings_per_form:             int  = 3
     include_filing_excerpts:      bool = True
+    # Lookback window honoured by the backtest filings cache provider when
+    # serving ``get_company_filings``.  The live EDGAR provider derives its
+    # own window from ``form_types`` + ``limit`` and ignores this value;
+    # only the cache replay path consults it.
+    filings_lookback_days:        int  = 90
     # Phase 3 (Task 5): earnings and short-interest lookback windows promoted
     # from ad-hoc provider defaults to the central FetchDefaults catalogue so
     # that callers can rely on get_config().defaults rather than hard-coding.

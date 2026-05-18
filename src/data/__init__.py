@@ -180,14 +180,21 @@ async def get_stock_news(
         Historical clock timestamp.  Defaults to ``datetime.now(UTC)``.
     """
     from datetime import timedelta as _td
+    from data.config import get_config
     as_of = resolve_as_of(as_of, allow_wallclock=True, site="data.get_stock_news")
     as_of_date = as_of.date()
+    # Pull lookback_days from config so the cache provider (which requires
+    # the kwarg) and the live Alpha Vantage provider (which honours it when
+    # from_date is absent) both receive a consistent value sourced from
+    # config/data.json — the single source of truth.
+    lookback_days = get_config().defaults.news_lookback_days
     return await _dispatch(
         "news",
         ticker.upper(),
-        from_date=from_date or (as_of_date - _td(days=7)),
+        from_date=from_date or (as_of_date - _td(days=lookback_days)),
         to_date=to_date or as_of_date,
         limit=limit,
+        lookback_days=lookback_days,
         as_of=as_of,
     )
 
@@ -310,11 +317,18 @@ async def get_company_filings(
     as_of:
         Historical clock timestamp.  Defaults to ``datetime.now(UTC)``.
     """
+    from data.config import get_config
     as_of = resolve_as_of(as_of, allow_wallclock=True, site="data.get_company_filings")
+    # The live EDGAR provider ignores lookback_days (it derives its own
+    # window from form_types + limit), but the cache provider requires it.
+    # Sourcing from config keeps the single-source-of-truth invariant.
+    lookback_days = get_config().defaults.filings_lookback_days
     return await _dispatch(
         "filings", ticker.upper(),
         form_types=form_types, limit=limit,
-        include_excerpts=include_excerpts, as_of=as_of,
+        include_excerpts=include_excerpts,
+        lookback_days=lookback_days,
+        as_of=as_of,
     )
 
 
