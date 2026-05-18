@@ -272,7 +272,16 @@ def _build_provider_fns(warmup_days: int = 30) -> dict:
         "news":              _news,
         "filings":           _filings,
         "insider_trades":    _insider_trades,
-        "politician_trades": _politician_trades,
+        # politician_trades intentionally disabled — there is no free
+        # historical source (FMP's senate/house endpoints require a paid
+        # tier; Quiver's historic data is also paid).  The smart_money
+        # analyst already degrades gracefully when politician data is
+        # absent (see src/agents/analysts/smart_money/fetch.py:88-93),
+        # so the fill skips the domain entirely rather than logging a
+        # 403 per ticker.  The `_politician_trades` provider function is
+        # retained as a placeholder — re-enable by uncommenting the line
+        # below once a working free provider lands.
+        # "politician_trades": _politician_trades,
         "notable_holders":   _notable_holders,
     }
 
