@@ -161,14 +161,73 @@ async def test_alpha_vantage_empty_feed_returns_empty_list(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_alpha_vantage_missing_feed_key_returns_empty_list(monkeypatch):
-    """A payload without a ``feed`` key (e.g. error response) returns ``[]``."""
+async def test_alpha_vantage_information_envelope_raises(monkeypatch):
+    """An ``Information`` envelope (rate-limit / quota) must raise.
+
+    AV's free-tier rate-limit response arrives as HTTP 200 with
+    ``{"Information": "...25 requests/day..."}`` and no ``feed`` key — which
+    is indistinguishable from a genuinely empty feed unless the provider
+    explicitly checks for the envelope.  We raise so the cache_runs layer
+    surfaces the outage instead of writing ``status=ok, rows_written=0``.
+    """
     from data.providers.news import alpha_vantage as mod
 
     monkeypatch.setattr(mod, "require_key", lambda _: "test-token")
     monkeypatch.setattr(
         mod.httpx, "AsyncClient",
         lambda *a, **k: _AsyncCM(_make_fake_resp({"Information": "rate limit hit"})),
+    )
+
+    with pytest.raises(mod.AlphaVantageEnvelopeError, match="Information"):
+        await mod.fetch("AAPL", as_of=date(2023, 3, 12), lookback_days=7)
+
+
+@pytest.mark.asyncio
+async def test_alpha_vantage_note_envelope_raises(monkeypatch):
+    """A ``Note`` envelope (legacy throttle notification) must also raise."""
+    from data.providers.news import alpha_vantage as mod
+
+    monkeypatch.setattr(mod, "require_key", lambda _: "test-token")
+    monkeypatch.setattr(
+        mod.httpx, "AsyncClient",
+        lambda *a, **k: _AsyncCM(_make_fake_resp({"Note": "throttled"})),
+    )
+
+    with pytest.raises(mod.AlphaVantageEnvelopeError, match="Note"):
+        await mod.fetch("AAPL", as_of=date(2023, 3, 12), lookback_days=7)
+
+
+@pytest.mark.asyncio
+async def test_alpha_vantage_error_message_envelope_raises(monkeypatch):
+    """An ``Error Message`` envelope (e.g. invalid params) must raise."""
+    from data.providers.news import alpha_vantage as mod
+
+    monkeypatch.setattr(mod, "require_key", lambda _: "test-token")
+    monkeypatch.setattr(
+        mod.httpx, "AsyncClient",
+        lambda *a, **k: _AsyncCM(
+            _make_fake_resp({"Error Message": "Invalid API call"})
+        ),
+    )
+
+    with pytest.raises(mod.AlphaVantageEnvelopeError, match="Error Message"):
+        await mod.fetch("AAPL", as_of=date(2023, 3, 12), lookback_days=7)
+
+
+@pytest.mark.asyncio
+async def test_alpha_vantage_missing_feed_key_without_envelope_returns_empty(monkeypatch):
+    """A payload with neither ``feed`` nor an envelope key still returns ``[]``.
+
+    Preserves graceful behaviour for AV responses that happen to omit
+    ``feed`` without signalling an error — we only raise when AV
+    *explicitly* indicates a non-data state via one of the envelope keys.
+    """
+    from data.providers.news import alpha_vantage as mod
+
+    monkeypatch.setattr(mod, "require_key", lambda _: "test-token")
+    monkeypatch.setattr(
+        mod.httpx, "AsyncClient",
+        lambda *a, **k: _AsyncCM(_make_fake_resp({})),
     )
 
     out = await mod.fetch("AAPL", as_of=date(2023, 3, 12), lookback_days=7)

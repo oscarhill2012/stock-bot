@@ -55,6 +55,24 @@ from data.secrets import require_key
 # Alpha Vantage REST base URL — all queries go through the single /query endpoint.
 _BASE = "https://www.alphavantage.co/query"
 
+# Top-level keys AV uses to communicate non-data states inside a HTTP 200
+# envelope.  The free tier returns a `"Information"` payload (with HTTP 200
+# and *no* `feed` key) once the 25-request/day budget is exhausted — which is
+# indistinguishable from a genuinely empty feed unless we look for these
+# markers explicitly.  Audit 2026-05-18 traced an entire SVB cache fill with
+# `news` showing `status=ok, rows_written=0` to exactly this blind spot.
+_ENVELOPE_KEYS: tuple[str, ...] = ("Information", "Note", "Error Message")
+
+
+class AlphaVantageEnvelopeError(RuntimeError):
+    """Raised when AV returns a non-data envelope (rate-limit, quota, error).
+
+    Distinguished from a genuinely empty feed so callers (cache_runs, in
+    particular) can record the failure instead of silently writing zero
+    rows.  The HTTP layer cannot detect this — AV returns HTTP 200 with
+    `{"Information": "...25 requests/day..."}` and no `feed` key.
+    """
+
 # Hard limit on articles returned per request (AV maximum is 1000; 200 is a
 # safe default that keeps response sizes manageable without losing coverage).
 _DEFAULT_ARTICLE_LIMIT = 200
@@ -237,6 +255,10 @@ async def fetch(
         If ``ALPHA_VANTAGE_API_KEY`` is not set in the environment.
     httpx.HTTPStatusError
         On a non-2xx HTTP response from Alpha Vantage.
+    AlphaVantageEnvelopeError
+        If AV responds with a non-data envelope (``Information``, ``Note``,
+        or ``Error Message`` key — typically a rate-limit or quota
+        notification served at HTTP 200).
     """
     symbol = ticker.upper()
 
@@ -268,6 +290,22 @@ async def fetch(
             resp = await client.get(_BASE, params=params)
             resp.raise_for_status()
             payload: dict = resp.json() or {}
+
+            # Detect non-data envelopes BEFORE walking the feed.  AV serves
+            # rate-limit/quota notices at HTTP 200 with no ``feed`` key, so
+            # ``_extract_articles`` would silently return ``[]`` and the cache
+            # writer would record status=ok / rows_written=0 — masking the
+            # outage.  Raising lets the cache_runs layer surface it as an
+            # error and prevents downstream tickers from being skipped under
+            # the same exhausted quota.
+            for envelope_key in _ENVELOPE_KEYS:
+                msg = payload.get(envelope_key)
+
+                if msg:
+                    raise AlphaVantageEnvelopeError(
+                        f"Alpha Vantage returned a {envelope_key!r} envelope "
+                        f"(likely rate-limit or quota): {str(msg)[:200]}"
+                    )
 
             for article in _extract_articles(payload, symbol):
                 if article.url not in seen_urls:
