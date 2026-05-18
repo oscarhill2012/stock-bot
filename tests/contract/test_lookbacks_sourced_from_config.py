@@ -74,7 +74,6 @@ def _sentinel_config() -> DataConfig:
     )
 
 
-@pytest.mark.xfail(strict=True, reason="awaiting Task 7 (smart_money) migration")
 @pytest.mark.asyncio
 async def test_smart_money_fetch_uses_config_lookbacks(monkeypatch) -> None:
     """smart_money_fetch_callback forwards config sentinels to its providers.
