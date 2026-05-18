@@ -82,6 +82,17 @@ class DomainFindings:
     skipped_tickers:      list[str]           = field(default_factory=list)   # no cache_runs row at all
     error_examples:       list[str]           = field(default_factory=list)
 
+    # ── Future-bleed (PIT > window_end) — rows that a backtest analyst at
+    # any tick within the window must never see.  A non-zero count almost
+    # certainly indicates a provider that's silently over-fetching past the
+    # simulation clock (e.g. ignoring a ``to_date`` kwarg the way AV news
+    # was doing pre-2026-05-18 fix).  These bleeds are interpretation-
+    # falsifying — the strategist would see post-event information and
+    # produce results that *look* good but rely on hindsight.
+    future_bleed_rows:        int                  = 0
+    future_bleed_max_pit:     str | None           = None
+    future_bleed_per_ticker:  dict[str, int]       = field(default_factory=dict)
+
 
 # ---------------------------------------------------------------------------
 # Helpers.
@@ -163,6 +174,29 @@ def audit_domain(
         )
         counts[t] = cur.fetchone()[0]
     findings.per_ticker_in_window = counts
+
+    # ── 2b.  Future-bleed — rows whose PIT date is past window_end. ───────
+    # Any non-zero result means a provider over-fetched past the simulation
+    # clock, which would leak future info into a backtest tick at any time
+    # within the window.  Reported per-ticker so the offending source is
+    # obvious rather than just a domain-level number.
+    cur.execute(
+        f"SELECT COUNT(*), MAX({domain.pit_expr}) "                            # noqa: S608
+        f"FROM {domain.table} WHERE {domain.pit_expr} > ?",
+        (end_iso,),
+    )
+    bleed_count, bleed_max = cur.fetchone()
+    findings.future_bleed_rows    = bleed_count or 0
+    findings.future_bleed_max_pit = bleed_max
+
+    if findings.future_bleed_rows > 0:
+        cur.execute(
+            f"SELECT ticker, COUNT(*) FROM {domain.table} "                    # noqa: S608
+            f"WHERE {domain.pit_expr} > ? GROUP BY ticker "
+            f"ORDER BY COUNT(*) DESC",
+            (end_iso,),
+        )
+        findings.future_bleed_per_ticker = {t: n for t, n in cur.fetchall()}
 
     # ── 3.  cache_runs audit — what did the fetcher record? ────────────────
     cur.execute(
@@ -338,6 +372,41 @@ def print_ohlcv_spans(ohl: dict[str, dict[str, object]]) -> None:
         print(f"  {t:<8} {str(info['min']):>11} → {str(info['max']):>11}  ({info['count']} bars)")
 
 
+def print_future_bleed_check(
+    all_findings: list[DomainFindings],
+    end_iso:      str,
+) -> None:
+    """Print per-domain future-bleed counts (rows with PIT > window_end).
+
+    Any non-zero count is interpretation-falsifying: at every tick inside
+    the backtest window the analyst would gain visibility on information
+    dated after the window even ends, which leaks into every signal.
+    """
+    _section(f"Future-bleed check (rows with PIT > window_end {end_iso})")
+
+    any_bleed = False
+    for f in all_findings:
+        if not f.table_present:
+            continue
+
+        if f.future_bleed_rows == 0:
+            print(f"  {f.domain.name:<20}  clean")
+            continue
+
+        any_bleed = True
+
+        # Compact summary line + per-ticker breakdown indented under it.
+        print(
+            f"  {f.domain.name:<20}  BLEED — "
+            f"{f.future_bleed_rows} row(s), latest PIT = {f.future_bleed_max_pit}"
+        )
+        for t, n in f.future_bleed_per_ticker.items():
+            print(f"      {t:<8} +{n}")
+
+    if not any_bleed:
+        print("\n  All domains clean — no rows dated past window_end.")
+
+
 def print_per_domain_details(all_findings: list[DomainFindings]) -> None:
     """Print the longer per-domain breakdown — skip details when the
     headline shows the domain is healthy and there is nothing to elaborate."""
@@ -429,6 +498,16 @@ def render_verdict(
                 f"cache_runs row at all: {f.skipped_tickers}"
             )
 
+        # Future-bleed is the single highest-severity check — flag it
+        # prominently so it isn't lost in the silent-empty noise.
+        if f.future_bleed_rows > 0:
+            warns.append(
+                f"{f.domain.name}: FUTURE-BLEED — {f.future_bleed_rows} "
+                f"row(s) dated past window_end (latest "
+                f"{f.future_bleed_max_pit}); per-ticker "
+                f"{f.future_bleed_per_ticker}"
+            )
+
     return warns
 
 
@@ -495,6 +574,8 @@ def main() -> int:
 
         ohl = deep_check_ohlcv(con, tickers)
         print_ohlcv_spans(ohl)
+
+        print_future_bleed_check(all_findings, end_iso)
 
         _section("Verdict")
         warns = render_verdict(all_findings, deep)
