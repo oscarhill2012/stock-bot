@@ -1,4 +1,4 @@
-"""Tests that ``as_of`` is forwarded to every wrapper + aggregator dispatch.
+"""Tests that ``as_of`` is forwarded to every wrapper dispatch.
 
 DEVIATION from plan: The plan's test referenced ``get_stock_stats`` and domain
 ``"stats"``, both of which were retired in Phase 5.  This test uses the actual

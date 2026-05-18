@@ -24,7 +24,7 @@ from .models.sentiment import SocialSentiment
 from .models.trades import Form4Bundle, PoliticianTrade, NotableHolder
 from .models.filings import Filing
 from .models.earnings import EarningsHistory
-from .models.analyst_consensus import AnalystConsensusBundle, AnalystRating, AnalystRevision  # noqa: F401
+from .models.analyst_consensus import AnalystConsensusBundle
 from .models.short_interest import ShortInterestSnapshot
 from .models.options import OptionContract
 
