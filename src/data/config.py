@@ -51,7 +51,10 @@ class FetchDefaults(BaseModel):
 class DataConfig(BaseModel):
     providers: dict[str, str]
     defaults: FetchDefaults = Field(default_factory=FetchDefaults)
-    http_timeout_seconds: float = 15.0
+    # Prefixed ``quiver_`` to reflect that only the Quiver Quant politician-trades
+    # provider actually consumes this value.  A global ``http_timeout_seconds``
+    # name implied it was project-wide; it is not.
+    quiver_http_timeout_seconds: float = 15.0
 
     @model_validator(mode="after")
     def _check_domains(self) -> DataConfig:

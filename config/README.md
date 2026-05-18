@@ -50,7 +50,7 @@ shared by all providers. Adding a new provider is a one-file drop in
 | `defaults.include_filing_excerpts` | bool | Whether to attach filing excerpts to the bundle. |
 | `defaults.earnings_lookback_quarters` | int | Number of historical quarters fetched by the earnings provider. Default 4. |
 | `defaults.short_interest_lookback_days` | int | Lookback window (days) for FINRA short-interest snapshots. Default 90. |
-| `http_timeout_seconds` | float | Shared HTTP timeout applied to provider clients. |
+| `quiver_http_timeout_seconds` | float | HTTP timeout (seconds) for the Quiver Quant congressional-trades provider. |
 
 Each `providers.<domain>` value must be a name registered in the matching
 `src/data/providers/<domain>/` module. Validation happens at import time —

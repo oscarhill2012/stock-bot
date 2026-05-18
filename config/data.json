@@ -26,5 +26,5 @@
     "earnings_lookback_quarters": 4,
     "short_interest_lookback_days": 90
   },
-  "http_timeout_seconds": 15.0
+  "quiver_http_timeout_seconds": 15.0
 }

@@ -68,9 +68,7 @@ def _sentinel_config() -> DataConfig:
             earnings_lookback_quarters   = 4,
             short_interest_lookback_days = 90,
         ),
-        # Task 12 renames this field to ``quiver_http_timeout_seconds``;
-        # update this line in lockstep with the Task 12 edits.
-        http_timeout_seconds = 15.0,
+        quiver_http_timeout_seconds = 15.0,
     )
 
 

@@ -41,7 +41,7 @@ VALID_PAYLOAD: dict = {
         "filings_per_form": 3,
         "include_filing_excerpts": True,
     },
-    "http_timeout_seconds": 15.0,
+    "quiver_http_timeout_seconds": 15.0,
 }
 
 
@@ -61,7 +61,7 @@ def test_valid_config_loads(tmp_path: Path) -> None:
     assert cfg.providers["company_ratios"] == "yfinance"
     assert isinstance(cfg.defaults, FetchDefaults)
     assert cfg.defaults.news_lookback_days == 7
-    assert cfg.http_timeout_seconds == 15.0
+    assert cfg.quiver_http_timeout_seconds == 15.0
 
 
 def test_unknown_domain_rejected(tmp_path: Path) -> None:
@@ -119,7 +119,7 @@ def test_fetch_defaults_includes_earnings_and_short_interest(tmp_path: Path) -> 
             "earnings_lookback_quarters":   4,
             "short_interest_lookback_days": 90,
         },
-        "http_timeout_seconds": 15.0,
+        "quiver_http_timeout_seconds": 15.0,
     }
     path = tmp_path / "data.json"
     path.write_text(__import__("json").dumps(payload), encoding="utf-8")
