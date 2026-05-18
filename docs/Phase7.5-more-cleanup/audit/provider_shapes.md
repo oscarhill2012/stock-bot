@@ -191,3 +191,25 @@ reshape target.
 
 All four agent-body sites must be updated together with the fetch-site rewrite
 to maintain internal consistency (see spec §5 and plan Task 17).
+
+---
+
+## Phase B verification log
+
+Records which domains were confirmed clean (no code change needed) during
+Phase B execution, and which required fixes.
+
+| Domain | Task | Outcome | Notes |
+|---|---|---|---|
+| `analyst_consensus` | 5 | fixed — live | Created `AnalystConsensusBundle` model; live provider now wraps tuple in bundle. |
+| `company_ratios` | 6 | fixed — cache | Cache now raises `KeyError` instead of returning `None` when no snapshot exists. |
+| `earnings` | 7 | verified clean | Live-only; contract test passes. No code change needed. |
+| `filings` | 8 | verified clean | Live + cache both return `list[Filing]`; contract test passes. |
+| `insider_trades` | 9 | verified clean | Live + cache both return `Form4Bundle`; contract test passes. |
+| `news` | 10 | verified clean | Live + cache both return `list[NewsArticle]`; contract test passes. |
+| `notable_holders` | 11 | verified clean | Live + cache both return `list[NotableHolder]`; contract test passes. |
+| `options` | 12 | fixed — live | Created `OptionContract` model; live provider now returns `list[OptionContract]`. |
+| `politician_trades` | 13 | verified clean | Live + cache both return `list[PoliticianTrade]`; contract test passes. |
+| `price_history` | 14 | verified clean | Live + cache both return `single/PriceHistory`; contract test passes. |
+| `short_interest` | 15 | verified clean | Live-only; contract test passes. No code change needed. |
+| `social_sentiment` | 16 | fixed — cache | Cache now returns empty `SocialSentiment` instead of `None`. |
