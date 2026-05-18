@@ -43,7 +43,8 @@ def test_early_close_day_yields_thirteen_hundred_close(monkeypatch) -> None:
     If ``schedule.py`` were hardcoding 16:00 ET this would fail, confirming
     that ``pandas_market_calendars`` (not config) owns session times.
     """
-    from backtest import schedule, settings as bs_mod
+    from backtest import schedule
+    from backtest import settings as bs_mod
 
     monkeypatch.setattr(bs_mod, "_cache", _make_settings(ticks_per_day=["open", "close"]))
 
@@ -65,7 +66,8 @@ def test_ticks_per_day_open_only_halves_tick_count(monkeypatch) -> None:
     Confirms that ``ticks_per_day`` is the sole policy knob for phase
     selection — and that the calendar-based path still honours it correctly.
     """
-    from backtest import schedule, settings as bs_mod
+    from backtest import schedule
+    from backtest import settings as bs_mod
 
     monkeypatch.setattr(bs_mod, "_cache", _make_settings(ticks_per_day=["open", "close"]))
     full = schedule.generate_ticks(date(2024, 1, 2), date(2024, 1, 12))
@@ -85,7 +87,8 @@ def test_unsupported_phase_raises(monkeypatch) -> None:
     """
     import pytest
 
-    from backtest import schedule, settings as bs_mod
+    from backtest import schedule
+    from backtest import settings as bs_mod
 
     monkeypatch.setattr(bs_mod, "_cache", _make_settings(ticks_per_day=["opening", "close"]))
 

@@ -15,12 +15,11 @@ here — Phase 7.6 deletes the function entirely.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
 from data.config import DataConfig, FetchDefaults
-
 
 # Sentinel values chosen to be distinct from every plausible production value.
 SENTINEL_NEWS              = 991
@@ -106,7 +105,7 @@ async def test_smart_money_fetch_uses_config_lookbacks(monkeypatch) -> None:
     monkeypatch.setattr(smart_money_fetch, "get_notable_holders",      fake_holders)
 
     class FakeCtx:
-        state = {"tickers": ["AAPL"], "as_of": datetime.now(timezone.utc)}
+        state = {"tickers": ["AAPL"], "as_of": datetime.now(UTC)}
 
     await smart_money_fetch.smart_money_fetch_callback(FakeCtx())
 
@@ -152,7 +151,7 @@ async def test_fundamental_fetch_uses_config_insider_lookback(monkeypatch) -> No
     monkeypatch.setattr(fundamental_fetch, "get_company_filings", fake_filings)
 
     class FakeCtx:
-        state = {"tickers": ["AAPL"], "as_of": datetime.now(timezone.utc)}
+        state = {"tickers": ["AAPL"], "as_of": datetime.now(UTC)}
 
     await fundamental_fetch.fundamental_fetch_callback(FakeCtx())
 

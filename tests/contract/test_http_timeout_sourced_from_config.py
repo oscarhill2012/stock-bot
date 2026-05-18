@@ -9,7 +9,6 @@ from unittest.mock import MagicMock, patch
 
 from data.config import DataConfig, FetchDefaults
 
-
 SENTINEL_TIMEOUT = 42.0
 
 

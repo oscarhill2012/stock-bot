@@ -33,6 +33,8 @@ def test_loader_validates_minimal_payload(tmp_path: Path) -> None:
 
 def test_loader_rejects_out_of_range_abort_ratio(tmp_path: Path) -> None:
     """failed_tick_abort_ratio outside [0, 1] is rejected by validation."""
+    from pydantic import ValidationError
+
     from backtest.settings import load_backtest_settings_from
 
     payload = {
@@ -47,7 +49,7 @@ def test_loader_rejects_out_of_range_abort_ratio(tmp_path: Path) -> None:
     path = tmp_path / "settings.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
 
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         load_backtest_settings_from(path)
 
 

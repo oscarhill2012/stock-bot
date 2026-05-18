@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def report(run_dir: Path, settings: "BacktestSettings") -> None:
+def report(run_dir: Path, settings: BacktestSettings) -> None:
     """Generate ``report/equity_curve.png`` and ``report/metrics.md``; backfill forwards.
 
     Reads portfolio snapshots from the run's ``db.sqlite``, writes an equity

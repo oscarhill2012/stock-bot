@@ -16,8 +16,6 @@ from data.retry import with_retry
 from ...models import PoliticianTrade, TradeSide
 
 _BASE_URL = "https://api.quiverquant.com/beta"
-# _HTTP_TIMEOUT removed — timeout is now sourced from get_config().quiver_http_timeout_seconds
-# so that config/data.json is the single source of truth.
 
 logger = logging.getLogger(__name__)
 
