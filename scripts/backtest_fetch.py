@@ -402,9 +402,10 @@ async def _main_async(args: argparse.Namespace) -> None:
     """
     from backtest.cache.fetcher import Fetcher
     from backtest.cache.store import CachedDataStore
+    from backtest.settings import get_backtest_settings
     from backtest.windows import load_windows
 
-    settings  = json.loads(Path("config/backtest_settings.json").read_text())
+    settings  = get_backtest_settings()
     watchlist_path = Path(args.watchlist)
     watchlist = json.loads(watchlist_path.read_text())["tickers"]
 
@@ -416,11 +417,10 @@ async def _main_async(args: argparse.Namespace) -> None:
         )
     window = windows[args.window]
 
-    # Read warm-up days from settings; fall back to 30 if absent (safe default
-    # that covers RSI(14), ATR(14), and pct_change_20d's longest lookback).
-    warmup_days: int = settings.get("ohlcv_warmup_days", 30)
+    # Read warm-up days from settings — already validated by BacktestSettings.
+    warmup_days: int = settings.ohlcv_warmup_days
 
-    store = CachedDataStore(Path(settings["cache_path"]))
+    store = CachedDataStore(Path(settings.cache_path))
 
     fetcher = Fetcher(
         store=store,

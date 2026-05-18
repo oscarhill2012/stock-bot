@@ -84,9 +84,9 @@ def main() -> None:
 
     # Wrap the golden cache store with the auditing decorator so every
     # cache-read row is intercepted and recorded.
-    import json
-    settings   = json.loads(Path("config/backtest_settings.json").read_text())
-    cache_path = Path(settings["cache_path"])
+    from backtest.settings import get_backtest_settings
+    settings   = get_backtest_settings()
+    cache_path = Path(settings.cache_path)
 
     inner = CachedDataStore(cache_path)
     store = AuditingStore(inner=inner)

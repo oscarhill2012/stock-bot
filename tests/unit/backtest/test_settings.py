@@ -130,3 +130,34 @@ def test_runner_accepts_backtest_settings_instance(tmp_path: Path, monkeypatch) 
         watchlist_path = watchlist_path,
     )
     assert runner._settings is settings
+
+
+def test_each_script_uses_get_backtest_settings() -> None:
+    """Every CLI script consuming backtest_settings.json goes through the loader."""
+    import ast
+    from pathlib import Path
+
+    targets = [
+        "scripts/backtest_fetch.py",
+        "scripts/backtest_report.py",
+        "scripts/backtest_audit_tick.py",
+        "scripts/debug_cache_audit.py",
+    ]
+
+    for path_str in targets:
+        source = Path(path_str).read_text(encoding="utf-8")
+        tree   = ast.parse(source, path_str)
+
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "loads"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "json"
+            ):
+                src_segment = ast.get_source_segment(source, node) or ""
+                assert "backtest_settings.json" not in src_segment, (
+                    f"{path_str}: direct json.loads(backtest_settings.json) "
+                    "found — use get_backtest_settings() instead."
+                )
