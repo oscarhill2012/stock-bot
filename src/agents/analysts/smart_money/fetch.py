@@ -5,14 +5,20 @@ sophisticated observers (congressional trades, notable 13F holders).  Insider
 trades (Form 4) belong to the Fundamental analyst, which has the prose-reading
 mandate (MD&A, risk factors, Form 4 footnotes) that justifies an LLM.
 
-The callback writes ``state["smart_money_data"]`` as:
+Phase 7.6 Task 17 reshapes the state key.  The callback writes
+``state["smart_money_data"]`` as a ticker-first dict:
 
 .. code-block:: python
 
     {
-        "politicians": {ticker: [filing_dict, ...]},
-        "notable_holders": {ticker: [holder_dict, ...]},
+        "AAPL": SmartMoneyRaw(politicians=[...], notable_holders=[...]),
+        "MSFT": SmartMoneyRaw(politicians=[...], notable_holders=[...]),
     }
+
+Values are ``SmartMoneyRaw`` model instances, not plain dicts.  Downstream
+consumers access ``raw.politicians`` / ``raw.notable_holders`` as attributes.
+``extra="forbid"`` on ``SmartMoneyRaw`` ensures construction-time validation
+so typos surface loudly rather than silently producing empty lists.
 
 The callback **always** returns ``None``.  This keeps ADK from setting
 ``ctx.end_invocation = True`` (which would bypass ``_run_async_impl`` and
@@ -32,6 +38,7 @@ from data import (
     get_notable_holders,
     get_public_figure_trades,
 )
+from data.models.smart_money import SmartMoneyRaw
 from data.timeguard import resolve_as_of
 from observability.trace import _trace_maybe
 
@@ -85,10 +92,12 @@ async def smart_money_fetch_callback(
     politician_lookback_days = defaults.politician_lookback_days
     holder_lookback_days     = defaults.notable_holder_lookback_days
 
-    smart_money_data: dict = {
-        "politicians": {},
-        "notable_holders": {},
-    }
+    # Ticker-first dict: state["smart_money_data"][ticker] → SmartMoneyRaw.
+    # SmartMoneyRaw expects list[PoliticianTrade] and list[NotableHolder]; the
+    # providers already return typed model instances so we pass them through
+    # directly.  Never call .model_dump() here — downstream consumers use
+    # attribute access (raw.politicians / raw.notable_holders), not dict keys.
+    smart_money_data: dict[str, SmartMoneyRaw] = {}
 
     for ticker in tickers:
         try:
@@ -107,12 +116,13 @@ async def smart_money_fetch_callback(
             logger.warning("notable_holders fetch failed for %s: %s", ticker, exc)
             holders = []
 
-        smart_money_data["politicians"][ticker] = [
-            t.model_dump() if hasattr(t, "model_dump") else t for t in politicians
-        ]
-        smart_money_data["notable_holders"][ticker] = [
-            h.model_dump() if hasattr(h, "model_dump") else h for h in holders
-        ]
+        # Construct the per-ticker aggregate.  extra="forbid" on SmartMoneyRaw
+        # means a ValidationError fires loudly if a field name is wrong, rather
+        # than silently dropping data into empty lists.
+        smart_money_data[ticker] = SmartMoneyRaw(
+            politicians=politicians,
+            notable_holders=holders,
+        )
 
     state["smart_money_data"] = smart_money_data
 

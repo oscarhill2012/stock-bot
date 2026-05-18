@@ -125,8 +125,18 @@ def make_evidence_callback(
             # plain-dict state objects in unit tests.
             _to_dict = getattr(state, "to_dict", None)
             state_snapshot: dict = _to_dict() if callable(_to_dict) else dict(state)
+
+            # Retrieve the per-ticker slice.  Phase 7.6 Task 17 changes
+            # smart_money_data to store SmartMoneyRaw Pydantic model instances
+            # rather than plain dicts.  All other analysts continue to use plain
+            # dicts.  Normalise to a dict here so every extractor always receives
+            # a plain dict regardless of the upstream storage format.
+            raw_slice = data.get(ticker, {})
+            if hasattr(raw_slice, "model_dump"):
+                raw_slice = raw_slice.model_dump()
+
             features: dict[str, float] = extractor(
-                data.get(ticker, {}), ticker, as_of=recorded_at,
+                raw_slice, ticker, as_of=recorded_at,
                 state=state_snapshot,
             )
 

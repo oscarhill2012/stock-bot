@@ -1,13 +1,17 @@
-"""Tests for smart_money_fetch_callback — Phase 5, Tasks 4 and 9.
+"""Tests for smart_money_fetch_callback — Phase 5, Tasks 4 and 9; Phase 7.6 Task 17.
 
 After Phase 5 Task 4, smart_money_fetch_callback must NOT pull insider trades.
 The callback is scoped to external-observer flows only: politician_trades and
 notable_holders.
 
-After Phase 5 Task 9 (regression fix), the callback must always return None —
+After Phase 5 Task 9 (regression fix), the callback always returns None —
 returning a Content object would cause ADK to set end_invocation=True, which
 would bypass _run_async_impl and prevent per-ticker no-data verdicts from
 being emitted.  No-data handling is delegated to SmartMoneyAnalyst._run_async_impl.
+
+After Phase 7.6 Task 17, the callback writes state["smart_money_data"] as a
+ticker-first dict of SmartMoneyRaw instances rather than a category-first
+nested dict.
 """
 from __future__ import annotations
 
@@ -63,11 +67,15 @@ async def test_smart_money_fetch_does_not_call_insider_trades():
 
 
 @pytest.mark.asyncio
-async def test_smart_money_fetch_writes_only_politicians_and_holders():
-    """The smart_money_data state dict has exactly 'politicians' and 'notable_holders' keys.
+async def test_smart_money_fetch_writes_ticker_keyed_data():
+    """After Phase 7.6 Task 17, smart_money_data is ticker-keyed, not category-keyed.
 
-    The 'insiders' key must be absent after Phase 5 Task 4.
+    The old category-first keys ('politicians', 'notable_holders', 'insiders')
+    must not appear at the top level.  Instead the top-level keys are ticker
+    symbols, each mapping to a SmartMoneyRaw instance.
     """
+    from data.models.smart_money import SmartMoneyRaw
+
     ctx = _make_ctx(["AAPL"])
 
     with (
@@ -84,9 +92,19 @@ async def test_smart_money_fetch_writes_only_politicians_and_holders():
         await fetch_mod.smart_money_fetch_callback(ctx)
 
     data = ctx.state["smart_money_data"]
+
+    # Old category-first keys must not exist at the top level.
     assert "insiders" not in data, "insiders key must be absent from smart_money_data"
-    assert "politicians" in data
-    assert "notable_holders" in data
+    assert "politicians" not in data, (
+        "category key 'politicians' must not appear in ticker-first shape"
+    )
+    assert "notable_holders" not in data, (
+        "category key 'notable_holders' must not appear in ticker-first shape"
+    )
+
+    # The ticker itself must be present as the top-level key.
+    assert "AAPL" in data, "AAPL ticker key missing from smart_money_data"
+    assert isinstance(data["AAPL"], SmartMoneyRaw)
 
 
 # ---------------------------------------------------------------------------
@@ -126,10 +144,29 @@ async def test_fetch_always_returns_none_when_no_activity():
 
 @pytest.mark.asyncio
 async def test_gate_passes_with_politician_trade():
-    """Callback returns None (allow LLM) when at least one politician trade exists."""
+    """Callback returns None when at least one politician trade exists.
+
+    After Phase 7.6 Task 17, the ticker key maps to a SmartMoneyRaw instance
+    whose .politicians list carries the trade.  The stub returns a real
+    PoliticianTrade instance so Pydantic's list[PoliticianTrade] validation
+    on SmartMoneyRaw passes without coercion errors.
+    """
+    from datetime import date
+
+    from data.models.smart_money import SmartMoneyRaw
+    from data.models.trades import PoliticianTrade
+
     ctx = _make_ctx(["AAPL"])
-    politician = MagicMock()
-    politician.model_dump = lambda: {"side": "BUY", "amount": 50_000}
+    politician = PoliticianTrade(
+        ticker="AAPL",
+        politician="Jane Doe",
+        chamber="House",
+        party="D",
+        side="buy",
+        transaction_date=date(2024, 1, 15),
+        amount_min_usd=15_000,
+        amount_max_usd=50_000,
+    )
 
     with (
         patch(
@@ -145,15 +182,37 @@ async def test_gate_passes_with_politician_trade():
         result = await fetch_mod.smart_money_fetch_callback(ctx)
 
     assert result is None  # Gate did NOT fire — signal present.
-    assert "AAPL" in ctx.state["smart_money_data"]["politicians"]
+
+    # Ticker-first: the AAPL key holds a SmartMoneyRaw instance.
+    payload = ctx.state["smart_money_data"]["AAPL"]
+    assert isinstance(payload, SmartMoneyRaw)
+    assert len(payload.politicians) == 1
 
 
 @pytest.mark.asyncio
 async def test_gate_passes_with_notable_holder():
-    """Callback returns None when at least one notable holder is present."""
+    """Callback returns None when at least one notable holder is present.
+
+    After Phase 7.6 Task 17, the ticker key maps to a SmartMoneyRaw instance
+    whose .notable_holders list carries the holder.  The stub returns a real
+    NotableHolder instance so Pydantic's list[NotableHolder] validation on
+    SmartMoneyRaw passes without coercion errors.
+    """
+    from datetime import datetime, timezone
+
+    from data.models.smart_money import SmartMoneyRaw
+    from data.models.trades import NotableHolder
+
     ctx = _make_ctx(["MSFT"])
-    holder = MagicMock()
-    holder.model_dump = lambda: {}
+    holder = NotableHolder(
+        ticker="MSFT",
+        holder="BigFund LLC",
+        form_type="SC 13G",
+        intent="passive",
+        is_amendment=False,
+        filed_at=datetime(2024, 2, 1, tzinfo=timezone.utc),
+        accession_no="0001234567-24-000001",
+    )
 
     with (
         patch(
@@ -169,12 +228,23 @@ async def test_gate_passes_with_notable_holder():
         result = await fetch_mod.smart_money_fetch_callback(ctx)
 
     assert result is None
-    assert "MSFT" in ctx.state["smart_money_data"]["notable_holders"]
+
+    # Ticker-first: the MSFT key holds a SmartMoneyRaw instance.
+    payload = ctx.state["smart_money_data"]["MSFT"]
+    assert isinstance(payload, SmartMoneyRaw)
+    assert len(payload.notable_holders) == 1
 
 
 @pytest.mark.asyncio
 async def test_smart_money_data_ticker_shape():
-    """Per-ticker dicts inside smart_money_data are correctly populated."""
+    """Per-ticker values in smart_money_data are SmartMoneyRaw instances.
+
+    After Phase 7.6 Task 17, the shape is ticker-first.  Each ticker maps
+    to a SmartMoneyRaw instance with .politicians and .notable_holders lists,
+    not to a nested dict.
+    """
+    from data.models.smart_money import SmartMoneyRaw
+
     ctx = _make_ctx(["TSLA"])
 
     with (
@@ -191,10 +261,12 @@ async def test_smart_money_data_ticker_shape():
         await fetch_mod.smart_money_fetch_callback(ctx)
 
     data = ctx.state["smart_money_data"]
-    assert "TSLA" in data["politicians"]
-    assert "TSLA" in data["notable_holders"]
-    assert isinstance(data["politicians"]["TSLA"], list)
-    assert isinstance(data["notable_holders"]["TSLA"], list)
+
+    assert "TSLA" in data, "TSLA ticker key missing from smart_money_data"
+    payload = data["TSLA"]
+    assert isinstance(payload, SmartMoneyRaw)
+    assert isinstance(payload.politicians, list)
+    assert isinstance(payload.notable_holders, list)
 
 
 # ---------------------------------------------------------------------------
@@ -224,12 +296,15 @@ async def test_run_async_impl_emits_no_data_verdicts_when_data_empty():
     analyst = SmartMoneyAnalyst(heuristics=heuristics)
 
     # Simulate the state that the fetch callback writes after finding no signal.
-    # smart_money_data exists but every ticker's sub-dicts are empty lists.
+    # Phase 7.6 Task 17: smart_money_data is ticker-first, values are
+    # SmartMoneyRaw instances with empty lists on both attributes.
+    from data.models.smart_money import SmartMoneyRaw
+
     state = {
         "tickers": ["AAPL", "MSFT"],
         "smart_money_data": {
-            "politicians":     {"AAPL": [], "MSFT": []},
-            "notable_holders": {"AAPL": [], "MSFT": []},
+            "AAPL": SmartMoneyRaw(politicians=[], notable_holders=[]),
+            "MSFT": SmartMoneyRaw(politicians=[], notable_holders=[]),
         },
     }
 
@@ -270,11 +345,13 @@ async def test_run_async_impl_verdicts_have_required_fields():
     )
     analyst = SmartMoneyAnalyst(heuristics=heuristics)
 
+    # Phase 7.6 Task 17: ticker-first shape.
+    from data.models.smart_money import SmartMoneyRaw
+
     state = {
         "tickers": ["GOOG"],
         "smart_money_data": {
-            "politicians":     {"GOOG": []},
-            "notable_holders": {"GOOG": []},
+            "GOOG": SmartMoneyRaw(politicians=[], notable_holders=[]),
         },
     }
 
@@ -289,3 +366,46 @@ async def test_run_async_impl_verdicts_have_required_fields():
     # These fields are required by make_evidence_callback and AnalystVerdict.
     for field in ("ticker", "lean", "confidence", "magnitude", "is_no_data"):
         assert field in verdict, f"Required field '{field}' missing from verdict dict"
+
+
+# ---------------------------------------------------------------------------
+# Phase 7.6 Task 17 — ticker-first SmartMoneyRaw shape
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_fetch_callback_writes_ticker_first_smart_money_raw():
+    """Fetch callback writes state['smart_money_data'][ticker] as SmartMoneyRaw.
+
+    Phase 7.6 Task 17 reshapes the state key from category-first nested dicts
+    to ticker-first SmartMoneyRaw instances.  This test drives the new shape
+    through the full callback path with stubbed providers returning empty lists,
+    and asserts that the value at each ticker key is a SmartMoneyRaw instance
+    with the correct (empty) attribute values.
+    """
+    from agents.analysts.smart_money import fetch as smart_money_fetch
+    from data.models.smart_money import SmartMoneyRaw
+
+    ctx = _make_ctx(["AAPL"])
+
+    with (
+        patch(
+            "agents.analysts.smart_money.fetch.get_public_figure_trades",
+            new=AsyncMock(return_value=[]),
+        ),
+        patch(
+            "agents.analysts.smart_money.fetch.get_notable_holders",
+            new=AsyncMock(return_value=[]),
+        ),
+    ):
+        await smart_money_fetch.smart_money_fetch_callback(ctx)
+
+    payload = ctx.state["smart_money_data"]["AAPL"]
+
+    # The value must be a SmartMoneyRaw instance, not a plain dict.
+    assert isinstance(payload, SmartMoneyRaw), (
+        f"Expected SmartMoneyRaw, got {type(payload).__name__}"
+    )
+
+    # Both lists should be empty — the stubs returned no data.
+    assert payload.politicians == []
+    assert payload.notable_holders == []
