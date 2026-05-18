@@ -2,7 +2,6 @@
 
 Re-exported flat for convenience: ``from data.models import CompanyRatios``.
 """
-from .bundle import ProviderError, StockSignalBundle
 from .company_ratios import CompanyRatios
 from .filings import Filing
 from .market import OHLCBar
@@ -31,10 +30,8 @@ __all__ = [
     "OHLCBar",
     "PoliticianTrade",
     "PriceHistory",
-    "ProviderError",
     "SocialSentiment",
     "SocialSentimentSnapshot",
-    "StockSignalBundle",
     "TradeSide",
     "is_missing_timestamp",
 ]

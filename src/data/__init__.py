@@ -69,7 +69,6 @@ from .models import (
     OHLCBar,
     PoliticianTrade,
     PriceHistory,
-    ProviderError,
     SocialSentiment,
     SocialSentimentSnapshot,
 )
@@ -346,7 +345,6 @@ __all__ = [
     "OHLCBar",
     "PoliticianTrade",
     "PriceHistory",
-    "ProviderError",
     "SocialSentiment",
     "SocialSentimentSnapshot",
     # Rate limits
