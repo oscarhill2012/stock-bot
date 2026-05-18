@@ -70,6 +70,7 @@ def _build_ticker_context(
     ticker: str,
     filings_payload: list[dict],
     insider_bundle: Form4Bundle,
+    insider_lookback_days: int,
 ) -> str:
     """Build the LLM-readable context block for a single ticker.
 
@@ -118,7 +119,9 @@ def _build_ticker_context(
         lines.append("  (no filings available)")
 
     # --- Insider activity (structured numerics) ---
-    lines.append("-- INSIDER ACTIVITY (30d, structured) --")
+    # Window label reflects the *configured* lookback (defaults.insider_lookback_days),
+    # not a hardcoded "30d" — those days flow from config/data.json and can drift.
+    lines.append(f"-- INSIDER ACTIVITY ({insider_lookback_days}d, structured) --")
 
     trades = insider_bundle.trades if insider_bundle else []
     buys   = [t for t in trades if t.side == "buy"]
@@ -297,7 +300,10 @@ async def fundamental_fetch_callback(
 
         # Build the LLM-readable context block for this ticker and accumulate.
         context_blocks.append(
-            _build_ticker_context(ticker, filings_payload, insider_bundle)
+            _build_ticker_context(
+                ticker, filings_payload, insider_bundle,
+                insider_lookback_days=insider_lookback_days,
+            )
         )
 
     state["fundamental_data"] = fundamental_data

@@ -709,6 +709,51 @@ either be deleted with B30 or rewritten to point at this file.
 
 ---
 
+## Appendix — Phase 7.5 review carry-overs
+
+Items flagged by the opus final review of the `config-as-truth` branch
+(2026-05-18) that were intentionally deferred rather than landed in that
+PR.  Recorded here so they don't get lost.
+
+### A1. Sweep remaining `_HTTP_TIMEOUT` literals in non-Quiver providers
+
+**Files:** `src/data/providers/short_interest/finra.py`,
+`src/data/providers/price_history/tiingo.py`,
+`src/data/providers/company_ratios/fmp.py` (each carries its own
+hardcoded `_HTTP_TIMEOUT = 15.0`).
+
+**Why deferred:** Phase 7.5 spec D5 explicitly scoped the rename and
+config plumbing to Quiver only.  Generalising forces a design call —
+single global `http_timeout_seconds`, or per-provider
+`<provider>_http_timeout_seconds`?  That is a brainstorm, not a cleanup.
+
+**Trigger:** the next time any of those three providers is exercised
+in earnest, or when paper-deployment surfaces a need to tune them.
+
+**Effort:** Small once the design choice is made (~1 hour of edits +
+contract tests).  Half a day if the choice itself needs a spec.
+
+### A2. Resolve the commented-out `_politician_trades` provider in `scripts/backtest_fetch.py`
+
+**File:** `scripts/backtest_fetch.py:226` (function defined),
+`scripts/backtest_fetch.py:262` (commented-out registration in the
+provider map).
+
+**Why deferred:** Per the user's standing position
+(`memory/project_politician_trades_disabled.md`), there is no free
+historical source for congressional trades, so the analyst is allowed
+to degrade gracefully and the fetcher is intentionally inert.  Phase
+7.5 has no remit to find a paid source or accept analyst-permanent
+degradation.
+
+**Trigger:** either (a) a viable historical politician-trades source
+appears (Quiver paid tier, FMP backfill, etc.), or (b) a deliberate
+decision to retire the politician-trades analyst entirely.
+
+**Effort:** Sub-1-hour cleanup once the trigger is decided.
+
+---
+
 ## Decisions that need the user
 
 Two judgement calls are mine in this draft; flag if either should flip:
