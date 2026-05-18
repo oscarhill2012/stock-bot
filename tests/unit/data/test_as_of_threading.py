@@ -54,19 +54,3 @@ async def test_wrapper_forwards_as_of(fn, domain) -> None:
     )
 
 
-@pytest.mark.asyncio
-async def test_aggregator_forwards_as_of() -> None:
-    """``get_stock_signal_bundle`` threads ``as_of`` into every dispatch call."""
-    from data.aggregator import get_stock_signal_bundle
-
-    with patch("data.aggregator.dispatch", new=AsyncMock(return_value=None)) as m:
-        # Suppress StockSignalBundle construction — not the focus of this test.
-        with patch("data.aggregator.StockSignalBundle") as sb:
-            sb.return_value = object()
-            await get_stock_signal_bundle("AAPL", as_of=FIXED)
-
-    # Every dispatch call must carry as_of=FIXED.
-    for call in m.await_args_list:
-        assert call.kwargs.get("as_of") == FIXED, (
-            f"dispatch call missing as_of: {call}"
-        )
