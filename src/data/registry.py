@@ -24,7 +24,7 @@ from .models.sentiment import SocialSentiment
 from .models.trades import Form4Bundle, PoliticianTrade, NotableHolder
 from .models.filings import Filing
 from .models.earnings import EarningsHistory
-from .models.analyst_consensus import AnalystRating, AnalystRevision  # noqa: F401 — kept for context
+from .models.analyst_consensus import AnalystConsensusBundle, AnalystRating, AnalystRevision  # noqa: F401
 from .models.short_interest import ShortInterestSnapshot
 
 # ---------------------------------------------------------------------------
@@ -76,23 +76,10 @@ class DomainShape:
     payload_type: type
 
 
-# --- Placeholder stubs for model classes that do not yet exist --------------
+# --- Placeholder stub for OptionContract — replaced in Task 12 -------------
 #
-# These are inlined here (rather than imported) to keep the module importable
-# while the real implementations are created in their respective tasks.
-# Replace each stub with a proper import once the model lands.
-
-@dataclass
-class AnalystConsensusBundle:
-    """Placeholder — replaced in Task 5.
-
-    Task 5 will create the real ``AnalystConsensusBundle`` in
-    ``src/data/models/analyst_consensus.py`` and update the live provider.
-    """
-
-    rating: AnalystRating
-    revisions: list[AnalystRevision]
-
+# Inlined here to keep the module importable until the real model lands.
+# Replace with a proper import once Task 12 creates the real model.
 
 @dataclass
 class OptionContract:

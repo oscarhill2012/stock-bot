@@ -310,16 +310,14 @@ async def _call_live_provider(domain: str, monkeypatch: pytest.MonkeyPatch) -> o
         return await mod.fetch("AAPL", as_of=_as_of_date, lookback_quarters=4)
 
     # ── analyst_consensus ─────────────────────────────────────────────────────
-    # yfinance provider; returns (AnalystRating, list[AnalystRevision]) — a
-    # plain tuple, NOT AnalystConsensusBundle.  This is the known live drift.
-    # The xfail mark on this domain ensures the failing assertion is expected.
+    # yfinance provider; now returns AnalystConsensusBundle (Task 5 aligned).
     if domain == "analyst_consensus":
         from data.providers.analyst_consensus import yfinance as mod
 
         mock_ticker = MagicMock()
-        mock_ticker.analyst_price_targets = {}
-        mock_ticker.upgrades_downgrades   = pd.DataFrame()
-        mock_ticker.recommendations_summary = pd.DataFrame()
+        mock_ticker.analyst_price_targets   = {}
+        mock_ticker.upgrades_downgrades      = pd.DataFrame()
+        mock_ticker.recommendations_summary  = pd.DataFrame()
         mock_ticker.info = {}
         monkeypatch.setattr(mod.yf, "Ticker", lambda _sym: mock_ticker)
         return await mod.fetch("AAPL", as_of=_as_of_date)
@@ -551,7 +549,6 @@ _LIVE_ONLY: set[str] = {"earnings", "analyst_consensus", "short_interest", "opti
 # DOMAIN_SHAPES entry.  Source: audit column "Drift fix needed = live".
 # Each Phase B alignment task removes the relevant entry.
 _LIVE_PENDING: set[str] = {
-    "analyst_consensus",    # returns tuple[AnalystRating, list[AnalystRevision]]; needs AnalystConsensusBundle wrapper
     "options",              # shell returns dict; OptionContract model not yet defined
 }
 

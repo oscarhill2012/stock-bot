@@ -3,14 +3,15 @@ analyst_consensus provider.
 
 ``AnalystRating`` holds the consensus price-target + recommendation snapshot
 for one ticker as of one date.  ``AnalystRevision`` captures a single
-upgrade/downgrade/target event from one firm.
+upgrade/downgrade/target event from one firm.  ``AnalystConsensusBundle``
+wraps both into the canonical bundle returned by the live provider.
 """
 from __future__ import annotations
 
 from datetime import date
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class AnalystRating(BaseModel):
@@ -81,3 +82,27 @@ class AnalystRevision(BaseModel):
     from_grade: str | None = None
     to_grade: str | None = None
     event_date: date
+
+
+class AnalystConsensusBundle(BaseModel):
+    """Bundle wrapping the analyst consensus snapshot and revision history for
+    one ticker — the canonical return type for the ``analyst_consensus`` domain.
+
+    This is the ``bundle / AnalystConsensusBundle`` shape declared in
+    ``DOMAIN_SHAPES``.  Both sub-objects are required; pass empty lists / a
+    default-initialised ``AnalystRating`` when the provider returns no data.
+
+    Attributes
+    ----------
+    rating:
+        Consensus price-target and recommendation snapshot as of the requested
+        date.
+    revisions:
+        Zero or more recent upgrade / downgrade / target-change events, ordered
+        newest-first.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    rating: AnalystRating
+    revisions: list[AnalystRevision] = Field(default_factory=list)
