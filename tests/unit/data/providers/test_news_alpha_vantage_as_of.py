@@ -561,6 +561,203 @@ async def test_alpha_vantage_timestamp_format_uses_hhmmss(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Window resolution — ``from_date`` / ``to_date`` kwargs (PIT-aware)
+# ---------------------------------------------------------------------------
+#
+# These tests pin the contract between ``data.get_stock_news`` (which forwards
+# ``from_date`` / ``to_date``) and the AV provider.  Before this contract was
+# enforced, the provider silently ignored both kwargs and used the default
+# ``lookback_days=7`` — meaning a backtest fetcher asking for a 40-day SVB
+# window only ever got the last 7 days of news.
+
+@pytest.mark.asyncio
+async def test_alpha_vantage_honours_from_date_to_date(monkeypatch):
+    """When ``from_date`` is supplied the window starts there, not at ``as_of - lookback_days``.
+
+    Regression guard: the backtest fetcher calls into AV with a 40-day span
+    via ``from_date`` / ``to_date``.  The provider must chunk that whole
+    span, not the default 7-day window.
+    """
+    from data.providers.news import alpha_vantage as mod
+
+    call_params: list[dict] = []
+
+    class _TrackingCM:
+        async def __aenter__(self) -> _TrackingCM:
+            return self
+
+        async def __aexit__(self, *exc) -> bool:
+            return False
+
+        async def get(self, url: str, params: dict | None = None, **kwargs) -> MagicMock:
+            call_params.append(params or {})
+            return _make_fake_resp({"feed": []})
+
+    monkeypatch.setattr(mod, "require_key", lambda _: "test-token")
+    monkeypatch.setattr(mod.httpx, "AsyncClient", lambda *a, **k: _TrackingCM())
+
+    # 40 days = 2 chunks under the 30-day cap.
+    await mod.fetch(
+        "AAPL",
+        as_of=date(2023, 4, 7),
+        from_date=date(2023, 2, 27),
+        to_date=date(2023, 4, 7),
+        # `lookback_days` would imply a 7-day window if used — verifies it is ignored.
+        lookback_days=7,
+    )
+
+    assert len(call_params) == 2, (
+        f"Expected 2 chunks for a 40-day window, got {len(call_params)}"
+    )
+    assert call_params[0]["time_from"].startswith("20230227")
+    assert call_params[-1]["time_to"].startswith("20230407")
+
+
+@pytest.mark.asyncio
+async def test_alpha_vantage_falls_back_to_lookback_days_when_no_window_kwargs(monkeypatch):
+    """Without ``from_date``/``to_date`` the legacy ``lookback_days`` path is preserved."""
+    from data.providers.news import alpha_vantage as mod
+
+    call_params: list[dict] = []
+
+    class _TrackingCM:
+        async def __aenter__(self) -> _TrackingCM:
+            return self
+
+        async def __aexit__(self, *exc) -> bool:
+            return False
+
+        async def get(self, url: str, params: dict | None = None, **kwargs) -> MagicMock:
+            call_params.append(params or {})
+            return _make_fake_resp({"feed": []})
+
+    monkeypatch.setattr(mod, "require_key", lambda _: "test-token")
+    monkeypatch.setattr(mod.httpx, "AsyncClient", lambda *a, **k: _TrackingCM())
+
+    await mod.fetch("AAPL", as_of=date(2023, 3, 12), lookback_days=7)
+
+    # lookback=7 fits in a single chunk; window starts 7 days before as_of.
+    assert len(call_params) == 1
+    assert call_params[0]["time_from"].startswith("20230305")
+    assert call_params[0]["time_to"].startswith("20230312")
+
+
+@pytest.mark.asyncio
+async def test_alpha_vantage_clips_to_date_at_as_of_for_pit(monkeypatch):
+    """``to_date`` is clipped to ``as_of`` even when the caller asks for later — PIT cap.
+
+    The cap is the provider's last line of defence against a sloppy caller
+    leaking future articles into a backtest tick.
+    """
+    from data.providers.news import alpha_vantage as mod
+
+    call_params: list[dict] = []
+
+    class _TrackingCM:
+        async def __aenter__(self) -> _TrackingCM:
+            return self
+
+        async def __aexit__(self, *exc) -> bool:
+            return False
+
+        async def get(self, url: str, params: dict | None = None, **kwargs) -> MagicMock:
+            call_params.append(params or {})
+            return _make_fake_resp({"feed": []})
+
+    monkeypatch.setattr(mod, "require_key", lambda _: "test-token")
+    monkeypatch.setattr(mod.httpx, "AsyncClient", lambda *a, **k: _TrackingCM())
+
+    # Caller asks for window ending two weeks past as_of — must be clipped.
+    await mod.fetch(
+        "AAPL",
+        as_of=date(2023, 3, 12),
+        from_date=date(2023, 3, 5),
+        to_date=date(2023, 3, 26),
+    )
+
+    assert len(call_params) == 1
+    assert call_params[0]["time_to"].startswith("20230312"), (
+        f"PIT cap leaked: time_to={call_params[0]['time_to']!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_alpha_vantage_accepts_datetime_for_from_date(monkeypatch):
+    """``from_date`` accepts ``datetime`` and coerces to ``date`` correctly.
+
+    The live pipeline forwards tz-aware datetimes; ``_coerce_date`` handles
+    the cross-type case so the provider doesn't reject them.
+    """
+    from datetime import UTC as _UTC
+    from datetime import datetime as _dt
+
+    from data.providers.news import alpha_vantage as mod
+
+    call_params: list[dict] = []
+
+    class _TrackingCM:
+        async def __aenter__(self) -> _TrackingCM:
+            return self
+
+        async def __aexit__(self, *exc) -> bool:
+            return False
+
+        async def get(self, url: str, params: dict | None = None, **kwargs) -> MagicMock:
+            call_params.append(params or {})
+            return _make_fake_resp({"feed": []})
+
+    monkeypatch.setattr(mod, "require_key", lambda _: "test-token")
+    monkeypatch.setattr(mod.httpx, "AsyncClient", lambda *a, **k: _TrackingCM())
+
+    await mod.fetch(
+        "AAPL",
+        as_of=date(2023, 3, 12),
+        from_date=_dt(2023, 3, 5, 16, 0, tzinfo=_UTC),
+        to_date=_dt(2023, 3, 12, 16, 0, tzinfo=_UTC),
+    )
+
+    assert len(call_params) == 1
+    assert call_params[0]["time_from"].startswith("20230305")
+
+
+@pytest.mark.asyncio
+async def test_alpha_vantage_reversed_window_returns_empty(monkeypatch):
+    """A reversed window (``from_date > to_date``) returns ``[]`` without an API call.
+
+    Defensive guard — prevents ``_chunk_window`` from looping forever and
+    avoids burning a request on an obviously-broken caller.
+    """
+    from data.providers.news import alpha_vantage as mod
+
+    call_count = 0
+
+    class _TrackingCM:
+        async def __aenter__(self) -> _TrackingCM:
+            return self
+
+        async def __aexit__(self, *exc) -> bool:
+            return False
+
+        async def get(self, *args, **kwargs) -> MagicMock:
+            nonlocal call_count
+            call_count += 1
+            return _make_fake_resp({"feed": []})
+
+    monkeypatch.setattr(mod, "require_key", lambda _: "test-token")
+    monkeypatch.setattr(mod.httpx, "AsyncClient", lambda *a, **k: _TrackingCM())
+
+    out = await mod.fetch(
+        "AAPL",
+        as_of=date(2023, 3, 12),
+        from_date=date(2023, 3, 20),
+        to_date=date(2023, 3, 10),
+    )
+
+    assert out == []
+    assert call_count == 0
+
+
+# ---------------------------------------------------------------------------
 # Integration / slow test (real network — skipped in CI)
 # ---------------------------------------------------------------------------
 

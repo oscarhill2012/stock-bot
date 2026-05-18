@@ -84,6 +84,38 @@ _DEFAULT_ARTICLE_LIMIT = 200
 _MAX_CHUNK_DAYS = 30
 
 
+def _coerce_date(value: Any) -> date | None:
+    """Return ``value`` as a ``date``, accepting ``date``, ``datetime``, or ``None``.
+
+    The dispatcher (``data.get_stock_news``) hands the news provider
+    ``from_date`` / ``to_date`` values that may be either ``date`` or
+    ``datetime``, depending on caller — the backtest fetcher passes ``date``
+    via window config, while the live pipeline could plausibly pass a tz-aware
+    ``datetime``.  Normalising once here avoids a chain of ``isinstance``
+    checks inside the call body.
+
+    Parameters
+    ----------
+    value:
+        A ``date``, ``datetime``, or ``None``.
+
+    Returns
+    -------
+    date | None
+        ``value.date()`` for a ``datetime``, ``value`` for a ``date``,
+        ``None`` if ``value`` is ``None`` or any other type (callers fall
+        back to ``lookback_days`` when this returns ``None``).
+    """
+    # datetime is a subclass of date, so check it first.
+    if isinstance(value, datetime):
+        return value.date()
+
+    if isinstance(value, date):
+        return value
+
+    return None
+
+
 def _parse_ts(s: str) -> datetime:
     """Parse an Alpha Vantage timestamp string into a UTC-aware datetime.
 
@@ -213,17 +245,26 @@ async def fetch(
     *,
     as_of: date,
     lookback_days: int = 7,
+    from_date: date | datetime | None = None,
+    to_date: date | datetime | None = None,
     **_: Any,
 ) -> list[NewsArticle]:
     """Return news articles for ``ticker`` from Alpha Vantage ``NEWS_SENTIMENT``.
 
-    Queries a ``[as_of - lookback_days, as_of]`` window, splitting it into
-    ≤ 30-day chunks to avoid AV response truncation and keep individual
-    request sizes manageable.  Results from all chunks are merged and
-    de-duplicated by URL before being returned.
+    Window resolution (most-specific-wins):
 
-    Point-in-time correctness: each chunk's ``time_to`` is capped at
-    ``as_of T235959``, so no articles published after ``as_of`` are included.
+    - If ``from_date`` is supplied, ``window_start = from_date`` — the caller
+      has explicitly requested a span, so ignore ``lookback_days``.
+    - Otherwise ``window_start = as_of - lookback_days`` (legacy behaviour).
+    - ``window_end = min(to_date, as_of)`` if ``to_date`` is supplied,
+      otherwise ``window_end = as_of``.  The ``as_of`` cap is non-negotiable
+      and exists to preserve point-in-time correctness — no article published
+      after the simulation clock can ever be returned, even if a caller asks
+      for one.
+
+    Splits the resolved window into ≤ 30-day chunks to avoid AV response
+    truncation and keep individual request sizes manageable.  Results from
+    all chunks are merged and de-duplicated by URL before being returned.
 
     Parameters
     ----------
@@ -231,23 +272,31 @@ async def fetch(
         Stock symbol (e.g. ``"AAPL"``).  Case-insensitive — normalised to
         upper-case before the API call.
     as_of:
-        The simulation / backtest date.  Used as the upper bound of the query
-        window.
+        The simulation / backtest date.  Hard upper bound on the query window
+        even when ``to_date`` extends past it.
     lookback_days:
-        Number of calendar days to look back from ``as_of``.  Defaults to 7.
-        Windows longer than 30 days are automatically split into monthly
-        chunks; each chunk incurs one AV API request.
+        Days to look back from ``as_of`` when ``from_date`` is not supplied.
+        Defaults to 7.  Windows longer than 30 days are automatically split
+        into monthly chunks; each chunk incurs one AV API request.
+    from_date:
+        Explicit lower bound of the news window.  Accepts ``date`` or
+        ``datetime``.  When present, overrides ``lookback_days``.  This is the
+        kwarg ``data.get_stock_news`` forwards — without honouring it, the
+        provider silently underfetches whenever the dispatcher asks for a
+        custom span (e.g. a backtest fill covering more than 7 days).
+    to_date:
+        Explicit upper bound of the news window.  Accepts ``date`` or
+        ``datetime``.  Clipped to ``as_of`` for PIT safety.
     **_:
-        Absorbs extra keyword arguments forwarded by ``dispatch`` so callers
-        do not need to filter kwargs before calling this function.
+        Absorbs other extra keyword arguments forwarded by ``dispatch`` so
+        callers do not need to filter kwargs.
 
     Returns
     -------
     list[NewsArticle]
-        Articles in the query window, de-duplicated by URL and ordered
+        Articles in the resolved window, de-duplicated by URL and ordered
         chunk-by-chunk (oldest chunk first, newest-first within each chunk as
-        returned by AV).  Returns an empty list if the API key is absent or
-        all response feeds are empty.
+        returned by AV).  Returns an empty list when all feeds are empty.
 
     Raises
     ------
@@ -266,9 +315,35 @@ async def fetch(
     # configured .env (import-time failures would break the registry).
     api_key = require_key("ALPHA_VANTAGE_API_KEY")
 
-    # Build the full window then split it into ≤ 30-day chunks.
-    window_start = as_of - timedelta(days=lookback_days)
-    chunks = _chunk_window(window_start, as_of, _MAX_CHUNK_DAYS)
+    # ── Resolve the query window ───────────────────────────────────────────
+    # `as_of` may arrive as either a date or a datetime depending on caller
+    # (live pipeline vs. backtest fetcher).  Normalise to date before any
+    # arithmetic so chunk boundaries are consistent.
+    as_of_date = _coerce_date(as_of) or as_of  # leave as-is if coerce fails
+
+    explicit_start = _coerce_date(from_date)
+    explicit_end   = _coerce_date(to_date)
+
+    # Lower bound: explicit `from_date` wins; otherwise fall back to the
+    # legacy `as_of - lookback_days` calculation.
+    window_start = (
+        explicit_start
+        if explicit_start is not None
+        else as_of_date - timedelta(days=lookback_days)
+    )
+
+    # Upper bound: explicit `to_date` if given, but never past `as_of`.
+    # Capping here is the only thing standing between a sloppy caller and a
+    # PIT leak, so the cap is unconditional.
+    window_end = min(explicit_end, as_of_date) if explicit_end is not None else as_of_date
+
+    # Defensive: if window_start > window_end (caller passed a reversed
+    # range, or `from_date` is after `as_of`) treat as an empty window
+    # rather than letting `_chunk_window` loop forever.
+    if window_start > window_end:
+        return []
+
+    chunks = _chunk_window(window_start, window_end, _MAX_CHUNK_DAYS)
 
     # Track seen URLs to de-duplicate articles that straddle chunk boundaries.
     seen_urls: set[str] = set()
