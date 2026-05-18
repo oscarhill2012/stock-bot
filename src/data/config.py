@@ -32,15 +32,20 @@ _DOMAINS: frozenset[str] = frozenset({
 
 
 class FetchDefaults(BaseModel):
-    news_lookback_days: int = 7
-    insider_lookback_days: int = 30
-    politician_lookback_days: int = 90
-    notable_holder_lookback_days: int = 180
-    notable_holder_limit: int = 20
-    history_period: str = "1y"
-    history_interval: str = "1d"
-    filings_per_form: int = 3
-    include_filing_excerpts: bool = True
+    news_lookback_days:           int  = 7
+    insider_lookback_days:        int  = 30
+    politician_lookback_days:     int  = 90
+    notable_holder_lookback_days: int  = 180
+    notable_holder_limit:         int  = 20
+    history_period:               str  = "1y"
+    history_interval:             str  = "1d"
+    filings_per_form:             int  = 3
+    include_filing_excerpts:      bool = True
+    # Phase 3 (Task 5): earnings and short-interest lookback windows promoted
+    # from ad-hoc provider defaults to the central FetchDefaults catalogue so
+    # that callers can rely on get_config().defaults rather than hard-coding.
+    earnings_lookback_quarters:   int  = 4
+    short_interest_lookback_days: int  = 90
 
 
 class DataConfig(BaseModel):

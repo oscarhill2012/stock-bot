@@ -87,3 +87,44 @@ def test_malformed_json_raises(tmp_path: Path) -> None:
     p.write_text("{not json", encoding="utf-8")
     with pytest.raises(json.JSONDecodeError):
         load_config_from(p)
+
+
+def test_fetch_defaults_includes_earnings_and_short_interest(tmp_path: Path) -> None:
+    """FetchDefaults exposes earnings_lookback_quarters and short_interest_lookback_days."""
+    payload = {
+        "providers": {
+            "price_history":     "yfinance",
+            "company_ratios":    "pit_composite",
+            "news":              "alpha_vantage",
+            "social_sentiment":  "finnhub",
+            "insider_trades":    "edgar",
+            "politician_trades": "fmp",
+            "notable_holders":   "edgar",
+            "filings":           "edgar",
+            "earnings":          "finnhub",
+            "analyst_consensus": "yfinance",
+            "short_interest":    "finra",
+            "options":           "yfinance",
+        },
+        "defaults": {
+            "news_lookback_days":           7,
+            "insider_lookback_days":        30,
+            "politician_lookback_days":     90,
+            "notable_holder_lookback_days": 180,
+            "notable_holder_limit":         20,
+            "history_period":               "1y",
+            "history_interval":             "1d",
+            "filings_per_form":             3,
+            "include_filing_excerpts":      True,
+            "earnings_lookback_quarters":   4,
+            "short_interest_lookback_days": 90,
+        },
+        "http_timeout_seconds": 15.0,
+    }
+    path = tmp_path / "data.json"
+    path.write_text(__import__("json").dumps(payload), encoding="utf-8")
+
+    cfg = load_config_from(path)
+    assert isinstance(cfg.defaults, FetchDefaults)
+    assert cfg.defaults.earnings_lookback_quarters   == 4
+    assert cfg.defaults.short_interest_lookback_days == 90
