@@ -295,8 +295,13 @@ def test_no_silent_zero_features_on_svb_window(tmp_path: Path) -> None:
         ),
         patch("yfinance.Ticker", return_value=mock_yf_ticker),
     ):
+        # ``Runner`` now takes a pre-loaded ``BacktestSettings`` instance via
+        # ``settings=`` rather than a file path — tests load the sandboxed JSON
+        # themselves and inject the resulting model.
+        from backtest.settings import load_backtest_settings_from
+
         runner = Runner(
-            settings_path=override_settings_path,
+            settings=load_backtest_settings_from(override_settings_path),
             windows_path=Path("config/backtest_windows.json"),
             watchlist_path=Path("config/watchlist.json"),
         )
