@@ -353,9 +353,4 @@ the project root.
 | `failed_tick_abort_ratio` | float [0–1] | Fraction of ticks allowed to fail before the harness aborts the run. |
 | `fake_broker_starting_cash` | float | Starting cash balance (USD) for the in-memory fake broker used in backtests. |
 | `forward_return_horizons_days` | list[int] | Horizons (in calendar days) over which forward returns are computed for scoring. |
-| `default_lookback_days.news` | int | Default lookback window (days) for news evidence fetched during replay. |
-| `default_lookback_days.insider_trades` | int | Default lookback window (days) for insider-trade evidence fetched during replay. |
-| `default_lookback_days.politician_trades` | int | Default lookback window (days) for politician-trade evidence fetched during replay. |
-| `default_lookback_days.notable_holders` | int | Default lookback window (days) for notable-holder snapshots fetched during replay. |
-| `default_lookback_days.filings` | int | Default lookback window (days) for SEC filings fetched during replay. |
 | `ohlcv_warmup_days` | int | Extra calendar days of OHLCV history fetched before the window start during cache fill, so rolling indicators (RSI(14), ATR(14), pct_change_20d) have enough bars to compute on the first tick. |

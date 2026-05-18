@@ -64,6 +64,33 @@ def _as_of_close(end) -> datetime:
     return datetime.combine(end, time(16, 0), tzinfo=_NY)
 
 
+# ---------------------------------------------------------------------------
+# Per-domain lookback that the live analysts request at replay time.
+#
+# Mirrored verbatim from the analyst modules so the fetcher's window-coverage
+# arithmetic can guarantee that, at every tick T in the replay window, the
+# cache holds every row the analyst will ask for in (T - lookback, T].
+#
+# Without this, a tick at window-start would receive a strict subset of the
+# rows the live analyst would have seen — silently degrading news / insider /
+# politician verdicts for the first ~lookback days of the replay.
+#
+# Currently a duplicate of the analyst constants (cited inline below).  The
+# long-run fix is B30 in docs/superpowers/backlog.md — make config/data.json
+# the single source of truth for both analysts and the fetcher, then delete
+# this dict.
+# ---------------------------------------------------------------------------
+_ANALYST_LOOKBACK_DAYS: dict[str, int] = {
+    "news":              7,   # src/data/__init__.py:188 (get_stock_news default; news analyst passes no kwargs)
+    "insider_trades":    30,  # src/agents/analysts/fundamental/fetch.py:53 — _INSIDER_LOOKBACK_DAYS
+    "politician_trades": 30,  # src/agents/analysts/smart_money/fetch.py:38 — POLITICIAN_LOOKBACK_DAYS
+    # notable_holders: 90 — already covered by the get_notable_holders default
+    #   (180d) which the _notable_holders fetcher inherits at as_of=window_end.
+    # filings: covered by the live provider's own filing-cycle default at
+    #   as_of=window_end (10-K annual / 10-Q quarterly cadence).
+}
+
+
 async def _fill_quarterly_ratios(ticker: str, start, end) -> list:
     """Fetch one ``CompanyRatios`` snapshot per quarter-end in ``[start, end]``.
 
@@ -173,9 +200,22 @@ def _build_provider_fns(warmup_days: int = 30) -> dict:
         return await _fill_quarterly_ratios(ticker, start, end)
 
     async def _news(ticker: str, *, start, end) -> list:
-        """Fetch news articles published within the window."""
+        """Fetch news articles for the window plus the analyst's prior-context lookback.
+
+        ``from_date`` is extended backward by
+        ``_ANALYST_LOOKBACK_DAYS["news"]`` so the very-first replay tick can
+        still serve the news analyst's default 7-day historical window
+        (``get_stock_news`` extends ``as_of`` back by 7 days when the caller
+        passes no ``from_date``).  Without the extension the first ~7 trading
+        days of the replay see an empty news pane regardless of what was
+        actually published in the run-up to the window.
+        """
+        pre_window_buffer = timedelta(days=_ANALYST_LOOKBACK_DAYS["news"])
         return await get_stock_news(
-            ticker, from_date=start, to_date=end, as_of=_as_of_close(end),
+            ticker,
+            from_date=start - pre_window_buffer,
+            to_date=end,
+            as_of=_as_of_close(end),
         )
 
     async def _filings(ticker: str, *, start, end) -> list:
@@ -183,7 +223,16 @@ def _build_provider_fns(warmup_days: int = 30) -> dict:
         return await get_company_filings(ticker, as_of=_as_of_close(end))
 
     async def _insider_trades(ticker: str, *, start, end) -> list:
-        """Fetch Form 4 insider trades for the window period.
+        """Fetch Form 4 insider trades for the window plus the analyst's lookback.
+
+        Lookback formula:
+            window-span (in days) + ``_ANALYST_LOOKBACK_DAYS["insider_trades"]``
+
+        The window-span piece covers every tick in the replay; the analyst
+        piece extends coverage backwards from window-start so the very-first
+        tick can still serve the analyst's full 30-day lookback request
+        (otherwise rows filed within ``[window_start - 30, window_start]``
+        would be absent from the cache).
 
         The edgar provider returns a ``Form4Bundle`` containing both
         ``trades`` and ``derivatives``, but the cache's
@@ -192,15 +241,23 @@ def _build_provider_fns(warmup_days: int = 30) -> dict:
         here so the fetcher hands the writer the expected
         ``list[InsiderTrade]`` shape.
         """
-        lookback = (end - start).days + 14
+        lookback = (end - start).days + _ANALYST_LOOKBACK_DAYS["insider_trades"]
         bundle = await get_insider_trades(
             ticker, lookback_days=lookback, as_of=_as_of_close(end),
         )
         return bundle.trades
 
     async def _politician_trades(ticker: str, *, start, end) -> list:
-        """Fetch congressional/politician trades disclosed during the window."""
-        lookback = (end - start).days + 14
+        """Fetch congressional/politician trades for the window plus the analyst's lookback.
+
+        Lookback formula:
+            window-span (in days) + ``_ANALYST_LOOKBACK_DAYS["politician_trades"]``
+
+        Same rationale as ``_insider_trades``: the analyst-side lookback piece
+        extends coverage backwards from window-start so the smart-money
+        analyst's first-tick request is fully served by the cache.
+        """
+        lookback = (end - start).days + _ANALYST_LOOKBACK_DAYS["politician_trades"]
         return await get_public_figure_trades(
             ticker, lookback_days=lookback, as_of=_as_of_close(end),
         )

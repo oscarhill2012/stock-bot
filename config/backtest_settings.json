@@ -8,12 +8,5 @@
   "failed_tick_abort_ratio": 0.10,
   "fake_broker_starting_cash": 100000.0,
   "forward_return_horizons_days": [1, 5, 20],
-  "ohlcv_warmup_days": 30,
-  "default_lookback_days": {
-    "news":              30,
-    "insider_trades":    90,
-    "politician_trades": 90,
-    "notable_holders":   365,
-    "filings":           365
-  }
+  "ohlcv_warmup_days": 30
 }

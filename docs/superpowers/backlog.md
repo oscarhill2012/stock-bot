@@ -472,6 +472,38 @@ Two narrative-prose sources remain unread after Phase 5:
 
 ---
 
+### B30. Single source of truth for analyst lookback days — collapse hardcoded constants, `data.json` defaults, and the fetcher mirror dict  *(medium consolidation)*
+
+**Origin:** Surfaced 2026-05-18 while validating coverage for the first SVB backfill.  The lookback values that determine how much historical data the analysts request from the data layer live in **three** uncoordinated places, and no two of them agree:
+
+1. Module-level constants in the analyst fetch files — the *actual* values requested at runtime:
+   - `src/agents/analysts/fundamental/fetch.py:53` — `_INSIDER_LOOKBACK_DAYS = 30`
+   - `src/agents/analysts/smart_money/fetch.py:38` — `POLITICIAN_LOOKBACK_DAYS = 30`
+   - `src/agents/analysts/smart_money/fetch.py:39` — `HOLDER_LOOKBACK_DAYS = 90`
+   - News analyst (`src/agents/analysts/news/fetch.py:139`) passes no kwargs, so the default cascades to:
+   - `src/data/__init__.py:188` — `get_stock_news` default (7d window)
+2. `config/data.json` `defaults` block — declared but mostly unread by the analyst call sites:
+   - `news_lookback_days: 7`, `insider_lookback_days: 30`, `politician_lookback_days: **90**`, `notable_holder_lookback_days: **180**`
+   - The bold values **do not match** the analyst constants — politician (90 declared / 30 actual) and notable_holders (180 declared / 90 actual) drift.
+3. `scripts/backtest_fetch.py` — the new `_ANALYST_LOOKBACK_DAYS` mirror dict, added today as a tactical fix for the start-of-window coverage gap.  Annotated as a duplicate-pending-this-cleanup.
+
+The drift was harmless before today because nothing cross-referenced the three sources.  The backfill arithmetic now does (the fetcher must pre-fetch at least as much as the analyst will request at the first tick), so the source-of-truth question can no longer be deferred indefinitely.
+
+**The goal in plain English:** one place — `config/data.json` — owns every per-domain lookback the system uses.  The analyst modules read it at runtime, the fetcher reads it when sizing the fill, the mirror dict in `backtest_fetch.py` and the hardcoded constants in the analyst modules both go away.  A contract test rejects any new magic-number lookback that bypasses the config.
+
+**Key questions to brainstorm:**
+- Read frequency: pull from `data.config.get_config()` at module-import time (cached) or per-call (allows hot-swap during a single process)?  ADK agents are usually long-lived, so import-time is probably fine.
+- The declared-vs-actual mismatch in `data.json` (politician 90 vs 30, holders 180 vs 90) is a real ambiguity — is the *current* analyst behaviour (30 / 90) right and `data.json` wrong, or vice versa?  The literature on insider/politician trade signal (Cohen-Malloy-Pomorski; Ziobrowski et al.) tends toward 90-day windows.  This consolidation is the cheapest moment to revisit the values themselves.
+- Scope: just the four named lookbacks (news, insider, politician, holders), or every magic lookback in the codebase including history period/interval, earnings horizon, short_interest 90d, etc.?  Tighter scope ships faster; broader scope eliminates the next drift.
+- Enforcement: a `tests/contract/test_no_magic_lookbacks.py` that AST-walks the analyst modules and fails on any literal-integer `lookback_days=N` that isn't sourced from config?  Or an architectural rule documented in `CLAUDE.md` and enforced socially?
+- Backtest parity: once the analysts read from config, the fetcher reading the same config gives the fill ⇆ replay coverage guarantee structurally.  Should this be the moment to formalise that guarantee (cf. [[B25]] data-fidelity matrix)?
+
+**Dependencies:** Independent.  Conceptually adjacent to [[B25]] (the matrix that would catch fill ⇆ replay coverage drift) and [[B26]] (provider return-type unification — the lookback-config question is the same kind of "tighten the contract once, not per leak" reasoning, just on the call-site side instead of the return-shape side).
+
+**Likely outcome of the brainstorm:** a spec that (a) names `data.json` as the canonical source, (b) lists each call site to migrate (4 analyst constants + the fetcher mirror dict + the news-analyst no-kwargs path), (c) decides on the declared-vs-actual values, (d) sketches the contract test, (e) sequences the cleanup so each step is independently mergeable.  Effort: roughly one phase — every call-site change is a one-liner but spread across 5+ files.
+
+---
+
 ## Tier 3 — Small follow-ups & easy wins
 
 ### B6. Persist `risk_clamps_applied`
@@ -659,9 +691,10 @@ Phase 4 (Goals 1 + 2 — strategist v2 + analyst contract, plans A→B→C→D)
          ├── B26 (Provider Protocol return-type unification — HIGH PRIORITY)
          ├── B27 (smart_money state shape normalisation)
          ├── B28 (cache Form 4 Table II derivative trades)
-         └── B29 (integration smoke-test scaffolding dedup — test-only)
+         ├── B29 (integration smoke-test scaffolding dedup — test-only)
+         └── B30 (single-source-of-truth for analyst lookback days — fill ⇆ replay parity)
 ```
 
-**Rough order if doing them in series:** Phase 4 plans A → B → C → D → Phase 5 (analyst re-categorisation) → B16 (ratchet policy operationalised by Phase 5's surface trace) → analyst-surface-redesign (consolidates B9 + half of B14) → **B26** (architectural cleanup — high priority before more providers land) → B27 / B28 (related provider/cache contract follow-ups) → B6 → B7 → B11 → B18 (co-specced with B11) → B10 → B2 (long arc) → B5 → B17 (likely folds into B2) → B4 → B3 → B8 → B29 (test-only cleanup, rule-of-three). B12/B13/B14-deterministic-narrator/B15 fold in only as trace data justifies, ordered ad-hoc against [[B16]]'s checklist.
+**Rough order if doing them in series:** Phase 4 plans A → B → C → D → Phase 5 (analyst re-categorisation) → B16 (ratchet policy operationalised by Phase 5's surface trace) → analyst-surface-redesign (consolidates B9 + half of B14) → **B26** (architectural cleanup — high priority before more providers land) → B27 / B28 / B30 (related provider/cache contract follow-ups) → B6 → B7 → B11 → B18 (co-specced with B11) → B10 → B2 (long arc) → B5 → B17 (likely folds into B2) → B4 → B3 → B8 → B29 (test-only cleanup, rule-of-three). B12/B13/B14-deterministic-narrator/B15 fold in only as trace data justifies, ordered ad-hoc against [[B16]]'s checklist.
 
 Most are independent enough to reorder by what hurts most in operation. Two strict orderings hold: **Phase 4 before B2** (the knowledge base needs a clean signal contract and decision telemetry to reason over) and **Phase 5 before B9/B10/B11/B12/B13/B14** (every analyst-side and debate-side experiment assumes the post-Phase 5 5-analyst pack, deterministic baseline, and surface-trace harness).

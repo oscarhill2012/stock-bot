@@ -252,13 +252,6 @@ def test_end_to_end_run_produces_full_artefact_tree(
         "failed_tick_abort_ratio":     1.0,        # never abort in smoke test
         "fake_broker_starting_cash":   100_000.0,
         "forward_return_horizons_days": [1],
-        "default_lookback_days": {
-            "news":               30,
-            "insider_trades":     90,
-            "politician_trades":  90,
-            "notable_holders":    365,
-            "filings":            365,
-        },
     }
     settings_path = tmp_path / "backtest_settings.json"
     settings_path.write_text(json.dumps(settings))
