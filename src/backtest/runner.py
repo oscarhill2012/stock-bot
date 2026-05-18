@@ -52,6 +52,7 @@ from backtest.providers import (  # noqa: F401
     social_sentiment_cache,
 )
 from backtest.schedule import generate_ticks
+from backtest.settings import BacktestSettings
 from backtest.windows import load_windows
 from broker.fake import FakeBroker
 from data.registry import DOMAINS, set_active_provider
@@ -171,8 +172,10 @@ class Runner:
 
     Parameters
     ----------
-    settings_path:
-        Path to ``config/backtest_settings.json``.
+    settings:
+        Optional pre-loaded ``BacktestSettings`` instance.  When ``None``, the
+        singleton from ``backtest.settings.get_backtest_settings()`` is used.
+        Tests inject a sandboxed instance here to avoid touching real config files.
     windows_path:
         Path to ``config/backtest_windows.json``.
     watchlist_path:
@@ -182,36 +185,44 @@ class Runner:
     def __init__(
         self,
         *,
-        settings_path:  Path = Path("config/backtest_settings.json"),
-        windows_path:   Path = Path("config/backtest_windows.json"),
-        watchlist_path: Path = Path("config/watchlist.json"),
+        settings:       BacktestSettings | None = None,
+        windows_path:   Path                    = Path("config/backtest_windows.json"),
+        watchlist_path: Path                    = Path("config/watchlist.json"),
     ) -> None:
-        """Load config files; defer actual run setup to ``.run()``."""
-        self._settings  = json.loads(Path(settings_path).read_text())
+        """Load config files; defer actual run setup to ``.run()``.
+
+        Parameters
+        ----------
+        settings:
+            Optional pre-loaded ``BacktestSettings``.  When ``None``, the
+            singleton from ``backtest.settings.get_backtest_settings()`` is
+            used.  Tests inject a sandboxed instance here.
+        windows_path:
+            Path to ``config/backtest_windows.json``.
+        watchlist_path:
+            Path to ``config/watchlist.json``.
+        """
+        from backtest.settings import get_backtest_settings
+
+        self._settings  = settings if settings is not None else get_backtest_settings()
         self._windows   = load_windows(Path(windows_path))
         self._watchlist = json.loads(Path(watchlist_path).read_text())["tickers"]
 
     @staticmethod
-    def _runs_root_from_config(
-        settings_path: Path = Path("config/backtest_settings.json"),
-    ) -> Path:
-        """Read ``runs_root`` from the settings file and return it as a Path.
+    def _runs_root_from_config() -> Path:
+        """Return ``runs_root`` from the active backtest settings.
 
         Convenience helper for scripts that need to locate an existing run
         directory without constructing a full ``Runner`` instance.
-
-        Parameters
-        ----------
-        settings_path:
-            Path to ``config/backtest_settings.json``.
 
         Returns
         -------
         Path
             The configured ``runs_root`` directory (not guaranteed to exist).
         """
-        settings = json.loads(Path(settings_path).read_text())
-        return Path(settings["runs_root"])
+        from backtest.settings import get_backtest_settings
+
+        return Path(get_backtest_settings().runs_root)
 
     def run(
         self,
@@ -262,7 +273,7 @@ class Runner:
             window  = self._windows[window_key]
             wl      = list(watchlist or self._watchlist)
             run_id  = f"{window_key}-{_git_sha7()}"
-            run_dir = Path(self._settings["runs_root"]) / run_id
+            run_dir = Path(self._settings.runs_root) / run_id
             run_dir.mkdir(parents=True, exist_ok=True)
 
             # ── SIGINT / SIGTERM handler ────────────────────────────────────────
@@ -296,7 +307,7 @@ class Runner:
             _prev_sigterm = signal.signal(signal.SIGTERM, _signal_handler)
 
             # ── open the golden cache store ─────────────────────────────────────
-            store = CachedDataStore(Path(self._settings["cache_path"]))
+            store = CachedDataStore(Path(self._settings.cache_path))
             _store_handle.set_store(store)
 
             # ── pre-flight: drop tickers with no OHLCV in the window ───────────
@@ -329,7 +340,7 @@ class Runner:
                 window_end=window.end,
             )
             broker = FakeBroker(
-                starting_cash=self._settings["fake_broker_starting_cash"],
+                starting_cash=self._settings.fake_broker_starting_cash,
                 prices=seed_prices,
             )
 
@@ -366,7 +377,7 @@ class Runner:
                 window_key=window_key,
                 db_session=db_session,
                 decision_logger=dl,
-                failure_abort_ratio=self._settings["failed_tick_abort_ratio"],
+                failure_abort_ratio=self._settings.failed_tick_abort_ratio,
             )
             schedule = generate_ticks(window.start, window.end)
 

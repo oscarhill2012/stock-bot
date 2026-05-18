@@ -99,3 +99,34 @@ def test_reset_cache_forces_reload(monkeypatch) -> None:
 
     assert first == second
     assert first is not second
+
+
+def test_runner_accepts_backtest_settings_instance(tmp_path: Path, monkeypatch) -> None:
+    """Runner.__init__ accepts an injected BacktestSettings instance."""
+    from backtest.runner import Runner
+    from backtest.settings import BacktestSettings
+
+    settings = BacktestSettings(
+        cache_path                   = str(tmp_path / "store.sqlite"),
+        runs_root                    = str(tmp_path / "runs"),
+        ticks_per_day                = ["open", "close"],
+        failed_tick_abort_ratio      = 0.1,
+        fake_broker_starting_cash    = 100_000.0,
+        forward_return_horizons_days = [1, 5, 20],
+        ohlcv_warmup_days            = 30,
+    )
+
+    windows_path   = tmp_path / "windows.json"
+    watchlist_path = tmp_path / "watchlist.json"
+    windows_path.write_text(
+        '{"smoke": {"start": "2024-01-02", "end": "2024-01-03", "notes": ""}}',
+        encoding="utf-8",
+    )
+    watchlist_path.write_text('{"tickers": ["AAPL"]}', encoding="utf-8")
+
+    runner = Runner(
+        settings       = settings,
+        windows_path   = windows_path,
+        watchlist_path = watchlist_path,
+    )
+    assert runner._settings is settings

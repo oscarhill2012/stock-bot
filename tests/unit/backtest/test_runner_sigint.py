@@ -58,26 +58,31 @@ def test_sigint_handler_writes_interrupted_manifest(tmp_path: Path) -> None:
     6. Assert ``manifest.status == "interrupted"`` and ``interrupted_at`` is set.
     """
     # Minimal config files required by Runner.__init__
-    settings_path  = tmp_path / "backtest_settings.json"
     windows_path   = tmp_path / "backtest_windows.json"
     watchlist_path = tmp_path / "watchlist.json"
 
     runs_root = tmp_path / "runs"
     runs_root.mkdir()
 
-    settings_path.write_text(json.dumps({
-        "runs_root":                str(runs_root),
-        "cache_path":               str(tmp_path / "cache" / "store.sqlite"),
-        "fake_broker_starting_cash": 10_000,
-        "failed_tick_abort_ratio":  0.10,
-        "forward_return_horizons_days": [1, 5, 20],
-    }))
     windows_path.write_text(json.dumps({
         "test-window": {"start": "2023-03-06", "end": "2023-03-08", "notes": ""}
     }))
     watchlist_path.write_text(json.dumps({"tickers": ["AAPL"]}))
 
     from backtest.runner import Runner
+    from backtest.settings import load_backtest_settings_from
+
+    settings_path = tmp_path / "backtest_settings.json"
+    settings_path.write_text(json.dumps({
+        "runs_root":                   str(runs_root),
+        "cache_path":                  str(tmp_path / "cache" / "store.sqlite"),
+        "ticks_per_day":               ["open", "close"],
+        "fake_broker_starting_cash":   10_000.0,
+        "failed_tick_abort_ratio":     0.10,
+        "forward_return_horizons_days": [1, 5, 20],
+        "ohlcv_warmup_days":           30,
+    }), encoding="utf-8")
+    settings = load_backtest_settings_from(settings_path)
 
     # Slot to capture the SIGINT handler registered by _run_async.
     captured_handler: list = [None]
@@ -102,7 +107,7 @@ def test_sigint_handler_writes_interrupted_manifest(tmp_path: Path) -> None:
     # handler before the finally block runs by relying on the spy above.
 
     runner = Runner(
-        settings_path=settings_path,
+        settings=settings,
         windows_path=windows_path,
         watchlist_path=watchlist_path,
     )

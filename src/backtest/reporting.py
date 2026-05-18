@@ -39,6 +39,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from backtest.cache.store import CachedDataStore
+from backtest.settings import BacktestSettings
 from orchestrator.persistence import PortfolioSnapshotRow, TradeLogRow
 
 logger = logging.getLogger(__name__)
@@ -46,7 +47,7 @@ logger = logging.getLogger(__name__)
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def report(run_dir: Path, settings: dict) -> None:
+def report(run_dir: Path, settings: "BacktestSettings") -> None:
     """Generate ``report/equity_curve.png`` and ``report/metrics.md``; backfill forwards.
 
     Reads portfolio snapshots from the run's ``db.sqlite``, writes an equity
@@ -58,7 +59,7 @@ def report(run_dir: Path, settings: dict) -> None:
     run_dir:
         Root directory for the run (contains ``db.sqlite``, ``decisions/``, etc.).
     settings:
-        Parsed contents of ``config/backtest_settings.json``.  Required keys:
+        Validated ``BacktestSettings`` instance.  Required attributes:
         ``cache_path`` and ``forward_return_horizons_days``.
     """
     run_dir = Path(run_dir)
@@ -92,7 +93,7 @@ def report(run_dir: Path, settings: dict) -> None:
     # Attempt to compute SPY buy-and-hold return over the same window as the
     # portfolio snapshots.  Falls back to a descriptive N/A string if SPY is not
     # in the cache, so the run does not crash when the user hasn't fetched SPY.
-    cache          = CachedDataStore(Path(settings["cache_path"]))
+    cache          = CachedDataStore(Path(settings.cache_path))
     vs_spy_delta   = _compute_vs_spy_delta(equity, cache)
 
     _write_equity_curve(equity, report_dir / "equity_curve.png")
@@ -106,7 +107,7 @@ def report(run_dir: Path, settings: dict) -> None:
 
     # ── forward-return backfill ───────────────────────────────────────────────
     # ``cache`` was already opened above for the SPY delta calculation; reuse it.
-    horizons = settings["forward_return_horizons_days"]
+    horizons = settings.forward_return_horizons_days
     _backfill_forward_returns(run_dir / "decisions", cache, horizons)
 
 
