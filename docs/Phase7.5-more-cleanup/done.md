@@ -12,7 +12,7 @@ silently ignored.
 Spec: `docs/Phase7.5-more-cleanup/specs/config_as_truth.md`
 Plan: `docs/Phase7.5-more-cleanup/plans/config-as-truth-v1.md`
 
-## What landed (15 commits)
+## What landed (16 commits)
 
 1. `feat(backtest): add BacktestSettings typed loader` — Pydantic v2 model
    with `extra="forbid"`, `load_backtest_settings_from`, cached
@@ -41,6 +41,11 @@ Plan: `docs/Phase7.5-more-cleanup/plans/config-as-truth-v1.md`
 12. `docs(config): reconcile README with Phase 7.5 schema changes`.
 13. `chore: clean up ruff lints and stale removal comment`.
 14. `test(smoke): switch end-to-end smoke to typed BacktestSettings`.
+15. `fix(data): wrappers forward lookback_days to cache providers` —
+    regression found in opus final review.  Adds
+    `filings_lookback_days=90` to `FetchDefaults` and routes both
+    `get_stock_news` and `get_company_filings` through `get_config()`.
+    Pinned by `tests/contract/test_wrappers_supply_lookback_to_cache.py`.
 
 ## Behavioural shifts (read before merging)
 
