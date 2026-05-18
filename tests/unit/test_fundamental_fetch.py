@@ -68,7 +68,14 @@ async def test_fundamental_fetch_insider_is_form4bundle(monkeypatch):
 
     bundle = Form4Bundle(trades=[], derivatives=[])
 
-    monkeypatch.setattr(fetch_mod, "get_company_ratios", AsyncMock(return_value=None))
+    # Phase 7.6: get_company_ratios now always returns a CompanyRatios instance
+    # (cache raises KeyError on miss, live always constructs).  Tests must mirror
+    # that contract — None is no longer a reachable return value.
+    monkeypatch.setattr(
+        fetch_mod,
+        "get_company_ratios",
+        AsyncMock(return_value=CompanyRatios(ticker="MSFT")),
+    )
     monkeypatch.setattr(fetch_mod, "get_company_filings", AsyncMock(return_value=[]))
     monkeypatch.setattr(fetch_mod, "get_insider_trades", AsyncMock(return_value=bundle))
 
@@ -117,7 +124,11 @@ async def test_fundamental_fetch_multiple_tickers(monkeypatch):
     """The callback iterates all tickers independently."""
     import agents.analysts.fundamental.fetch as fetch_mod
 
-    monkeypatch.setattr(fetch_mod, "get_company_ratios", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        fetch_mod,
+        "get_company_ratios",
+        AsyncMock(return_value=CompanyRatios(ticker="AAPL")),
+    )
     monkeypatch.setattr(fetch_mod, "get_company_filings", AsyncMock(return_value=[]))
     monkeypatch.setattr(
         fetch_mod,

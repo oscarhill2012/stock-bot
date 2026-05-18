@@ -92,7 +92,7 @@ DOMAIN_SHAPES: dict[str, DomainShape] = {
     "notable_holders":   DomainShape("list",   NotableHolder),
     "filings":           DomainShape("list",   Filing),
     "earnings":          DomainShape("single", EarningsHistory),
-    "analyst_consensus": DomainShape("bundle", AnalystConsensusBundle),  # TODO: confirm type in Task 5
+    "analyst_consensus": DomainShape("bundle", AnalystConsensusBundle),
     "short_interest":    DomainShape("list",   ShortInterestSnapshot),
     "options":           DomainShape("list",   OptionContract),
 }

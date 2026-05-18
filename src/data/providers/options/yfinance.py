@@ -4,8 +4,9 @@ Snapshot-only; not PIT-correct.  Row #4 is dropped from the v1 backtest per
 decision 7.1 of docs/Phase7-pre-backtest-cleanup/providers-and-silent-gaps-v1.md.
 
 This module exists so the registry has a non-empty entry for the ``options``
-domain.  It returns an empty dict for any ``as_of`` in the past (the normal
-backtest-replay path), and also for same-day calls — the live wiring that
+domain.  It returns an empty ``list[OptionContract]`` for any ``as_of`` in
+the past (the normal backtest-replay path), and also for same-day calls —
+the live wiring that
 would call ``yfinance.Ticker(symbol).option_chain(expiry)`` is deferred to a
 follow-up spec.
 
@@ -15,8 +16,9 @@ yfinance option chains reflect the *current* state of the market: strikes,
 implied volatility, and open interest are all point-in-time snapshots that
 change tick by tick.  There is no historical replay endpoint in yfinance, so
 any backtest that consumed options data would silently receive today's values
-rather than the values that existed on the simulated date.  Returning ``{}``
-makes the data absence explicit and allows analyst agents to degrade gracefully
+rather than the values that existed on the simulated date.  Returning an
+empty ``list[OptionContract]`` makes the data absence explicit and allows
+analyst agents to degrade gracefully
 rather than ingest anachronistic data.
 
 Registry parameters
