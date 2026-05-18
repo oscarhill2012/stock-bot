@@ -439,8 +439,13 @@ def _build_trade(
     )
 
     # Row-level insider identity overrides form-level when present.
+    # NOTE: we deliberately do NOT include "name" as a fallback key — on a
+    # pandas Series the attribute `.name` is the row index (0, 1, 2, …),
+    # which `_row_get` resolves via getattr and then truthily short-circuits
+    # the form-level fallback for indices >= 1, producing bogus
+    # "insider_name=1" / "=2" cache rows (audit 2026-05-18).
     insider_name = str(
-        _row_get(row, "insider_name", "InsiderName", "name") or form_insider or "unknown"
+        _row_get(row, "insider_name", "InsiderName") or form_insider or "unknown"
     )
     insider_title = str(
         _row_get(row, "insider_title", "InsiderTitle", "title") or form_title or ""
@@ -508,8 +513,11 @@ def _build_derivative(
         or filed_date
     )
 
+    # See note in _build_trade — "name" is excluded from the fallback chain
+    # because pandas Series.name resolves via getattr to the row index, which
+    # truthily short-circuits the form-insider fallback for rows 1, 2, … .
     insider_name = str(
-        _row_get(row, "insider_name", "InsiderName", "name") or form_insider or "unknown"
+        _row_get(row, "insider_name", "InsiderName") or form_insider or "unknown"
     )
     insider_title = str(
         _row_get(row, "insider_title", "InsiderTitle", "title") or form_title or ""
@@ -633,6 +641,17 @@ def _fetch_and_parse_one(filing: Any, symbol: str) -> Form4Bundle:
     if not getattr(form4, "ticker", None):
         with contextlib.suppress(AttributeError, TypeError):
             form4.ticker = symbol  # type: ignore[attr-defined]
+
+    # Edgartools' parsed Form 4 object does not populate `.filed_at`, but the
+    # outer filing entry carries the SEC's accepted `filing_date`.  Inject it
+    # so `_parse_form4` does not coerce every row to MISSING_TIMESTAMP and the
+    # cache writer does not silently drop the entire filing (audit 2026-05-18:
+    # 253 rows dropped on the SVB backfill traced to this gap).
+    if not getattr(form4, "filed_at", None):
+        outer_date = getattr(filing, "filing_date", None)
+        if outer_date is not None:
+            with contextlib.suppress(AttributeError, TypeError):
+                form4.filed_at = outer_date  # type: ignore[attr-defined]
 
     return _parse_form4(form4)
 
