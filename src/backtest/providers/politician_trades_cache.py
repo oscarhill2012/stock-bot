@@ -26,7 +26,7 @@ async def fetch(
     ticker: str,
     *,
     as_of: datetime,
-    lookback_days: int = 90,
+    lookback_days: int,   # required — defaults now flow from get_config() in caller
     **_unused,
 ) -> list[PoliticianTrade]:
     """Return politician trades disclosed at or before ``as_of``.
@@ -38,7 +38,8 @@ async def fetch(
     as_of:
         Point-in-time upper bound on ``COALESCE(disclosure_date, transaction_date)``.
     lookback_days:
-        How many calendar days before ``as_of`` to include (default 90).
+        How many calendar days before ``as_of`` to include.  Required — the
+        caller is responsible for supplying the value from ``get_config()``.
 
     Returns
     -------
