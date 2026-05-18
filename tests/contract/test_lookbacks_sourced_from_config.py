@@ -116,7 +116,6 @@ async def test_smart_money_fetch_uses_config_lookbacks(monkeypatch) -> None:
     assert captured["holder"]     == SENTINEL_NOTABLE_HOLDER
 
 
-@pytest.mark.xfail(strict=True, reason="awaiting Task 8 (fundamental) migration")
 @pytest.mark.asyncio
 async def test_fundamental_fetch_uses_config_insider_lookback(monkeypatch) -> None:
     """fundamental_fetch_callback forwards the config insider sentinel.

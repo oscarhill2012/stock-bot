@@ -43,14 +43,12 @@ from google.genai import types as genai_types
 
 from config.analysts import FundamentalCaps, get_analysts_config
 from data import get_company_filings, get_company_ratios, get_insider_trades
+from data.config import get_config
 from data.models import Form4Bundle, InsiderTrade
 from data.timeguard import resolve_as_of
 from observability.trace import _trace_maybe
 
 logger = logging.getLogger(__name__)
-
-# Lookback window for Form 4 insider trades passed to the provider.
-_INSIDER_LOOKBACK_DAYS = 30
 
 
 def _caps() -> FundamentalCaps:
@@ -241,6 +239,10 @@ async def fundamental_fetch_callback(
         state.get("as_of"), allow_wallclock=True, site="fundamental/fetch",
     )
 
+    # Source lookback from config once per callback invocation — config/data.json
+    # owns the value so all call sites agree and there is no parallel constant.
+    insider_lookback_days = get_config().defaults.insider_lookback_days
+
     fundamental_data: dict[str, dict] = {}
     context_blocks: list[str] = []
 
@@ -271,7 +273,7 @@ async def fundamental_fetch_callback(
         # --- insider trades (Form 4) ---
         try:
             insider_bundle = await get_insider_trades(
-                ticker, lookback_days=_INSIDER_LOOKBACK_DAYS, as_of=as_of
+                ticker, lookback_days=insider_lookback_days, as_of=as_of
             )
             # Store the raw Form4Bundle so the extractor can access typed fields
             # directly without re-parsing a dict.
