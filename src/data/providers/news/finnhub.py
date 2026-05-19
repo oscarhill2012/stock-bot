@@ -265,8 +265,16 @@ def _map_article(item: dict, symbol: str) -> NewsArticle:
     domain="news",
     name="finnhub",
     upstream="finnhub",
-    rate_per_minute=60,
-    burst=30,
+    # 50/min + burst=10 caps any 60-second window at 60 calls — exactly
+    # Finnhub's free-tier limit — without leaving the bucket able to dump
+    # a 30-call burst mid-window the way the original 60/30 config did.
+    # Worst-case 429s observed 2026-05-19 when a 20-ticker fill against
+    # /company-news with 7-day chunking issued ~160 Finnhub calls; the
+    # old burst could empty half the window's budget before the bucket
+    # noticed.  Shared with earnings/finnhub and social_sentiment/finnhub
+    # via the registry's per-upstream limiter map.
+    rate_per_minute=50,
+    burst=10,
 )
 async def fetch(
     ticker: str,

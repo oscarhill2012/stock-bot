@@ -46,8 +46,11 @@ _BASE = "https://finnhub.io/api/v1"
     domain="earnings",
     name="finnhub",
     upstream="finnhub",
-    rate_per_minute=60,
-    burst=30,  # matches all other finnhub upstream declarations
+    # Must match every other ``upstream="finnhub"`` declaration — the
+    # registry enforces a single (rate, burst) per upstream.  See
+    # news/finnhub.py for the rationale behind 50/10.
+    rate_per_minute=50,
+    burst=10,
 )
 async def fetch(
     ticker: str,
