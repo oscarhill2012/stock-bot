@@ -17,6 +17,8 @@ import logging
 import os
 import sys
 
+from dotenv import load_dotenv
+
 from backtest.runner import Runner
 
 
@@ -26,6 +28,15 @@ def main() -> None:
     Parses ``--window`` (required) from ``sys.argv``, delegates to
     ``Runner().run()``, and exits with code 1 if the run was aborted.
     """
+    # Load ``.env`` *before* anything reads ``os.environ``.  In a backtest
+    # replay every data provider reads from the SQLite cache rather than a
+    # live API, so the lazy ``data.secrets._ensure_loaded()`` path never
+    # fires — without this call, ADK's LLM client can't see Vertex AI vars
+    # (``GOOGLE_GENAI_USE_VERTEXAI`` / ``GOOGLE_CLOUD_PROJECT`` etc.) and
+    # falls back to API-key mode with no key.  ``load_dotenv`` is idempotent
+    # and respects pre-existing env vars (override=False by default).
+    load_dotenv()
+
     # Strict-as_of mode is mandatory for backtests — a missing as_of at any
     # provider or writer site must abort the run rather than fabricate a
     # wall-clock substitute.  See src/data/timeguard.py.

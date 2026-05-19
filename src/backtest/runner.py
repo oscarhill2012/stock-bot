@@ -202,7 +202,22 @@ class Runner:
         watchlist_path:
             Path to ``config/watchlist.json``.
         """
+        # Local imports kept inside ``__init__`` so importing this module
+        # stays cheap (no settings parse, no .env read at import time).
+        from dotenv import load_dotenv
+
         from backtest.settings import get_backtest_settings
+
+        # Load ``.env`` here as well as in ``scripts/backtest_run.py`` so
+        # programmatic callers (integration tests, ad-hoc scripts that import
+        # ``Runner`` directly) also get LLM / API credentials into the env
+        # before the pipeline starts building agents.  In a cache-only
+        # backtest the lazy load in ``data.secrets._ensure_loaded`` is never
+        # triggered, so without this call ADK's Vertex AI client cannot find
+        # ``GOOGLE_GENAI_USE_VERTEXAI`` / ``GOOGLE_CLOUD_PROJECT`` and the
+        # tick aborts with "No API key was provided".  ``load_dotenv`` is
+        # idempotent and respects pre-existing env vars (override=False).
+        load_dotenv()
 
         self._settings  = settings if settings is not None else get_backtest_settings()
         self._windows   = load_windows(Path(windows_path))
