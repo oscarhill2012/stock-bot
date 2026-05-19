@@ -51,9 +51,33 @@ def main() -> None:
         metavar="KEY",
         help="window key in config/backtest_windows.json",
     )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "optional cap on the number of ticks to execute (e.g. --limit 1 "
+            "for a single-tick sanity run).  Default: run every scheduled tick."
+        ),
+    )
+    parser.add_argument(
+        "--run-id",
+        dest="run_id",
+        default=None,
+        metavar="NAME",
+        help=(
+            "optional override for the run-id (and therefore the artefact "
+            "directory name).  Default: <window>-<git-sha7>."
+        ),
+    )
     args = parser.parse_args()
 
-    result = Runner().run(args.window)
+    result = Runner().run(
+        args.window,
+        tick_limit       = args.limit,
+        run_id_override  = args.run_id,
+    )
 
     print(f"run_id:  {result.run_id}")
     print(f"run_dir: {result.run_dir}")

@@ -235,6 +235,9 @@ class Runner:
         self,
         window_key: str,
         watchlist: list[str] | None = None,
+        *,
+        tick_limit:      int | None = None,
+        run_id_override: str | None = None,
     ) -> RunResult:
         """Materialise the run, drive every tick, return a ``RunResult``.
 
@@ -246,6 +249,16 @@ class Runner:
         watchlist:
             Optional override list of ticker symbols.  Defaults to the full
             watchlist from ``config/watchlist.json``.
+        tick_limit:
+            Optional cap on the number of ticks to execute — the generated
+            tick schedule is sliced to ``[:tick_limit]`` before being handed
+            to the driver.  Used by trial / sanity-check runs.  ``None``
+            (the default) runs every scheduled tick.
+        run_id_override:
+            Optional human-readable name to use as the run-id (and therefore
+            the artefact directory) instead of the default
+            ``<window>-<git-sha7>``.  Lets sanity runs land in a predictable
+            location like ``runs/trial-run/`` rather than under a SHA.
 
         Returns
         -------
@@ -253,7 +266,14 @@ class Runner:
             Summary with ``run_id``, ``run_dir``, and ``status``.
         """
         import asyncio
-        return asyncio.run(self._run_async(window_key, watchlist))
+        return asyncio.run(
+            self._run_async(
+                window_key,
+                watchlist,
+                tick_limit      = tick_limit,
+                run_id_override = run_id_override,
+            )
+        )
 
     # ── private implementation ──────────────────────────────────────────────────
 
@@ -261,6 +281,9 @@ class Runner:
         self,
         window_key: str,
         watchlist: list[str] | None,
+        *,
+        tick_limit:      int | None = None,
+        run_id_override: str | None = None,
     ) -> RunResult:
         """Async implementation of the full run lifecycle."""
         # Belt-and-braces: scripts.backtest_run also sets this, but defending
@@ -283,7 +306,10 @@ class Runner:
 
             window     = self._windows[window_key]
             wl         = list(watchlist or self._watchlist)
-            run_id     = f"{window_key}-{_git_sha7()}"
+            # Default to ``<window>-<git-sha7>`` so concurrent runs can't
+            # collide; a caller-supplied ``run_id_override`` wins outright
+            # (used by trial / sanity runs that want a stable directory name).
+            run_id     = run_id_override or f"{window_key}-{_git_sha7()}"
             runs_root  = runs_root_for_window(self._settings, window_key)
             run_dir    = runs_root / run_id
             run_dir.mkdir(parents=True, exist_ok=True)
@@ -397,6 +423,16 @@ class Runner:
                 failure_abort_ratio=self._settings.failed_tick_abort_ratio,
             )
             schedule = generate_ticks(window.start, window.end)
+
+            # Apply optional cap from trial / sanity runs — slice rather than
+            # mutating the underlying generator so the schedule object stays a
+            # plain list, which the driver iterates directly.
+            if tick_limit is not None:
+                schedule = schedule[:tick_limit]
+                logger.info(
+                    "tick_limit=%d in effect — executing %d of the scheduled ticks",
+                    tick_limit, len(schedule),
+                )
 
             # Seed the same initial state keys that ``orchestrator/tick.py``
             # provides on live runs.  The strategist prompt template references
