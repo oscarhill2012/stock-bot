@@ -110,6 +110,7 @@ def report(run_dir: Path, settings: BacktestSettings, *, window: str) -> None:
         fill_count=fill_count,
         win_rate=win_rate,
         vs_spy_delta=vs_spy_delta,
+        ticks_per_day=len(settings.ticks_per_day),
     )
 
     # ── forward-return backfill ───────────────────────────────────────────────
@@ -152,12 +153,13 @@ def _write_metrics(
     fill_count: int = 0,
     win_rate: float = float("nan"),
     vs_spy_delta: float | str = "N/A — SPY not in cache (run backtest_fetch with SPY)",
+    ticks_per_day: int = 1,
 ) -> None:
     """Compute performance metrics and write a Markdown report to ``outpath``.
 
     Metrics written (spec §end-of-window):
     - Total return as a percentage of starting value.
-    - Annualised Sharpe ratio (assumes 252 trading days per year).
+    - Annualised Sharpe ratio (252 trading days × ``ticks_per_day``).
     - Max drawdown (largest peak-to-trough decline as a fraction).
     - vs-SPY delta (bot total return − SPY total return over the same window).
     - Win rate (winning closed trades / total closed trades).
@@ -179,20 +181,33 @@ def _write_metrics(
         Bot total return minus SPY total return, expressed as a fraction
         (e.g. ``0.05`` = 5 pp outperformance).  Pass a descriptive string
         when SPY data is unavailable rather than crashing.
+    ticks_per_day:
+        Number of ticks per trading day in the schedule (e.g. 2 for the
+        default open + close policy).  Used to scale the Sharpe
+        annualisation factor — the ``series`` contains one return per
+        tick, so the annualisation must compound across both the trading
+        calendar (252) and the per-day tick count.  Defaults to 1 so
+        callers with no schedule context (ad-hoc replays) still get a
+        sensible figure.
     """
     start_v = series[0][1]
     end_v   = series[-1][1]
     total_return = (end_v - start_v) / start_v
 
     # ── Sharpe ───────────────────────────────────────────────────────────────
-    # Per-tick returns: assumes ticks are evenly spaced.
+    # Per-tick returns: assumes ticks are evenly spaced.  Annualisation
+    # scales the per-tick Sharpe by ``sqrt(252 * ticks_per_day)`` — a
+    # two-ticks-per-day schedule produces twice as many returns per year
+    # as a daily-close-only schedule, so the naïve ``sqrt(252)`` factor
+    # under-reports Sharpe by ``sqrt(ticks_per_day)``.
     rets = []
     for (_, v0), (_, v1) in zip(series, series[1:], strict=False):
         if v0 != 0:
             rets.append((v1 - v0) / v0)
 
     if len(rets) >= 2 and statistics.pstdev(rets) > 0:
-        sharpe = (statistics.mean(rets) / statistics.pstdev(rets)) * (252 ** 0.5)
+        annualisation = (252 * ticks_per_day) ** 0.5
+        sharpe = (statistics.mean(rets) / statistics.pstdev(rets)) * annualisation
     else:
         sharpe = float("nan")
 

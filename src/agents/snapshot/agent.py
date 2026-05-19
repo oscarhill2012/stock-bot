@@ -42,13 +42,36 @@ class SnapshotterAgent(BaseAgent):
         bot_positions_value = bot_total - bot_cash
         bot_position_count  = len(portfolio.positions)
 
-        # Fetch the latest SPY close for the benchmark comparison.
+        # Resolve the tick clock first so the SPY lookup below sees the right
+        # as_of.  Backtest replays inject ``state["as_of"]``; live runs fall
+        # back to wall-clock via ``resolve_as_of(allow_wallclock=True)``.
+        raw_as_of = state.get("as_of")
+        recorded_at = resolve_as_of(
+            raw_as_of if isinstance(raw_as_of, datetime) else None,
+            allow_wallclock=True,
+            site="snapshot/agent",
+        )
+
+        # Fetch the latest SPY close via the registered price-history provider
+        # so the call honours STOCKBOT_STRICT_AS_OF and goes through the cache
+        # in backtest replays (instead of leaking the wall-clock SPY price into
+        # historical snapshots).  Live runs dispatch to the yfinance provider
+        # and degrade cleanly to "today's close".  Falls back to 0.0 on any
+        # provider failure so a single bad bar can never abort the tick.
+        spy_price = 0.0
         try:
-            import yfinance as yf
-            spy_ticker = yf.Ticker("SPY")
-            hist = spy_ticker.history(period="1d")
-            spy_price = float(hist["Close"].iloc[-1]) if not hist.empty else 0.0
-        except Exception:
+            from data import get_price_history
+            tick_phase = state.get("tick_phase")
+            spy_hist = await get_price_history(
+                "SPY",
+                period   = "5d",
+                interval = "1d",
+                as_of    = recorded_at,
+                phase    = tick_phase,
+            )
+            if spy_hist.bars:
+                spy_price = float(spy_hist.bars[-1].close)
+        except Exception:  # noqa: BLE001 — defensive; never crash the tick
             spy_price = 0.0
 
         # Anchor starting capital and SPY price on the very first tick.
@@ -66,16 +89,8 @@ class SnapshotterAgent(BaseAgent):
         excess_return_pct = bot_return_pct - spy_return_pct
         spy_value_if_held = start * (1 + spy_return_pct / 100)
 
-        # Prefer state["as_of"] (set by the backtest driver to the historical
-        # tick timestamp) so equity-curve timestamps are deterministic in replay.
-        # Fall back to wall-clock on live runs where as_of is absent.
-        raw_as_of = state.get("as_of")
-        recorded_at = resolve_as_of(
-            raw_as_of if isinstance(raw_as_of, datetime) else None,
-            allow_wallclock=True,
-            site="snapshot/agent",
-        )
-
+        # ``recorded_at`` was resolved above so the SPY lookup could honour
+        # the tick clock; re-use it here for the snapshot row's timestamp.
         snap = {
             "tick_id":              tick_id,
             "recorded_at":          recorded_at,

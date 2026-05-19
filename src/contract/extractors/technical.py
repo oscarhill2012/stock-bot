@@ -23,7 +23,7 @@ sites continue to work unchanged.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import date, datetime
 from math import copysign
 from typing import TYPE_CHECKING, Any
 
@@ -90,6 +90,7 @@ def _relative_strength(
     ref_ph: Any,
     *,
     window: int,
+    as_of: date | datetime | None = None,
 ) -> float | None:
     """Own-ticker percentage change minus reference-series percentage change.
 
@@ -107,6 +108,12 @@ def _relative_strength(
         ``None``.
     window:
         Lookback window in bars (e.g. 5 or 20).
+    as_of:
+        Optional PIT cutoff.  When provided, reference bars with a
+        ``timestamp`` strictly after ``as_of`` are dropped before computing
+        the lookback window — this prevents a backtest tick from peeking at
+        future reference moves when ``state["reference_prices"]`` was seeded
+        for the entire window.  ``None`` disables clamping (live behaviour).
 
     Returns
     -------
@@ -117,7 +124,17 @@ def _relative_strength(
         return None
 
     own_closes = [b["close"] for b in own_bars if b.get("close") is not None]
-    ref_closes = [b.close   for b in ref_ph.bars]
+
+    # PIT clamp: drop reference bars dated after ``as_of`` so the lookback
+    # cannot leak post-as_of data into the percentage change.  Bars whose
+    # ``timestamp`` is a ``date`` or ``datetime`` are both handled by the
+    # ``_bar_date`` helper.
+    ref_bars = ref_ph.bars
+    if as_of is not None:
+        cutoff = as_of.date() if isinstance(as_of, datetime) else as_of
+        ref_bars = [b for b in ref_bars if _bar_date(b) <= cutoff]
+
+    ref_closes = [b.close for b in ref_bars]
 
     own_chg = _pct_change(own_closes, window)
     ref_chg = _pct_change(ref_closes, window)
@@ -126,6 +143,17 @@ def _relative_strength(
         return None
 
     return own_chg - ref_chg
+
+
+def _bar_date(bar: Any) -> date:
+    """Return the calendar date of an ``OHLCBar``-shaped object.
+
+    Handles both ``datetime`` and ``date`` ``timestamp`` attributes so the
+    PIT clamp in ``_relative_strength`` works against whichever shape the
+    upstream provider emits.
+    """
+    ts = bar.timestamp
+    return ts.date() if isinstance(ts, datetime) else ts
 
 
 def _zero_features() -> dict[str, float]:
@@ -257,7 +285,11 @@ def extract_technical_features(
         computation.  Defaults to ``""`` so callers can pass ``state=`` as the
         only keyword argument.
     as_of:
-        Legacy historical clock parameter — reserved, currently unused.
+        Tick clock for PIT clamping.  Forwarded to ``_relative_strength`` so
+        the reference price series is truncated to bars at or before the
+        tick — eliminates the backtest leak where a window-spanning
+        ``state["reference_prices"]`` dict otherwise let day-1 ticks
+        compute relative strength against end-of-window SPY moves.
     state:
         Phase 7 pipeline state dict — currently unused but accepted so callers
         can pass it without error (Fix C / relative-strength will wire it in
@@ -380,8 +412,12 @@ def extract_technical_features(
         spy_ph = ref_prices.get("SPY")
 
         # Relative strength versus the broad market (SPY).
+        # ``as_of`` (when provided by the technical agent) clamps the
+        # reference series to bars at or before the tick — without this,
+        # a backtest tick with a window-spanning ``reference_prices`` dict
+        # would compute relative strength against post-as_of SPY bars.
         for w in (5, 20):
-            rs_spy = _relative_strength(bars, spy_ph, window=w)
+            rs_spy = _relative_strength(bars, spy_ph, window=w, as_of=as_of)
             if rs_spy is not None:
                 out[f"relative_strength_vs_spy_{w}d"] = rs_spy
 
@@ -392,7 +428,7 @@ def extract_technical_features(
         sector_ph       = ref_prices.get(sector_etf) if sector_etf else None
 
         for w in (5, 20):
-            rs_sec = _relative_strength(bars, sector_ph, window=w)
+            rs_sec = _relative_strength(bars, sector_ph, window=w, as_of=as_of)
             if rs_sec is not None:
                 out[f"relative_strength_vs_sector_{w}d"] = rs_sec
 
