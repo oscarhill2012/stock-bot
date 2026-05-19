@@ -23,12 +23,17 @@ from orchestrator.state import Order
 
 
 class _StubCtx:
-    """Minimal ADK InvocationContext stand-in wrapping a plain dict as session state."""
+    """Minimal ADK InvocationContext stand-in wrapping a plain dict as session state.
+
+    Carries ``invocation_id`` as a real string because the executor now yields
+    an ``Event`` whose ``invocation_id`` field is Pydantic-validated.
+    """
 
     def __init__(self, state: dict) -> None:
         session = MagicMock()
         session.state = state
         self.session = session
+        self.invocation_id = "test-invocation"
 
 
 async def _run(agent: ExecutorAgent, state: dict) -> None:

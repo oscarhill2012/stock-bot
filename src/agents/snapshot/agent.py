@@ -7,7 +7,7 @@ from typing import Any
 
 from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
-from google.adk.events import Event
+from google.adk.events import Event, EventActions
 
 from data.timeguard import resolve_as_of
 
@@ -111,9 +111,31 @@ class SnapshotterAgent(BaseAgent):
             save_portfolio_snapshot(self.db_session, snap)
             self.db_session.commit()
 
+        # Publish the snapshot into ADK session state.  The direct dict
+        # assignment below is sufficient for any *in-tick* reader on this
+        # same ``ctx.session`` reference, but ADK's
+        # ``InMemorySessionService`` only merges mutations into the
+        # *storage* session via an Event whose ``actions.state_delta``
+        # carries them.  The backtest driver re-fetches the session at the
+        # end of every tick (``session_service.get_session``) and checks
+        # ``state["last_snapshot"]["tick_id"]``; without the yielded
+        # state_delta below, the re-fetched copy lacks ``last_snapshot``
+        # entirely and the driver aborts the whole run with
+        # "pipeline did not reach snapshotter for tick ...".
+        #
+        # The wider cross-tick state-propagation issue (MemoryWriter's
+        # ``memory_buffer`` / ``day_digest`` / ``thesis`` and Executor's
+        # ``executions`` / ``last_executed_tick_id`` rely on direct
+        # ``state[k]=v`` mutations that are silently lost between ticks)
+        # is tracked in ``docs/todo-fixes.md`` under Group 2.5 —
+        # cross-tick ADK session state propagation.
         state["last_snapshot"] = snap
-        return
-        yield  # required to make this an async generator
+
+        yield Event(
+            author        = self.name,
+            invocation_id = ctx.invocation_id,
+            actions       = EventActions(state_delta={"last_snapshot": snap}),
+        )
 
 
 def build_snapshotter(broker, db_session=None) -> SnapshotterAgent:

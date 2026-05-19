@@ -8,10 +8,18 @@ from broker.fake import FakeBroker
 
 
 def _make_ctx(state: dict) -> MagicMock:
+    """Build a mock InvocationContext for the executor under test.
+
+    The executor now yields an ``Event`` whose ``invocation_id`` field is a
+    Pydantic-validated string, so the mock must return a real string rather
+    than the default ``MagicMock`` attribute proxy.
+    """
+
     session = MagicMock()
     session.state = state
     ctx = MagicMock()
     ctx.session = session
+    ctx.invocation_id = "test-invocation"
     return ctx
 
 

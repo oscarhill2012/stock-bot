@@ -32,13 +32,20 @@ _HISTORICAL_TS = datetime(2023, 3, 10, 9, 30, 0, tzinfo=UTC)
 # ── Shared helpers ────────────────────────────────────────────────────────────
 
 class _StubCtx:
-    """Minimal ADK InvocationContext stand-in — only exposes session.state."""
+    """Minimal ADK InvocationContext stand-in — only exposes session.state.
+
+    Also carries a real string ``invocation_id`` because Snapshotter / Executor
+    / MemoryWriter now yield an ``Event`` whose ``invocation_id`` field is
+    Pydantic-validated as ``str`` (state_delta cross-tick propagation, see
+    ``docs/todo-fixes.md`` Group 2.5).
+    """
 
     def __init__(self, state: dict) -> None:
         class _S:
             pass
         self.session = _S()
         self.session.state = state
+        self.invocation_id = "test-invocation"
 
 
 def _run(coro_gen) -> list:

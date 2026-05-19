@@ -7,7 +7,7 @@ from typing import Any
 
 from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
-from google.adk.events import Event
+from google.adk.events import Event, EventActions
 
 from broker.protocol import Broker, BrokerRejection
 from data.timeguard import resolve_as_of
@@ -146,9 +146,11 @@ class ExecutorAgent(BaseAgent):
 
             executions.append(exec_record.model_dump())
 
-        state["executions"] = executions
-        state["positions"] = positions
-        state["last_executed_tick_id"] = tick_id
+        # Direct mutation — visible to any later agent in *this* tick that
+        # reads ``ctx.session.state`` (same object reference).
+        state["executions"]             = executions
+        state["positions"]              = positions
+        state["last_executed_tick_id"]  = tick_id
 
         # Surface trace — no-op unless state["_trace"] is set by trace_tick.py.
         _trace_maybe(state, "07_broker_calls", executions)
@@ -164,6 +166,30 @@ class ExecutorAgent(BaseAgent):
             except Exception:
                 # Defensive: a logger failure must never abort the tick.
                 pass
+
+        # Cross-tick propagation — ADK's ``InMemorySessionService`` only
+        # merges mutations into the storage session via an Event whose
+        # ``actions.state_delta`` carries them.  Without this yielded event,
+        # the next tick's ``session_service.get_session`` re-fetch would
+        # return a copy of storage that still has the *previous* tick's
+        # ``positions`` map, so any cross-tick SELL (BUY in tick T, SELL in
+        # tick T+1) would lose the opening thesis and write a partial
+        # ``TradeLogRow`` (null ``opening_price`` / ``opened_tag``).  The
+        # idempotency guard at the top of this method would also fire on
+        # stale ``last_executed_tick_id``.
+        #
+        # This is the same pattern as the Snapshotter fix (2026-05-19);
+        # see ``docs/todo-fixes.md`` Group 2.5 for the wider audit and the
+        # planned move to a DB-hydration / RAG model.
+        yield Event(
+            author        = self.name,
+            invocation_id = ctx.invocation_id,
+            actions       = EventActions(state_delta={
+                "executions":            executions,
+                "positions":             positions,
+                "last_executed_tick_id": tick_id,
+            }),
+        )
 
 
 def build_executor(broker: Broker, db_session=None) -> ExecutorAgent:

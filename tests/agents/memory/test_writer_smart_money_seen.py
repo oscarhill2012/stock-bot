@@ -29,6 +29,7 @@ async def test_smart_money_seen_true_when_real_evidence(monkeypatch):
     }
     ctx = MagicMock()
     ctx.session.state = state
+    ctx.invocation_id = "test-invocation"
 
     # Use a proper async helper to avoid the asyncio.sleep(result=) incompatibility
     # in Python 3.10+ (asyncio.sleep does not accept a result= keyword there).
@@ -66,6 +67,7 @@ async def test_smart_money_seen_false_when_only_no_data(monkeypatch):
     }
     ctx = MagicMock()
     ctx.session.state = state
+    ctx.invocation_id = "test-invocation"
 
     import agents.memory.writer as W
 

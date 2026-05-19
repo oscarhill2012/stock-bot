@@ -11,11 +11,17 @@ from orchestrator.state import Order
 
 
 def _make_ctx(state: dict) -> MagicMock:
-    """Build a minimal ADK InvocationContext stub from a plain state dict."""
+    """Build a minimal ADK InvocationContext stub from a plain state dict.
+
+    Sets ``invocation_id`` to a real string because the executor now yields
+    an ``Event`` whose ``invocation_id`` field is Pydantic-validated.
+    """
+
     session = MagicMock()
     session.state = state
     ctx = MagicMock()
     ctx.session = session
+    ctx.invocation_id = "test-invocation"
     return ctx
 
 

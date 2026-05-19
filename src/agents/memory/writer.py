@@ -6,7 +6,7 @@ from datetime import datetime
 
 from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
-from google.adk.events import Event
+from google.adk.events import Event, EventActions
 
 from data.timeguard import resolve_as_of
 
@@ -100,7 +100,21 @@ class MemoryWriter(BaseAgent):
         if decision is None:
             return
 
-        buffer: list[BufferEntry] = state.get("memory_buffer", [])
+        # The cross-tick state_delta below serialises BufferEntry instances to
+        # plain dicts (so ADK's InMemorySessionService can deep-copy them
+        # safely).  When this agent runs on tick T+1, those dicts come back
+        # in ``state["memory_buffer"]`` and must be re-hydrated to BufferEntry
+        # so ``detect_repeat`` (and any other attribute-access consumer
+        # downstream) sees the same shape it did before the state_delta
+        # round-trip.  This mirrors the permissive-read pattern already used
+        # for ``final_orders`` in ``executor/agent.py`` (model_validate-or-
+        # passthrough) and for ``smart_money_evidence`` in
+        # ``_has_real_smart_money`` above.
+        raw_buffer = state.get("memory_buffer", [])
+        buffer: list[BufferEntry] = [
+            BufferEntry.model_validate(e) if isinstance(e, dict) else e
+            for e in raw_buffer
+        ]
         day_digest: str = state.get("day_digest", "")
         executions = state.get("executions", [])
 
@@ -137,17 +151,42 @@ class MemoryWriter(BaseAgent):
             buffer, new_entry, day_digest
         )
 
-        state["memory_buffer"] = [e.model_dump() for e in updated_buffer]
-        state["day_digest"] = updated_digest
+        # Pre-compute the values once so both the in-tick direct mutation and
+        # the cross-tick ``state_delta`` payload below stay consistent.
+        memory_buffer_payload = [e.model_dump() for e in updated_buffer]
+        new_thesis: str = (
+            decision.get("updated_thesis", state.get("thesis", ""))
+            if isinstance(decision, dict)
+            else decision.updated_thesis
+        )
 
-        if isinstance(decision, dict):
-            state["thesis"] = decision.get("updated_thesis", state.get("thesis", ""))
-        else:
-            state["thesis"] = decision.updated_thesis
+        # Direct mutation — visible to any later agent in *this* tick that
+        # reads ``ctx.session.state`` (same object reference).
+        state["memory_buffer"] = memory_buffer_payload
+        state["day_digest"]    = updated_digest
+        state["thesis"]        = new_thesis
 
-        # No events to yield — pure state mutation.
-        return
-        yield  # required to make this an async generator
+        # Cross-tick propagation — ADK's ``InMemorySessionService`` only
+        # merges mutations into the storage session via an Event whose
+        # ``actions.state_delta`` carries them.  Without this yielded event,
+        # the next tick's ``session_service.get_session`` re-fetch would
+        # return a copy of storage that still has the *previous* tick's
+        # ``memory_buffer`` / ``day_digest`` / ``thesis`` — i.e. the
+        # strategist's prompt would see stale memory on every tick.
+        #
+        # This is the same pattern as the Snapshotter fix (2026-05-19).
+        # The wider audit + the planned move to a DB-hydration / RAG model
+        # is tracked in ``docs/todo-fixes.md`` under Group 2.5 — cross-tick
+        # ADK session state propagation.
+        yield Event(
+            author        = self.name,
+            invocation_id = ctx.invocation_id,
+            actions       = EventActions(state_delta={
+                "memory_buffer": memory_buffer_payload,
+                "day_digest":    updated_digest,
+                "thesis":        new_thesis,
+            }),
+        )
 
 
 memory_writer = MemoryWriter()

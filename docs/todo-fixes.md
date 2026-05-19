@@ -33,9 +33,11 @@ must resolve, and rough effort.  Severity tags are *production-impact* —
 
 Two tiers, then a special-cases bucket.
 
-1. **Pre-backtest correctness gates** — Groups 1 & 2.  These would silently
-   distort or invalidate a first real backtest run.  Ship before the first
-   trustworthy backtest window.
+1. **Pre-backtest correctness gates** — Groups 1, 2 & 2.5.  These would
+   silently distort or invalidate a first real backtest run.  Ship before
+   the first trustworthy backtest window.  Group 2.5 was added 2026-05-19
+   after the trial 1-tick run aborted on an ADK state-propagation issue
+   that will recur every full-window backtest and every live tick.
 2. **Deferred until after backtest** — Groups 3 & 4.  Low-risk hygiene that
    does not change pipeline behaviour.  Sequenced after the first backtest so
    the team can focus pre-backtest energy on correctness, not cleanup.  In
@@ -377,6 +379,290 @@ Each analyst's fetcher takes responsibility for what *it* needs.
 **Effort.** Medium.  Touches every analyst fetch and the aggregator.
 
 **Origin.** Phase 7 code-review D9 (`docs/Phase7-pre-backtest-cleanup/code-review.md:360`).
+
+---
+
+### Group 2.5 — Cross-tick ADK session state propagation
+
+**Cohesion justification:** every custom `BaseAgent` subclass in `src/agents/`
+inherits the same contract trap — writes to `ctx.session.state[k]=v` are
+visible to other agents in the *same tick* (because they share the same
+`ctx.session` reference) but are silently dropped from the storage session
+that the driver re-fetches between ticks.  All affected agents are policed
+by the same enforcement mechanism (a contract test that AST-walks
+`_run_async_impl` for state subscript assignments and demands a paired
+`state_delta` event) and all share the same fix shape (yield an `Event`
+with `EventActions(state_delta={...})`).  Specifying them together avoids
+designing the same audit and the same enforcement test twice.
+
+This group lives in the **pre-backtest correctness gates** because the
+user explicitly flagged 2026-05-19 that "this issue will haunt us when
+running full backtests since they will count as a session and running
+live each tick will be a session".  The first multi-tick backtest is the
+moment the cross-tick keys (memory buffer, executions, thesis) actually
+need to survive between ticks — at one tick the bug is invisible.
+
+#### 2.5.1 — Audit & fix every custom `BaseAgent` that writes cross-tick state (HIGH)
+
+**Goal.**  Every custom `BaseAgent` subclass that mutates session state for
+*cross-tick* consumption uses an `Event` with `EventActions(state_delta={...})`
+rather than relying on direct `ctx.session.state[k]=v` assignments.  The
+driver's per-tick `get_session` check and any subsequent tick that reads
+prior-tick state see consistent storage.
+
+**Non-goals.**
+
+- Do **not** rewrite the driver to pull per-tick context from DB + broker
+  instead of session state as part of this item — that is the alternative
+  architecture (Option B); evaluate only if Option A's audit reveals too
+  many sites to police.
+- Do **not** add `state_delta` wrappers to `LlmAgent` instances — ADK
+  already routes their output through events.
+- Do **not** force every state **read** through a wrapper — only **writes**
+  are at risk.
+- Do **not** strip the in-tick direct `state[k]=v` mutation when adding the
+  yielded event; downstream agents in the same tick read the runtime
+  `ctx.session` object, not the storage copy, so the direct write still
+  matters for same-tick consumers.
+
+**Current state.**  ADK's `InMemorySessionService._copy_session`
+(`.venv/lib/python3.14/site-packages/google/adk/sessions/in_memory_session_service.py:39`)
+returns a copy of the session on every `get_session(...)`.  The runtime
+`ctx.session` handed to agents is a copy; the storage-side session only
+sees mutations that arrive through `append_event(event)` and only when
+`event.actions.state_delta` is non-empty
+(`in_memory_session_service.py:349-363`).  Custom `BaseAgent`s that write
+directly to `ctx.session.state[k]=v` and yield nothing (or yield an Event
+without `state_delta`) leave those writes orphaned on the runtime copy;
+the next `get_session` returns a fresh copy that does not contain them.
+
+Empirically reproduced 2026-05-19:
+
+```python
+class WriterAgent(BaseAgent):
+    name: str = "Writer"
+    async def _run_async_impl(self, ctx):
+        ctx.session.state["written_by_writer"] = "hello"
+        return
+        yield
+# After run_async: session_service.get_session().state lacks
+# 'written_by_writer'.  The same agent yielding
+#   Event(author=..., invocation_id=...,
+#         actions=EventActions(state_delta={"written_by_writer": "hello"}))
+# propagates correctly.
+```
+
+**Affected agents (audit so far — not exhaustive):**
+
+| Agent | State key(s) | Cross-tick? | Status |
+|---|---|---|---|
+| `src/agents/snapshot/agent.py:SnapshotterAgent` | `last_snapshot` | yes — driver re-reads `last_snapshot.tick_id` via `session_service.get_session` to detect tick completion | **Patched** 2026-05-19 (surgical fix; yields `state_delta` event) |
+| `src/agents/memory/writer.py:MemoryWriter` | `memory_buffer`, `day_digest`, `thesis` | yes — memory_buffer is designed to grow across ticks; DB re-seeds masks the symptom but obscures the bug | **Patched** 2026-05-19 (yields `state_delta` event + permissive-read hydration of dict-shaped buffer entries to `BufferEntry`) |
+| `src/agents/executor/agent.py:ExecutorAgent` | `executions`, `positions`, `last_executed_tick_id` | yes — RiskGate / thesis-pruner may read prior-tick `executions` from state, and `positions` carries the opening thesis that SELL ticks need to write the closing trade-log row | **Patched** 2026-05-19 (yields `state_delta` event paired with the existing direct mutation) |
+| `src/agents/risk_gate/agent.py:RiskGateAgent` | `risk_gate_action`, `risk_gate_notes` | no — in-tick only (consumed by Executor same tick) | safe (in-tick reads see same `ctx.session` reference) |
+| `src/agents/analysts/technical/agent.py:TechnicalAnalyst` | `technical_evidence[ticker]` | no — consumed by `evidence_writer` same tick | safe |
+
+The audit must walk every `BaseAgent` subclass under `src/agents/` and
+classify each `state[k]=v` site as in-tick-only (safe) or cross-tick
+(needs `state_delta`).
+
+**Verification probe (2026-05-19).**  Empirically confirmed cross-tick
+propagation now works end-to-end via a 2-tick backtest
+(`trial-debug3`, completed status, two `portfolio_snapshots` rows
+written).  The probe itself was indirect but unambiguous: between the
+first MemoryWriter patch and the read-side hydration fix, the 2-tick
+run aborted on tick 2 with
+`AttributeError: 'dict' object has no attribute 'decision_tag'` raised
+from `detect_repeat` — proving that the previous tick's
+`memory_buffer` entry *had* propagated into tick 2's session as a dict
+(it would have been an empty list pre-fix).  Pre-fix: storage merge
+never happened, so the next tick would have read the seeded
+`memory_buffer: []` from `runner.py` and produced a buffer of size 1
+on every tick forever — silent compounding-loss bug, exactly the
+failure mode the user flagged 2026-05-19.
+
+**Key decisions for the spec.**
+
+- **Option A — surgical fixes per agent.**  For each cross-tick writer,
+  add a yielded `Event` with `EventActions(state_delta={...})` paired with
+  the direct mutation (defence in depth — direct mutation handles same-tick
+  reads, event handles next-tick reads).  Pros: minimal blast radius, no
+  architectural shift.  Cons: easy to forget when a new `BaseAgent` is
+  added; relies on enforcement (2.5.2) to stay sound.
+- **Option B — drop ADK session state for cross-tick handoff entirely.**
+  Driver pulls per-tick context from DB (snapshots, executions, memory) +
+  broker (positions, cash) at the start of every tick, seeds it freshly
+  into the new session, and treats `state` as a per-tick scratch buffer.
+  Pros: removes the contract trap; matches "state is a tick cache, DB is
+  truth" model.  Cons: bigger refactor; requires audit of every state-key
+  *consumer* too, not just every writer.
+- **Sequencing.**  Whichever option is chosen ships before the first
+  multi-tick backtest is interpreted as a meaningful result — a 30-day
+  window with two ticks/day is 60 ticks where the memory buffer is
+  supposed to compound, and that compounding is currently silently lost.
+- **Defence in depth pairing.**  Even with Option A, the direct mutation
+  should stay alongside the yielded event.  Removing it makes same-tick
+  consumers read a stale `state[k]` until the runner merges the event,
+  which the driver does between agents but not within a single agent's
+  `_run_async_impl`.
+
+**Effort.**  Option A: ~one phase (audit + ~5 agents × ~10 lines + the
+contract test in 2.5.2).  Option B: ~two phases (state-key consumer
+inventory + driver redesign + per-tick seeder refactor + retire the
+session-state-as-handoff convention).
+
+**Origin.**  2026-05-19 trial-backtest failure — 1-tick run aborted with
+`RuntimeError: pipeline did not reach snapshotter for tick 'trial-run-2025-09-02T13:30:00+00:00-open' — last_snapshot.tick_id was None`.
+Root-caused via empirical reproduction of the ADK state-propagation
+mechanism; surgical Snapshotter fix applied the same day to unblock the
+trial run (`backtests/baseline-2025-09/runs/trial-run-fix/manifest.json`
+shows status `completed`).
+
+---
+
+#### 2.5.2 — Contract test forbidding orphan cross-tick `state[k]=v` writes (HIGH)
+
+**Goal.**  A contract test that AST-walks every `BaseAgent` subclass in
+`src/agents/` and refuses a `ctx.session.state[<key>] = <expr>` assignment
+inside `_run_async_impl` unless the same method yields an `Event` whose
+`actions=EventActions(state_delta=...)` mentions the same key — or the
+key is annotated as `# in-tick-only` (a per-line escape hatch).  Catches
+2.5.1-style bugs at lint time, not at "the first multi-tick backtest
+silently produces nonsense" time.
+
+**Non-goals.**
+
+- Do **not** ban every `state[k]=v` write — in-tick writes are still
+  idiomatic.  The check is "does this key escape the tick?".
+- Do **not** require `state_delta` for `LlmAgent` `output_key` writes —
+  ADK handles those itself.
+- Do **not** widen scope to cover `state.update(...)` or `setattr`-style
+  mutations as part of this fix; if those crop up in the audit, add them
+  in a follow-up.
+
+**Current state.**  Zero enforcement.  The only feedback channel is "a
+later tick reads a stale key".  The Snapshotter incident (2026-05-19)
+happened because the driver's completion check noticed the missing key;
+for `memory_buffer` and `executions` there is no equivalent assertion
+and the failure mode is silent.
+
+**Key decisions for the spec.**
+
+- **Static AST walker vs runtime tracker.**
+  - **AST walker** (preferred): a pytest collected at `tests/contract/`
+    that parses each agent module, finds `Assign` nodes whose target is a
+    `Subscript` on `ctx.session.state`, and checks the enclosing
+    `_run_async_impl` for a `Yield` of an `Event` mentioning the same
+    key in `state_delta`.  Cheap, runs in CI, no runtime overhead.
+    Imperfect (false positives possible — e.g. dynamic key names) but the
+    escape-hatch comment handles those.
+  - **Runtime tracker**: wrap `ctx.session.state` with a dict subclass
+    that records writes and asserts at agent-exit that every recorded
+    write key appears in the latest yielded `state_delta`.  Stronger
+    signal but adds runtime cost and only fires when an agent is
+    exercised in tests.
+- **Escape-hatch syntax.**  `# in-tick-only` trailing comment on the
+  assignment line, parsed by the walker.  Mirrors `# noqa` convention.
+- **Coverage scope.**  Start at `src/agents/` only; widen to other
+  `BaseAgent` subclasses if any are added in `src/orchestrator/` or
+  `src/backtest/`.
+
+**Effort.**  Small.  ~80 lines of AST walker + ~5 unit tests + the
+escape-hatch documentation in `docs/` or the agent style guide.
+
+**Origin.**  2026-05-19, paired with 2.5.1.  The Snapshotter incident is
+the proof case — every other affected agent (MemoryWriter, Executor) is
+currently undetected because no driver-side assertion looks for their
+keys.
+
+---
+
+#### 2.5.3 — Replace session-state cross-tick handoff with DB hydration + RAG memory (MED — design phase)
+
+**Goal.**  Retire the "session state is the cross-tick handoff" model
+in favour of treating session state as a *per-tick scratch buffer*.
+Every tick (live or backtest) starts with state seeded from
+**authoritative sources**: positions and cash from the broker;
+prior-tick memory from a retrieval-augmented generation (RAG) store
+that the MemoryWriter writes into; portfolio snapshots from the
+persistence DB.  The state_delta plumbing of 2.5.1 becomes a defence
+in depth rather than the primary mechanism.
+
+**Non-goals.**
+
+- Do **not** unblock the first multi-tick backtest on this item — the
+  surgical fixes from 2.5.1 already do that.  This is the architectural
+  follow-up that the user has indicated should be planned *after* the
+  uniform state_delta patch lands and is verified.
+- Do **not** pick a vector store / embedding model in this item —
+  that's the spec's job.  Goal here is just to record the direction
+  and the constraints.
+- Do **not** widen scope to "all of memory" — the live-side memory
+  buffer is the trigger; the day-digest summarisation and the
+  evidence/decision logs are separate concerns and can ride on the
+  same store but should be specced separately.
+
+**Current state (post 2.5.1).**
+
+- `state_delta` events propagate `memory_buffer`, `day_digest`,
+  `thesis`, `positions`, `executions`, `last_executed_tick_id`, and
+  `last_snapshot` across ticks within a single ADK
+  `InMemorySessionService` lifetime.
+- The backtest driver creates one `InMemorySessionService` *per tick*
+  (`src/backtest/driver.py:292`) and rehydrates the new session from a
+  driver-level dict.  This means even with 2.5.1 in place, the
+  session-state handoff is mediated by a driver-private Python dict,
+  not by anything persistent.
+- The live entrypoint at `src/orchestrator/tick.py:_build_initial_state`
+  (lines 85-100) hard-codes `memory_buffer: []`, `day_digest: ""`,
+  `thesis: ""`, `positions: {}` every tick — no DB re-load.  In
+  cloud-hosted live mode, each scheduled tick is a fresh process
+  invocation, so the in-memory handoff is moot and the live bot would
+  start every tick amnesiac.
+
+**Key decisions for the spec.**
+
+- **Store choice.**  Vertex AI Vector Search (already used for the
+  dedup embeddings — `agents/memory/embeddings.py`), Chroma / DuckDB-VSS
+  for local dev, or a SQL-only "memory table" approach (no semantic
+  similarity, just last-N retrieval)?  Trade-off: full RAG is more
+  capability but more infra; last-N is enough for the
+  `MemoryProjection.recent` and `tag_frequency` slots the strategist
+  prompt already uses.
+- **Retrieval surface.**  At tick-start, what does the seeder ask for?
+  Last-N raw entries (simplest)?  Similar entries by current
+  market-context embedding (more capability)?  Both?
+- **Write surface.**  Same MemoryWriter agent writes both the per-tick
+  buffer entry to the store *and* the state_delta for in-process
+  consumers, or a separate writer that runs out-of-pipeline?
+- **Cloud sync.**  The store has to be reachable from both the
+  backtest harness (local) and the future cloud-hosted live tick (one
+  GCP region).  Same store with different namespaces, or two stores
+  with a sync job?
+- **State-as-scratch contract.**  Once the seeder reads from DB/RAG
+  rather than the driver dict, can the state_delta plumbing from 2.5.1
+  be deleted?  Or is it still load-bearing as a defence-in-depth
+  fallback?  This is the same Option A vs Option B question that 2.5.1
+  parked.
+
+**Effort.**  Two phases (rough).  Phase one is the spec itself + a
+proof-of-concept seeder hitting a local Chroma instance to prove the
+retrieval surface works against real backtest memory.  Phase two is
+the production wiring + cloud-store choice + retirement of the
+driver-dict handoff.
+
+**Sequencing.**  Hard-blocked on 2.5.1 being verified at end-to-end
+scale (i.e. at least one full-window multi-day backtest passes with
+plausible memory-buffer contents).  Without that evidence, redesigning
+the cross-tick handoff is speculative.
+
+**Origin.**  2026-05-19 user direction — *"we will work out how memory
+persists make sure we apply snapshot fix uniformly and then plan how
+to add rag system after"* — after the 1-tick → 2-tick regression
+investigation surfaced that the live-tick code path (`tick.py`) is
+also amnesiac.  The state_delta fixes only paper over the issue for
+in-process multi-tick contexts; the structurally correct answer is
+DB/RAG hydration at tick start.
 
 ---
 
