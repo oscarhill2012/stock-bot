@@ -55,8 +55,17 @@ to overweight and why.
 Emit a TickerStance for EVERY watchlist ticker: {tickers}.
 
 Per stance:
-- preferred_weight ∈ [0,1]: your ideal portfolio weight next tick.
-- conviction ∈ [0,1]: how strongly you hold this view.
+- preferred_weight (float, [0.0, 1.0]): the share of total portfolio value
+  to allocate to this ticker next tick (0.0 = no position — exit if held,
+  do not open if flat).  This bot is long-only: 0.0 is the floor, so
+  express bearishness by lowering the weight toward zero rather than
+  going negative.  Downstream risk constraints cap any single ticker at
+  20% of the portfolio and keep at least 10% in cash, so realistic
+  stances sit well below 1.0 and the sum of your weights across the
+  watchlist cannot exceed 90%.
+- conviction (float, [0.0, 1.0]): how strongly you hold this stance —
+  your confidence in the call, distinct from how much capital you want
+  behind it.
 - rationale: ≤{{STANCE_RATIONALE_MAX}} chars, why.
 - If proposing to OPEN (current ≈ 0 → preferred > 0): include horizon,
   target_price, stop_price; catalyst optional (≤{{STANCE_CATALYST_MAX}} chars).
