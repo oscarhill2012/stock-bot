@@ -15,7 +15,7 @@ async def test_fetch_price_history_accepts_as_of(monkeypatch: pytest.MonkeyPatch
 
     monkeypatch.setattr(
         mod, "_fetch_price_history",
-        lambda ticker, period, interval: PriceHistory(ticker=ticker, bars=[]),
+        lambda ticker, period, interval, as_of=None: PriceHistory(ticker=ticker, bars=[]),
     )
 
     out = await mod.fetch_price_history(

@@ -7,6 +7,20 @@ yfinance hit. This relies on each tick running in a fresh OS process (e.g. Cloud
 in-process multi-tick callers — test harnesses, long-running daemon modes — call
 ``_yt_raw.cache_clear()`` between ticks to avoid serving stale data.
 
+PIT (as_of) protection for OHLCV
+--------------------------------
+``_yt_raw`` now pulls *raw* bars (``auto_adjust=False``) plus the corporate-
+actions table (``yt.actions``).  ``_fetch_price_history`` applies back-
+adjustment via ``_pit_adjust`` using **only** actions with ex-date on or
+before the caller's ``as_of``.  This prevents the silent PIT leak from
+``auto_adjust=True``, which retroactively folds *every* split / dividend
+between a bar's date and "now" into the historical close — embedding
+post-window information into in-window bars when used for backtest replay.
+``as_of=datetime.now()`` on a live tick degrades cleanly to "apply all known
+actions" which is semantically equivalent to the previous auto_adjust=True
+behaviour (numerically near-identical because recent bars carry few
+unrealised actions ahead of them).
+
 Provenance notes
 ----------------
 ``forward_pe`` and ``analyst_rating_avg`` are flagged as **snapshot-leaky**:
@@ -22,6 +36,7 @@ from datetime import date, datetime
 from functools import lru_cache
 from typing import Any
 
+import pandas as pd
 import yfinance as yf
 
 from data.registry import register
@@ -62,9 +77,16 @@ def _f(d: dict[str, Any], *keys: str) -> float | None:
 def _yt_raw(symbol: str, period: str, interval: str) -> dict[str, Any]:
     """Fetch the raw yfinance payload once per ``(symbol, period, interval)``.
 
-    Returns a dict with ``history`` (DataFrame), ``info`` (dict), and
-    ``fast`` (dict). Shared between the price-history and ratios providers
-    so a single tick that needs both pays only one yfinance round-trip.
+    Returns a dict with ``history`` (raw, unadjusted OHLCV DataFrame),
+    ``actions`` (the splits + dividends table from ``yt.actions``),
+    ``info`` (dict), and ``fast`` (dict).  Shared between the price-history
+    and ratios providers so a single tick that needs both pays only one
+    yfinance round-trip.
+
+    ``auto_adjust=False`` is deliberate — back-adjustment is applied later
+    in ``_fetch_price_history`` via ``_pit_adjust`` using only the actions
+    that fall on or before the caller's ``as_of``.  See the module docstring
+    for the rationale.
 
     Parameters
     ----------
@@ -78,10 +100,21 @@ def _yt_raw(symbol: str, period: str, interval: str) -> dict[str, Any]:
     Returns
     -------
     dict
-        Keys: ``"history"`` (DataFrame), ``"info"`` (dict), ``"fast"`` (dict).
+        Keys: ``"history"`` (DataFrame of raw bars), ``"actions"`` (DataFrame
+        of split + dividend events keyed by ex-date), ``"info"`` (dict),
+        ``"fast"`` (dict).
     """
     yt = yf.Ticker(symbol)
-    df = yt.history(period=period, interval=interval, auto_adjust=True)
+    df = yt.history(period=period, interval=interval, auto_adjust=False)
+
+    # Corporate-actions table — DatetimeIndex keyed by ex-date with
+    # ``Dividends`` and ``Stock Splits`` columns.  Empty DataFrame when
+    # the ticker has no recorded actions (or yfinance errors out).
+    actions: pd.DataFrame
+    try:
+        actions = yt.actions if yt.actions is not None else pd.DataFrame()
+    except Exception:
+        actions = pd.DataFrame()
 
     info: dict[str, Any] = {}
     try:
@@ -95,12 +128,104 @@ def _yt_raw(symbol: str, period: str, interval: str) -> dict[str, Any]:
     except Exception:
         fast = {}
 
-    return {"history": df, "info": info, "fast": fast}
+    return {"history": df, "actions": actions, "info": info, "fast": fast}
+
+
+def _pit_adjust(
+    df: pd.DataFrame | None,
+    actions: pd.DataFrame | None,
+    as_of: datetime | date | None,
+) -> pd.DataFrame | None:
+    """Back-adjust raw OHLCV bars using only actions with ex-date <= ``as_of``.
+
+    Splits and cash dividends with ex-date ``e`` are applied to every bar
+    whose date is **strictly before** ``e`` — never to bars on or after ``e``,
+    which already trade in post-event currency.  Actions with ex-date *after*
+    ``as_of`` are deliberately ignored: they had not yet been disclosed at
+    ``as_of``, so applying them would leak future information into the bar.
+
+    Arithmetic
+    ----------
+    * Splits: divide OHLC by the split factor; multiply Volume by the same.
+      A 4-for-1 split has factor 4.0 → pre-split closes become ``close / 4``.
+    * Dividends: subtract the per-share dividend amount from OHLC.  This is
+      the simple subtractive back-adjustment (matches the intent of yfinance's
+      auto_adjust=True for indicator-level use, accurate to sub-percent on
+      typical large-cap dividends).
+
+    Events are walked newest-first so each adjustment sees bars that have
+    not yet been altered by later events, mirroring yfinance's own
+    back-adjustment ordering.
+
+    Parameters
+    ----------
+    df:
+        Raw OHLCV DataFrame from ``_yt_raw["history"]``.  ``None`` or empty
+        returns immediately.
+    actions:
+        Corporate-actions DataFrame from ``_yt_raw["actions"]`` with
+        ``Dividends`` and ``Stock Splits`` columns.  ``None`` or empty
+        returns ``df`` unchanged.
+    as_of:
+        PIT cutoff — only actions with ex-date on or before this are applied.
+        ``None`` returns ``df`` unchanged (raw bars).
+
+    Returns
+    -------
+    pd.DataFrame | None
+        A new DataFrame with adjusted OHLC + Volume, or the input when no
+        adjustment was required.
+    """
+    if df is None or df.empty:
+        return df
+    if actions is None or actions.empty or as_of is None:
+        return df
+
+    # Normalise as_of to a date for comparison against ex-date timestamps.
+    as_of_date = as_of.date() if isinstance(as_of, datetime) else as_of
+
+    # Clamp the action set to events known on or before as_of.
+    pit_actions = actions[actions.index.date <= as_of_date]
+    if pit_actions.empty:
+        return df
+
+    df = df.copy()
+
+    # Apply newest-first so each event sees bars unaltered by later events.
+    for ex_date, row in pit_actions.iloc[::-1].iterrows():
+        ex_date_d = ex_date.date() if hasattr(ex_date, "date") else ex_date
+
+        # Mask: every bar strictly before the ex-date is in scope.
+        mask = df.index.date < ex_date_d
+        if not mask.any():
+            continue
+
+        split = float(row.get("Stock Splits", 0) or 0)
+        div   = float(row.get("Dividends",    0) or 0)
+
+        if split and split != 0:
+            df.loc[mask, ["Open", "High", "Low", "Close"]] /= split
+            df.loc[mask, "Volume"]                          *= split
+
+        if div:
+            df.loc[mask, ["Open", "High", "Low", "Close"]] -= div
+
+    return df
 
 
 @with_retry
-def _fetch_price_history(symbol: str, period: str, interval: str) -> PriceHistory:
-    """Project the yfinance OHLCV frame into a ``PriceHistory``.
+def _fetch_price_history(
+    symbol: str,
+    period: str,
+    interval: str,
+    as_of: datetime | date | None = None,
+) -> PriceHistory:
+    """Project the yfinance OHLCV frame into a ``PriceHistory``, PIT-clamped.
+
+    Raw bars are PIT-back-adjusted via ``_pit_adjust`` using only the corporate
+    actions known on or before ``as_of``.  When ``as_of`` is ``None`` the
+    bars are returned raw (unadjusted) — callers should pass an explicit
+    ``as_of`` to get an adjusted series.
 
     Parameters
     ----------
@@ -108,6 +233,10 @@ def _fetch_price_history(symbol: str, period: str, interval: str) -> PriceHistor
         Upper-cased ticker symbol.
     period, interval:
         Passed through to ``_yt_raw`` — keyed by the LRU cache.
+    as_of:
+        PIT cutoff for back-adjustment.  Live callers pass
+        ``datetime.now()`` (or near-equivalent); backtest callers pass
+        ``window.end``.  ``None`` disables adjustment entirely.
 
     Returns
     -------
@@ -115,7 +244,7 @@ def _fetch_price_history(symbol: str, period: str, interval: str) -> PriceHistor
         Bars ordered oldest -> newest. Empty list when yfinance returns no data.
     """
     raw = _yt_raw(symbol, period, interval)
-    df = raw["history"]
+    df  = _pit_adjust(raw.get("history"), raw.get("actions"), as_of)
 
     bars: list[OHLCBar] = []
     if df is not None and not df.empty:
@@ -353,10 +482,14 @@ async def fetch_price_history(
 ) -> PriceHistory:
     """Async wrapper for the price-history fetch — runs the blocking call off-thread.
 
-    ``as_of`` is accepted for dispatch parity but yfinance's period queries are
-    wall-clock anchored — live behaviour is unchanged.  Backfill callers slice
-    the returned ``max``-period history client-side to the historical window
-    (see ``scripts/backtest_fetch.py``).
+    ``as_of`` is now **honoured** as a PIT cutoff for corporate-action
+    back-adjustment.  yfinance still returns its full ``period``-anchored
+    bar set, but ``_pit_adjust`` filters splits / dividends to those with
+    ex-date on or before ``as_of`` before applying them — eliminating the
+    silent leak where post-window corporate actions would otherwise be
+    folded into in-window bars by ``auto_adjust=True``.  Live callers pass
+    ``as_of=datetime.now()`` and degrade cleanly to "apply all known
+    actions" (semantically equivalent to the previous behaviour).
 
     Parameters
     ----------
@@ -367,18 +500,17 @@ async def fetch_price_history(
     interval:
         yfinance history interval (default ``"1d"``).
     as_of:
-        Required for interface parity with cache-backed providers; ignored here
-        as yfinance serves wall-clock-current data.
+        PIT cutoff for corporate-action back-adjustment.  Required.
     **_unused:
         Absorbs any additional kwargs passed by the dispatch layer.
 
     Returns
     -------
     PriceHistory
-        OHLCV bars ordered oldest -> newest.
+        OHLCV bars ordered oldest -> newest, PIT-back-adjusted to ``as_of``.
     """
     symbol = ticker.upper()
-    return await asyncio.to_thread(_fetch_price_history, symbol, period, interval)
+    return await asyncio.to_thread(_fetch_price_history, symbol, period, interval, as_of)
 
 
 @register(
