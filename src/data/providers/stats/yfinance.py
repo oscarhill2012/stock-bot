@@ -191,6 +191,17 @@ def _pit_adjust(
 
     df = df.copy()
 
+    # Volume comes back from yfinance as ``int64``.  Under pandas >= 3.0 an
+    # in-place ``int64 *= float`` is forbidden when the product cannot be
+    # losslessly stored as int64 — e.g. a 3-for-2 split (factor 1.5) on a
+    # 1_000_001-share bar yields 1_500_001.5, which raises
+    # ``LossySetitemError``.  We promote Volume to ``float64`` once here so
+    # split multiplication is always safe; downstream we already coerce
+    # each volume to a Python ``float`` when building ``OHLCBar``, so this
+    # upcast is invisible to callers.
+    if "Volume" in df.columns and df["Volume"].dtype.kind in ("i", "u"):
+        df["Volume"] = df["Volume"].astype("float64")
+
     # Apply newest-first so each event sees bars unaltered by later events.
     for ex_date, row in pit_actions.iloc[::-1].iterrows():
         ex_date_d = ex_date.date() if hasattr(ex_date, "date") else ex_date
