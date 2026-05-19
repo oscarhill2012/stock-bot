@@ -12,8 +12,7 @@ def test_loader_validates_minimal_payload(tmp_path: Path) -> None:
     from backtest.settings import BacktestSettings, load_backtest_settings_from
 
     payload = {
-        "cache_path":                  "backtests/cache/store.sqlite",
-        "runs_root":                   "backtests/runs",
+        "backtests_root":              "backtests",
         "ticks_per_day":               ["open", "close"],
         "failed_tick_abort_ratio":     0.10,
         "fake_broker_starting_cash":   100000.0,
@@ -26,7 +25,7 @@ def test_loader_validates_minimal_payload(tmp_path: Path) -> None:
     settings = load_backtest_settings_from(path)
 
     assert isinstance(settings, BacktestSettings)
-    assert settings.cache_path                == "backtests/cache/store.sqlite"
+    assert settings.backtests_root            == "backtests"
     assert settings.ticks_per_day             == ["open", "close"]
     assert settings.fake_broker_starting_cash == 100_000.0
 
@@ -38,8 +37,7 @@ def test_loader_rejects_out_of_range_abort_ratio(tmp_path: Path) -> None:
     from backtest.settings import load_backtest_settings_from
 
     payload = {
-        "cache_path":                  "x",
-        "runs_root":                   "y",
+        "backtests_root":              "x",
         "ticks_per_day":               ["open", "close"],
         "failed_tick_abort_ratio":     1.5,
         "fake_broker_starting_cash":   100.0,
@@ -58,8 +56,7 @@ def test_loader_rejects_unknown_keys(tmp_path: Path) -> None:
     from backtest.settings import load_backtest_settings_from
 
     payload = {
-        "cache_path":                  "x",
-        "runs_root":                   "y",
+        "backtests_root":              "x",
         "ticks_per_day":               ["open", "close"],
         "tz":                          "America/New_York",
         "open_time":                   "09:30",
@@ -109,8 +106,7 @@ def test_runner_accepts_backtest_settings_instance(tmp_path: Path, monkeypatch) 
     from backtest.settings import BacktestSettings
 
     settings = BacktestSettings(
-        cache_path                   = str(tmp_path / "store.sqlite"),
-        runs_root                    = str(tmp_path / "runs"),
+        backtests_root               = str(tmp_path / "backtests"),
         ticks_per_day                = ["open", "close"],
         failed_tick_abort_ratio      = 0.1,
         fake_broker_starting_cash    = 100_000.0,

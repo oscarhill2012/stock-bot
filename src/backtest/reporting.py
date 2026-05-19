@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def report(run_dir: Path, settings: BacktestSettings) -> None:
+def report(run_dir: Path, settings: BacktestSettings, *, window: str) -> None:
     """Generate ``report/equity_curve.png`` and ``report/metrics.md``; backfill forwards.
 
     Reads portfolio snapshots from the run's ``db.sqlite``, writes an equity
@@ -59,8 +59,13 @@ def report(run_dir: Path, settings: BacktestSettings) -> None:
     run_dir:
         Root directory for the run (contains ``db.sqlite``, ``decisions/``, etc.).
     settings:
-        Validated ``BacktestSettings`` instance.  Required attributes:
-        ``cache_path`` and ``forward_return_horizons_days``.
+        Validated ``BacktestSettings`` instance.  Used to locate the
+        per-window golden cache and to read ``forward_return_horizons_days``.
+    window:
+        Window key — required so the per-window cache path can be derived.
+        Callers running a fresh backtest pass the same ``window_key`` used
+        for the run; ad-hoc replays parse it from the run-id via
+        ``window_from_run_id``.
     """
     run_dir = Path(run_dir)
     report_dir = run_dir / "report"
@@ -93,7 +98,9 @@ def report(run_dir: Path, settings: BacktestSettings) -> None:
     # Attempt to compute SPY buy-and-hold return over the same window as the
     # portfolio snapshots.  Falls back to a descriptive N/A string if SPY is not
     # in the cache, so the run does not crash when the user hasn't fetched SPY.
-    cache          = CachedDataStore(Path(settings.cache_path))
+    # Per-window golden cache — derived from ``backtests_root`` + window.
+    from backtest.settings import cache_path_for_window
+    cache          = CachedDataStore(cache_path_for_window(settings, window))
     vs_spy_delta   = _compute_vs_spy_delta(equity, cache)
 
     _write_equity_curve(equity, report_dir / "equity_curve.png")

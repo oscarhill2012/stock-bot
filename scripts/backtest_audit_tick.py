@@ -75,18 +75,18 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # Locate the run directory using the configured runs_root.
-    runs_root = Runner._runs_root_from_config()
+    # Locate the run directory using the per-window runs root.
+    runs_root = Runner._runs_root_from_config(args.window)
     run_dir   = runs_root / args.run_id
     if not run_dir.exists():
         print(f"run dir not found: {run_dir}", file=sys.stderr)
         sys.exit(2)
 
     # Wrap the golden cache store with the auditing decorator so every
-    # cache-read row is intercepted and recorded.
-    from backtest.settings import get_backtest_settings
+    # cache-read row is intercepted and recorded.  Per-window cache.
+    from backtest.settings import cache_path_for_window, get_backtest_settings
     settings   = get_backtest_settings()
-    cache_path = Path(settings.cache_path)
+    cache_path = cache_path_for_window(settings, args.window)
 
     inner = CachedDataStore(cache_path)
     store = AuditingStore(inner=inner)

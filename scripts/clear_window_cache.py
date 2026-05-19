@@ -240,9 +240,12 @@ def main() -> int:
     scope_start = window_start - timedelta(days=args.lookback_days)
     scope_end   = window_end   + timedelta(days=args.bleed_days)
 
+    # Per-window: ``<backtests_root>/<window>/store.sqlite``.  ``--cache-path``
+    # remains as an explicit override hatch for ad-hoc forensic work.
+    from backtest.settings import cache_path_for_window
     cache_path = (
         Path(args.cache_path) if args.cache_path
-        else (repo_root / settings.cache_path)
+        else (repo_root / cache_path_for_window(settings, args.window))
     )
     if not cache_path.exists():
         print(f"cache file not found: {cache_path}", file=sys.stderr)

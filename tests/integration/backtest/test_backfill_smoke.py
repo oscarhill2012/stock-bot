@@ -30,15 +30,17 @@ async def test_backfill_writes_then_skips_on_rerun(
     tmp_path:
         pytest-provided temporary directory, cleaned up after the test.
     """
-    # ── Arrange: temp cache + config files ───────────────────────────────────
-    cache_path     = tmp_path / "cache.sqlite"
+    # ── Arrange: temp backtests root + config files ──────────────────────────
+    # Per-window layout — the fetcher will land its store at
+    # ``<backtests_root>/<window>/store.sqlite``.
+    backtests_root = tmp_path / "backtests"
+    cache_path     = backtests_root / "smoke" / "store.sqlite"
     settings_path  = tmp_path / "backtest_settings.json"
     windows_path   = tmp_path / "backtest_windows.json"
     watchlist_path = tmp_path / "watchlist.json"
 
     settings_path.write_text(json.dumps({
-        "cache_path": str(cache_path),
-        "runs_root":  str(tmp_path / "runs"),
+        "backtests_root": str(backtests_root),
     }))
     windows_path.write_text(json.dumps({
         "smoke": {"start": "2023-03-06", "end": "2023-03-10", "notes": "smoke"},

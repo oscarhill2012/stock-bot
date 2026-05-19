@@ -162,7 +162,10 @@ def fixture_cache(tmp_path: Path) -> Path:
     Path
         Absolute path to the SQLite cache file.
     """
-    cache_path = tmp_path / "cache" / "store.sqlite"
+    # Per-window: place the fixture cache where the runner will look for the
+    # ``smoke`` window (``<backtests_root>/<window>/store.sqlite``).
+    cache_path = tmp_path / "backtests" / "smoke" / "store.sqlite"
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
     store = CachedDataStore(cache_path)
 
     # Write 25 warm-up bars (2023-02-06 to 2023-03-10) plus the 3 window
@@ -273,15 +276,19 @@ def test_end_to_end_run_produces_full_artefact_tree(
     # tz/open_time/close_time keys (session times now come from
     # pandas_market_calendars) and switched Runner to a `settings=` kwarg.
     from backtest.settings import BacktestSettings
+    # ``fixture_cache`` was already placed at
+    # ``<tmp_path>/backtests/smoke/store.sqlite`` by the per-window fixture
+    # — passing the parent of <window>/ as backtests_root keeps everything in
+    # one tree under ``tmp_path/backtests/``.
     settings_obj = BacktestSettings(
-        cache_path                   = str(fixture_cache),
-        runs_root                    = str(tmp_path / "runs"),
+        backtests_root               = str(tmp_path / "backtests"),
         ticks_per_day                = ["open", "close"],
         failed_tick_abort_ratio      = 1.0,        # never abort in smoke test
         fake_broker_starting_cash    = 100_000.0,
         forward_return_horizons_days = [1],
         ohlcv_warmup_days            = 30,
     )
+    _ = fixture_cache  # fixture writes are observed via the path layout above
 
     windows = {
         "smoke": {

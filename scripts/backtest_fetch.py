@@ -475,7 +475,14 @@ async def _main_async(args: argparse.Namespace) -> None:
     # Read warm-up days from settings — already validated by BacktestSettings.
     warmup_days: int = settings.ohlcv_warmup_days
 
-    store = CachedDataStore(Path(settings.cache_path))
+    # Per-window cache lives at ``<backtests_root>/<window>/store.sqlite``.
+    # Ensure the parent directory exists before opening so a clean repo can
+    # be fetched into without manual ``mkdir``.
+    from backtest.settings import cache_path_for_window
+    cache_path = cache_path_for_window(settings, args.window)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+
+    store = CachedDataStore(cache_path)
 
     fetcher = Fetcher(
         store=store,

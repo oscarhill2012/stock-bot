@@ -27,8 +27,7 @@ def _make_settings(*, ticks_per_day: list[str]) -> BacktestSettings:
         non-schedule fields.
     """
     return BacktestSettings(
-        cache_path                   = "x",
-        runs_root                    = "y",
+        backtests_root               = "x",
         ticks_per_day                = ticks_per_day,
         failed_tick_abort_ratio      = 0.1,
         fake_broker_starting_cash    = 100.0,

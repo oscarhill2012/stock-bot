@@ -209,20 +209,27 @@ class Runner:
         self._watchlist = json.loads(Path(watchlist_path).read_text())["tickers"]
 
     @staticmethod
-    def _runs_root_from_config() -> Path:
-        """Return ``runs_root`` from the active backtest settings.
+    def _runs_root_from_config(window: str) -> Path:
+        """Return the per-window runs directory from the active backtest settings.
 
         Convenience helper for scripts that need to locate an existing run
-        directory without constructing a full ``Runner`` instance.
+        directory without constructing a full ``Runner`` instance.  Resolves
+        to ``<backtests_root>/<window>/runs/`` under the per-window layout.
+
+        Parameters
+        ----------
+        window:
+            Window key (e.g. ``"svb-stress-2023-03"``) — required because
+            each window has its own runs subtree.
 
         Returns
         -------
         Path
-            The configured ``runs_root`` directory (not guaranteed to exist).
+            The per-window runs directory (not guaranteed to exist).
         """
-        from backtest.settings import get_backtest_settings
+        from backtest.settings import get_backtest_settings, runs_root_for_window
 
-        return Path(get_backtest_settings().runs_root)
+        return runs_root_for_window(get_backtest_settings(), window)
 
     def run(
         self,
@@ -270,10 +277,15 @@ class Runner:
         try:
             os.environ["STOCKBOT_STRICT_AS_OF"] = "1"
 
-            window  = self._windows[window_key]
-            wl      = list(watchlist or self._watchlist)
-            run_id  = f"{window_key}-{_git_sha7()}"
-            run_dir = Path(self._settings.runs_root) / run_id
+            # Resolve per-window paths up front — every artefact for this
+            # window lives under ``<backtests_root>/<window_key>/``.
+            from backtest.settings import cache_path_for_window, runs_root_for_window
+
+            window     = self._windows[window_key]
+            wl         = list(watchlist or self._watchlist)
+            run_id     = f"{window_key}-{_git_sha7()}"
+            runs_root  = runs_root_for_window(self._settings, window_key)
+            run_dir    = runs_root / run_id
             run_dir.mkdir(parents=True, exist_ok=True)
 
             # ── SIGINT / SIGTERM handler ────────────────────────────────────────
@@ -307,7 +319,12 @@ class Runner:
             _prev_sigterm = signal.signal(signal.SIGTERM, _signal_handler)
 
             # ── open the golden cache store ─────────────────────────────────────
-            store = CachedDataStore(Path(self._settings.cache_path))
+            # Per-window: ``<backtests_root>/<window>/store.sqlite``.  The
+            # parent directory is created so a first-run fetch can land here
+            # cleanly when the user hasn't pre-fetched.
+            cache_path = cache_path_for_window(self._settings, window_key)
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            store = CachedDataStore(cache_path)
             _store_handle.set_store(store)
 
             # ── pre-flight: drop tickers with no OHLCV in the window ───────────
@@ -456,10 +473,11 @@ class Runner:
         (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
         # Generate the report unconditionally — if the run aborted, the report
-        # still tells us what *did* happen up to the abort point.
+        # still tells us what *did* happen up to the abort point.  Pass the
+        # ``window_key`` so ``report()`` can locate the per-window cache.
         try:
             from backtest.reporting import report
-            report(run_dir, self._settings)
+            report(run_dir, self._settings, window=window_key)
         except Exception:
             logger.exception("report generation failed for %s", run_id)
 

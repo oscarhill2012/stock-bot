@@ -61,8 +61,10 @@ def test_sigint_handler_writes_interrupted_manifest(tmp_path: Path) -> None:
     windows_path   = tmp_path / "backtest_windows.json"
     watchlist_path = tmp_path / "watchlist.json"
 
-    runs_root = tmp_path / "runs"
-    runs_root.mkdir()
+    # Per-window layout: every artefact lives under
+    # ``<backtests_root>/<window>/`` — the test only needs the root.
+    backtests_root = tmp_path / "backtests"
+    backtests_root.mkdir()
 
     windows_path.write_text(json.dumps({
         "test-window": {"start": "2023-03-06", "end": "2023-03-08", "notes": ""}
@@ -74,8 +76,7 @@ def test_sigint_handler_writes_interrupted_manifest(tmp_path: Path) -> None:
 
     settings_path = tmp_path / "backtest_settings.json"
     settings_path.write_text(json.dumps({
-        "runs_root":                   str(runs_root),
-        "cache_path":                  str(tmp_path / "cache" / "store.sqlite"),
+        "backtests_root":              str(backtests_root),
         "ticks_per_day":               ["open", "close"],
         "fake_broker_starting_cash":   10_000.0,
         "failed_tick_abort_ratio":     0.10,

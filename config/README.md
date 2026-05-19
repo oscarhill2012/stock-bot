@@ -12,7 +12,7 @@ and reference these files by relative path (resolved from the project root).
 | `schedule.json` | Tick cadence — how many ticks per day and their ET times | `src/config/schedule.py` (`get_schedule_config()`) |
 | `strategist.json` | Character caps on strategist LLM free-text fields | `src/config/strategist.py` (`get_strategist_config()`) |
 | `backtest_windows.json` | Era-keyed historical date windows for the backtest harness | `src/backtest/windows.py` (`load_windows()`) |
-| `backtest_settings.json` | Cache path, run root, tick schedule, and lookback defaults for backtesting | `src/backtest/settings.py` (`get_backtest_settings()`) |
+| `backtest_settings.json` | Backtests root (cache + runs nest per-window underneath), tick schedule, and lookback defaults for backtesting | `src/backtest/settings.py` (`get_backtest_settings()`) |
 
 When adding or changing a config value: update the JSON file, then update the
 relevant section in this README.
@@ -354,13 +354,31 @@ the project root.
 
 | Setting | Type | Meaning |
 |---|---|---|
-| `cache_path` | string | SQLite file used by the backtest cache store (PIT-safe evidence snapshots). |
-| `runs_root` | string | Directory root under which per-run output folders are created. |
+| `backtests_root` | string | Single root directory under which every window nests its own cache and runs. Resolves to `<root>/<window>/store.sqlite` for the golden cache and `<root>/<window>/runs/<run-id>/` for run artefacts. Use `cache_path_for_window` / `runs_root_for_window` helpers in `src/backtest/settings.py` to derive concrete paths — never hand-join. |
 | `ticks_per_day` | list[string] | Named tick phases emitted each NYSE session (subset of `["open", "close"]`). |
 | `failed_tick_abort_ratio` | float [0–1] | Fraction of ticks allowed to fail before the harness aborts the run. |
 | `fake_broker_starting_cash` | float | Starting cash balance (USD) for the in-memory fake broker used in backtests. |
 | `forward_return_horizons_days` | list[int] | Horizons (in calendar days) over which forward returns are computed for scoring. |
 | `ohlcv_warmup_days` | int | Extra calendar days of OHLCV history fetched before the window start during cache fill, so rolling indicators (RSI(14), ATR(14), pct_change_20d) have enough bars to compute on the first tick. |
+
+**Per-window storage layout.** Each window owns its own subtree — there is
+no shared cache across windows.  Example:
+
+```
+backtests/
+└── svb-stress-2023-03/
+    ├── store.sqlite          # golden cache for this window only
+    └── runs/
+        └── svb-stress-2023-03-abc1234/
+            ├── manifest.json
+            ├── db.sqlite
+            └── ...
+```
+
+Scripts that only take a `--run-id` (e.g. `backtest_report`,
+`backtest_audit_tick`) recover the window key by parsing the run-id
+prefix via `backtest.settings.window_from_run_id` — run-IDs follow
+`<window>-<7-char git sha>`.
 
 **Why no `tz`/`open_time`/`close_time`?**  NYSE session times — including
 early-close days such as the day after Thanksgiving — are owned by

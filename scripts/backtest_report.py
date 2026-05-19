@@ -3,7 +3,8 @@
 Useful when you want to re-run reporting after patching ``reporting.py``
 without re-running the full backtest.  Loads backtest settings via
 ``get_backtest_settings()`` and resolves the run directory as
-``<runs_root>/<run-id>/``.
+``<backtests_root>/<window>/runs/<run-id>/`` (per-window layout).  The
+window key is parsed from the run-id's ``<window>-<sha7>`` prefix.
 
 Usage::
 
@@ -13,18 +14,21 @@ from __future__ import annotations
 
 import argparse
 import logging
-from pathlib import Path
 
 from backtest.reporting import report
-from backtest.settings import get_backtest_settings
+from backtest.settings import (
+    get_backtest_settings,
+    runs_root_for_window,
+    window_from_run_id,
+)
 
 
 def main() -> None:
     """Parse CLI arguments and delegate to ``backtest.reporting.report``.
 
-    Loads backtest settings via ``get_backtest_settings()``, resolves the run
-    directory, and calls ``report()`` to generate ``report/equity_curve.png``
-    and ``report/metrics.md``.
+    Loads backtest settings via ``get_backtest_settings()``, derives the
+    window key from the run-id, resolves the run directory under
+    ``<backtests_root>/<window>/runs/<run-id>/``, and calls ``report()``.
     """
     logging.basicConfig(
         level=logging.INFO,
@@ -42,12 +46,15 @@ def main() -> None:
     args = parser.parse_args()
 
     settings = get_backtest_settings()
-    run_dir  = Path(settings.runs_root) / args.run_id
+
+    # Window is encoded in the run-id prefix: ``<window>-<sha7>``.
+    window  = window_from_run_id(args.run_id)
+    run_dir = runs_root_for_window(settings, window) / args.run_id
 
     if not run_dir.exists():
         raise SystemExit(f"Run directory not found: {run_dir}")
 
-    report(run_dir, settings)
+    report(run_dir, settings, window=window)
     print(f"report written under {run_dir / 'report'}")
 
 

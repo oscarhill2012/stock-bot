@@ -169,9 +169,23 @@ def test_no_silent_zero_features_on_svb_window(tmp_path: Path) -> None:
     import json as _json
     from pathlib import Path as _Path
 
-    real_settings = _json.loads(_Path("config/backtest_settings.json").read_text())
-    override_settings = {**real_settings, "runs_root": str(tmp_path / "runs")}
+    # Per-window layout: every artefact for this window lives under
+    # ``<backtests_root>/svb-stress-2023-03/``.  We redirect the whole
+    # backtests root into ``tmp_path`` and symlink the per-window directory
+    # to the real one so the test can read the live svb cache without
+    # mutating the project tree's ``runs/`` subtree.
+    real_settings   = _json.loads(_Path("config/backtest_settings.json").read_text())
+    real_backtests  = _Path(real_settings["backtests_root"]).resolve()
+    tmp_backtests   = tmp_path / "backtests"
+    tmp_backtests.mkdir()
+    # Symlink the live svb window into the tmp tree so cache reads hit the
+    # frozen golden cache while ``runs/`` writes land in ``tmp_path``.
+    (tmp_backtests / "svb-stress-2023-03").symlink_to(
+        real_backtests / "svb-stress-2023-03",
+        target_is_directory=True,
+    )
 
+    override_settings = {**real_settings, "backtests_root": str(tmp_backtests)}
     override_settings_path = tmp_path / "backtest_settings.json"
     override_settings_path.write_text(_json.dumps(override_settings))
 
@@ -188,7 +202,16 @@ def test_no_silent_zero_features_on_svb_window(tmp_path: Path) -> None:
     from backtest.cache.store import CachedDataStore
     from data.models import OHLCBar
 
-    _cache_path = _Path(real_settings["cache_path"])
+    # Resolve the per-window cache via the helper rather than hand-rolling
+    # the path — keeps the test honest about the live layout.
+    from backtest.settings import (
+        cache_path_for_window,
+        load_backtest_settings_from,
+    )
+    _real_settings_obj = load_backtest_settings_from(
+        _Path("config/backtest_settings.json")
+    )
+    _cache_path = cache_path_for_window(_real_settings_obj, "svb-stress-2023-03")
     _store = CachedDataStore(_cache_path)
 
     # SVB window is 2023-03-06 to 2023-04-07.  Include 30 days of warm-up
