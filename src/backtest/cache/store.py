@@ -321,6 +321,15 @@ class CachedDataStore:
                 fifty_day_average=snapshot.fifty_day_average,
                 two_hundred_day_average=snapshot.two_hundred_day_average,
                 last_price=snapshot.last_price,
+                # XBRL-derived ratios — populated by pit_composite from
+                # SEC EntityFacts.query() PIT calls.  All can be None when
+                # the upstream concept is missing for this ticker / date.
+                profit_margin=snapshot.profit_margin,
+                debt_to_equity=snapshot.debt_to_equity,
+                roe=snapshot.roe,
+                revenue_growth_yoy=snapshot.revenue_growth_yoy,
+                free_cash_flow=snapshot.free_cash_flow,
+                peg=snapshot.peg,
             ).on_conflict_do_nothing(index_elements=["ticker", "as_of_date"])
             s.execute(stmt)
             s.commit()

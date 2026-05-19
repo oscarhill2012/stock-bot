@@ -128,6 +128,15 @@ Thresholds used by `derive_social_verdict()`.
 
 ### `smart_money` — deterministic SmartMoney analyst
 
+> **Shelved (2026-05-19).** The SmartMoney analyst is currently excluded from
+> the analyst pool in `src/orchestrator/pipeline.py` because both of its
+> input streams are unusable: `politician_trades` has no free PIT-correct
+> historical source, and `notable_holders` issues a filer-side EDGAR query
+> that returns the issuer's own filings rather than 13D/13G holdings of
+> that issuer.  The heuristics block below is retained so the analyst can
+> be revived in one line once a subject-side notable-holders provider
+> lands.
+
 Thresholds used by `derive_smart_money_verdict()`.
 
 | Setting | Type | Meaning |

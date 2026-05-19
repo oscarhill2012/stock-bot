@@ -96,6 +96,19 @@ class CompanyRatiosRow(CacheBase):
     two_hundred_day_average: float = Column(Float)
     last_price:             float = Column(Float)
 
+    # XBRL-derived ratios — populated by the pit_composite provider from
+    # SEC ``EntityFacts.query().by_concept().as_of()`` calls.  All nullable
+    # because XBRL is sparse (ADRs, recent IPOs, foreign filers can lack
+    # any of these concepts).  ``peg`` is intentionally always None — no
+    # PIT-correct source exists for the forward-growth term; the column is
+    # carried for forward compatibility / schema parity with the model.
+    profit_margin:          float = Column(Float)
+    debt_to_equity:         float = Column(Float)
+    roe:                    float = Column(Float)
+    revenue_growth_yoy:     float = Column(Float)
+    free_cash_flow:         float = Column(Float)
+    peg:                    float = Column(Float)
+
     __table_args__ = (Index("ix_ratios_ticker_asof", "ticker", "as_of_date"),)
 
 

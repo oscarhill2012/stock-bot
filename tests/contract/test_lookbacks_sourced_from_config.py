@@ -257,6 +257,15 @@ async def test_backtest_insider_trades_uses_config_lookback(monkeypatch) -> None
     assert captured["lookback_days"] == expected
 
 
+@pytest.mark.skip(
+    reason=(
+        "notable_holders cache-fill is shelved (2026-05-19) — see "
+        "scripts/backtest_fetch._build_provider_fns and "
+        "src/orchestrator/pipeline._build_analyst_pool.  Unskip together "
+        "with re-enabling the domain and the SmartMoney analyst once a "
+        "subject-side notable-holders provider lands."
+    )
+)
 @pytest.mark.asyncio
 async def test_backtest_notable_holders_uses_config_lookback_and_limit(monkeypatch) -> None:
     """Cache-fill ``_notable_holders`` forwards both lookback and limit from config.

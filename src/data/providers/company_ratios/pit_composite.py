@@ -13,9 +13,12 @@ The ``CompanyRatios`` model carries three classes of field:
   ``revenue_growth_yoy``, ``free_cash_flow``) — computed from SEC-filed
   concepts via ``_load_xbrl_summary``.  All default to ``None`` when the
   required concepts are absent or the company has no XBRL data.
-- **PEG ratio** — attempted via yfinance ``pegRatio`` snapshot because forward
-  EPS growth is not in XBRL.  Tagged as ``yfinance_snapshot_leak`` in the
-  provider errors dict when populated this way.
+- **PEG ratio** — intentionally always ``None``.  Forward EPS growth (the "G"
+  in PEG) is broker / analyst consensus and is not in XBRL; the only
+  available source (``yf.Ticker.info["pegRatio"]``) returns a wall-clock
+  value that leaks future information into backtest replays.  Until a
+  PIT-correct source exists the field is surfaced as ``None`` in both live
+  and backtest so the two modes match.
 
 Live behaviour: when ``as_of`` is "now" (the wrapper default), this reduces to
 "use today's OHLCV close + latest XBRL facts" — identical signal to the old
@@ -58,13 +61,28 @@ class _Facts:
     dps_ttm:     float | None
 
 
+# Module-level flag — ``set_identity`` only needs to run once per process,
+# but ``_ensure_identity`` is called inside every XBRL fetch path.  Without
+# this flag the underlying ``edgar.core`` logger emits an INFO line on every
+# call (twice per snapshot × every ticker × every trading day in a backtest
+# fill), drowning out genuinely useful progress output.
+_IDENTITY_SET: bool = False
+
+
 def _ensure_identity() -> None:
     """Set the EDGAR User-Agent identity required by the SEC fair-use policy.
 
-    Reads ``EDGAR_IDENTITY`` from the environment via ``require_key`` so the
-    call only fails at fetch time, not at import time.
+    Idempotent — the underlying ``set_identity`` call is fired at most once
+    per process.  Reads ``EDGAR_IDENTITY`` from the environment via
+    ``require_key`` so the call only fails at fetch time, not at import time.
     """
+    global _IDENTITY_SET
+
+    if _IDENTITY_SET:
+        return
+
     set_identity(require_key("EDGAR_IDENTITY"))
+    _IDENTITY_SET = True
 
 
 def _safe_float(v: Any) -> float | None:
@@ -129,8 +147,12 @@ def _fetch_xbrl_facts(symbol: str, as_of_date: date) -> _Facts:
             Parsed float, or ``None`` if the concept is absent / unparseable.
         """
         try:
-            q   = facts.query().by_concept(concept).as_of(as_of_date)
-            row = q.latest() if hasattr(q, "latest") else None
+            q    = facts.query().by_concept(concept).as_of(as_of_date)
+            # ``q.latest()`` returns a *list* of FinancialFact rows (one per
+            # period of the most recent filing).  We take the first row — it
+            # carries the scalar ``value`` we want.
+            rows = q.latest() if hasattr(q, "latest") else None
+            row  = rows[0] if rows else None
             return _safe_float(getattr(row, "value", None)) if row else None
         except Exception:
             return None
@@ -159,17 +181,16 @@ def _fetch_xbrl_facts(symbol: str, as_of_date: date) -> _Facts:
 
 
 def _load_xbrl_summary(symbol: str, as_of_date: date) -> dict[str, float | None]:
-    """Derive six ratio fields from XBRL ``EntityFacts`` filed at or before ``as_of_date``.
+    """Derive five ratio fields from XBRL ``EntityFacts`` filed at or before ``as_of_date``.
 
     Each ratio is computed from US-GAAP-taxonomy concepts using trailing
     twelve-month (TTM) figures where the spec requires it, and a single
     point-in-time balance-sheet figure where the spec requires that.  If a
     required concept is missing the field silently defaults to ``None``.
 
-    The function also attempts to populate ``peg`` via yfinance ``pegRatio``
-    because forward EPS growth is broker-sourced, not filed in XBRL.  The
-    returned dict carries a ``"_peg_source"`` sentinel (``"yfinance"`` or
-    ``None``) so the caller can tag the snapshot-leak risk.
+    ``peg`` is also present in the returned dict but is intentionally left
+    as ``None`` — there is no PIT-correct source for the forward growth
+    term, so the field is surfaced as ``None`` in both live and backtest.
 
     Parameters
     ----------
@@ -182,20 +203,22 @@ def _load_xbrl_summary(symbol: str, as_of_date: date) -> dict[str, float | None]
     -------
     dict[str, float | None]
         Keys: ``profit_margin``, ``debt_to_equity``, ``roe``,
-        ``revenue_growth_yoy``, ``free_cash_flow``, ``peg``, ``_peg_source``.
-        All ratio values are ``float | None``; ``_peg_source`` is ``str | None``.
+        ``revenue_growth_yoy``, ``free_cash_flow``, ``peg``.  All values are
+        ``float | None``; ``peg`` is always ``None``.
     """
     _ensure_identity()
 
-    # Initialise all output fields to None; we populate what we can.
-    result: dict[str, float | None | str] = {
+    # Initialise all output fields to None; we populate what we can.  ``peg``
+    # is kept in the dict shape (rather than dropped) so callers — and the
+    # ``_ratios_from_components`` reader — don't need to special-case the
+    # absence of the key.  It is never populated to a non-``None`` value.
+    result: dict[str, float | None] = {
         "profit_margin":      None,
         "debt_to_equity":     None,
         "roe":                None,
         "revenue_growth_yoy": None,
         "free_cash_flow":     None,
         "peg":                None,
-        "_peg_source":        None,
     }
 
     # --- Attempt to pull XBRL facts; ADRs / recent IPOs may have no data ---
@@ -224,8 +247,12 @@ def _load_xbrl_summary(symbol: str, as_of_date: date) -> dict[str, float | None]
             Parsed finite float, or ``None`` on any failure.
         """
         try:
-            q   = facts.query().by_concept(concept).as_of(as_of_date)
-            row = q.latest() if hasattr(q, "latest") else None
+            q    = facts.query().by_concept(concept).as_of(as_of_date)
+            # ``q.latest()`` returns a *list* of FinancialFact rows from the
+            # most recent filing — take the first (the canonical TTM/period
+            # value for the concept).
+            rows = q.latest() if hasattr(q, "latest") else None
+            row  = rows[0] if rows else None
             return _safe_float(getattr(row, "value", None)) if row else None
         except Exception:
             return None
@@ -253,9 +280,12 @@ def _load_xbrl_summary(symbol: str, as_of_date: date) -> dict[str, float | None]
     # --- revenue_growth_yoy: (rev_now - rev_1y_ago) / rev_1y_ago ---
     prior_date = as_of_date.replace(year=as_of_date.year - 1)
     try:
-        q_prior   = facts.query().by_concept("Revenues").as_of(prior_date)
-        row_prior = q_prior.latest() if hasattr(q_prior, "latest") else None
-        rev_prior = _safe_float(getattr(row_prior, "value", None)) if row_prior else None
+        q_prior    = facts.query().by_concept("Revenues").as_of(prior_date)
+        # Same list-unwrap as ``_ttm`` / ``_scalar`` — ``q.latest()`` returns a
+        # list of rows from the latest filing on or before ``prior_date``.
+        rows_prior = q_prior.latest() if hasattr(q_prior, "latest") else None
+        row_prior  = rows_prior[0] if rows_prior else None
+        rev_prior  = _safe_float(getattr(row_prior, "value", None)) if row_prior else None
     except Exception:
         rev_prior = None
 
@@ -268,16 +298,15 @@ def _load_xbrl_summary(symbol: str, as_of_date: date) -> dict[str, float | None]
     if operating_cf is not None and capex is not None:
         result["free_cash_flow"] = operating_cf - capex
 
-    # --- peg: not in XBRL — fall back to yfinance snapshot ---
-    # This is a point-in-time *today* value, not PIT-correct for backtest use.
-    try:
-        peg_val = yf.Ticker(symbol).info.get("pegRatio")
-        peg_f   = _safe_float(peg_val)
-        if peg_f is not None:
-            result["peg"]         = peg_f
-            result["_peg_source"] = "yfinance"
-    except Exception:
-        pass  # PEG stays None — non-fatal
+    # --- peg: intentionally left None ---
+    # PEG = trailing P/E ÷ forward EPS growth.  The "G" term is broker /
+    # analyst consensus and is not filed in XBRL.  The only available source
+    # (``yf.Ticker(symbol).info["pegRatio"]``) returns whatever yfinance has
+    # cached *today* — a wall-clock value that would be identical for every
+    # historical ``as_of`` and so would leak future information into
+    # backtest replays.  Until we find a PIT-correct source we surface
+    # ``None`` everywhere, in both live and backtest, so the strategist's
+    # "PEG:" bullet renders the same in both modes (no live/backtest skew).
 
     return result  # type: ignore[return-value]
 
@@ -368,8 +397,9 @@ def _ratios_from_components(
     history:
         PIT-sliced OHLCV bars from ``_fetch_price_series``.
     xbrl_ratios:
-        Dict from ``_load_xbrl_summary`` with derived ratio fields and the
-        ``_peg_source`` sentinel.
+        Dict from ``_load_xbrl_summary`` with the five derived ratio fields
+        and a ``peg`` key that is always ``None`` (kept in the dict shape
+        for forward compatibility — see ``_load_xbrl_summary``).
     as_of:
         The point-in-time date for this snapshot; stored on the model so
         the backtest cache can key lookups correctly.
@@ -402,13 +432,6 @@ def _ratios_from_components(
 
     fifty_day   = _moving_average(closes,  50)
     two_hundred = _moving_average(closes, 200)
-
-    # Log snapshot-leak warning when PEG was sourced from yfinance (not PIT-correct).
-    if xbrl_ratios.get("_peg_source") == "yfinance":
-        logger.debug(
-            "PEG ratio for %s sourced from yfinance snapshot (not PIT-correct for %s).",
-            symbol, as_of,
-        )
 
     return CompanyRatios(
         ticker                  = symbol,

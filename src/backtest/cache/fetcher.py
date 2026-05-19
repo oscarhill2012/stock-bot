@@ -226,6 +226,11 @@ class Fetcher:
         error: str | None = None
         rows_written = 0
 
+        # Per-(ticker, domain) progress — emitted before the (potentially
+        # multi-second) network call so the user can see what's currently
+        # being fetched, not just what already finished.
+        logger.info("fetching %s/%s …", ticker, domain)
+
         try:
             results = await fn(
                 ticker,
@@ -250,6 +255,14 @@ class Fetcher:
             else:
                 writer(ticker, results)
                 rows_written = len(results) if hasattr(results, "__len__") else 0
+
+            # Success line — explicit row count + elapsed seconds so the
+            # user can spot the slow domains at a glance during a long fill.
+            elapsed = (datetime.now(tz=UTC) - started).total_seconds()
+            logger.info(
+                "done %s/%s — %d row(s) in %.1fs",
+                ticker, domain, rows_written, elapsed,
+            )
 
         except Exception as exc:
             status = "error"

@@ -65,16 +65,28 @@ def _as_of_close(end) -> datetime:
 
 
 
-async def _fill_quarterly_ratios(ticker: str, start, end) -> list:
-    """Fetch one ``CompanyRatios`` snapshot per quarter-end in ``[start, end]``.
+async def _fill_per_tick_ratios(ticker: str, start, end) -> list:
+    """Fetch one ``CompanyRatios`` snapshot per NYSE trading day in ``[start, end]``.
 
-    Calls the active company_ratios provider once per quarter-end date and
-    returns ``list[(snapshot, quarter_end_date)]`` so ``Fetcher._fetch_one``
-    can unpack each tuple into the store's ``write_company_ratios`` signature.
+    Live-equivalent semantics: every live tick calls
+    ``get_company_ratios(ticker, as_of=now())``, which dispatches to the active
+    company_ratios provider and returns the most-recent filing's XBRL facts
+    plus price-derived fields current to that moment.  The cache pre-records
+    the same call offline, once per trading day at market close, so replay
+    returns the snapshot a live agent would have seen.
 
-    The replay reader uses ``as_of_date <= as_of`` so multiple snapshots
-    inside one window let the analyst see the right quarter's fundamentals
-    rather than a single window-end snapshot.
+    Implementation notes
+    --------------------
+    - The session schedule (and especially early-close days) comes from
+      ``pandas_market_calendars`` — same source the tick generator uses — so
+      cache-fill aligns exactly with the ticks the driver later emits.
+    - Close-of-day is the chosen as_of moment because the
+      ``CompanyRatiosRow`` table is keyed by ``(ticker, as_of_date)``; two
+      same-date snapshots (e.g. one at open + one at close) would collide on
+      the primary key.  At replay, ``read_company_ratios`` returns the latest
+      snapshot with ``as_of_date <= query.date()``, so a close-of-day row
+      correctly serves both the open and close ticks of the next session and
+      the close tick of its own session.
 
     Parameters
     ----------
@@ -88,36 +100,39 @@ async def _fill_quarterly_ratios(ticker: str, start, end) -> list:
     Returns
     -------
     list[tuple[CompanyRatios, date]]
-        One entry per quarter-end that falls within ``[start, end]``, or a
-        single window-end snapshot if no quarter-end falls inside the range.
+        One ``(snapshot, trading_date)`` entry per NYSE session in
+        ``[start, end]``.  Empty when the window contains no NYSE sessions
+        (e.g. the window is a single weekend day).
     """
-    from datetime import date as _date
+    import pandas_market_calendars as mcal
 
     from data import get_company_ratios
 
-    # Calendar quarter-end dates: 31-Mar, 30-Jun, 30-Sep, 31-Dec.
-    _Q_ENDS = ((3, 31), (6, 30), (9, 30), (12, 31))
-
-    candidates: list[_date] = []
-    for year in range(start.year, end.year + 1):
-        for month, day in _Q_ENDS:
-            candidates.append(_date(year, month, day))
-
-    targets = [d for d in candidates if start <= d <= end]
-    if not targets:
-        # Window doesn't span any quarter-end — fall back to a single snapshot
-        # at window-end so the cache is not entirely empty.
-        targets = [end]
+    # NYSE is the only calendar used elsewhere in the harness — see
+    # backtest/schedule.py for the rationale.  Importing the calendar here
+    # rather than reusing schedule.generate_ticks keeps the cache-fill
+    # decoupled from the ``ticks_per_day`` setting (which is a replay-time
+    # concern, not a fill-time one — we always want one snapshot per session
+    # at fill).
+    nyse  = mcal.get_calendar("NYSE")
+    sched = nyse.schedule(start_date=start, end_date=end)
 
     out: list = []
-    for qe in targets:
+
+    for _, row in sched.iterrows():
+        # ``market_close`` is a tz-aware pandas Timestamp in
+        # America/New_York; ``to_pydatetime()`` preserves the tz.  On
+        # early-close days the calendar already encodes the truncated time.
+        close_dt = row["market_close"].to_pydatetime()
+
         snapshot = await get_company_ratios(
             ticker,
-            period="max",
-            interval="1d",
-            as_of=datetime.combine(qe, time(16, 0), tzinfo=_NY),
+            period   = "max",
+            interval = "1d",
+            as_of    = close_dt,
         )
-        out.append((snapshot, qe))
+        out.append((snapshot, close_dt.date()))
+
     return out
 
 
@@ -170,8 +185,13 @@ def _build_provider_fns(warmup_days: int = 30) -> dict:
         return [bar for bar in history.bars if warmup_start <= bar.timestamp.date() <= end]
 
     async def _company_ratios(ticker: str, *, start, end) -> list:
-        """Fan out quarter-end as_ofs across the window for PIT-correct snapshots."""
-        return await _fill_quarterly_ratios(ticker, start, end)
+        """One PIT snapshot per NYSE trading day — live-equivalent semantics.
+
+        See ``_fill_per_tick_ratios`` for the rationale.  In short: live
+        calls ``get_company_ratios`` every tick, so the cache pre-records
+        the same call once per trading session at close.
+        """
+        return await _fill_per_tick_ratios(ticker, start, end)
 
     async def _news(ticker: str, *, start, end) -> list:
         """Fetch news articles for the window plus the analyst's prior-context lookback.
@@ -305,7 +325,19 @@ def _build_provider_fns(warmup_days: int = 30) -> dict:
         # retained as a placeholder — re-enable by uncommenting the line
         # below once a working free provider lands.
         # "politician_trades": _politician_trades,
-        "notable_holders":   _notable_holders,
+        #
+        # notable_holders intentionally disabled (2026-05-19) — the
+        # edgartools-backed provider issues ``Company(symbol).get_filings()``
+        # which returns filings where ``symbol`` is the *filer* (the issuer
+        # disclosing its own 10-K / 10-Q / 8-K).  For SC 13D / 13G the
+        # canonical query needs ``symbol`` as the *subject* (the company
+        # being held), which edgartools does not expose.  Past fills wrote
+        # rows where the "holder" was the issuer itself (e.g. JPM rows with
+        # holder=JPMORGAN CHASE & CO), so the data is misleading rather
+        # than merely sparse.  The smart_money analyst is also shelved in
+        # ``orchestrator.pipeline._build_analyst_pool`` while this is out
+        # — re-enable both together once a subject-side provider lands.
+        # "notable_holders":   _notable_holders,
     }
 
 
@@ -489,6 +521,14 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)-8s %(name)s  %(message)s",
     )
+
+    # ── Quieten chatty libraries ────────────────────────────────────────────
+    # These libraries log at INFO level for routine internals (edgar
+    # repeats "Identity of the Edgar REST client set to..." on every fetch;
+    # yfinance / urllib3 emit per-request lines).  Drop them to WARNING so
+    # the fetcher's own progress lines are readable.
+    for noisy in ("edgar", "edgar.core", "yfinance", "urllib3", "peewee"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
     parser = argparse.ArgumentParser(
         description=(

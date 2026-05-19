@@ -7,23 +7,33 @@ from google.adk.agents import SequentialAgent
 def _build_analyst_pool():
     """Build a fresh AnalystPool each time to avoid single-parent constraint.
 
-    Five children: Fundamental, News, SmartMoney, Technical, and Social —
-    all three deterministic analysts (SmartMoney, Technical, Social) are
-    ``BaseAgent`` subclasses that derive verdicts via heuristics in
-    ``_run_async_impl`` with no LLM involvement.
+    Four children: Fundamental, News, Technical, and Social — the two
+    deterministic analysts (Technical, Social) are ``BaseAgent`` subclasses
+    that derive verdicts via heuristics in ``_run_async_impl`` with no LLM
+    involvement.
+
+    SmartMoney is currently shelved (2026-05-19).  Its two input streams are
+    both unusable: ``politician_trades`` has no free PIT-correct historical
+    source (FMP / Quiver are paid for back-data), and ``notable_holders``
+    uses ``Company.get_filings()`` which returns filer-side filings (the
+    issuer's own 10-K, 10-Q etc.) rather than subject-side 13D/13G
+    holdings — see ``src/data/providers/notable_holders/edgar.py``.  The
+    analyst module, extractor, heuristics, and consumer hooks
+    (``smart_money_evidence`` key in ``evidence_writer``, ``memory.writer``,
+    ``strategist.evidence_view``) all remain in the tree so the analyst
+    can be revived in one line when a fix lands.  Downstream consumers
+    already cope with the key being absent.
     """
     from google.adk.agents import ParallelAgent
 
     from agents.analysts.fundamental.agent import _build_fundamental_analyst
     from agents.analysts.heuristics import load_heuristics
     from agents.analysts.news.agent import _build_news_analyst
-    from agents.analysts.smart_money.agent import _build_smart_money_analyst
     from agents.analysts.social.agent import _build_social_analyst
     from agents.analysts.technical.agent import _build_technical_analyst
 
     # Load heuristics once so all deterministic analysts share the same cached
-    # config object — consumed by technical, social, and smart_money BaseAgent
-    # analysts.
+    # config object — consumed by the technical and social BaseAgent analysts.
     h = load_heuristics()
 
     return ParallelAgent(
@@ -33,7 +43,10 @@ def _build_analyst_pool():
             _build_fundamental_analyst(h.fundamental_vocabulary),  # narrowed LlmAgent
             _build_news_analyst(h.news_vocabulary),
             _build_social_analyst(h.social),            # deterministic BaseAgent
-            _build_smart_money_analyst(h.smart_money),  # deterministic BaseAgent
+            # _build_smart_money_analyst(h.smart_money) — shelved (see docstring).
+            # Re-enable by re-importing _build_smart_money_analyst above and
+            # uncommenting the line below once notable_holders / politician
+            # trades have working PIT-correct providers.
         ],
     )
 

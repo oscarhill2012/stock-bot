@@ -47,7 +47,7 @@ async def test_pit_composite_returns_filled_ratios(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(mod, "_load_xbrl_summary", lambda *a, **k: {
         "profit_margin": None, "debt_to_equity": None, "roe": None,
         "revenue_growth_yoy": None, "free_cash_flow": None,
-        "peg": None, "_peg_source": None,
+        "peg": None,
     })
 
     out = await mod.fetch("AAPL", as_of=datetime(2023, 3, 14, tzinfo=UTC))
@@ -78,7 +78,7 @@ async def test_pit_composite_handles_missing_facts(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(mod, "_load_xbrl_summary", lambda *a, **k: {
         "profit_margin": None, "debt_to_equity": None, "roe": None,
         "revenue_growth_yoy": None, "free_cash_flow": None,
-        "peg": None, "_peg_source": None,
+        "peg": None,
     })
 
     out = await mod.fetch("XYZ", as_of=datetime(2023, 3, 14, tzinfo=UTC))
@@ -104,7 +104,7 @@ async def test_pit_composite_handles_empty_prices(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(mod, "_load_xbrl_summary", lambda *a, **k: {
         "profit_margin": None, "debt_to_equity": None, "roe": None,
         "revenue_growth_yoy": None, "free_cash_flow": None,
-        "peg": None, "_peg_source": None,
+        "peg": None,
     })
 
     out = await mod.fetch("XYZ", as_of=datetime(2023, 3, 14, tzinfo=UTC))
@@ -142,15 +142,16 @@ async def test_pit_composite_populates_new_ratios(monkeypatch: pytest.MonkeyPatc
         lambda symbol, as_of: PriceHistory(ticker=symbol, bars=_make_bars(220, last_close=175.0)),
     )
 
-    # Full XBRL summary — all six ratio fields present, no PEG leak.
+    # Full XBRL summary — all five ratio fields present.  ``peg`` is always
+    # surfaced as ``None`` by ``_load_xbrl_summary`` (there is no PIT-correct
+    # source for the forward-growth term — see the provider docstring).
     fake_xbrl: dict = {
         "profit_margin":      0.25,
         "debt_to_equity":     1.5,
         "roe":                0.15,
         "revenue_growth_yoy": 0.07,
         "free_cash_flow":     9.0e10,
-        "peg":                1.8,
-        "_peg_source":        "yfinance",   # from yfinance fallback
+        "peg":                None,
     }
     monkeypatch.setattr(mod, "_load_xbrl_summary", lambda *a, **k: fake_xbrl)
 
@@ -164,7 +165,8 @@ async def test_pit_composite_populates_new_ratios(monkeypatch: pytest.MonkeyPatc
     assert out.roe                == pytest.approx(0.15)
     assert out.revenue_growth_yoy == pytest.approx(0.07)
     assert out.free_cash_flow     == pytest.approx(9.0e10)
-    assert out.peg                == pytest.approx(1.8)
+    # PEG is intentionally always None — no PIT-correct source available.
+    assert out.peg                is None
 
     # as_of must be populated.
     from datetime import date

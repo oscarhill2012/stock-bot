@@ -271,6 +271,162 @@ def deep_check_insider_trades(con: sqlite3.Connection) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Domain-specific deep dive: company_ratios.  Verifies the 2026-05-19 fixes:
+#
+# - list-unwrap fix in pit_composite (XBRL fields no longer silently None);
+# - per-tick fill rewrite in scripts/backtest_fetch (one snapshot per NYSE
+#   trading day, not one per quarter-end inside the window);
+# - peg field intentionally surfaced as None in both live and backtest.
+#
+# We cross-check the per-ticker company_ratios row count against the
+# in-window ohlcv bar count for the same ticker — they share the same
+# trading-day cardinality, so any mismatch flags a fill regression.  We
+# also report per-column null counts (in-window) and per-ticker × XBRL
+# field coverage so that a *partial* regression (e.g. NetIncomeLoss
+# missing for one ticker but not another) is visible at a glance.
+# ---------------------------------------------------------------------------
+# XBRL-derived ratio columns — should be populated on the majority of
+# rows for calendar-fiscal-year US-domiciled tickers.  Sparse / all-null
+# for ADRs and non-calendar fiscal years (e.g. AVGO Oct year-end) is
+# expected — flag, but don't FAIL.
+_XBRL_RATIO_FIELDS: tuple[str, ...] = (
+    "profit_margin",
+    "debt_to_equity",
+    "roe",
+    "revenue_growth_yoy",
+    "free_cash_flow",
+)
+
+# Price-derived columns — should be populated on every in-window row
+# (yfinance always has a close).  100% null on any of these means the
+# yfinance leg of pit_composite failed silently.
+_PRICE_FIELDS: tuple[str, ...] = (
+    "last_price",
+    "market_cap",
+    "trailing_pe",
+    "dividend_yield",
+    "fifty_day_average",
+    "two_hundred_day_average",
+)
+
+
+def deep_check_company_ratios(
+    con:       sqlite3.Connection,
+    tickers:   list[str],
+    start_iso: str,
+    end_iso:   str,
+) -> dict:
+    """Per-ticker fill density + per-column XBRL null distribution.
+
+    Schema-resilient: introspects ``company_ratios`` columns at runtime and
+    only queries fields that actually exist in the cache.  Any
+    model-expected XBRL/price column that is *missing from the table* is
+    captured in ``missing_columns`` so the verdict can flag the drift
+    (silent-drop on write path).
+
+    Returns
+    -------
+    dict
+        Keys: ``rows_per_ticker`` (in-window rowcount),
+        ``distinct_dates_per_ticker`` (distinct ``as_of_date``s),
+        ``null_counts`` (per-column null count over in-window rows — only
+        for columns that exist),
+        ``peg_non_null`` (sanity for the leak fix — must be 0; ``None`` if
+        the column does not exist in the schema),
+        ``xbrl_coverage`` (per-ticker × XBRL field non-null count — only
+        for XBRL fields that exist as columns),
+        ``missing_columns`` (model-expected columns absent from the
+        company_ratios table — drift signal).
+    """
+    cur = con.cursor()
+    out: dict = {}
+
+    # ── 0. Introspect the schema so we only query columns that exist. ────────
+    # The 2026-05-19 pit_composite fix added several XBRL-derived ratio
+    # fields to the ``CompanyRatios`` Pydantic model, but the SQLite cache
+    # schema and the store's ``write_company_ratios`` were never updated to
+    # persist them.  This block discovers the gap rather than crashing.
+    cur.execute("PRAGMA table_info(company_ratios)")
+    table_cols  = {row[1] for row in cur.fetchall()}
+
+    expected    = set(_XBRL_RATIO_FIELDS) | set(_PRICE_FIELDS) | {"peg"}
+    present     = sorted(expected & table_cols)
+    missing     = sorted(expected - table_cols)
+    out["missing_columns"] = missing
+
+    # ── 1. Per-ticker row & distinct-date counts ──────────────────────────────
+    # If the per-tick fill is healthy these two numbers match and equal the
+    # number of NYSE trading days in [start, end] (cross-checked against
+    # ohlcv in the printer).
+    rows_per_ticker:           dict[str, int] = {}
+    distinct_dates_per_ticker: dict[str, int] = {}
+    for t in tickers:
+        cur.execute(
+            "SELECT COUNT(*), COUNT(DISTINCT date(as_of_date)) "
+            "FROM company_ratios "
+            "WHERE ticker=? AND date(as_of_date) BETWEEN ? AND ?",
+            (t, start_iso, end_iso),
+        )
+        n, n_dates = cur.fetchone()
+        rows_per_ticker[t]           = n
+        distinct_dates_per_ticker[t] = n_dates
+    out["rows_per_ticker"]           = rows_per_ticker
+    out["distinct_dates_per_ticker"] = distinct_dates_per_ticker
+
+    # ── 2. Per-column null counts (in-window only) ───────────────────────────
+    # Iterate over the intersection of expected and present columns so a
+    # cache schema older than the model doesn't blow up the audit.  Columns
+    # that exist on the model but not the table are surfaced via
+    # ``missing_columns`` instead (much more informative than a crash).
+    null_counts: dict[str, int] = {}
+    for col in present:
+        cur.execute(
+            f"SELECT COUNT(*) FROM company_ratios "                            # noqa: S608
+            f"WHERE date(as_of_date) BETWEEN ? AND ? AND {col} IS NULL",
+            (start_iso, end_iso),
+        )
+        null_counts[col] = cur.fetchone()[0]
+    out["null_counts"] = null_counts
+
+    # ── 3. PEG-specific verification — must be 100% null post-fix ────────────
+    # ``peg`` had a wall-clock leak from yf.Ticker.info["pegRatio"] before
+    # the 2026-05-19 fix.  Any non-null row means the fix didn't land for
+    # that path (or someone re-introduced the yfinance fallback).  If peg
+    # isn't a column yet, the field is structurally absent — record None so
+    # the verdict can distinguish "no column" from "column with leaks".
+    if "peg" in table_cols:
+        cur.execute("SELECT COUNT(*) FROM company_ratios WHERE peg IS NOT NULL")
+        out["peg_non_null"] = cur.fetchone()[0]
+    else:
+        out["peg_non_null"] = None
+
+    # ── 4. Per-ticker × XBRL field non-null count ────────────────────────────
+    # A row of zeros for one ticker × all five fields strongly suggests the
+    # XBRL pipeline failed for that ticker (foreign filer, no XBRL data,
+    # weird taxonomy mapping).  Per-field sparsity is normal for ratios
+    # that depend on a missing concept (e.g. ShortTermBorrowings absent →
+    # debt_to_equity null while profit_margin / roe stay populated).  Only
+    # iterate over XBRL fields that actually exist in the schema.
+    present_xbrl = [f for f in _XBRL_RATIO_FIELDS if f in table_cols]
+    xbrl_coverage: dict[str, dict[str, int]] = {}
+    for t in tickers:
+        per_field: dict[str, int] = {}
+        for fld in present_xbrl:
+            cur.execute(
+                f"SELECT COUNT(*) FROM company_ratios "                        # noqa: S608
+                f"WHERE ticker=? AND date(as_of_date) BETWEEN ? AND ? "
+                f"AND {fld} IS NOT NULL",
+                (t, start_iso, end_iso),
+            )
+            per_field[fld] = cur.fetchone()[0]
+        xbrl_coverage[t] = per_field
+    out["xbrl_coverage"]   = xbrl_coverage
+    out["present_xbrl"]    = present_xbrl
+
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Domain-specific deep dive: ohlcv.  Per-ticker date span confirms the
 # warm-up window actually landed (analysts request lookback from tick T).
 # ---------------------------------------------------------------------------
@@ -372,6 +528,107 @@ def print_ohlcv_spans(ohl: dict[str, dict[str, object]]) -> None:
         print(f"  {t:<8} {str(info['min']):>11} → {str(info['max']):>11}  ({info['count']} bars)")
 
 
+def print_company_ratios_deep(
+    deep:           dict,
+    ohlcv_findings: DomainFindings,
+    tickers:        list[str],
+) -> None:
+    """Print the company_ratios deep-dive — per-tick fill density + XBRL coverage.
+
+    Cross-checks the per-ticker company_ratios in-window row count against
+    the ohlcv in-window bar count.  Both share the NYSE trading-day
+    cardinality, so any mismatch indicates the per-tick fill regressed
+    relative to the price feed.
+    """
+    _section("company_ratios deep check (2026-05-19 pit_composite + per-tick fixes)")
+
+    # ── Schema drift — model columns absent from the cache table ───────────
+    # Flag prominently because a column missing from the table means the
+    # write path silently drops that field on every snapshot.
+    missing = deep.get("missing_columns") or []
+    if missing:
+        print(
+            f"  SCHEMA DRIFT — {len(missing)} model column(s) absent from "
+            f"company_ratios table:"
+        )
+        for col in missing:
+            print(f"      {col}")
+        print(
+            "  (write_company_ratios silently drops these — backtest "
+            "replays will never see them.)\n"
+        )
+    else:
+        print("  Schema in sync with model — no missing columns.\n")
+
+    # ── Per-ticker fill density vs ohlcv in-window cardinality ──────────────
+    rows_pt    = deep["rows_per_ticker"]
+    dates_pt   = deep["distinct_dates_per_ticker"]
+    ohlcv_pt   = ohlcv_findings.per_ticker_in_window
+
+    print("  Per-ticker fill density (rows / distinct dates) vs ohlcv in-window bars:")
+    print(f"    {'ticker':<8} {'rows':>6} {'dates':>6} {'ohlcv':>6}  status")
+    for t in tickers:
+        n        = rows_pt.get(t, 0)
+        n_dates  = dates_pt.get(t, 0)
+        n_ohlcv  = ohlcv_pt.get(t, 0)
+
+        # Three checks: rows == dates (no duplicate PIT-pinned snapshots),
+        # rows == ohlcv bar count (one snapshot per trading day), and
+        # rows > 0 (something landed at all).
+        if n == 0:
+            flag = "EMPTY"
+        elif n != n_dates:
+            flag = f"DUPLICATES ({n - n_dates} extra)"
+        elif n != n_ohlcv:
+            flag = f"MISMATCH (ohlcv has {n_ohlcv})"
+        else:
+            flag = "ok"
+        print(f"    {t:<8} {n:>6d} {n_dates:>6d} {n_ohlcv:>6d}  {flag}")
+
+    # ── Per-column null counts (in-window only) ──────────────────────────────
+    # Render fields the schema actually has; absent ones show "—" so the
+    # block stays readable next to the schema-drift section above.
+    null_counts = deep["null_counts"]
+
+    def _fmt_nulls(fld: str) -> str:
+        """Format the null-count cell, marking columns absent from the table."""
+        return f"{null_counts[fld]:>6d}" if fld in null_counts else "   —  "
+
+    print("\n  Per-column null counts (in-window rows):")
+    print("    XBRL-derived fields (expected sparse for ADRs / non-Dec FY):")
+    for fld in _XBRL_RATIO_FIELDS:
+        print(f"      {fld:<22} nulls: {_fmt_nulls(fld)}")
+
+    print("    Price-derived fields (expected ~0 nulls):")
+    for fld in _PRICE_FIELDS:
+        print(f"      {fld:<22} nulls: {_fmt_nulls(fld)}")
+
+    print(f"\n    peg                    nulls: {_fmt_nulls('peg')}  "
+          f"(peg is intentionally always None — non-null = leak)")
+
+    peg_nn = deep["peg_non_null"]
+    if peg_nn is None:
+        print("    peg non-null rowcount (whole table): n/a (column not in schema)")
+    else:
+        print(f"    peg non-null rowcount (whole table): {peg_nn}")
+
+    # ── Per-ticker × XBRL field coverage matrix ──────────────────────────────
+    cov          = deep["xbrl_coverage"]
+    present_xbrl = deep.get("present_xbrl", [])
+
+    print("\n  Per-ticker × XBRL-field non-null row counts:")
+    if not present_xbrl:
+        print("    (no XBRL columns present in schema — matrix omitted)")
+    else:
+        header_fields = " ".join(f"{fld[:11]:>11}" for fld in present_xbrl)
+        print(f"    {'ticker':<8} {header_fields}")
+        for t in tickers:
+            cells = " ".join(
+                f"{cov[t].get(fld, 0):>11d}" for fld in present_xbrl
+            )
+            print(f"    {t:<8} {cells}")
+
+
 def print_future_bleed_check(
     all_findings: list[DomainFindings],
     end_iso:      str,
@@ -451,8 +708,11 @@ def print_per_domain_details(all_findings: list[DomainFindings]) -> None:
 # it as informational only.
 # ---------------------------------------------------------------------------
 def render_verdict(
-    all_findings: list[DomainFindings],
-    deep:         dict[str, int],
+    all_findings:    list[DomainFindings],
+    deep:            dict[str, int],
+    ratios_deep:     dict,
+    ohlcv_findings:  DomainFindings,
+    tickers:         list[str],
 ) -> list[str]:
     """Return a list of WARN strings; empty list means PASS."""
 
@@ -468,6 +728,61 @@ def render_verdict(
             f"{deep['numeric_insider_name']} insider_trades rows still have "
             f"a numeric insider_name (Series.name leak)"
         )
+
+    # ── company_ratios regressions ──────────────────────────────────────────
+    # Schema drift is the highest-priority signal here: a column absent from
+    # the cache means the store's write path silently drops the field on
+    # every snapshot, so backtest replays will never see it regardless of
+    # whether the live provider computes it correctly.
+    missing_cols = ratios_deep.get("missing_columns") or []
+    if missing_cols:
+        warns.append(
+            f"company_ratios: schema drift — {len(missing_cols)} model "
+            f"column(s) absent from cache table: {missing_cols}.  "
+            f"write_company_ratios silently drops these on every write."
+        )
+
+    # PEG must be 100% null after the 2026-05-19 fix — any non-null row means
+    # someone re-introduced a wall-clock fallback (yf.Ticker.info["pegRatio"]
+    # or similar).  Whole-table count, not just in-window — we want to catch
+    # a regression even if it leaked outside the immediate window.  Skip if
+    # the column is structurally absent (schema-drift covers that).
+    peg_nn = ratios_deep["peg_non_null"]
+    if peg_nn is not None and peg_nn > 0:
+        warns.append(
+            f"company_ratios: PEG leak regression — {peg_nn} "
+            f"row(s) have non-null peg (post-fix expectation is 0)"
+        )
+
+    # Cross-check per-tick fill density against ohlcv bar counts — a healthy
+    # per-tick fill produces exactly one ratios row per ohlcv bar per ticker.
+    # Mismatches indicate the fill loop short-circuited (missing days) or
+    # double-wrote (duplicate as_of_date values).
+    rows_pt  = ratios_deep["rows_per_ticker"]
+    ohlcv_pt = ohlcv_findings.per_ticker_in_window if ohlcv_findings.table_present else {}
+    fill_mismatches = [
+        t for t in tickers
+        if rows_pt.get(t, 0) != ohlcv_pt.get(t, 0)
+    ]
+    if fill_mismatches:
+        warns.append(
+            f"company_ratios: per-tick fill mismatch with ohlcv for "
+            f"{len(fill_mismatches)} ticker(s): {fill_mismatches}"
+        )
+
+    # Whole-pipeline regression — if every ticker is null for an XBRL field
+    # the upstream concept selector or list-unwrap fix has regressed.  Per-
+    # ticker sparsity is normal and is *not* flagged here (the printer's
+    # coverage matrix shows that case clearly).  Only check XBRL columns
+    # that actually exist; absent ones are already covered by schema-drift.
+    cov          = ratios_deep["xbrl_coverage"]
+    present_xbrl = ratios_deep.get("present_xbrl", [])
+    for fld in present_xbrl:
+        if all(cov[t].get(fld, 0) == 0 for t in tickers):
+            warns.append(
+                f"company_ratios: XBRL field {fld!r} is 100% null across all "
+                f"tickers — pipeline regression?"
+            )
 
     for f in all_findings:
         # Skip disabled domains — they're expected to be empty.
@@ -576,10 +891,17 @@ def main() -> int:
         ohl = deep_check_ohlcv(con, tickers)
         print_ohlcv_spans(ohl)
 
+        # company_ratios deep check needs the ohlcv DomainFindings so it can
+        # cross-check the per-tick fill density against the trading-day bar
+        # count — find the entry by name rather than relying on list index.
+        ohlcv_findings = next(f for f in all_findings if f.domain.name == "ohlcv")
+        ratios_deep    = deep_check_company_ratios(con, tickers, start_iso, end_iso)
+        print_company_ratios_deep(ratios_deep, ohlcv_findings, tickers)
+
         print_future_bleed_check(all_findings, end_iso)
 
         _section("Verdict")
-        warns = render_verdict(all_findings, deep)
+        warns = render_verdict(all_findings, deep, ratios_deep, ohlcv_findings, tickers)
         if not warns:
             print("  PASS — cache looks ready for backtest replay.\n")
             return 0

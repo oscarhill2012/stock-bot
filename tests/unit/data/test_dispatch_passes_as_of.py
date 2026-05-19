@@ -79,9 +79,20 @@ async def test_get_stock_news_dispatches_cleanly(monkeypatch: pytest.MonkeyPatch
 
 @pytest.mark.asyncio
 async def test_get_public_figure_trades_dispatches_cleanly(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``get_public_figure_trades`` must not TypeError when calling the active provider."""
+    """``get_public_figure_trades`` must not TypeError when calling the active provider.
+
+    The active provider is ``fmp`` (Financial Modeling Prep), whose
+    ``/senate-disclosure`` endpoint returns 403 on the free tier — any
+    real HTTP call here yields a false fail.  Mirror the original
+    intent (which unset Quiver's key) by unsetting ``FMP_API_KEY`` so
+    the provider hits its documented soft-fail branch and returns ``[]``
+    without issuing any request.  The wrapper's ``as_of`` plumbing is
+    still exercised; only the network layer is skipped.
+    """
     from data import get_public_figure_trades
 
+    monkeypatch.delenv("FMP_API_KEY",         raising=False)
     monkeypatch.delenv("QUIVER_QUANT_API_KEY", raising=False)
+
     out = await get_public_figure_trades("AAPL", as_of=datetime(2023, 3, 15, tzinfo=UTC))
     assert out == []
