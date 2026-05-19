@@ -39,6 +39,11 @@ def _make_driver(tmp_path: Path) -> Driver:
         run_dir=tmp_path,
         window_key="test-window",
         failure_abort_ratio=0.10,
+        # This suite patches the ADK runner to raise specific exception
+        # types — the real pipeline (and therefore the Snapshotter) never
+        # executes, so disable the post-tick snapshot-completion check or
+        # it would mask the very behaviour we want to assert here.
+        enforce_pipeline_completion=False,
     )
 
 

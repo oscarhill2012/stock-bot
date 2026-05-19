@@ -39,6 +39,57 @@ logger = logging.getLogger(__name__)
 _TICK_MESSAGE_TEMPLATE = "Backtest tick {tick_id}"
 
 
+def _log_exception_chain(
+    exc: BaseException,
+    tick_id: str,
+    depth: int = 0,
+) -> None:
+    """Recursively log ``exc`` and any ``ExceptionGroup`` sub-exceptions.
+
+    ADK's parallel-agent code surfaces failures as ``BaseExceptionGroup`` /
+    ``ExceptionGroup`` whose default ``str()`` only reports the count
+    ("unhandled errors in a TaskGroup (2 sub-exceptions)"), not the actual
+    sub-exceptions.  Without unwrapping, every mid-pipeline failure appears
+    in the log as the same useless one-liner.
+
+    This helper walks ``exc.exceptions`` (if present) and logs each leaf
+    exception with its own traceback so the underlying cause is visible.
+
+    Parameters
+    ----------
+    exc:
+        The exception (or exception group) to log.
+    tick_id:
+        Current tick identifier — included in every log line so failures
+        from concurrent ticks can be told apart.
+    depth:
+        Recursion depth, used to indent nested sub-exceptions for legibility.
+    """
+
+    indent = "  " * depth
+
+    # ``ExceptionGroup`` and ``BaseExceptionGroup`` both expose ``.exceptions``;
+    # ordinary exceptions do not, so ``getattr`` keeps this generic.
+    subs = getattr(exc, "exceptions", None)
+
+    if subs:
+        # Group node — log the wrapper plus a count, then recurse into each
+        # sub-exception so the *leaves* land in the log with full tracebacks.
+        logger.error(
+            "%stick %s ExceptionGroup: %s (%d sub-exceptions)",
+            indent, tick_id, type(exc).__name__, len(subs),
+        )
+        for sub in subs:
+            _log_exception_chain(sub, tick_id, depth + 1)
+    else:
+        # Leaf node — log with ``exc_info`` so the traceback comes through.
+        logger.error(
+            "%stick %s sub-exception: %s: %s",
+            indent, tick_id, type(exc).__name__, exc,
+            exc_info=exc,
+        )
+
+
 class Driver:
     """Loop over scheduled ticks and invoke the live pipeline for each.
 
@@ -67,6 +118,15 @@ class Driver:
         If ``failed_ticks / total_ticks`` exceeds this threshold, ``run``
         raises ``RuntimeError`` and writes ``status="aborted"`` to the
         manifest.  Default 0.10 (10 %).
+    enforce_pipeline_completion:
+        When ``True`` (the default — production-safe), the driver asserts
+        after every tick that the Snapshotter (the *last* agent in the
+        pipeline) wrote ``state["last_snapshot"]`` keyed by the current
+        tick_id.  If the snapshot is missing or stale, the tick is treated
+        as a real failure rather than silently marked "completed".  Tests
+        that exercise the driver against a stubbed / failing pipeline
+        (e.g. no API keys, mocked ADK runner) should pass ``False`` because
+        the snapshotter cannot run end-to-end in those scenarios.
     """
 
     def __init__(
@@ -79,6 +139,7 @@ class Driver:
         db_session: Any = None,
         decision_logger: Any = None,
         failure_abort_ratio: float = 0.10,
+        enforce_pipeline_completion: bool = True,
     ) -> None:
         """Wire the driver.  ``run_dir`` should already exist."""
         self._broker             = broker
@@ -88,6 +149,7 @@ class Driver:
         self._db_session         = db_session
         self._dl                 = decision_logger
         self._ratio              = failure_abort_ratio
+        self._enforce_completion = enforce_pipeline_completion
         self._traces_dir         = self._run_dir / "traces"
         self._traces_dir.mkdir(parents=True, exist_ok=True)
 
@@ -253,6 +315,28 @@ class Driver:
             role="user",
         )
 
+        # The ADK runner may raise for two distinct reasons here:
+        #
+        # 1. *Cleanup-bug* (ADK 1.32): the pipeline has actually finished and
+        #    the snapshotter has written ``last_snapshot``, but ADK's
+        #    parallel-agent finaliser throws ``AttributeError`` or an
+        #    ``ExceptionGroup`` during teardown.  Safe to ignore — the
+        #    snapshot row is already in the database.
+        # 2. *Real mid-pipeline failure*: an agent raised; the snapshotter
+        #    never ran; ``last_snapshot`` is absent or stale.  Previously
+        #    this was indistinguishable from case 1 and was silently
+        #    swallowed, so any new regression in fundamental / news /
+        #    strategist agents looked like a clean run.
+        #
+        # We now always unwrap the exception chain so the *leaf* causes land
+        # in the log with their tracebacks (see ``_log_exception_chain``).
+        # The "did the pipeline actually finish?" arbitration is deferred to
+        # the post-run ``last_snapshot`` check below.
+        #
+        # NOTE: deliberately catches ``Exception`` (not ``BaseException``) so
+        # ``KeyboardInterrupt``, ``SystemExit``, and ``MemoryError`` propagate
+        # normally and are not silently swallowed.
+        pipeline_exc: BaseException | None = None
         try:
             async for _ in runner.run_async(
                 user_id="backtest",
@@ -261,16 +345,8 @@ class Driver:
             ):
                 pass
         except (AttributeError, Exception) as exc:
-            # ADK 1.32 runner-cleanup bug — see tick.py for details.  The
-            # pipeline has already completed at this point; read state below.
-            # NOTE: deliberately catches ``Exception`` (not ``BaseException``)
-            # so that ``KeyboardInterrupt``, ``SystemExit``, and ``MemoryError``
-            # propagate normally and are not silently swallowed here.
-            logger.warning(
-                "ADK runner raised after tick %s (pipeline likely completed): "
-                "%s: %s",
-                state["tick_id"], type(exc).__name__, exc,
-            )
+            pipeline_exc = exc
+            _log_exception_chain(exc, state["tick_id"])
 
         # Pull session state back into ``state`` so the next tick sees
         # positions, portfolio, and any other keys written by pipeline agents.
@@ -281,6 +357,24 @@ class Driver:
         )
         if updated is not None:
             state.update(dict(updated.state))
+
+        # ── pipeline-completion check ──────────────────────────────────────
+        # The Snapshotter is the *last* agent in the pipeline and writes
+        # ``state["last_snapshot"]`` keyed by the current ``tick_id``.  If
+        # the snapshot is missing or carries a different tick_id (i.e. it's
+        # leftover from a previous tick that ran to completion), the
+        # pipeline did not reach the end — raise so the outer loop records
+        # this tick as failed and the abort-ratio logic can fire.
+        if self._enforce_completion:
+            snap        = state.get("last_snapshot")
+            snap_tickid = snap.get("tick_id") if isinstance(snap, dict) else None
+            if snap_tickid != state["tick_id"]:
+                raise RuntimeError(
+                    f"pipeline did not reach snapshotter for tick "
+                    f"{state['tick_id']!r} — last_snapshot.tick_id was "
+                    f"{snap_tickid!r}.  See preceding log entries for the "
+                    f"underlying exception chain."
+                ) from pipeline_exc
 
     def _refresh_broker_prices(self, tickers: list[str], tick: Tick) -> None:
         """Set FakeBroker prices to the day's open or close from the cache.

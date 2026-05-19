@@ -53,6 +53,12 @@ async def test_driver_produces_one_trace_file(tmp_path: Path, cache) -> None:
         broker=broker,
         run_dir=tmp_path,
         window_key="test",
+        # The real LLM agents in the pipeline gracefully degrade with no
+        # API key, but the Snapshotter at the end of the pipeline never
+        # gets called in that scenario.  Disable the strict completion
+        # check so this driver-wiring smoke test keeps asserting only
+        # "trace file was produced", which is what it was written to do.
+        enforce_pipeline_completion=False,
     )
 
     schedule = [
