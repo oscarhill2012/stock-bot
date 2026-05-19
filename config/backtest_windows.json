@@ -3,5 +3,15 @@
     "start": "2023-03-06",
     "end":   "2023-04-07",
     "notes": "SVB / Signature collapse, regional banking stress. First v1 window."
+  },
+  "baseline-2025-09": {
+    "start": "2025-09-02",
+    "end":   "2025-10-13",
+    "notes": "September 2025 baseline window. 30 NYSE sessions (2025-09-02 Tue, first session after Labor Day, through 2025-10-13 Mon). Within Finnhub's ~1-year news retention."
+  },
+  "iran-conflict-2026-02": {
+    "start": "2026-02-10",
+    "end":   "2026-03-24",
+    "notes": "Onset of US-Iran conflict — geopolitical-instability stress window. 30 NYSE sessions (2026-02-10 Tue through 2026-03-24 Tue; Presidents Day 2026-02-16 closure accounted for). Within Finnhub's ~1-year news retention."
   }
 }

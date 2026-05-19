@@ -276,6 +276,72 @@ async def test_clips_to_date_at_as_of_for_pit(monkeypatch: pytest.MonkeyPatch) -
 
 
 @pytest.mark.asyncio
+async def test_response_side_pit_filter_drops_future_dated_articles(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog:      pytest.LogCaptureFixture,
+) -> None:
+    """Articles dated past ``window_end`` are dropped from the response.
+
+    Regression guard for the 2026-05-19 future-bleed diagnosis: Finnhub's
+    ``/company-news`` endpoint does not strictly honour the ``to=`` upper
+    bound and returns articles dated months past it.  The provider must
+    post-filter every chunk by parsed publication date so the cache
+    cannot receive a row past ``window_end`` no matter what the API
+    hands back.
+
+    The fake response mixes in-window and future-dated articles in the
+    same chunk; only the in-window ones must survive, and a warning must
+    be emitted naming the count dropped.
+    """
+    import data.providers.news.finnhub as mod
+
+    # Window: [2023-03-06, 2023-03-12].  Fake response contains two
+    # in-window articles and three future-dated articles that mirror the
+    # production bleed pattern (dated weeks-to-months past ``to=``).
+    rows = [
+        {"headline": "InA",  "url": "https://a", "summary": "", "source": "S",
+         "datetime": 1678147200},     # 2023-03-07 00:00 UTC — in window
+        {"headline": "InB",  "url": "https://b", "summary": "", "source": "S",
+         "datetime": 1678579200},     # 2023-03-12 00:00 UTC — at upper bound, in window
+        {"headline": "FwA",  "url": "https://fa", "summary": "", "source": "S",
+         "datetime": 1678838400},     # 2023-03-15 00:00 UTC — 3 days past window
+        {"headline": "FwB",  "url": "https://fb", "summary": "", "source": "S",
+         "datetime": 1681171200},     # 2023-04-11 00:00 UTC — ~1 month past
+        {"headline": "FwC",  "url": "https://fc", "summary": "", "source": "S",
+         "datetime": 1709251200},     # 2024-03-01 00:00 UTC — ~1 year past
+    ]
+
+    monkeypatch.setattr(mod, "_fetch_company_news", lambda s, f, t: rows)
+
+    caplog.set_level(logging.WARNING, logger="data.providers.news.finnhub")
+    out = await mod.fetch(
+        "AAPL",
+        from_date=date(2023, 3, 6),
+        to_date=date(2023, 3, 12),
+        as_of=datetime(2023, 3, 12, tzinfo=UTC),
+    )
+
+    # Only the two in-window articles must survive (newest-first ordering).
+    headlines = [a.headline for a in out]
+    assert headlines == ["InB", "InA"], (
+        f"PIT bleed: response-side filter let through {headlines!r}"
+    )
+
+    # The dropped-future warning must surface exactly the 3 filtered rows
+    # so an audit operator notices that Finnhub returned out-of-range data.
+    bleed_logs = [
+        r for r in caplog.records
+        if "dropped" in r.message and "future-dated" in r.message
+    ]
+    assert len(bleed_logs) == 1, (
+        f"expected exactly one dropped-future warning, got {len(bleed_logs)}"
+    )
+    assert "dropped 3/5" in bleed_logs[0].message, (
+        f"warning message did not name the dropped count: {bleed_logs[0].message!r}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_reversed_window_returns_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     """A reversed window (``from_date > to_date``) returns ``[]`` without an API call."""
     import data.providers.news.finnhub as mod
@@ -411,17 +477,24 @@ async def test_below_truncation_threshold_no_warning(
 
 @pytest.mark.asyncio
 async def test_articles_sorted_newest_first(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Returned articles are sorted newest-first regardless of API order."""
+    """Returned articles are sorted newest-first regardless of API order.
+
+    All three article timestamps are placed *inside* the requested
+    [2023-03-01, 2023-03-15] window so the response-side PIT filter does
+    not drop them — this test is asserting sort behaviour, not the PIT
+    clip.  Epochs chosen so each lands on a distinct day for legibility.
+    """
     import data.providers.news.finnhub as mod
 
     rows = [
-        # Intentionally returned oldest-first.
+        # Intentionally returned oldest-first.  Epochs are mid-window UTC
+        # midnight so they unambiguously sit inside [2023-03-01, 2023-03-15].
         {"headline": "Old", "url": "https://old", "summary": "", "source": "S",
-         "datetime": 1678000000},
+         "datetime": 1677715200},     # 2023-03-02 00:00 UTC
         {"headline": "Mid", "url": "https://mid", "summary": "", "source": "S",
-         "datetime": 1678500000},
+         "datetime": 1678233600},     # 2023-03-08 00:00 UTC
         {"headline": "New", "url": "https://new", "summary": "", "source": "S",
-         "datetime": 1679000000},
+         "datetime": 1678752000},     # 2023-03-14 00:00 UTC
     ]
 
     monkeypatch.setattr(mod, "_fetch_company_news", lambda s, f, t: rows)
@@ -439,12 +512,19 @@ async def test_articles_sorted_newest_first(monkeypatch: pytest.MonkeyPatch) -> 
 
 @pytest.mark.asyncio
 async def test_limit_caps_returned_count(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``limit=N`` caps the merged, sorted result at N articles (newest kept)."""
+    """``limit=N`` caps the merged, sorted result at N articles (newest kept).
+
+    All ten fake articles are dated 2023-03-01 (the single-day window) so
+    the response-side PIT filter does not drop them — the test is about
+    the cap behaviour, not the PIT clip.
+    """
     import data.providers.news.finnhub as mod
 
+    # 1677628800 = 2023-03-01 00:00 UTC; ``+ i`` shifts only by seconds so
+    # every article remains on 2023-03-01 and stays within the window.
     rows = [
         {"headline": f"A{i}", "url": f"https://a/{i}", "summary": "", "source": "S",
-         "datetime": 1678000000 + i}
+         "datetime": 1677628800 + i}
         for i in range(10)
     ]
 

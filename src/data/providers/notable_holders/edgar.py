@@ -35,7 +35,22 @@ from data.secrets import require_key
 
 from ...models import NotableHolder
 
-_FORMS = ("SC 13D", "SC 13G", "SC 13D/A", "SC 13G/A")
+# EDGAR returns Schedule 13D/G filings under two distinct form labels depending
+# on filing vintage:
+#   - "SC 13D" / "SC 13G" (with "/A" amendment suffix) for filings up to
+#     roughly early-mid 2024.
+#   - "SCHEDULE 13D" / "SCHEDULE 13G" (with "/A" amendment suffix) for filings
+#     after SEC's labelling switch in 2024.
+# A 2026-05-19 audit of the baseline-2025-09 cache window found zero rows
+# across all 20 watchlist tickers because only the legacy "SC ..." labels
+# were being queried; recent filings are returned under the "SCHEDULE ..."
+# label.  We query both naming conventions so neither vintage is missed.
+# ``_classify`` and the 13D-only ``purpose_excerpt`` gate both substring-match
+# on "13D"/"13G", so they handle either label without changes.
+_FORMS = (
+    "SC 13D",       "SC 13G",       "SC 13D/A",       "SC 13G/A",
+    "SCHEDULE 13D", "SCHEDULE 13G", "SCHEDULE 13D/A", "SCHEDULE 13G/A",
+)
 
 # Maximum characters to retain from Item 4 "Purpose of Transaction" prose.
 _PURPOSE_EXCERPT_MAX = 2_000

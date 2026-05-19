@@ -34,6 +34,17 @@ viable or AV access is restored.
 ``to_date`` is unconditionally clipped to ``as_of.date()`` so no article
 published after the simulation clock can ever leak into a backtest tick,
 regardless of how lazy the caller's window arithmetic is.
+
+In addition to that **request-side** clip, the provider applies a
+**response-side** PIT filter: every chunk's response is post-filtered to
+drop articles whose ``datetime`` field is past ``window_end``.  This is
+necessary because Finnhub's ``/company-news`` endpoint does **not**
+strictly honour the ``to=`` parameter — diagnosed 2026-05-19 against the
+``baseline-2025-09`` window, where queries with ``to=2025-10-13``
+returned market-summary articles dated up to ``2026-03-30`` (some five
+months past the upper bound).  The provider is the last line of defence
+here: without the response-side filter, those rows reach the cache
+table and corrupt every backtest tick within the window.
 """
 from __future__ import annotations
 
@@ -144,6 +155,36 @@ def _coerce_date(value: Any) -> date | None:
         return value
 
     return None
+
+
+def _item_date(item: dict) -> date | None:
+    """Return the publication ``date`` for a Finnhub article, or ``None``.
+
+    Finnhub's ``/company-news`` payload uses Unix-epoch seconds for the
+    ``datetime`` field.  Mirrors the parse done by ``_map_article`` but
+    returns just the ``date`` component for window-membership tests —
+    the response-side PIT filter only cares about which calendar day the
+    article belongs to, not the precise instant.
+
+    Parameters
+    ----------
+    item:
+        One element from Finnhub's raw response list.
+
+    Returns
+    -------
+    date | None
+        The article's publication date in UTC, or ``None`` if the
+        ``datetime`` field is missing, non-numeric, or non-positive —
+        those rows are handed downstream so ``_map_article``'s
+        ``MISSING_TIMESTAMP`` fallback can route them.
+    """
+    ts = item.get("datetime")
+
+    if not isinstance(ts, (int, float)) or ts <= 0:
+        return None
+
+    return datetime.fromtimestamp(ts, tz=UTC).date()
 
 
 def _chunk_window(start: date, end: date, chunk_days: int) -> list[tuple[date, date]]:
@@ -345,7 +386,37 @@ async def fetch(
                 _TRUNCATION_WARN_THRESHOLD,
             )
 
+        # ── Response-side PIT filter ───────────────────────────────────────
+        # Finnhub's ``/company-news`` does not strictly honour ``to=`` — it
+        # routinely returns articles dated past the requested upper bound
+        # (sometimes months past for cross-ticker market-summary stories).
+        # Drop every article whose parsed publication date is past
+        # ``window_end`` so the cache cannot receive a future-dated row no
+        # matter what the API hands back.  Articles whose ``datetime`` field
+        # is missing or unparseable are kept here; ``_map_article``'s
+        # ``MISSING_TIMESTAMP`` fallback handles them downstream.
+        dropped_future = 0
+        pit_filtered:   list[dict] = []
+
         for item in raw:
+            item_date = _item_date(item)
+
+            if item_date is not None and item_date > window_end:
+                dropped_future += 1
+                continue
+
+            pit_filtered.append(item)
+
+        if dropped_future > 0:
+            logger.warning(
+                "finnhub: chunk %s..%s for %s dropped %d/%d future-dated "
+                "articles (published_at > window_end %s) — Finnhub does not "
+                "strictly honour to=",
+                chunk_start, chunk_end, symbol, dropped_future, len(raw),
+                window_end,
+            )
+
+        for item in pit_filtered:
             url = item.get("url") or ""
 
             # Empty-URL articles cannot be de-duplicated by URL; skip them

@@ -244,7 +244,14 @@ async def fundamental_fetch_callback(
 
     # Source lookback from config once per callback invocation — config/data.json
     # owns the value so all call sites agree and there is no parallel constant.
-    insider_lookback_days = get_config().defaults.insider_lookback_days
+    defaults = get_config().defaults
+    insider_lookback_days    = defaults.insider_lookback_days
+    # ``filings_per_form`` and ``include_filing_excerpts`` are *also* config-owned:
+    # the dispatcher's hardcoded defaults (5, True) would otherwise silently
+    # override whatever data.json says.  Reading them here keeps the live tick
+    # in lock-step with the backtest cache-fill, which reads the same keys.
+    filings_per_form         = defaults.filings_per_form
+    include_filing_excerpts  = defaults.include_filing_excerpts
 
     fundamental_data: dict[str, dict] = {}
     context_blocks: list[str] = []
@@ -265,7 +272,12 @@ async def fundamental_fetch_callback(
 
         # --- filings ---
         try:
-            filings = await get_company_filings(ticker, as_of=as_of)
+            filings = await get_company_filings(
+                ticker,
+                as_of=as_of,
+                limit=filings_per_form,
+                include_excerpts=include_filing_excerpts,
+            )
             filings_payload = [
                 f.model_dump() if hasattr(f, "model_dump") else f for f in filings
             ]

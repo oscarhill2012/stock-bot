@@ -137,6 +137,73 @@ async def test_notable_holders_edgar_parses_cover_page_and_purpose(
     )
 
 
+# ---------------------------------------------------------------------------
+# fetch() — SEC form-label backward compatibility
+# ---------------------------------------------------------------------------
+# SEC relabelled Schedule 13D/G forms from "SC 13..." to "SCHEDULE 13..."
+# during 2024.  ``_FORMS`` must include both naming conventions so cache
+# fills covering windows on either side of the switch are not silently
+# empty.  These tests pin that contract.
+
+def test_forms_query_list_covers_both_naming_conventions() -> None:
+    """``_FORMS`` queries both legacy and current SEC form labels."""
+    from data.providers.notable_holders.edgar import _FORMS
+
+    # Legacy labels (pre-2024 filings).
+    assert "SC 13D"       in _FORMS
+    assert "SC 13G"       in _FORMS
+    assert "SC 13D/A"     in _FORMS
+    assert "SC 13G/A"     in _FORMS
+
+    # Current labels (post-2024 filings).
+    assert "SCHEDULE 13D"   in _FORMS
+    assert "SCHEDULE 13G"   in _FORMS
+    assert "SCHEDULE 13D/A" in _FORMS
+    assert "SCHEDULE 13G/A" in _FORMS
+
+
+@pytest.mark.asyncio
+async def test_fetch_handles_schedule_13g_amendment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A filing carrying the post-2024 ``SCHEDULE 13G/A`` label flows through
+    ``_build`` and ``_classify`` like its legacy ``SC 13G/A`` counterpart.
+
+    Verifies that ``intent='passive'``, ``is_amendment=True``, and
+    ``purpose_excerpt is None`` (13G filings, regardless of label, never
+    populate the Item 4 excerpt).
+    """
+    import data.providers.notable_holders.edgar as mod
+
+    fake = _FakeFiling(
+        form="SCHEDULE 13G/A",
+        filing_date=date(2025, 9, 15),
+        accession_no="z",
+        body="Percent of Class: 5.1% Shares Held: 1,000,000",
+    )
+
+    monkeypatch.setattr(mod, "_iter_filings", lambda *a, **k: [fake])
+
+    async def _noop_acquire() -> None:
+        return None
+
+    monkeypatch.setattr(mod._LIMITERS["edgar"], "acquire", _noop_acquire)
+
+    out = await mod.fetch("AAPL", as_of=datetime(2025, 10, 13, tzinfo=UTC))
+
+    assert len(out) == 1
+    holder = out[0]
+
+    assert holder.form_type      == "SCHEDULE 13G/A"
+    assert holder.intent         == "passive"
+    assert holder.is_amendment   is True
+    assert holder.purpose_excerpt is None, (
+        "13G filings (legacy or current label) must never populate purpose_excerpt."
+    )
+    assert abs(holder.percent_of_class - 5.1) < 1e-6
+    assert holder.shares_held == 1_000_000.0
+
+
 @pytest.mark.asyncio
 async def test_notable_holders_edgar_13g_has_no_purpose_excerpt(
     monkeypatch: pytest.MonkeyPatch,

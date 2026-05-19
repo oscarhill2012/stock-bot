@@ -91,6 +91,11 @@ async def smart_money_fetch_callback(
     defaults = get_config().defaults
     politician_lookback_days = defaults.politician_lookback_days
     holder_lookback_days     = defaults.notable_holder_lookback_days
+    # ``notable_holder_limit`` caps the number of 13D/G rows the provider
+    # returns per ticker.  Sourced from config so the live tick and backtest
+    # cache-fill agree on row counts; without this the dispatcher's
+    # hardcoded default (20) silently overrides the configured value.
+    holder_limit             = defaults.notable_holder_limit
 
     # Ticker-first dict: state["smart_money_data"][ticker] → SmartMoneyRaw.
     # SmartMoneyRaw expects list[PoliticianTrade] and list[NotableHolder]; the
@@ -110,7 +115,10 @@ async def smart_money_fetch_callback(
 
         try:
             holders = await get_notable_holders(
-                ticker, lookback_days=holder_lookback_days, as_of=as_of
+                ticker,
+                lookback_days=holder_lookback_days,
+                limit=holder_limit,
+                as_of=as_of,
             )
         except Exception as exc:
             logger.warning("notable_holders fetch failed for %s: %s", ticker, exc)

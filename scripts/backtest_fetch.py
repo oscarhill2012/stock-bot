@@ -182,6 +182,19 @@ def _build_provider_fns(warmup_days: int = 30) -> dict:
         extension the first ~N trading days of the replay see an empty news
         pane regardless of what was actually published in the run-up to the
         window.
+
+        ``limit`` is set explicitly to ``2000`` (rather than relying on the
+        dispatcher's default of ``50``) because the dispatcher's cap is sized
+        for live ticks — at backtest cache-fill time we want to preserve the
+        full chunked Finnhub pull across the whole window.  Without the
+        override, a high-volume ticker (MSFT, AAPL) whose per-week chunk
+        already returns 200+ articles would have its earliest weeks
+        discarded by the newest-first ``[:50]`` slice in the provider, and
+        replay ticks near the start of the window would see an effectively
+        empty news pane.  ``2000`` is generous enough to absorb six weeks of
+        even the noisiest names while still capping memory in pathological
+        cases; per-tick analysts still serve their usual 20-article slice
+        from the cache.
         """
         from data.config import get_config
         pre_window_buffer = timedelta(days=get_config().defaults.news_lookback_days)
@@ -190,11 +203,29 @@ def _build_provider_fns(warmup_days: int = 30) -> dict:
             from_date=start - pre_window_buffer,
             to_date=end,
             as_of=_as_of_close(end),
+            limit=2000,
         )
 
     async def _filings(ticker: str, *, start, end) -> list:
-        """Fetch SEC filings filed on or before window-close."""
-        return await get_company_filings(ticker, as_of=_as_of_close(end))
+        """Fetch SEC filings filed on or before window-close.
+
+        ``limit`` (``filings_per_form``) and ``include_excerpts``
+        (``include_filing_excerpts``) are sourced from ``config/data.json``
+        so the cache-fill and the live tick agree on row counts and excerpt
+        attachment.  Without this, the dispatcher's hardcoded defaults
+        (``limit=5``, ``include_excerpts=True``) would silently override the
+        configured values.  ``filings_lookback_days`` is consumed inside
+        ``get_company_filings`` itself, so the caller does not forward it
+        directly.
+        """
+        from data.config import get_config
+        defaults = get_config().defaults
+        return await get_company_filings(
+            ticker,
+            as_of=_as_of_close(end),
+            limit=defaults.filings_per_form,
+            include_excerpts=defaults.include_filing_excerpts,
+        )
 
     async def _insider_trades(ticker: str, *, start, end) -> list:
         """Fetch Form 4 insider trades for the window plus the analyst's lookback.
@@ -241,8 +272,22 @@ def _build_provider_fns(warmup_days: int = 30) -> dict:
         )
 
     async def _notable_holders(ticker: str, *, start, end) -> list:
-        """Fetch SC-13D/13G/13F filings filed before window-close."""
-        return await get_notable_holders(ticker, as_of=_as_of_close(end))
+        """Fetch SC-13D/13G/13F filings filed before window-close.
+
+        ``lookback_days`` (``notable_holder_lookback_days``) and ``limit``
+        (``notable_holder_limit``) are sourced from ``config/data.json`` so
+        the cache-fill matches the live tick.  Without this, the
+        dispatcher's hardcoded defaults (``lookback_days=180``, ``limit=20``)
+        would silently override the configured values.
+        """
+        from data.config import get_config
+        defaults = get_config().defaults
+        return await get_notable_holders(
+            ticker,
+            lookback_days=defaults.notable_holder_lookback_days,
+            limit=defaults.notable_holder_limit,
+            as_of=_as_of_close(end),
+        )
 
     return {
         "ohlcv":             _ohlcv,
