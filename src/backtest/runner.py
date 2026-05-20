@@ -473,8 +473,12 @@ class Runner:
             )
 
             state: dict = {
+                # A1.6 — ``tickers`` is the single canonical watchlist
+                # key.  The previous duplicate ``watchlist`` seed has
+                # been dropped; the driver now sources its per-tick
+                # price refresh from ``state["tickers"]`` so live and
+                # backtest agree on the same field.
                 "tickers":          wl_filtered,
-                "watchlist":        wl_filtered,
                 "portfolio":        portfolio.model_dump(mode="json"),
                 "positions":        {},
                 "memory_buffer":    [],

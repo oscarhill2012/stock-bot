@@ -180,8 +180,8 @@ class Driver:
         Parameters
         ----------
         state:
-            Shared mutable state dict.  Must contain at least ``"tickers"``
-            and ``"watchlist"`` keys.  Modified in-place so each tick inherits
+            Shared mutable state dict.  Must contain at least ``"tickers"``.
+            Modified in-place so each tick inherits
             positions and holdings from the previous one.
         schedule:
             Ordered list of ``Tick`` objects (``as_of`` + ``phase``).
@@ -201,8 +201,12 @@ class Driver:
             )
             state["_decision_logger"] = self._dl
 
-            # Update FakeBroker price to the day's open or close.
-            self._refresh_broker_prices(state.get("watchlist", []), tick)
+            # Update FakeBroker price to the day's open or close.  The
+            # symbol list comes from ``state["tickers"]`` — A1.6 folded
+            # the redundant ``state["watchlist"]`` key away.  Live has
+            # no ``watchlist`` either, so this aligns the two
+            # lifecycles on a single key.
+            self._refresh_broker_prices(state.get("tickers", []), tick)
 
             # Refresh ``state["portfolio"]`` from the broker so the
             # strategist's after-callback and held-view see the same
