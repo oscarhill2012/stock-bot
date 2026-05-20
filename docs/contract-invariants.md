@@ -72,10 +72,10 @@ on `state_delta` (Rule 1).
 | `day_digest` | MemoryWriter (via `state_delta`) | **cross-tick** | Persistence layer (see §E) | Phase 2 (read), Phase 4 (write) | Persistence subsystem — see §E. | Summarised day-level context. Exact lifetime and rebuild rule deferred to §E. |
 | `thesis` | Strategist (via `state_delta`) | **cross-tick** | Persistence layer (see §E) | Phase 2 (read), Phase 4 (write) | Persistence subsystem — see §E. | Strategist's standing market thesis. |
 | `strategist_decision` | Strategist (`output_key`) | tick-scoped | Strategist LLM call | Phase 3 (during-tick) | n/a | Consumed by RiskGate and Executor downstream in the same tick. |
-| `technical_verdict` | TechnicalAnalyst (`output_key`) | tick-scoped | TechnicalAnalyst LLM call | Phase 3 | n/a | Unique key — see §C-Rule 4. |
-| `fundamental_verdict` | FundamentalAnalyst (`output_key`) | tick-scoped | FundamentalAnalyst LLM call | Phase 3 | n/a | Unique key — see §C-Rule 4. |
-| `news_verdict` | NewsAnalyst (`output_key`) | tick-scoped | NewsAnalyst LLM call | Phase 3 | n/a | Unique key — see §C-Rule 4. |
-| `social_verdict` | SocialAnalyst (`output_key`) | tick-scoped | SocialAnalyst LLM call | Phase 3 | n/a | Unique key — see §C-Rule 4. |
+| `technical_verdicts` | TechnicalAnalyst (`state_delta`) | tick-scoped | TechnicalAnalyst deterministic extractor | Phase 3 | n/a | Unique key — see §C-Rule 4. Yielded as a list of per-ticker verdict dicts; written via `state_delta` (Rule 1) — TechnicalAnalyst is a BaseAgent, not an LlmAgent, so no `output_key`. |
+| `fundamental_verdicts` | FundamentalAnalyst (`output_key`) | tick-scoped | FundamentalAnalyst LLM call | Phase 3 | n/a | Unique key — see §C-Rule 4. |
+| `news_verdicts` | NewsAnalyst (`output_key`) | tick-scoped | NewsAnalyst LLM call | Phase 3 | n/a | Unique key — see §C-Rule 4. |
+| `social_verdicts` | SocialAnalyst (`state_delta`) | tick-scoped | SocialAnalyst deterministic extractor | Phase 3 | n/a | Unique key — see §C-Rule 4. Yielded as a list of per-ticker verdict dicts; written via `state_delta` (Rule 1) — SocialAnalyst is a BaseAgent, not an LlmAgent, so no `output_key`. |
 
 The four cross-tick rows (`positions`, `memory_buffer`, `day_digest`,
 `thesis`) all depend on the persistence subsystem described in §E.
@@ -240,9 +240,13 @@ non-deterministically.
 Each branch's `state_delta` is appended in completion order.
 
 **Implication:** the AnalystPool's four analysts must each have a unique
-`output_key`. The §A table records the four current keys
-(`technical_verdict`, `fundamental_verdict`, `news_verdict`,
-`social_verdict`) explicitly to prevent future drift.
+output key. The §A table records the four current keys
+(`technical_verdicts`, `fundamental_verdicts`, `news_verdicts`,
+`social_verdicts`) explicitly to prevent future drift. Two analysts
+(FundamentalAnalyst, NewsAnalyst) use ADK's `output_key` mechanism;
+the other two (TechnicalAnalyst, SocialAnalyst) are BaseAgent
+subclasses and yield their writes via `state_delta` (Rule 1) — the
+uniqueness requirement of Rule 4 is satisfied regardless of mechanism.
 
 ### Rule 5 — `LoopAgent` must have a terminating condition
 

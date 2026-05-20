@@ -40,7 +40,7 @@ deviation becomes a live failure mode.
 | §A | `day_digest` | deviation | high | Cross-tick field; seeded `""` in both. No persistence read/write. |
 | §A | `thesis` | deviation | high | Cross-tick field; seeded `""` in both. No persistence read/write. |
 | §A | `strategist_decision` | deviation | medium | LlmAgent `output_key` is correct; but `_strategist_validation_callback` re-writes the field via direct mutation (Rule 1). |
-| §A | `technical_verdict` / `fundamental_verdict` / `news_verdict` / `social_verdict` | deviation | medium | Code uses plural keys (`*_verdicts`); spec uses singular. Naming drift. Also: technical + social use direct mutation, not `output_key`. |
+| §A | `technical_verdicts` / `fundamental_verdicts` / `news_verdicts` / `social_verdicts` | resolved (A1.5) | — | Spec aligned to the code's plural form 2026-05-20. Technical + social still write via `state_delta` (Rule 1), not `output_key` (resolved by A1.1 / A1.2). |
 | §A | `as_of`, `tick_phase` | unmodelled | medium | Set by backtest driver; read by writers + analysts. Not in §A. Live never sets either. |
 | §A | `last_executed_tick_id`, `last_snapshot` | unmodelled | low | Used by Executor idempotency + driver assertion. Not in §A. |
 | §A | `held_positions_view`, `ticker_evidence`, `ticker_evidence_objects`, `{analyst}_data`, `{analyst}_evidence` | unmodelled (intermediate) | medium | Within-tick agent-to-agent handoffs. Allowed by §A's "intermediate" carve-out, but Rule 1 still applies — currently direct-mutated. |
@@ -180,24 +180,22 @@ the running code but not in §A.
   either (a) yield a `state_delta` from a wrapping agent, or (b) remove
   the callback's re-write and let consumers handle both shapes.
 
-### `technical_verdict` / `fundamental_verdict` / `news_verdict` / `social_verdict` — DEVIATION (medium)
+### `technical_verdicts` / `fundamental_verdicts` / `news_verdicts` / `social_verdicts` — RESOLVED (A1.5 + A1.1/A1.2)
 
 Two distinct issues here, plus a naming drift.
 
-**Naming drift.** Spec uses singular (`technical_verdict`); code uses
-plural (`technical_verdicts`). Verified:
+**Naming drift — RESOLVED (A1.5, 2026-05-20).** The spec has been
+updated to match the code's plural form. The four keys as wired in
+code:
 
 - Fundamental: `src/agents/analysts/fundamental/agent.py:164` —
   `output_key="fundamental_verdicts"`.
 - News: `src/agents/analysts/news/agent.py:119` —
   `output_key="news_verdicts"`.
-- Technical: `src/agents/analysts/technical/agent.py:129` —
-  `state["technical_verdicts"] = verdicts` (no `output_key`; see below).
-- Social: `src/agents/analysts/social/agent.py:120` —
-  `state["social_verdicts"] = verdicts` (no `output_key`; see below).
-
-Pick one form (plural is what's wired) and align the spec, or rename
-the four code sites to match the spec.
+- Technical: `src/agents/analysts/technical/agent.py` — yields
+  `state_delta={"technical_verdicts": ...}` (resolved by A1.1).
+- Social: `src/agents/analysts/social/agent.py` — yields
+  `state_delta={"social_verdicts": ...}` (resolved by A1.2).
 
 **Direct mutation in BaseAgent analysts.** The spec column "Owner" reads
 "TechnicalAnalyst (`output_key`)" for technical/social, but those two
@@ -214,9 +212,10 @@ session backend these writes are not durable; downstream consumers see
 them only because the same in-memory dict is shared within an
 invocation.
 
-**Why it hasn't bitten:** in-memory session services keep mutations
-visible; the contract failure surfaces only with a persistence-backed
-session service.
+**Why the previous Rule 1 deviation hadn't bitten before A1.1/A1.2:**
+in-memory session services keep direct mutations visible across the
+SequentialAgent boundary; the contract failure would surface only on a
+persistence-backed session service. A1.1 / A1.2 close the gap.
 
 ### `as_of` — UNMODELLED (medium)
 
@@ -660,19 +659,12 @@ will define schemas, lifecycle hooks, and storage backends.
 
 ## Cross-cutting structural notes
 
-### Naming drift between spec and code
+### Naming drift between spec and code — RESOLVED (A1.5, 2026-05-20)
 
-The audit found one naming drift (singular vs plural verdict keys; see
-§A `*_verdict` finding). Recommendation: standardise on whichever form
-is cheapest to change — likely the spec, since the plural-keyed code is
-shipping. If choosing to fix the code instead, the refactor touches:
-
-- `src/agents/analysts/technical/agent.py:129`
-- `src/agents/analysts/fundamental/agent.py:164`
-- `src/agents/analysts/news/agent.py:119`
-- `src/agents/analysts/social/agent.py:120`
-- every prompt and consumer that reads `{technical,fundamental,news,
-  social}_verdicts` (grep target).
+The audit's one naming drift (singular vs plural verdict keys) was
+resolved by updating the spec to match the shipping plural form. No
+code changes were needed. Historical context retained here so future
+audits can trace the decision.
 
 ### `memory_buffer` / `day_digest` / `thesis` owner asymmetry
 
