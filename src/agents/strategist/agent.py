@@ -15,6 +15,7 @@ from agents.strategist.prompts import STRATEGIST_INSTRUCTION
 from agents.strategist.schema import StrategistDecision
 from broker.portfolio import Portfolio
 from data.timeguard import resolve_as_of
+from observability.trace import _trace_maybe
 
 # Module-level logger for the validation callback and any future callbacks.
 logger = logging.getLogger(__name__)
@@ -248,7 +249,15 @@ def _strategist_validation_callback(
     )
 
     # Write the enriched decision (with legacy fields populated) back to state.
-    state["strategist_decision"] = decision.model_dump(mode="json")
+    decision_dump = decision.model_dump(mode="json")
+    state["strategist_decision"] = decision_dump
+
+    # Surface the strategist decision on the per-tick trace so downstream
+    # inspection (decisions/, report/) and ad-hoc trace forensics can see
+    # the full stance set, decision_tag, reasoning, and derived weights.
+    # No-op unless state["_trace"] is set by the backtest driver.
+    _trace_maybe(state, "03_strategist", decision_dump)
+
     return None
 
 
