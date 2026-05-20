@@ -76,12 +76,22 @@ on `state_delta` (Rule 1).
 | `fundamental_verdicts` | FundamentalAnalyst (`output_key`) | tick-scoped | FundamentalAnalyst LLM call | Phase 3 | n/a | Unique key — see §C-Rule 4. |
 | `news_verdicts` | NewsAnalyst (`output_key`) | tick-scoped | NewsAnalyst LLM call | Phase 3 | n/a | Unique key — see §C-Rule 4. |
 | `social_verdicts` | SocialAnalyst (`state_delta`) | tick-scoped | SocialAnalyst deterministic extractor | Phase 3 | n/a | Unique key — see §C-Rule 4. Yielded as a list of per-ticker verdict dicts; written via `state_delta` (Rule 1) — SocialAnalyst is a BaseAgent, not an LlmAgent, so no `output_key`. |
+| `tick_phase` | Tick bootstrap | tick-scoped | Lifecycle wrapper | Phase 2 | n/a | Literal string — live sets `"live"`; backtest sets the schedule's `tick.phase` (`"open"` / `"close"`). Decorative for the pipeline today; consumed by observability/tracing surfaces. Documented in §A so future agents that branch on phase have a contractual hook. |
+| `last_executed_tick_id` | Executor (`state_delta`) | tick-scoped | Executor's idempotency handshake | Phase 3 | n/a | Set to the current `tick_id` after the Executor finishes its run. Read by the Executor itself at the top of the next invocation as an idempotency guard. Written via `state_delta` (Rule 1); a paired direct write is currently retained as defensive belt-and-braces (out of A1 scope — see todo-fixes 2.5.x). |
+| `last_snapshot` | Snapshotter (`state_delta`) | tick-scoped | Snapshotter's pipeline-completion handshake | Phase 3 | n/a | Set at the end of the tick. Read by the backtest driver's per-tick assertion (`src/backtest/driver.py:393-401`) to confirm the pipeline reached the Snapshotter. Written via `state_delta`; the paired direct write is defensive (out of A1 scope). |
 
 The four cross-tick rows (`positions`, `memory_buffer`, `day_digest`,
 `thesis`) all depend on the persistence subsystem described in §E.
 Until that subsystem exists, those rows describe target-state and any
 lifecycle that ships without true persistence for them violates the
 contract.
+
+Two of the tick-scoped rows (`last_executed_tick_id`, `last_snapshot`)
+exist as **in-tick handshake keys** — written and read inside a single
+tick, with no cross-tick contract. They are listed in §A only because
+their owners and refresh points are stable enough to lock down; they
+do not require persistence and the lifecycle wrapper does not touch
+them.
 
 ---
 
