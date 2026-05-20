@@ -10,18 +10,11 @@ from google.genai import types as genai_types
 
 from agents.risk_gate.lifecycle import StrategistContractViolation
 from agents.strategist.derivation import TickContext, derive_legacy_fields
-from agents.strategist.held_view import render_held_positions_view
 from agents.strategist.lifecycle import derive_lifecycle_action
 from agents.strategist.prompts import STRATEGIST_INSTRUCTION
 from agents.strategist.schema import StrategistDecision
 from broker.portfolio import Portfolio
-from contract.digest import build_ticker_evidence
-from contract.digest_defaults import DEFAULT_ANALYST_WEIGHTS
-from contract.evidence import AnalystEvidence
-from contract.strategist_prompt import render_all_ticker_blocks
-from contract.ticker_evidence import TickerEvidence
 from data.timeguard import resolve_as_of
-from observability.trace import _trace_maybe
 
 # Module-level logger for the validation callback and any future callbacks.
 logger = logging.getLogger(__name__)
@@ -45,143 +38,11 @@ def _coerce_portfolio(value: Portfolio | dict | None) -> Portfolio:
     return Portfolio.model_validate(value)
 
 
-def _held_view_before_callback(callback_context: CallbackContext) -> genai_types.Content | None:
-    """Render the held-positions block into ``state["temp:held_positions_view"]``.
-
-    Reads ``state["positions"]`` (dict of ticker → PositionThesis dump) and
-    ``state["portfolio"]`` (Portfolio dump or object), then writes a formatted
-    string to ``state["temp:held_positions_view"]`` for the prompt template to
-    interpolate (A2.6: ``temp:`` prefix so ADK strips it at the invocation
-    boundary).
-
-    Args:
-        callback_context: ADK callback context carrying the mutable pipeline state.
-
-    Returns:
-        ``None`` — this callback never short-circuits the agent run.
-    """
-    state = callback_context.state
-    positions = state.get("positions", {}) or {}
-    portfolio = _coerce_portfolio(state.get("portfolio"))
-    # ``temp:`` prefix — ADK strips this at the invocation boundary; the
-    # prompt template references ``{temp:held_positions_view}`` (A2.6).
-    state["temp:held_positions_view"] = render_held_positions_view(positions, portfolio)
-    return None
-
-
-def _evidence_view_before_callback(
-    callback_context: CallbackContext,
-) -> genai_types.Content | None:
-    """Build TickerEvidence per ticker from the per-analyst evidence lists, then render.
-
-    The pipeline stores per-analyst evidence as flat lists in state under keys like
-    ``technical_evidence``, ``fundamental_evidence``, etc. This callback:
-    1. Indexes each list by ticker.
-    2. Calls ``build_ticker_evidence`` to aggregate them into a ``TickerEvidence`` per ticker.
-    3. Writes the rendered string to ``state["temp:ticker_evidence"]`` for the prompt template.
-    4. Also writes the raw JSON-serialised objects to ``state["temp:ticker_evidence_objects"]``
-       for any downstream code that needs the structured data (A2.6: ``temp:``
-       prefix so ADK strips both keys at the invocation boundary).
-
-    Args:
-        callback_context: ADK callback context carrying the mutable pipeline state.
-
-    Returns:
-        ``None`` — this callback never short-circuits the agent run.
-    """
-    state = callback_context.state
-    tickers: list[str] = state.get("tickers", []) or []
-    tick_id: str = state.get("tick_id", "unknown")
-
-    # Resolve the tick timestamp used as ``recorded_at`` for evidence objects.
-    # Priority order:
-    #   1. state["as_of"]    — set by the backtest driver to the historical tick
-    #      timestamp; guarantees deterministic replay.
-    #   2. state["recorded_at"] — set by some live-path callers as an ISO string
-    #      or datetime.
-    #   3. resolve_as_of wall-clock fallback — live fallback when neither key is
-    #      present.  Strict mode vetoes this if STOCKBOT_STRICT_AS_OF=1.
-    as_of_raw = state.get("as_of")
-    if isinstance(as_of_raw, datetime):
-        # Backtest path — deterministic replay timestamp is available.
-        recorded_at = as_of_raw
-    else:
-        recorded_at_raw = state.get("recorded_at")
-        if isinstance(recorded_at_raw, str):
-            # Live path where recorded_at was serialised as an ISO string.
-            recorded_at = datetime.fromisoformat(recorded_at_raw)
-        else:
-            # Fall through to timeguard — walls clock or strict-mode abort.
-            recorded_at = resolve_as_of(
-                recorded_at_raw if isinstance(recorded_at_raw, datetime) else None,
-                allow_wallclock=True,
-                site="strategist/agent._evidence_view",
-            )
-
-    def _index(key: str) -> dict[str, AnalystEvidence]:
-        """Index a per-analyst evidence list by ticker.
-
-        Items in the list may be raw dicts (post-JSON-serialisation) or
-        already-validated ``AnalystEvidence`` objects.
-
-        Args:
-            key: The state key, e.g. ``"technical_evidence"``.
-
-        Returns:
-            A dict mapping ticker → ``AnalystEvidence``.
-        """
-        items = state.get(key, []) or []
-        out: dict[str, AnalystEvidence] = {}
-        for item in items:
-            ev = AnalystEvidence.model_validate(item) if isinstance(item, dict) else item
-            out[ev.ticker] = ev
-        return out
-
-    # Collect evidence for each analyst dimension, indexed by ticker.
-    tech = _index("technical_evidence")
-    fund = _index("fundamental_evidence")
-    news = _index("news_evidence")  # renamed from sentiment_evidence in Task 6
-    sm = _index("smart_money_evidence")
-
-    # Build one TickerEvidence per watchlist ticker by assembling the available
-    # per-analyst evidence. Tickers with no evidence for a given analyst simply
-    # omit that analyst from per_analyst — build_ticker_evidence handles sparse dicts.
-    ticker_evidence: list[TickerEvidence] = []
-    for t in tickers:
-        per_analyst: dict[str, AnalystEvidence] = {}
-        if t in tech:
-            per_analyst["technical"] = tech[t]
-        if t in fund:
-            per_analyst["fundamental"] = fund[t]
-        if t in news:
-            per_analyst["news"] = news[t]
-        if t in sm:
-            per_analyst["smart_money"] = sm[t]
-
-        te = build_ticker_evidence(
-            per_analyst=per_analyst,
-            ticker=t,
-            tick_id=tick_id,
-            recorded_at=recorded_at,
-            weights=DEFAULT_ANALYST_WEIGHTS,
-        )
-        ticker_evidence.append(te)
-
-    # Keep both shapes in state — the rendered string for the prompt template, and
-    # the JSON-serialised objects for any downstream code that wants structured data.
-    # The renderer (render_all_ticker_blocks) uses the feature-bullet registries in
-    # contract.strategist_prompt to produce labelled, human-readable per-ticker blocks
-    # that include feature values, rationale tags, and any prose AnalystReport.
-    # ``temp:`` prefix — ADK strips these at the invocation boundary (A2.6).
-    # The prompt template references ``{temp:ticker_evidence}``, and
-    # ``EvidenceWriter`` reads ``temp:ticker_evidence_objects`` downstream.
-    state["temp:ticker_evidence_objects"] = [te.model_dump(mode="json") for te in ticker_evidence]
-    state["temp:ticker_evidence"] = render_all_ticker_blocks(ticker_evidence)
-
-    # Surface trace — no-op unless state["_trace"] is set by trace_tick.py.
-    _trace_maybe(state, "04_digest", state["temp:ticker_evidence_objects"])
-
-    return None
+# NOTE — A2.1 removed the two strategist before_agent_callbacks
+# (``_held_view_before_callback`` and ``_evidence_view_before_callback``).  Their
+# work now lives in ``agents.strategist.context_shim.StrategistContextShim``,
+# which yields a single ``Event(state_delta=...)`` rather than mutating state in
+# place from a callback — see Rule 1 of ``docs/contract-invariants.md``.
 
 
 def _log_offending_decision(
