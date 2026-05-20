@@ -1,11 +1,8 @@
 """Strategist v2 LlmAgent — emits per-ticker TickerStance, derives legacy fields server-side."""
 from __future__ import annotations
 
-import json
 import logging
-import os
 from datetime import datetime
-from typing import Any
 
 from google.adk.agents import LlmAgent
 from google.adk.agents.callback_context import CallbackContext
@@ -24,11 +21,9 @@ from contract.evidence import AnalystEvidence
 from contract.strategist_prompt import render_all_ticker_blocks
 from contract.ticker_evidence import TickerEvidence
 from data.timeguard import resolve_as_of
-from observability.trace import _trace_maybe, make_llm_trace_callbacks
+from observability.trace import _trace_maybe
 
-# Module-level logger.  Used by the after-model clamp callback to emit a
-# WARNING whenever it has to fix an out-of-range stance value — see
-# ``_clamp_stance_bounds_after_model`` below.
+# Module-level logger for the validation callback and any future callbacks.
 logger = logging.getLogger(__name__)
 
 
@@ -389,180 +384,9 @@ def _strategist_validation_callback(
     return None
 
 
-def _composite_before_callback(
-    callback_context: CallbackContext,
-) -> genai_types.Content | None:
-    """Run held-view and evidence-view before-callbacks in sequence.
-
-    Short-circuits if either callback returns a ``Content`` object (which would
-    indicate an unexpected error; in practice, neither callback currently does).
-
-    Args:
-        callback_context: ADK callback context carrying the mutable pipeline state.
-
-    Returns:
-        ``None`` if both callbacks complete normally, or the first non-``None``
-        ``Content`` returned by either callback.
-    """
-    out = _held_view_before_callback(callback_context)
-    if out is not None:
-        return out
-    return _evidence_view_before_callback(callback_context)
-
-
-# ── Sanitising after-model callback ───────────────────────────────────────────
-
-# Fields on ``TickerStance`` that carry the ``ge=0.0, le=1.0`` constraint and
-# therefore need clamping if the LLM drifts.  Kept as a module-level constant
-# so the unit test can import it and stay in sync.
-_CLAMPED_STANCE_FIELDS: tuple[str, ...] = ("preferred_weight", "conviction")
-
-
-def _clamp_stance_bounds_after_model(
-    callback_context: CallbackContext,                                          # noqa: ARG001 — required by ADK signature
-    llm_response: Any,
-) -> Any:
-    """Clamp ``preferred_weight`` and ``conviction`` to ``[0.0, 1.0]`` before validation.
-
-    The ``TickerStance`` schema enforces ``ge=0.0, le=1.0`` on both fields, but
-    Gemini occasionally produces out-of-range values — notably *negative*
-    ``preferred_weight`` to express short positions, which this bot does not
-    support (see ``stance_schema.py`` and ``lifecycle.py`` — long-only by design).
-    Without intervention, ADK's ``_maybe_save_output_to_state`` calls Pydantic's
-    ``model_validate_json``, which raises ``ValidationError`` and aborts the
-    whole tick.
-
-    This callback fires *after* the LLM call but *before* ADK's schema
-    validation pass.  It deserialises the response JSON, clamps any
-    out-of-range numeric fields on each stance to ``[0.0, 1.0]``, and writes
-    the corrected JSON back into the response part.  A WARNING is emitted
-    listing every clamp so we can monitor how often the model drifts (a high
-    rate would indicate the prompt needs further tightening).
-
-    Defensive design notes:
-    - Silently tolerates any response shape the function cannot understand
-      (missing content/parts, non-JSON text, non-list stances).  The
-      downstream validator will surface the original error if there is one;
-      this callback's job is *only* to fix out-of-range numerics on stances.
-    - Mutates ``part.text`` in place rather than constructing a new
-      ``LlmResponse``, mirroring the in-place pattern used by ADK's own
-      trace callbacks.
-    - Returns ``None`` so ADK continues with the (possibly modified) response.
-
-    Parameters
-    ----------
-    callback_context:
-        ADK callback context (unused — kept for signature compatibility).
-    llm_response:
-        The raw ``LlmResponse`` from Gemini.  Mutated in place.
-
-    Returns
-    -------
-    None
-        ADK proceeds with the (mutated) response.
-    """
-
-    # ── 1. Reach the JSON text on the response, if any ─────────────────────────
-    content = getattr(llm_response, "content", None)
-    parts   = getattr(content, "parts", None)
-    if not parts:
-        return None
-
-    part = parts[0]
-    text = getattr(part, "text", None)
-    if not text:
-        return None
-
-    # ── 2. Parse — bail out on garbage so the downstream parser can complain ──
-    try:
-        payload = json.loads(text)
-    except (TypeError, json.JSONDecodeError):
-        return None
-
-    stances = payload.get("stances") if isinstance(payload, dict) else None
-    if not isinstance(stances, list):
-        return None
-
-    # ── 3. Walk every stance, clamp every constrained field, collect a log ────
-    clamped: list[str] = []
-
-    for stance in stances:
-        if not isinstance(stance, dict):
-            continue
-
-        ticker = stance.get("ticker", "?")
-
-        for field in _CLAMPED_STANCE_FIELDS:
-            value = stance.get(field)
-
-            # Booleans are technically a subclass of int — exclude explicitly.
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                continue
-
-            if value < 0.0 or value > 1.0:
-                new_value = max(0.0, min(1.0, float(value)))
-                clamped.append(f"{ticker}:{field}={value!r}->{new_value!r}")
-                stance[field] = new_value
-
-    # ── 4. If we touched anything, re-serialise + warn ─────────────────────────
-    if clamped:
-        logger.warning(
-            "Strategist response: clamped %d out-of-range stance value(s) to [0,1]: %s",
-            len(clamped), ", ".join(clamped),
-        )
-        # ``separators`` keeps the re-serialisation compact so we don't bloat
-        # the trace; ADK only needs valid JSON, not formatted.
-        part.text = json.dumps(payload, separators=(",", ":"))
-
-    return None
-
-
 # ── Agent definition ──────────────────────────────────────────────────────────
 
-# Attach LLM trace callbacks only when STOCKBOT_TRACE=1 is set at import time.
-# The module-level singleton is built once; trace callbacks gate on state["_trace"]
-# at call time so they are fully inert on production runs where _trace is absent.
 _STRATEGIST_MODEL = "gemini-2.5-pro"
-_strategist_before_model: object = None
-_strategist_after_trace: object  = None
-if os.environ.get("STOCKBOT_TRACE") == "1":
-    _strategist_before_model, _strategist_after_trace = make_llm_trace_callbacks(
-        "05_strategist_llm", model=_STRATEGIST_MODEL
-    )
-
-
-def _strategist_after_model_composite(
-    callback_context: CallbackContext,
-    llm_response: Any,
-) -> Any:
-    """Run the clamp callback first, then the trace callback if trace mode is on.
-
-    Always-on clamping is mandatory: the ``ge=0`` constraint on
-    ``preferred_weight`` must hold regardless of whether tracing is enabled.
-    Trace is best-effort and runs *after* the clamp so the recorded trace
-    reflects what ADK actually validated (the corrected JSON), not the raw
-    pre-clamp response.
-
-    Parameters
-    ----------
-    callback_context:
-        ADK callback context, forwarded to both callbacks.
-    llm_response:
-        The raw ``LlmResponse``.  Mutated in place by the clamp callback.
-
-    Returns
-    -------
-    None
-        ADK proceeds with the (possibly mutated) response.
-    """
-
-    _clamp_stance_bounds_after_model(callback_context, llm_response)
-
-    if _strategist_after_trace is not None:
-        _strategist_after_trace(callback_context, llm_response)
-
-    return None
-
 
 strategist_agent = LlmAgent(
     name="Strategist",
@@ -570,8 +394,5 @@ strategist_agent = LlmAgent(
     instruction=STRATEGIST_INSTRUCTION,
     output_schema=StrategistDecision,
     output_key="strategist_decision",
-    before_agent_callback=_composite_before_callback,
     after_agent_callback=_strategist_validation_callback,
-    before_model_callback=_strategist_before_model,
-    after_model_callback=_strategist_after_model_composite,
 )
