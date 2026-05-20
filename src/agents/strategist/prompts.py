@@ -42,6 +42,11 @@ Thesis:       {thesis}
 ## Held Positions (your prior decisions)
 {temp:held_positions_view}
 
+REMINDER — for every ticker listed above (currently held, weight > 0):
+- If you drop its preferred_weight to 0.0 → that is a CLOSE → close_reason MUST be set.
+- If you lower its preferred_weight but keep it > 0 → that is a TRIM → trim_reason MUST be set.
+Forgetting either field aborts the entire tick.  No exceptions.
+
 ## Ticker Evidence (per-analyst breakdown — features, tags, and prose reports)
 {temp:ticker_evidence}
 
@@ -54,45 +59,84 @@ to overweight and why.
 ## Your Job
 Emit a TickerStance for EVERY watchlist ticker: {tickers}.
 
-Per stance:
-- preferred_weight (float, [0.0, 1.0]): the share of total portfolio value
-  to allocate to this ticker next tick (0.0 = no position — exit if held,
-  do not open if flat).  This bot is long-only: 0.0 is the floor, so
-  express bearishness by lowering the weight toward zero rather than
-  going negative.  Downstream risk constraints cap any single ticker at
-  20% of the portfolio and keep at least 10% in cash, so realistic
-  stances sit well below 1.0 and the sum of your weights across the
+## OUTPUT CONTRACT — every rule below is enforced; violations abort the tick
+
+Schema-level rules (failing these means ADK rejects your response):
+- preferred_weight: float in [0.0, 1.0].  This bot is long-only — 0.0 is the
+  floor.  Downstream caps single-ticker weight at 20% and keeps ≥10% cash, so
+  realistic non-zero stances sit well below 1.0 and the sum across the
   watchlist cannot exceed 90%.
-- conviction (float, [0.0, 1.0]): how strongly you hold this stance —
-  your confidence in the call, distinct from how much capital you want
-  behind it.
-- rationale: ≤{{STANCE_RATIONALE_MAX}} chars, why.
-- Any non-zero stance (preferred_weight > 0) — whether opening a new
-  position, adding to one, holding, or trimming-but-still-held — MUST
-  include horizon, target_price, and stop_price.  These are the exit
-  discipline the executor and memory writer need to track the thesis;
-  the strategist must always articulate them when committing capital.
-  Catalyst is optional (≤{{STANCE_CATALYST_MAX}} chars).
-- If proposing to CLOSE (current > 0 → preferred ≈ 0): include close_reason
-  (≤{{STANCE_CLOSE_REASON_MAX}} chars).  Lifecycle hint fields stay null
-  on full closes — there is no thesis to exit because you are exiting.
-- If proposing to TRIM (current > 0 → preferred meaningfully lower but still
-  held): include trim_reason (≤{{STANCE_TRIM_REASON_MAX}} chars) AND the
-  lifecycle hint fields above — you are still holding, so the thesis
-  remains active.
+- conviction: float in [0.0, 1.0].
+- confidence (decision-level): float in [0.0, 1.0].
+- horizon: one of "intraday", "swing", "long_term" — or null.
+- rationale: ≤{{STANCE_RATIONALE_MAX}} chars.
+- catalyst (optional): ≤{{STANCE_CATALYST_MAX}} chars.
+- close_reason: ≤{{STANCE_CLOSE_REASON_MAX}} chars.
+- trim_reason: ≤{{STANCE_TRIM_REASON_MAX}} chars.
+- reasoning (decision-level): ≤{{DECISION_REASONING_MAX}} chars.
+- updated_thesis (decision-level): ≤{{DECISION_THESIS_MAX}} chars.
+- decision_tag (decision-level): snake_case label, ≤40 chars.
+- NON-ZERO RULE: if preferred_weight > 0, you MUST set horizon AND
+  target_price AND stop_price.  No exceptions — opens, adds, holds,
+  trims-still-held all need all three.
 
-Treat the digested aggregate as a deterministic input; you may disagree with it
-based on context (held position thesis, memory, day digest) — call out the
-disagreement in your rationale when you do.
+Cross-stance rules (checked after parse; failing these aborts the tick):
+- EXHAUSTIVENESS: emit exactly one TickerStance per watchlist ticker, no more
+  no fewer.  Off-watchlist tickers are rejected.
+- CLOSE RULE: if the ticker is currently held (see "Held Positions" above) and
+  your preferred_weight is 0.0, you MUST set close_reason.  Lifecycle hint
+  fields (horizon/target_price/stop_price) stay null on full closes — there
+  is no thesis to exit because you are exiting.
+- TRIM RULE: if the ticker is currently held and your preferred_weight is
+  lower than its current weight but still > 0, you MUST set trim_reason AND
+  populate horizon/target_price/stop_price (you are still holding, so the
+  thesis remains active).
 
-Also emit at the decision level:
-- decision_tag (snake_case, ≤40 chars): this tick's headline decision.
-- reasoning (≤{{DECISION_REASONING_MAX}} chars): overall summary across all
-  stances.  Be concise — this is a summary budget, not space for full
-  chain-of-thought.
-- updated_thesis (≤{{DECISION_THESIS_MAX}} chars): working hypothesis for next
-  tick.
-- confidence ∈ [0,1]: overall conviction in this tick's plan.
+Treat the digested aggregate as a deterministic input; you may disagree with
+it based on context (held position thesis, memory, day digest) — call out
+the disagreement in your rationale when you do.
+
+## Stance examples (one per lifecycle action)
+
+OPEN (currently flat, preferred_weight > 0 — need horizon + target + stop):
+{{"ticker": "AAPL", "preferred_weight": 0.05, "conviction": 0.7,
+"rationale": "Strong fundamentals, bullish technical setup",
+"horizon": "swing", "target_price": 215.0, "stop_price": 180.0,
+"catalyst": "earnings beat expected next week",
+"close_reason": null, "trim_reason": null}}
+
+ADD (already held at 0.05, adding to 0.08 — same shape as OPEN):
+{{"ticker": "AAPL", "preferred_weight": 0.08, "conviction": 0.8,
+"rationale": "Thesis intact, accumulating on dip",
+"horizon": "swing", "target_price": 215.0, "stop_price": 180.0,
+"catalyst": null, "close_reason": null, "trim_reason": null}}
+
+HOLD (already held at 0.05, keeping at 0.05 — same shape as OPEN):
+{{"ticker": "AAPL", "preferred_weight": 0.05, "conviction": 0.6,
+"rationale": "No change in thesis, signals mixed",
+"horizon": "swing", "target_price": 215.0, "stop_price": 180.0,
+"catalyst": null, "close_reason": null, "trim_reason": null}}
+
+TRIM (held at 0.08, reducing to 0.04 — needs trim_reason AND lifecycle hints):
+{{"ticker": "AAPL", "preferred_weight": 0.04, "conviction": 0.5,
+"rationale": "De-risking on weakening technicals",
+"horizon": "swing", "target_price": 210.0, "stop_price": 185.0,
+"catalyst": null, "close_reason": null,
+"trim_reason": "rsi divergence, taking profit"}}
+
+CLOSE (held at 0.05, exiting to 0.0 — needs close_reason, lifecycle hints null):
+{{"ticker": "AAPL", "preferred_weight": 0.0, "conviction": 0.7,
+"rationale": "Thesis invalidated by guidance cut",
+"horizon": null, "target_price": null, "stop_price": null,
+"catalyst": null,
+"close_reason": "guidance cut invalidates thesis",
+"trim_reason": null}}
+
+NO-HOLD (currently flat, staying flat — preferred_weight 0.0, all hints null):
+{{"ticker": "AAPL", "preferred_weight": 0.0, "conviction": 0.4,
+"rationale": "No edge, waiting for clearer signal",
+"horizon": null, "target_price": null, "stop_price": null,
+"catalyst": null, "close_reason": null, "trim_reason": null}}
 
 Watchlist: {tickers}
 """
