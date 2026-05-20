@@ -80,7 +80,7 @@ def _build_strategist():
     from agents.strategist.schema import StrategistDecision
     from observability.trace import make_llm_trace_callbacks
 
-    model_name = "gemini-2.5-pro"
+    model_name = "gemini-3.5-flash"
     before_model = None
     after_model = None
     if os.environ.get("STOCKBOT_TRACE") == "1":

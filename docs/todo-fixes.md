@@ -1234,6 +1234,54 @@ conftest fixture.
 
 ---
 
+#### 3.8 — Centralise LLM model IDs in config (LOW)
+
+**Goal.** One config file (e.g. ``config/models.json``) holds every
+``gemini-*`` ID used across the pipeline.  Each agent reads its model name
+from config at construction time; no string literal lives in source.
+
+**Non-goals.**
+
+- Do not introduce per-environment model overrides (prod vs backtest) — one
+  ID per agent role for now.
+- Do not change the per-agent model choices themselves — only the storage
+  site.
+
+**Current state.** Model IDs are hardcoded as string literals in several
+sites, with no single source of truth:
+
+- ``src/orchestrator/pipeline.py:83`` — ``model_name = "gemini-2.5-pro"``
+  (the strategist's *live* model — what the backtest actually uses).
+- ``src/agents/strategist/agent.py:266`` — ``_STRATEGIST_MODEL =
+  "gemini-2.5-pro"`` (module-level constant on the agent; **not imported by
+  the pipeline**, so editing it has no effect on the backtest path — caught
+  on 2026-05-20 when a model swap silently no-op'd).
+- Analyst-side ``gemini-2.5-flash-lite`` literals in
+  ``src/agents/analysts/*/agent.py`` (technical, social, fundamental, news).
+
+Footguns this caused:
+
+- Two parallel "strategist model" declarations drifted out of sync; the one
+  in ``agent.py`` looked authoritative but was dead.
+- No grep-once way to inventory which Gemini tier each agent uses, so
+  upgrading (e.g. 2.5-pro → 3.x) means hunting through five files.
+
+**Resolution sketch.** Add ``config/models.json`` keyed by agent role
+(``strategist``, ``technical``, ``social``, ``fundamental``, ``news``,
+``risk_gate_if_any``).  Load once at module import via
+``config.models.get_model_config()`` (mirror the ``config/strategist.py``
+pattern).  Update ``config/README.md`` per CLAUDE.md convention.  Delete
+the now-dead ``_STRATEGIST_MODEL`` constant.  Add a unit test that grep-asserts
+no ``gemini-`` literal survives in ``src/``.
+
+**Effort.** Tiny — pure refactor, no behaviour change.
+
+**Origin.** 2026-05-20 backtest debugging — model swap on the dead
+``agent.py`` constant silently ran the old model for several runs before the
+hardcoded copy in ``pipeline.py:83`` was discovered.
+
+---
+
 ## Empirically gated
 
 ### Group 5 — Cannot proceed without empirical evidence

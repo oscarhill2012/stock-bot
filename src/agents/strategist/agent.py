@@ -263,11 +263,11 @@ def _strategist_validation_callback(
 
 # ── Agent definition ──────────────────────────────────────────────────────────
 
-_STRATEGIST_MODEL = "gemini-2.5-pro"
+_STRATEGIST_MODEL = "gemini-3.5-flash"
 
 strategist_agent = LlmAgent(
     name="Strategist",
-    model=_STRATEGIST_MODEL,  # preserved from prior agent.py — do not downgrade
+    model=_STRATEGIST_MODEL,  # gemini-3.5-flash — trialling next-gen Flash for the strategist
     instruction=STRATEGIST_INSTRUCTION,
     output_schema=StrategistDecision,
     output_key="strategist_decision",
