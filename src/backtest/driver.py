@@ -204,6 +204,30 @@ class Driver:
             # Update FakeBroker price to the day's open or close.
             self._refresh_broker_prices(state.get("watchlist", []), tick)
 
+            # Refresh ``state["portfolio"]`` from the broker so the
+            # strategist's after-callback and held-view see the same
+            # current_weights that risk_gate later reads from the broker.
+            #
+            # The live path (``orchestrator/tick.py:_build_initial_state``)
+            # rebuilds state from the broker on every Cloud Run Job
+            # invocation, so cross-tick staleness is structurally impossible
+            # there.  The backtest path keeps a single ``state`` dict alive
+            # across the whole schedule, so any field sourced from the
+            # broker has to be re-pulled at the tick boundary — otherwise
+            # tick 1's BUY fills land in the broker but tick 2's strategist
+            # still sees the empty-at-start portfolio dump, computes
+            # ``current_weights = {}``, misses its own "close needs
+            # close_reason" guard, and the violation only surfaces deep in
+            # risk_gate (which DOES read the live broker).  Re-pulling here
+            # eliminates that source-of-truth split.
+            #
+            # ``state["positions"]`` (the thesis book) is propagated
+            # separately by the executor's state_delta event and does not
+            # need a refresh here.
+            state["portfolio"] = (
+                await self._broker.get_portfolio()
+            ).model_dump(mode="json")
+
             try:
                 await self._run_one_tick(state)
             except Exception as exc:
