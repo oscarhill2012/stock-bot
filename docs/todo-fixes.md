@@ -566,6 +566,40 @@ and the failure mode is silent.
 - **Coverage scope.**  Start at `src/agents/` only; widen to other
   `BaseAgent` subclasses if any are added in `src/orchestrator/` or
   `src/backtest/`.
+- **Contract-spec policy tension** (added 2026-05-20).
+  `docs/contract-invariants.md` §C-Rule 1 — *"All
+  writes to session state must go through `EventActions(state_delta=...)`
+  events yielded by an agent"* — is stricter than this item's
+  current escape-hatch design.  The contract makes **no** in-tick
+  carve-out; every state write rides on `state_delta`, regardless of
+  whether the consumer is the next agent in the same tick or a future
+  tick.  The audit (`docs/Phase8-contract-audit-fixes/contract-audit.md` §C-Rule 1)
+  records 10+ in-tick direct-mutation sites the contract considers
+  deviations — including `held_positions_view`, `ticker_evidence*`,
+  `final_orders`, `risk_clamps_applied`, `technical_verdicts`,
+  `social_verdicts` — that the current "in-tick is safe" framing
+  classifies as fine.  The spec author for 2.5.2 must settle this:
+  - **Strict contract (recommended for new code):** drop the
+    escape-hatch entirely; the AST walker flags every
+    `state[k] = v` inside `_run_async_impl` regardless of consumer
+    lifetime.  Forces the in-tick refactors (these are the plan-A1
+    workstream from the 2026-05-20 brainstorm).  Higher one-time
+    cost; permanent enforcement of the contract.
+  - **Pragmatic carve-out (today's design):** keep `# in-tick-only`
+    as a permanent escape and accept the contract-deviation rate
+    measured by the audit.  Lower cost; permanent gap between code
+    and the contract document.
+  - **Phased:** strict policy with the escape-hatch initially
+    permitted, then a follow-up sweep removes all uses.  Two-step
+    landing; preserves enforcement intent.
+
+  Recommend deciding before the AST walker is implemented — the
+  walker's emitted error message changes between options.  Also
+  note: callbacks (e.g. `before_agent_callback`,
+  `after_agent_callback`) cannot yield events at all, so the walker
+  either tolerates callback-only writes or the codebase must
+  restructure callbacks into `BaseAgent` shims.  Plan A2 (from the
+  same 2026-05-20 brainstorm) is the source of those restructures.
 
 **Effort.**  Small.  ~80 lines of AST walker + ~5 unit tests + the
 escape-hatch documentation in `docs/` or the agent style guide.
@@ -578,6 +612,34 @@ keys.
 ---
 
 #### 2.5.3 — Replace session-state cross-tick handoff with DB hydration + RAG memory (MED — design phase)
+
+**Contract-invariants lineage** (added 2026-05-20).  This item is the
+fix-side counterpart to `docs/contract-invariants.md`
+§E (cross-session persistence subsystem) and is the home for the four
+high-severity §A cross-tick deviations recorded in
+`docs/Phase8-contract-audit-fixes/contract-audit.md`:
+
+| §A field | Lifetime | Current write site | Current read site |
+|---|---|---|---|
+| `positions` | cross-tick | Strategist intent (missing — no writer today) + Executor fact (`src/agents/executor/agent.py:202-210` state_delta) | both lifecycles seed `{}` at Phase 2 (`src/orchestrator/tick.py:_build_initial_state`, `src/backtest/runner.py:475-491`) — never read from any persistent store |
+| `memory_buffer` | cross-tick | MemoryWriter state_delta (`src/agents/memory/writer.py:181-189`) | both lifecycles seed `[]` at Phase 2 — never read from any persistent store |
+| `day_digest` | cross-tick | MemoryWriter state_delta (same yield) | both lifecycles seed `""` at Phase 2 — never read from any persistent store |
+| `thesis` | cross-tick | MemoryWriter state_delta (same yield); **no Strategist write today despite §A naming Strategist as owner** | both lifecycles seed `""` at Phase 2 — never read from any persistent store |
+
+The four rows above subsume the live bug previously tracked as F1
+(`state["positions"]` reset to `{}` on every live tick): it is the
+`positions` row, and the same persistence-read-at-tick-start fix closes
+it.
+
+The contract names the lifecycle phases that this item must populate:
+**Phase 2** (tick-start — `_build_initial_state` in both lifecycles)
+reads from the store into `state`; **Phase 4** (tick-end — post-pipeline
+code in `src/orchestrator/tick.py` for live and
+`src/backtest/driver.py:_run_tick` for backtest) drains
+`state_delta`s into the store.  The contract is *additive*: live and
+backtest must use the same persistence subsystem and the same hooks
+(per §D non-carve-outs in the spec — "cross-tick state persistence is
+not a carve-out; both lifecycles do it identically").
 
 **Goal.**  Retire the "session state is the cross-tick handoff" model
 in favour of treating session state as a *per-tick scratch buffer*.
@@ -644,6 +706,56 @@ in depth rather than the primary mechanism.
   be deleted?  Or is it still load-bearing as a defence-in-depth
   fallback?  This is the same Option A vs Option B question that 2.5.1
   parked.
+- **`thesis` ownership.**  `contract-invariants.md` §A names
+  Strategist as the owner of `state["thesis"]` alongside `positions`.
+  Current code has MemoryWriter writing all three of
+  `memory_buffer`, `day_digest`, and `thesis` from a single
+  `state_delta` yield (`src/agents/memory/writer.py:181-189`).
+  Strategist's `_strategist_validation_callback`
+  (`src/agents/strategist/agent.py:388`) does not currently write
+  `thesis` and could not yield a `state_delta` even if it did
+  (callbacks return None-or-Content; they cannot yield events —
+  see contract Rule 3).  Two ways to resolve:
+  - **Reassign ownership to MemoryWriter** and update the contract
+    spec's §A row.  Cheapest; matches current code.
+  - **Add a Strategist-side `thesis` write** via a new `BaseAgent`
+    shim that runs after Strategist and yields the
+    `state_delta` (this would also be the natural home for Plan A2's
+    Strategist-decision JSON coercion shim — same restructure).
+    Split MemoryWriter's state_delta in two: it keeps
+    `memory_buffer` + `day_digest`, the shim emits `thesis`.
+    Cleaner ownership; more code.
+
+  Decision belongs in this spec (not the plan that implements it)
+  because it affects the persistence schema design — if Strategist
+  owns `thesis`, the thesis-memory schema is keyed on the
+  strategist's writes, not MemoryWriter's buffer entries.
+- **Lifecycle-wrapper concept.**  `contract-invariants.md` §B names
+  four phases: Phase 1 (run-start, once per process), Phase 2
+  (tick-start, every tick), Phase 3 (during-tick pipeline), Phase 4
+  (tick-end, every tick).  The persistence subsystem attaches at
+  Phase 2 (rehydrate from store into `state`) and Phase 4 (drain
+  `state_delta`s into store).  Today both lifecycles have *de facto*
+  Phase 2 code (`src/orchestrator/tick.py:_build_initial_state` for
+  live; `src/backtest/runner.py:475-491` plus
+  `src/backtest/driver.py:192-202` for backtest) and *de facto*
+  Phase 4 code (post-pipeline tail in both lifecycles — backtest's
+  `state.update(dict(updated.state))` at
+  `src/backtest/driver.py:382-383` is the closest current
+  approximation, but it carries dict-to-dict, not state-to-store).
+  Neither is *named* as such.  The spec must decide:
+  - **Introduce a formal `LifecycleWrapper` abstraction** with named
+    hook methods (`phase_1_setup`, `phase_2_tick_start`,
+    `phase_4_tick_end`).  Both lifecycles import and configure the
+    same wrapper.  Cleanest contract alignment; bigger refactor.
+  - **Augment existing entry points** without a new abstraction —
+    just add the Phase 2 read + Phase 4 write at the right line
+    numbers.  Smaller change; loses the "lifecycle is a named
+    concept" property that contract §C-Rule 7 leans on.
+
+  This decision blocks item 2.5.4 (Lift pipeline-internal DB writers
+  into Phase 4 hooks) — 2.5.4 fills the Phase 4 slot that 2.5.3
+  defines.
 
 **Effort.**  Two phases (rough).  Phase one is the spec itself + a
 proof-of-concept seeder hitting a local Chroma instance to prove the
@@ -663,6 +775,205 @@ investigation surfaced that the live-tick code path (`tick.py`) is
 also amnesiac.  The state_delta fixes only paper over the issue for
 in-process multi-tick contexts; the structurally correct answer is
 DB/RAG hydration at tick start.
+
+---
+
+#### 2.5.4 — Lift pipeline-internal DB writers into Phase 4 lifecycle hooks (LOW)
+
+**Contract-invariants lineage** (added 2026-05-20).  This item
+addresses the medium-severity Rule 7 deviation recorded in
+`docs/Phase8-contract-audit-fixes/contract-audit.md` §C-Rule 7.  The contract
+(`docs/contract-invariants.md` §C-Rule 7) reads:
+
+> *"The pipeline (analysts → strategist → executor) reads from and
+>  writes to **state**.  It does not read from or write to the
+>  persistence layer (§E), the broker, or any provider for
+>  cross-tick data.  The lifecycle wrapper is responsible for [...]
+>  reading cross-tick fields from persistence into `state` at Phase 2
+>  (tick-start) [and] writing cross-tick `state_delta`s back to
+>  persistence at Phase 4 (tick-end)."*
+
+Today four agents inside the `SequentialAgent` pipeline commit DB
+rows mid-run.  Behaviour is correct (the rows land in the right
+tables, transactions commit cleanly) — the violation is purely
+architectural: the pipeline is not lifecycle-agnostic.  A notebook-
+driven REPL or any future third lifecycle would either have to
+provide an SQLAlchemy session or carve out the pipeline-internal DB
+writes by hand.
+
+This is also *not* the same as 2.5.3 — these are existing
+audit/observability writes against settled schemas, not the four
+cross-tick state fields.  2.5.3 builds the persistence subsystem
+for cross-tick state; 2.5.4 relocates the existing audit writes
+into the same Phase 4 hook 2.5.3 introduces.
+
+**Goal.**  Move the four mid-pipeline DB writes out of the pipeline's
+`SequentialAgent` and into a Phase 4 lifecycle hook owned by the
+wrapper (live entrypoint in `src/orchestrator/tick.py`, backtest
+driver in `src/backtest/driver.py`).  The pipeline becomes
+lifecycle-agnostic — it produces state; the wrapper persists it.
+Both lifecycles call the same hook with the same post-pipeline
+`state` shape.
+
+**Non-goals.**
+
+- Do **not** redesign the DB schema or any saver-function signature.
+  Schemas (`AnalystEvidenceRow`, `TickerEvidenceRow`,
+  `TickerStanceRow`, `TradeLogEntry`, `PortfolioSnapshot`) and savers
+  (`save_analyst_evidence`, `save_ticker_evidence`,
+  `save_ticker_stance`, `save_trade_log_entry`,
+  `save_portfolio_snapshot` in
+  `src/orchestrator/persistence.py`) stay as-is — the bytes written
+  to disk are identical pre- and post-2.5.4.
+- Do **not** bundle this with 2.5.3's cross-tick persistence work.
+  2.5.3 introduces the persistence subsystem for the four cross-
+  tick `state` fields (`positions`, `memory_buffer`, `day_digest`,
+  `thesis`); 2.5.4 only relocates existing audit writes against
+  already-settled schemas.  Bundling forces 2.5.4 to wait on store-
+  choice decisions it doesn't actually depend on.
+- Do **not** change the `db_session=None` no-op semantics that
+  `EvidenceWriter`, `StrategistDecisionWriter`,
+  `build_executor`, and `build_snapshotter` all honour today —
+  `tests/integration/backtest/test_end_to_end_smoke.py` relies on
+  passing `db_session=None` to short-circuit DB writes (no real
+  DB required to validate the topology).  The Phase 4 hook must
+  preserve this dry-run capability.
+- Do **not** touch the `TraceWriter` / decision-log observability
+  paths.  Those are §D-D1 carve-outs in the contract (additive,
+  lifecycle-specific by design); they stay where they are.
+
+**Current state.**  Four DB writers live inside the pipeline's
+`SequentialAgent` at `src/orchestrator/pipeline.py:109-121`:
+
+| Writer | Class | DB call site | What it writes |
+|---|---|---|---|
+| `EvidenceWriter` | `src/agents/contract/evidence_writer.py:35` | `:127` (`self.db_session.commit()` at end of `_run_async_impl`) | one `AnalystEvidenceRow` per analyst/ticker pair (loop over five analyst keys) + one `TickerEvidenceRow` per ticker |
+| `StrategistDecisionWriter` | `src/agents/strategist/decision_writer.py:22` | `:109` (commit at end of `_run_async_impl`) | one `TickerStanceRow` per stance in `strategist_decision.stances` |
+| Executor (trade log) | `src/agents/executor/agent.py` | `:131` (`save_trade_log_entry(...)`), import at `:101` | one `TradeLogEntry` per executed order, inline within `_run_async_impl` per-order loop |
+| Snapshotter (portfolio snapshot) | `src/agents/snapshot/agent.py` | `:110-111` (`save_portfolio_snapshot(...)` inline within `_run_async_impl`) | one `PortfolioSnapshot` per tick |
+
+All four currently:
+- Are wired into the `SequentialAgent` returned by `build_pipeline`
+  at `src/orchestrator/pipeline.py:109-121` (positions 2, 4, 6, 8
+  of the eight sub-agents).
+- Take `db_session` as a constructor parameter, defaulting to `None`
+  for the no-op short-circuit case.
+- Read the state they need (`{analyst}_evidence` and
+  `ticker_evidence_objects` for EvidenceWriter; `strategist_decision`
+  and `portfolio` for StrategistDecisionWriter; `final_orders` and
+  `executions` for Executor; `portfolio` and broker state for
+  Snapshotter) which is present post-pipeline because upstream agents
+  have already yielded the relevant `state_delta`s — meaning Phase 4
+  can read the same keys from `updated.state` after the
+  SequentialAgent returns.
+- Have **no in-tick consumer** of their DB writes — nothing in the
+  pipeline reads `AnalystEvidenceRow` etc. back from the DB during
+  the same tick.  The writes are purely outbound audit.
+- Honour `db_session is None` short-circuit at the top of
+  `_run_async_impl` (e.g. `evidence_writer.py:63-66`,
+  `decision_writer.py:48-50`), making them no-ops in the smoke test.
+
+Post-pipeline state is already accessible at both lifecycle exit
+points:
+- **Live:** `src/orchestrator/tick.py` — the tick entrypoint awaits
+  the pipeline and then exits.  The Phase 4 hook attaches between
+  `await runner.run_async(...)` and process exit.
+- **Backtest:** `src/backtest/driver.py:_run_tick` —
+  `state.update(dict(updated.state))` at `:382-383` is the current
+  post-pipeline write into the driver-private state dict.  The
+  Phase 4 hook attaches around the same point, before the
+  driver-level assertion at `:393-401`.
+
+Existing observation in the audit (`contract-audit.md` §C-Rule 7):
+"none of them reads cross-tick state from the DB — they only write
+audit/observability rows".  This is the load-bearing fact that lets
+2.5.4 proceed independently of 2.5.3's RAG/persistence design.
+
+**Key decisions for the spec.**
+
+- **Hook shape.**  Three plausible options:
+  - **Function on the lifecycle wrapper** — `wrapper.persist_tick(state,
+    db_session)`.  Called once at Phase 4.  Cheapest restructure.
+    Couples to whatever wrapper concept 2.5.3 introduces.
+  - **Dedicated `TickPersister` object** — instantiated once per
+    lifecycle, exposes `persist(state, db_session)` per tick.  More
+    testable in isolation, more ceremony.
+  - **Keep the four agents as `BaseAgent` shells** but instantiate and
+    invoke them *outside* the `SequentialAgent`, from the wrapper's
+    Phase 4 code.  Minimal change to existing classes; clearest
+    separation from the pipeline; preserves the existing
+    `_run_async_impl` logic untouched.
+
+  The third option is the smallest viable change but inherits
+  ADK's `Event`-yielding ceremony for what is now plain DB work.
+  The first is the cleanest if 2.5.3 has already named the wrapper.
+- **Ordering of writes.**  Today the four writers run in this order
+  inside the pipeline: EvidenceWriter → StrategistDecisionWriter →
+  Executor (trade log inline) → MemoryWriter → Snapshotter.
+  Snapshotter is intentionally last because its `last_snapshot`
+  state_delta feeds the driver's tick-completion assertion at
+  `src/backtest/driver.py:393-401`.  The Phase 4 hook must either
+  preserve this ordering or document why a new order is safe.
+  Executor's trade-log write is *inline within Executor* — splitting
+  it out from the Executor's order-execution logic is a separate
+  small refactor (the rest of Executor stays in the pipeline as a
+  state-only agent).
+- **Transactional boundaries.**  Each agent currently calls
+  `self.db_session.commit()` at the end of its own
+  `_run_async_impl`.  Phase 4 could:
+  - **Preserve current semantics:** four sequential commits, partial
+    failures leave earlier rows committed.  Matches the
+    `evidence_writer.py:123-126` comment ("no try/except wrapping
+    the saver loop — a mid-loop failure leaves the session dirty").
+  - **Batch into one commit at the end:** all-or-nothing per tick.
+    Cleaner failure model; breaks the current "snapshot row exists
+    even if trade-log row failed" assumption that any current
+    consumer might depend on.
+
+  Recommend explicit decision in the spec; non-default change.
+- **Backwards compatibility with `db_session=None`.**  The hook must
+  short-circuit when `db_session is None`, matching every existing
+  writer's `if self.db_session is None: return` guard.  The smoke
+  test must continue to pass without changes.
+- **Executor split.**  Executor today does two distinct things:
+  produce executions/positions state_deltas (pipeline-internal) AND
+  write trade-log rows to the DB (audit).  Cleanest split: a Phase 4
+  `persist_trade_log(state, db_session)` reads `state["executions"]`
+  and writes the rows, leaving the in-pipeline Executor stateful but
+  DB-free.  Alternative: keep the trade-log write inline and
+  exclude Executor from the relocation (Executor remains a Rule 7
+  deviation but every other writer is lifted).  Recommend the split.
+- **`db_session` plumbing.**  The pipeline's `build_pipeline` today
+  accepts `db_session` and threads it through the writers.  After
+  the relocation, `build_pipeline` no longer needs `db_session` at
+  all (assuming the Executor split above) — the wrapper holds the
+  session and passes it to the Phase 4 hook.  This is a minor public-
+  surface change to `build_pipeline`; document it.
+
+**Effort.**  Small to medium.  Pure mechanical relocation of four
+sites + the Phase 4 hook plumbing + the Executor split.  Estimated
+one focused session for spec + plan; one for implementation.  Tests
+mostly re-use existing assertions (the same DB rows must appear
+post-tick); add a contract test that asserts `build_pipeline()`
+contains no agent with a non-None `db_session` attribute (i.e. no
+mid-pipeline DB writes survive the refactor).
+
+**Sequencing.**  Blocked on 2.5.3 settling the lifecycle-wrapper
+shape.  Concrete blocker: the "hook shape" decision above depends on
+whether 2.5.3 introduces a formal `LifecycleWrapper` abstraction or
+just augments the existing entry points (see 2.5.3's "Lifecycle-
+wrapper concept" decision).  Starting 2.5.4 before 2.5.3 settles
+that risks rework.  Once 2.5.3's wrapper shape is fixed, 2.5.4 is a
+focused refactor with no further open architectural questions.
+
+**Origin.**  2026-05-20 contract audit — recorded as a Rule 7
+deviation in `docs/Phase8-contract-audit-fixes/contract-audit.md` §C-Rule 7
+("DEVIATION (medium)").  Distinct from the four cross-tick
+deviations (those are 2.5.3 territory) because the DB rows here are
+audit writes against settled schemas, not cross-tick state.
+Pre-deployment status (`memory/project_stockbot_deployment_state.md`)
+means no production observation of this deviation yet; it surfaces
+only as the contract is enforced.
 
 ---
 
