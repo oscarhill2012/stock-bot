@@ -9,9 +9,8 @@ run-loop is split cleanly across three hooks:
 
 2. ``_run_async_impl`` — reads ``state["technical_data"]``, runs
    ``extract_technical_features`` + ``derive_technical_verdict``
-   deterministically for every ticker, and writes
-   ``state["technical_verdicts"]`` directly to session state (same pattern as
-   ``SocialAnalyst``, ``RiskGateAgent``, and ``MemoryWriter``).
+   deterministically for every ticker, and yields an Event whose
+   ``state_delta`` carries ``technical_verdicts``.
 
 3. ``make_evidence_callback`` (``after_agent_callback``) — converts the
    pre-seeded ``technical_verdicts`` into ``AnalystEvidence`` records and
@@ -27,7 +26,7 @@ from typing import Any
 
 from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
-from google.adk.events import Event
+from google.adk.events import Event, EventActions
 
 from agents.analysts._common import make_evidence_callback
 from agents.analysts.heuristics import TechnicalHeuristics, load_heuristics
@@ -42,10 +41,10 @@ class TechnicalAnalyst(BaseAgent):
 
     Reads ``state["technical_data"]`` (populated by the fetch callback), runs
     ``extract_technical_features`` + ``derive_technical_verdict`` for each
-    ticker, and writes ``state["technical_verdicts"]``.  The registered
-    ``after_agent_callback`` (``make_evidence_callback``) then converts those
-    verdicts into ``AnalystEvidence`` records under
-    ``state["technical_evidence"]``.
+    ticker, and yields an ``Event`` whose ``state_delta`` carries
+    ``technical_verdicts``.  The registered ``after_agent_callback``
+    (``make_evidence_callback``) then converts those verdicts into
+    ``AnalystEvidence`` records under ``state["technical_evidence"]``.
     """
 
     # Pydantic field — TechnicalHeuristics is itself a frozen Pydantic model,
@@ -96,8 +95,9 @@ class TechnicalAnalyst(BaseAgent):
             ctx: ADK invocation context providing access to session state.
 
         Yields:
-            Nothing — state mutation is written directly, matching the pattern
-            used by SocialAnalyst, MemoryWriter, and RiskGateAgent.
+            One ``Event`` whose ``actions.state_delta`` carries the
+            ``technical_verdicts`` list.  Conforms to contract Rule 1; no
+            direct ``state[k] = v`` write is performed.
         """
         state = ctx.session.state
         tickers: list[str] = state.get("tickers", []) or []
@@ -125,15 +125,21 @@ class TechnicalAnalyst(BaseAgent):
             v_dict["ticker"] = ticker
             verdicts.append(v_dict)
 
-        # Write the verdict list so the after_agent_callback can read it.
-        state["technical_verdicts"] = verdicts
-
         # Surface trace — no-op unless state["_trace"] is set by trace_tick.py.
+        # Run before the yield so the trace records the same payload the
+        # state_delta carries.
         _trace_maybe(ctx.session.state, "02_technical_verdict", verdicts)
 
-        # No events emitted — pure state mutation, same as SocialAnalyst.
-        return
-        yield  # required to make this an async generator
+        # Contract Rule 1 — every state write rides on an Event whose
+        # ``actions.state_delta`` carries it.  ADK's SessionService only
+        # persists state via ``append_event``; a direct ``state[k] = v``
+        # would be lost on any non-in-memory session backend.  See
+        # ``docs/contract-invariants.md`` §C-Rule 1.
+        yield Event(
+            author        = self.name,
+            invocation_id = ctx.invocation_id,
+            actions       = EventActions(state_delta={"technical_verdicts": verdicts}),
+        )
 
 
 # Module-level singleton — used directly by unit tests and the analyst_pool
