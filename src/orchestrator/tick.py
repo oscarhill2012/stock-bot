@@ -58,11 +58,15 @@ async def _fetch_reference_prices(
 
 
 async def _build_initial_state(broker, tick_id: str, tickers: list[str]) -> dict:
-    """Build the initial pipeline state for one tick.
+    """Build the initial pipeline state for one live tick.
 
-    Reads the live portfolio from the broker and dumps it under
-    ``state["portfolio"]`` so the strategist's held-view callback can render
-    real holdings rather than the empty-portfolio sentinel.
+    Reads the live portfolio from the broker, fetches reference prices,
+    and seeds the Phase 2 lifecycle keys (``tick_id``, ``as_of``,
+    ``tick_phase``) plus the cross-tick fields the pipeline expects.
+    The cross-tick fields (``memory_buffer``, ``day_digest``, ``thesis``,
+    ``positions``) are seeded empty here — true persistence-backed
+    rehydration is tracked in ``docs/todo-fixes.md`` item 2.5.3 and is
+    out of scope for A1.
 
     Args:
         broker: Any broker implementing ``get_portfolio() -> Portfolio``.
@@ -70,8 +74,10 @@ async def _build_initial_state(broker, tick_id: str, tickers: list[str]) -> dict
         tickers: The list of watchlist ticker symbols for this tick.
 
     Returns:
-        A dict containing all keys the pipeline expects at startup, including
-        a JSON-serialisable portfolio snapshot under ``"portfolio"``.
+        A dict containing all keys the pipeline expects at startup,
+        including a JSON-serialisable portfolio snapshot under
+        ``"portfolio"`` and a wall-clock UTC ``as_of`` datetime under
+        ``"as_of"`` (tick_phase is the literal string ``"live"``).
     """
     portfolio = await broker.get_portfolio()
 
@@ -84,6 +90,16 @@ async def _build_initial_state(broker, tick_id: str, tickers: list[str]) -> dict
 
     return {
         "tick_id": tick_id,
+        # Phase 2 lifecycle handshake — the live builder is the single
+        # authoritative writer of ``as_of`` and ``tick_phase``.  Backtest
+        # sets the equivalents in ``src/backtest/driver.py``.  These
+        # keys are documented in ``docs/contract-invariants.md`` §A.
+        # Note: ``STOCKBOT_STRICT_AS_OF=1`` is
+        # set by backtest runs to veto wall-clock fallback at consumers
+        # like ``data.timeguard.resolve_as_of``; live must NOT set that
+        # env var, so this wall-clock seed lands cleanly.
+        "as_of":      datetime.now(tz=UTC),
+        "tick_phase": "live",
         "tickers": tickers,
         "memory_buffer": [],
         "day_digest": "",
