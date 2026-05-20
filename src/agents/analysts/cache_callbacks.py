@@ -45,7 +45,7 @@ Three steps:
        cache_before, cache_after = make_report_cache_callbacks(
            analyst_name       = "<name>",
            prompt_version     = <NAME>_PROMPT_VERSION,
-           data_state_key     = "<name>_data",
+           data_state_key     = "temp:<name>_data",  # A2.6: temp: prefix required
            verdicts_state_key = "<name>_verdicts",
            hash_inputs        = lambda d: <name>_hash_inputs(...),
            trace_label        = "NN_<name>_llm",
@@ -100,7 +100,8 @@ def make_report_cache_callbacks(
         prompt template or closed vocabulary changes to invalidate stale entries.
     data_state_key:
         Key in session state that holds the per-ticker raw data dict, e.g.
-        ``"news_data"`` or ``"fundamental_data"``.
+        ``"temp:news_data"`` or ``"temp:fundamental_data"`` (A2.6: ``temp:``
+        prefix required so ADK strips the key at the invocation boundary).
     verdicts_state_key:
         Key in session state where the LLM-emitted ``VerdictBatch`` eventually
         lands, e.g. ``"news_verdicts"``.  Used by ``_before`` to write cache

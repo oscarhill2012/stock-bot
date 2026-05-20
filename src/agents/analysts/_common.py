@@ -39,8 +39,8 @@ def make_evidence_callback(
        ``magnitude``, ``confidence``, ``rationale``, ``key_factors``,
        ``is_no_data``).
     2. For every ticker in the watchlist, calls
-       ``extractor(state["{analyst}_data"][ticker], ticker)`` to obtain the
-       deterministic feature vector.  If the LLM omitted a verdict for a
+       ``extractor(state["temp:{analyst}_data"][ticker], ticker)`` to obtain
+       the deterministic feature vector.  If the LLM omitted a verdict for a
        ticker, a no-data ``AnalystVerdict`` is synthesised so downstream
        consumers always receive one record per ticker.
     3. Writes the resulting ``AnalystEvidence`` list (as JSON-serialisable
@@ -92,7 +92,10 @@ def make_evidence_callback(
         )
 
         # Per-ticker raw data dict keyed by ticker symbol.
-        data: dict = state.get(f"{analyst}_data", {}) or {}
+        # The ``temp:`` prefix mirrors the fetch callbacks which write
+        # ``state["temp:{analyst}_data"]`` — ADK strips these keys at the
+        # invocation boundary so stale data never bleeds across ticks.
+        data: dict = state.get(f"temp:{analyst}_data", {}) or {}
 
         # Build a lookup from ticker → verdict dict for fast access below.
         # Two shapes are supported:

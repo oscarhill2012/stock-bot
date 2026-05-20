@@ -33,6 +33,7 @@ import os
 
 from google.adk.agents import LlmAgent
 
+from agents.analysts._base_yield import YieldingAnalystWrapper
 from agents.analysts._common import (
     _chain_after,
     _chain_before,
@@ -55,7 +56,7 @@ from .prompts import build_news_instruction
 # Agent factory
 # ---------------------------------------------------------------------------
 
-def _build_news_analyst(vocab: NewsVocabulary) -> LlmAgent:
+def _build_news_analyst(vocab: NewsVocabulary) -> YieldingAnalystWrapper:
     """Construct a fresh ``NewsAnalyst`` LlmAgent with closed-vocab prompt + cache.
 
     Renders the instruction by substituting the three closed-vocabulary lists
@@ -81,9 +82,10 @@ def _build_news_analyst(vocab: NewsVocabulary) -> LlmAgent:
 
     Returns
     -------
-    LlmAgent
-        A fully-wired ``NewsAnalyst`` ready to be added to the
-        ``AnalystPool`` ``ParallelAgent``.
+    YieldingAnalystWrapper
+        A fully-wired ``NewsAnalystBranch`` ready to be added to the
+        ``AnalystPool`` ``ParallelAgent``.  The inner ``LlmAgent`` is
+        accessible via ``.inner`` for tests that need to inspect it directly.
     """
     instruction = build_news_instruction(vocab)
     model = "gemini-2.5-flash-lite"
@@ -101,7 +103,7 @@ def _build_news_analyst(vocab: NewsVocabulary) -> LlmAgent:
     cache_before, cache_after = make_report_cache_callbacks(
         analyst_name       = "news",
         prompt_version     = NEWS_PROMPT_VERSION,
-        data_state_key     = "news_data",
+        data_state_key     = "temp:news_data",
         verdicts_state_key = "news_verdicts",
         hash_inputs        = lambda d: news_hash_inputs((d or {}).get("news") or []),
         trace_label        = "03_news_llm",
@@ -111,7 +113,11 @@ def _build_news_analyst(vocab: NewsVocabulary) -> LlmAgent:
     before_cb = _chain_before(cache_before, trace_before)
     after_cb  = _chain_after(cache_after, trace_after)
 
-    return LlmAgent(
+    # Build the inner LlmAgent — all callbacks and config are unchanged from
+    # the pre-A2.5 version.  The outer YieldingAnalystWrapper republishes the
+    # after_agent_callback's evidence write as a ``state_delta`` yield so the
+    # write is durable on persistent ADK session backends (Rule 1 compliance).
+    llm = LlmAgent(
         name="NewsAnalyst",
         model=model,
         instruction=instruction,
@@ -125,6 +131,11 @@ def _build_news_analyst(vocab: NewsVocabulary) -> LlmAgent:
         ),
         before_model_callback=before_cb,
         after_model_callback=after_cb,
+    )
+    return YieldingAnalystWrapper(
+        name="NewsAnalystBranch",
+        inner=llm,
+        evidence_state_key="news_evidence",
     )
 
 

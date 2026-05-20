@@ -212,6 +212,24 @@ persistence channel for state updates.
 **Implication:** Strategist's `after_agent_callback` writing the thesis
 book must emit a `state_delta`, not poke the dict.
 
+**In-tick callback carve-out (added 2026-05-20).**  ADK
+``after_agent_callback``s cannot yield Events (Rule 3) but are the only
+place certain LLM-output validation + derivation can run (they need
+runtime access to ``state["portfolio"]`` and ``state["tickers"]``, which
+``output_schema`` does not see).  Where such a callback writes to a
+state key whose only consumer is **another agent in the same tick**,
+that direct write is conformant.  The carve-out does NOT apply if the
+key escapes the tick — cross-tick keys must still go through
+``state_delta``.
+
+The canonical instance today is the Strategist's
+``_strategist_validation_callback`` (see
+``src/agents/strategist/agent.py:383``), which rewrites
+``state["strategist_decision"]`` with the derived legacy fields
+(``target_weights``, ``new_positions``, ``close_reasons``,
+``trim_reasons``).  Its only consumer is the downstream RiskGate agent
+in the same tick.
+
 ### Rule 2 — `temp:` is invocation-scoped only
 
 State keys prefixed with `temp:` are scoped to a single invocation (one
@@ -221,6 +239,15 @@ never for tick-to-tick state.
 
 **ADK grounding:** ADK documents the `temp:` prefix as invocation-scoped
 and not persisted by session services.
+
+**Concrete invocation-scoped keys (A2.6 rename, 2026-05-20):**
+the strategist's ``temp:held_positions_view``, ``temp:ticker_evidence``,
+``temp:ticker_evidence_objects``, and the four analyst raw-data keys
+``temp:technical_data`` / ``temp:fundamental_data`` / ``temp:news_data``
+/ ``temp:social_data``.  All written by callbacks or the
+``StrategistContextShim`` (Task A2.1); all consumed inside a single
+tick by the analyst's own ``_run_async_impl`` or by the Strategist's
+instruction template.
 
 ### Rule 3 — Callbacks never re-prompt
 

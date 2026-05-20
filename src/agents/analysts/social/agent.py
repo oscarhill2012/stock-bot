@@ -4,10 +4,10 @@
 run-loop is split cleanly across three hooks:
 
 1. ``social_fetch_callback`` (``before_agent_callback``) — fetches Finnhub
-   Reddit + Twitter aggregates and writes ``state["social_data"]``.  Returns
-   ``None`` so the agent body runs normally.
+   Reddit + Twitter aggregates and writes ``state["temp:social_data"]``.
+   Returns ``None`` so the agent body runs normally.
 
-2. ``_run_async_impl`` — reads ``state["social_data"]``, runs
+2. ``_run_async_impl`` — reads ``state["temp:social_data"]``, runs
    ``extract_social_features`` + ``derive_social_verdict`` deterministically
    for every ticker, and yields an Event whose ``state_delta`` carries
    ``social_verdicts``.
@@ -40,11 +40,12 @@ from .fetch import social_fetch_callback
 class SocialAnalyst(BaseAgent):
     """Deterministic Social analyst — no LLM calls; all verdicts from heuristics.
 
-    Reads ``state["social_data"]`` (populated by the fetch callback), runs
-    ``extract_social_features`` + ``derive_social_verdict`` for each ticker,
-    and yields an ``Event`` whose ``state_delta`` carries ``social_verdicts``.  The registered
-    ``after_agent_callback`` (``make_evidence_callback``) then converts those
-    verdicts into ``AnalystEvidence`` records under ``state["social_evidence"]``.
+    Reads ``state["temp:social_data"]`` (populated by the fetch callback),
+    runs ``extract_social_features`` + ``derive_social_verdict`` for each
+    ticker, and yields an ``Event`` whose ``state_delta`` carries
+    ``social_verdicts``.  The registered ``after_agent_callback``
+    (``make_evidence_callback``) then converts those verdicts into
+    ``AnalystEvidence`` records under ``state["social_evidence"]``.
     """
 
     # Pydantic field — SocialHeuristics is itself a frozen Pydantic model,
@@ -83,8 +84,8 @@ class SocialAnalyst(BaseAgent):
     ) -> AsyncGenerator[Event, None]:
         """Compute per-ticker social verdicts deterministically and write to state.
 
-        Reads ``state["social_data"]`` (written by the fetch callback), runs
-        ``extract_social_features`` + ``derive_social_verdict`` for every
+        Reads ``state["temp:social_data"]`` (written by the fetch callback),
+        runs ``extract_social_features`` + ``derive_social_verdict`` for every
         ticker, and writes the resulting verdict dict to
         ``state["social_verdicts"]``.  The after-callback
         (``make_evidence_callback``) then converts those verdicts into
@@ -99,7 +100,10 @@ class SocialAnalyst(BaseAgent):
             direct ``state[k] = v`` write is performed.
         """
         state = ctx.session.state
-        social_data: dict[str, dict] = state.get("social_data") or {}
+        # ``temp:social_data`` is written by the fetch callback in the same
+        # invocation — the ``temp:`` prefix guarantees ADK strips it between
+        # ticks so stale sentiment data can never bleed across boundaries.
+        social_data: dict[str, dict] = state.get("temp:social_data") or {}
 
         # Historical clock: backtest sets state["as_of"]; live falls back to None
         # (the extractor ignores it for clock-free features).

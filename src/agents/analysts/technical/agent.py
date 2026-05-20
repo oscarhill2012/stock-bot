@@ -4,10 +4,10 @@
 run-loop is split cleanly across three hooks:
 
 1. ``technical_fetch_callback`` (``before_agent_callback``) — fetches OHLCV
-   price history for each ticker and writes ``state["technical_data"]``.
+   price history for each ticker and writes ``state["temp:technical_data"]``.
    Returns ``None`` so the agent body runs normally.
 
-2. ``_run_async_impl`` — reads ``state["technical_data"]``, runs
+2. ``_run_async_impl`` — reads ``state["temp:technical_data"]``, runs
    ``extract_technical_features`` + ``derive_technical_verdict``
    deterministically for every ticker, and yields an Event whose
    ``state_delta`` carries ``technical_verdicts``.
@@ -39,8 +39,8 @@ from .fetch import technical_fetch_callback
 class TechnicalAnalyst(BaseAgent):
     """Deterministic Technical analyst — no LLM calls; all verdicts from heuristics.
 
-    Reads ``state["technical_data"]`` (populated by the fetch callback), runs
-    ``extract_technical_features`` + ``derive_technical_verdict`` for each
+    Reads ``state["temp:technical_data"]`` (populated by the fetch callback),
+    runs ``extract_technical_features`` + ``derive_technical_verdict`` for each
     ticker, and yields an ``Event`` whose ``state_delta`` carries
     ``technical_verdicts``.  The registered ``after_agent_callback``
     (``make_evidence_callback``) then converts those verdicts into
@@ -84,7 +84,7 @@ class TechnicalAnalyst(BaseAgent):
     ) -> AsyncGenerator[Event, None]:
         """Compute per-ticker technical verdicts deterministically and write to state.
 
-        Reads ``state["technical_data"]`` (written by the fetch callback), runs
+        Reads ``state["temp:technical_data"]`` (written by the fetch callback), runs
         ``extract_technical_features`` + ``derive_technical_verdict`` for every
         ticker, and writes the resulting verdict dicts to
         ``state["technical_verdicts"]``.  The after-callback
@@ -101,7 +101,10 @@ class TechnicalAnalyst(BaseAgent):
         """
         state = ctx.session.state
         tickers: list[str] = state.get("tickers", []) or []
-        data: dict[str, dict] = state.get("technical_data", {}) or {}
+        # ``temp:technical_data`` is written by the fetch callback in the same
+        # invocation — the ``temp:`` prefix guarantees ADK strips it between
+        # ticks so stale data can never bleed across invocation boundaries.
+        data: dict[str, dict] = state.get("temp:technical_data", {}) or {}
 
         # Historical clock: backtest sets state["as_of"]; live falls back to None
         # (the extractor ignores it for clock-free features).

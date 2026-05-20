@@ -76,7 +76,8 @@ async def test_evidence_writer_persists_both_row_types(db_session):
         "fundamental_evidence": [_evidence("fundamental", "AAPL")],
         "news_evidence": [],
         "smart_money_evidence": [],
-        "ticker_evidence_objects": [_ticker_evidence("AAPL")],
+        # A2.6: EvidenceWriter reads from the temp:-prefixed key.
+        "temp:ticker_evidence_objects": [_ticker_evidence("AAPL")],
     }
     ctx = MagicMock()
     ctx.session.state = state

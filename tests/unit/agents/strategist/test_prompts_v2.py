@@ -5,11 +5,13 @@ from agents.strategist.prompts import STRATEGIST_INSTRUCTION
 
 
 def test_template_has_held_positions_slot():
-    assert "{held_positions_view}" in STRATEGIST_INSTRUCTION
+    # A2.6: prompt template uses temp:-prefixed placeholder.
+    assert "{temp:held_positions_view}" in STRATEGIST_INSTRUCTION
 
 
 def test_template_has_ticker_evidence_slot():
-    assert "{ticker_evidence}" in STRATEGIST_INSTRUCTION
+    # A2.6: prompt template uses temp:-prefixed placeholder.
+    assert "{temp:ticker_evidence}" in STRATEGIST_INSTRUCTION
 
 
 def test_template_has_state_slots():
@@ -77,21 +79,30 @@ def test_template_documents_lifecycle_hint_rules():
 
 
 def test_template_renders_with_all_required_slots():
-    """Smoke test — ``str.format`` raises ``KeyError`` if any slot is missing.
+    """Smoke test — the template must fill cleanly with all required slot values.
 
-    The ``.format(...)`` call itself is the primary guard: if a future edit
-    introduces an unfilled ``{slot}`` the test fails with a ``KeyError``
-    before the assertions ever run. The two ``assert`` lines below are a
-    lightweight sanity check that the rendered output is non-empty and
-    contains the values we passed in.
+    A2.6 renamed two placeholders to ``{temp:held_positions_view}`` and
+    ``{temp:ticker_evidence}``.  Python's ``str.format`` / ``str.format_map``
+    both interpret the colon as the field/format-spec separator, so neither
+    can fill ``temp:``-prefixed keys directly.
+
+    Workaround: use ``str.replace`` to substitute the two ``temp:``-prefixed
+    placeholders first (converting them to plain ``{held_positions_view}`` and
+    ``{ticker_evidence}`` stand-ins), then call ``.format()`` in the normal
+    way.  The guard contract is preserved: any *missing* slot still raises
+    ``KeyError`` before the assertions execute.
     """
-    rendered = STRATEGIST_INSTRUCTION.format(
+    # Pre-substitute the temp:-prefixed slots so .format() can handle them.
+    template = (
+        STRATEGIST_INSTRUCTION
+        .replace("{temp:held_positions_view}", "(No held positions — portfolio is flat.)")
+        .replace("{temp:ticker_evidence}",     "AAPL\n  Aggregate: bullish (magnitude 0.42)")
+    )
+    rendered = template.format(
         portfolio="cash=100, positions={}",
         memory_buffer="[]",
         day_digest="(empty)",
         thesis="(empty)",
-        held_positions_view="(No held positions — portfolio is flat.)",
-        ticker_evidence="AAPL\n  Aggregate: bullish (magnitude 0.42)",
         tickers="['AAPL','MSFT']",
     )
     assert "No held positions" in rendered

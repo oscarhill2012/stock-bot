@@ -1,7 +1,7 @@
 """Tier-1 tests: social_fetch_callback writes state['social_data'] and returns None.
 
 The callback's sole responsibility is fetching raw social data and storing it
-under ``state["social_data"]``.  Verdict derivation is handled by
+under ``state["temp:social_data"]``.  Verdict derivation is handled by
 ``SocialAnalyst._run_async_impl`` — the callback must NOT derive verdicts and
 must NOT return a skip-Content (doing so would prevent the after-callback from
 ever firing).
@@ -48,7 +48,7 @@ async def test_social_fetch_writes_state_dict(monkeypatch):
     result = await fetch_mod.social_fetch_callback(ctx)
 
     # social_data must be populated for the agent body to consume.
-    assert "AAPL" in ctx.state["social_data"]
+    assert "AAPL" in ctx.state["temp:social_data"]
 
     # Callback must NOT derive verdicts — that is _run_async_impl's job.
     assert "social_verdicts" not in ctx.state
@@ -101,7 +101,7 @@ async def test_social_fetch_writes_typed_snapshot_shape(monkeypatch):
     ctx.state = {"tickers": ["MSFT"]}
     await fetch_mod.social_fetch_callback(ctx)
 
-    data = ctx.state["social_data"]["MSFT"]
+    data = ctx.state["temp:social_data"]["MSFT"]
     # New shape: typed snapshot list.
     assert "snapshots" in data
     assert "aggregate_score" in data
@@ -130,7 +130,7 @@ async def test_social_fetch_empty_on_provider_failure(monkeypatch):
     result = await fetch_mod.social_fetch_callback(ctx)
 
     # Phase 7 shape: no-data path emits {"snapshots": [], "aggregate_score": None}.
-    goog_data = ctx.state["social_data"]["GOOG"]
+    goog_data = ctx.state["temp:social_data"]["GOOG"]
     assert goog_data.get("snapshots") == []
     assert goog_data.get("aggregate_score") is None
     assert result is None

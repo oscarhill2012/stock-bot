@@ -315,13 +315,11 @@ def test_end_to_end_run_produces_full_artefact_tree(
     tickers = ["AAPL"]
 
     def _patched_build_strategist():
-        """Build strategist with a mock before_model_callback."""
-        from google.adk.agents import LlmAgent
+        """Build strategist as SequentialAgent[ContextShim, mock LlmAgent]."""
+        from google.adk.agents import LlmAgent, SequentialAgent
 
-        from agents.strategist.agent import (
-            _composite_before_callback,
-            _strategist_validation_callback,
-        )
+        from agents.strategist.agent import _strategist_validation_callback
+        from agents.strategist.context_shim import StrategistContextShim
         from agents.strategist.prompts import STRATEGIST_INSTRUCTION
         from agents.strategist.schema import StrategistDecision
 
@@ -332,39 +330,48 @@ def test_end_to_end_run_produces_full_artefact_tree(
             )
             return _make_strategist_llm_response(current_tickers)
 
-        return LlmAgent(
+        llm = LlmAgent(
             name="Strategist",
             model="gemini-2.5-pro",
             instruction=STRATEGIST_INSTRUCTION,
             output_schema=StrategistDecision,
             output_key="strategist_decision",
-            before_agent_callback=_composite_before_callback,
             after_agent_callback=_strategist_validation_callback,
             before_model_callback=_mock_before,
         )
 
+        return SequentialAgent(
+            name="StrategistBranch",
+            sub_agents=[StrategistContextShim(), llm],
+        )
+
     def _patched_build_analyst_pool():
-        """Build analyst pool with LLM agents short-circuited."""
-        from google.adk.agents import LlmAgent, ParallelAgent
+        """Build analyst pool with LLM agents short-circuited.
+
+        Matches the A2.7 production topology:
+        ``SequentialAgent([ParallelAgent([Tech, Social]), Fund, News])``.
+        Fundamental and News are wrapped by ``YieldingAnalystWrapper`` — to
+        reach the inner ``LlmAgent`` whose ``before_model_callback`` must be
+        mocked, we attribute-hop through ``.inner``.
+        """
+        from google.adk.agents import ParallelAgent, SequentialAgent
 
         from agents.analysts.fundamental.agent import _build_fundamental_analyst
         from agents.analysts.heuristics import load_heuristics
         from agents.analysts.news.agent import _build_news_analyst
-        from agents.analysts.smart_money.agent import _build_smart_money_analyst
         from agents.analysts.social.agent import _build_social_analyst
         from agents.analysts.technical.agent import _build_technical_analyst
-        from contract.evidence import VerdictBatch
 
         h = load_heuristics()
 
         # Deterministic analysts are BaseAgent subclasses — no LLM involved.
-        technical  = _build_technical_analyst(h.technical)
-        social     = _build_social_analyst(h.social)
-        smart_money = _build_smart_money_analyst(h.smart_money)
+        technical = _build_technical_analyst(h.technical)
+        social    = _build_social_analyst(h.social)
 
-        # LLM analysts need their before_model_callback mocked.
-        fundamental = _build_fundamental_analyst(h.fundamental_vocabulary)
-        news        = _build_news_analyst(h.news_vocabulary)
+        # LLM analysts are wrapped in YieldingAnalystWrapper after A2.5 —
+        # reach into ``.inner`` to mock the inner LlmAgent's model call.
+        fundamental_branch = _build_fundamental_analyst(h.fundamental_vocabulary)
+        news_branch        = _build_news_analyst(h.news_vocabulary)
 
         def _mock_analyst_before(callback_context, llm_request):
             """Return a synthetic VerdictBatch without calling Gemini."""
@@ -373,19 +380,23 @@ def test_end_to_end_run_produces_full_artefact_tree(
             )
             return _make_analyst_llm_response(current_tickers)
 
-        # Overwrite the before_model_callback on each LLM analyst.
-        # ADK reads this attribute from the agent instance at call time.
-        fundamental.before_model_callback = _mock_analyst_before
-        news.before_model_callback        = _mock_analyst_before
+        # ADK reads ``before_model_callback`` from the LlmAgent instance at
+        # call time; setting it on the wrapper itself is meaningless because
+        # the wrapper isn't an LlmAgent.  Hop to the wrapped LlmAgent.
+        fundamental_branch.inner.before_model_callback = _mock_analyst_before
+        news_branch.inner.before_model_callback        = _mock_analyst_before
 
-        return ParallelAgent(
+        parallel_deterministic = ParallelAgent(
+            name="DeterministicAnalysts",
+            sub_agents=[technical, social],
+        )
+
+        return SequentialAgent(
             name="AnalystPool",
             sub_agents=[
-                technical,
-                fundamental,
-                news,
-                social,
-                smart_money,
+                parallel_deterministic,
+                fundamental_branch,
+                news_branch,
             ],
         )
 

@@ -72,7 +72,7 @@ async def test_run_async_impl_writes_social_verdicts():
     analyst = SocialAnalyst(heuristics=_make_heuristics())
     state = {
         "tickers": ["AAPL"],
-        "social_data": {"AAPL": _aapl_social_payload()},
+        "temp:social_data": {"AAPL": _aapl_social_payload()},
     }
     ctx = _make_ctx(state)
 
@@ -90,7 +90,7 @@ async def test_run_async_impl_verdict_has_ticker_key():
     """Each verdict dict in social_verdicts must have a 'ticker' key for make_evidence_callback."""
     analyst = SocialAnalyst(heuristics=_make_heuristics())
     state = {
-        "social_data": {
+        "temp:social_data": {
             "MSFT": {
                 "snapshots": [
                     {
@@ -126,7 +126,7 @@ async def test_run_async_impl_verdict_has_ticker_key():
 async def test_run_async_impl_empty_social_data():
     """Empty social_data produces an empty social_verdicts list — no crash."""
     analyst = SocialAnalyst(heuristics=_make_heuristics())
-    state = {"social_data": {}}
+    state = {"temp:social_data": {}}
     ctx = _make_ctx(state)
 
     # Drain the generator and merge the yielded state_delta into ``state``
@@ -142,7 +142,7 @@ async def test_run_async_impl_no_data_ticker():
     """A ticker with an empty payload yields a no-data verdict (is_no_data=True)."""
     analyst = SocialAnalyst(heuristics=_make_heuristics())
     state = {
-        "social_data": {
+        "temp:social_data": {
             # Phase 7 no-data shape from the updated fetch callback.
             "GOOG": {"snapshots": [], "aggregate_score": None},
         },
@@ -175,7 +175,7 @@ async def test_after_callback_fires_and_writes_evidence():
     state = {
         "tick_id": "test-tick-001",
         "tickers": ["AAPL"],
-        "social_data": {"AAPL": _aapl_social_payload()},
+        "temp:social_data": {"AAPL": _aapl_social_payload()},
     }
     ctx = _make_ctx(state)
 

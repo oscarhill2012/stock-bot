@@ -1,7 +1,7 @@
 """Unit tests for fundamental_fetch_callback — Phase 5 triad (ratios + filings + insider).
 
 The callback must fetch all three data domains for every watchlist ticker and
-write them into ``state["fundamental_data"][ticker]`` under the keys
+write them into ``state["temp:fundamental_data"][ticker]`` under the keys
 ``"ratios"``, ``"filings"``, and ``"insider"``.
 
 Phase 5 data-model split: ``get_stock_stats`` → ``get_company_ratios``; the
@@ -52,7 +52,7 @@ async def test_fundamental_fetch_pulls_three_domains(monkeypatch):
 
     assert result is None
 
-    fundata = ctx.state["fundamental_data"]["AAPL"]
+    fundata = ctx.state["temp:fundamental_data"]["AAPL"]
     assert "ratios" in fundata, "ratios key missing from fundamental_data payload"
     assert "filings" in fundata, "filings key missing from fundamental_data payload"
     assert "insider" in fundata, "insider key missing from fundamental_data payload"
@@ -82,7 +82,7 @@ async def test_fundamental_fetch_insider_is_form4bundle(monkeypatch):
     ctx = _make_ctx(["MSFT"])
     await fetch_mod.fundamental_fetch_callback(ctx)
 
-    insider_val = ctx.state["fundamental_data"]["MSFT"]["insider"]
+    insider_val = ctx.state["temp:fundamental_data"]["MSFT"]["insider"]
     assert isinstance(insider_val, Form4Bundle), (
         f"Expected Form4Bundle, got {type(insider_val)}"
     )
@@ -108,7 +108,7 @@ async def test_fundamental_fetch_partial_failure_does_not_break_other_domains(mo
     ctx = _make_ctx(["TSLA"])
     await fetch_mod.fundamental_fetch_callback(ctx)
 
-    fundata = ctx.state["fundamental_data"]["TSLA"]
+    fundata = ctx.state["temp:fundamental_data"]["TSLA"]
 
     # ratios failed — key should exist with a safe fallback (None)
     assert "ratios" in fundata
@@ -139,5 +139,5 @@ async def test_fundamental_fetch_multiple_tickers(monkeypatch):
     ctx = _make_ctx(["AAPL", "GOOG"])
     await fetch_mod.fundamental_fetch_callback(ctx)
 
-    assert "AAPL" in ctx.state["fundamental_data"]
-    assert "GOOG" in ctx.state["fundamental_data"]
+    assert "AAPL" in ctx.state["temp:fundamental_data"]
+    assert "GOOG" in ctx.state["temp:fundamental_data"]

@@ -124,7 +124,7 @@ def _make_news_callbacks(prompt_version: str = NEWS_PROMPT_VERSION):
     return make_report_cache_callbacks(
         analyst_name       = "news",
         prompt_version     = prompt_version,
-        data_state_key     = "news_data",
+        data_state_key     = "temp:news_data",
         verdicts_state_key = "news_verdicts",
         hash_inputs        = lambda d: news_hash_inputs((d or {}).get("news") or []),
         trace_label        = "03_news_llm",
@@ -146,7 +146,7 @@ def _news_initial_state() -> dict:
     ]
     return {
         "tickers":   ["AAPL"],
-        "news_data": {"AAPL": {"news": articles}},
+        "temp:news_data": {"AAPL": {"news": articles}},
     }
 
 
@@ -161,7 +161,7 @@ def _news_mutate(state: dict) -> None:
         source       = "src",
         ticker       = "AAPL",
     ).model_dump()
-    state["news_data"]["AAPL"]["news"].append(new_article)
+    state["temp:news_data"]["AAPL"]["news"].append(new_article)
 
 
 def _news_verdicts() -> list[dict]:
@@ -194,13 +194,13 @@ def _make_fundamental_callbacks(prompt_version: str = FUNDAMENTAL_PROMPT_VERSION
 
     The hash function reconstructs typed ``CompanyRatios``, ``list[Filing]``,
     and ``Form4Bundle`` objects from the dicts in
-    ``state["fundamental_data"][ticker]`` before computing the digest, so the
+    ``state["temp:fundamental_data"][ticker]`` before computing the digest, so the
     test fixtures store the model-dump dict shapes directly.
     """
     return make_report_cache_callbacks(
         analyst_name       = "fundamental",
         prompt_version     = prompt_version,
-        data_state_key     = "fundamental_data",
+        data_state_key     = "temp:fundamental_data",
         verdicts_state_key = "fundamental_verdicts",
         hash_inputs        = lambda d: _fundamental_hash_inputs_from_dict(
             ticker = ((d or {}).get("ratios") or {}).get("ticker", ""),
@@ -237,7 +237,7 @@ def _fundamental_initial_state() -> dict:
 
     return {
         "tickers": ["AAPL"],
-        "fundamental_data": {
+        "temp:fundamental_data": {
             "AAPL": {
                 "ratios":  {"ticker": "AAPL", "trailing_pe": 28.5},
                 "filings": [_minimal_filing("0000320193-26-000010")],
@@ -250,7 +250,7 @@ def _fundamental_initial_state() -> dict:
 def _fundamental_mutate(state: dict) -> None:
     """Append a new filing with a fresh accession number to bust the hash."""
 
-    state["fundamental_data"]["AAPL"]["filings"].append(
+    state["temp:fundamental_data"]["AAPL"]["filings"].append(
         _minimal_filing("0000320193-26-000099")
     )
 

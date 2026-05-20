@@ -30,6 +30,7 @@ import os
 
 from google.adk.agents import LlmAgent
 
+from agents.analysts._base_yield import YieldingAnalystWrapper
 from agents.analysts._common import (
     _chain_after,
     _chain_before,
@@ -67,7 +68,7 @@ def _fundamental_hash_inputs_from_dict(ticker: str, triad: dict) -> str:
     ticker:
         Ticker symbol — used as the ``CompanyRatios`` fallback dict key.
     triad:
-        Per-ticker slice from ``state["fundamental_data"]``.
+        Per-ticker slice from ``state["temp:fundamental_data"]``.
 
     Returns
     -------
@@ -91,7 +92,7 @@ def _fundamental_hash_inputs_from_dict(ticker: str, triad: dict) -> str:
 # Agent factory
 # ---------------------------------------------------------------------------
 
-def _build_fundamental_analyst(vocab: FundamentalVocabulary) -> LlmAgent:
+def _build_fundamental_analyst(vocab: FundamentalVocabulary) -> YieldingAnalystWrapper:
     """Construct a fresh ``FundamentalAnalyst`` LlmAgent with closed-vocab prompt + cache.
 
     Renders the instruction by substituting the four closed-vocabulary lists
@@ -121,9 +122,10 @@ def _build_fundamental_analyst(vocab: FundamentalVocabulary) -> LlmAgent:
 
     Returns
     -------
-    LlmAgent
-        A fully-wired ``FundamentalAnalyst`` ready to be added to the
-        ``AnalystPool`` ``ParallelAgent``.
+    YieldingAnalystWrapper
+        A fully-wired ``FundamentalAnalystBranch`` ready to be added to the
+        ``AnalystPool`` ``ParallelAgent``.  The inner ``LlmAgent`` is
+        accessible via ``.inner`` for tests that need to inspect it directly.
     """
     instruction = build_fundamental_instruction(vocab)
     model = "gemini-2.5-flash-lite"
@@ -143,7 +145,7 @@ def _build_fundamental_analyst(vocab: FundamentalVocabulary) -> LlmAgent:
     cache_before, cache_after = make_report_cache_callbacks(
         analyst_name       = "fundamental",
         prompt_version     = FUNDAMENTAL_PROMPT_VERSION,
-        data_state_key     = "fundamental_data",
+        data_state_key     = "temp:fundamental_data",
         verdicts_state_key = "fundamental_verdicts",
         hash_inputs        = lambda d: _fundamental_hash_inputs_from_dict(
             ticker=((d or {}).get("ratios") or {}).get("ticker", ""),
@@ -156,7 +158,11 @@ def _build_fundamental_analyst(vocab: FundamentalVocabulary) -> LlmAgent:
     before_cb = _chain_before(cache_before, trace_before)
     after_cb  = _chain_after(cache_after, trace_after)
 
-    return LlmAgent(
+    # Build the inner LlmAgent — all callbacks and config are unchanged from
+    # the pre-A2.5 version.  The outer YieldingAnalystWrapper republishes the
+    # after_agent_callback's evidence write as a ``state_delta`` yield so the
+    # write is durable on persistent ADK session backends (Rule 1 compliance).
+    llm = LlmAgent(
         name="FundamentalAnalyst",
         model=model,
         instruction=instruction,
@@ -170,6 +176,11 @@ def _build_fundamental_analyst(vocab: FundamentalVocabulary) -> LlmAgent:
         ),
         before_model_callback=before_cb,
         after_model_callback=after_cb,
+    )
+    return YieldingAnalystWrapper(
+        name="FundamentalAnalystBranch",
+        inner=llm,
+        evidence_state_key="fundamental_evidence",
     )
 
 

@@ -43,9 +43,10 @@ async def test_technical_fetch_writes_state():
         result = await technical_fetch_callback(ctx)
 
     assert result is None
-    assert "AAPL" in ctx.state["technical_data"]
+    # A2.6: fetch callback writes under the temp:-prefixed key.
+    assert "AAPL" in ctx.state["temp:technical_data"]
 
-    aapl_data = ctx.state["technical_data"]["AAPL"]
+    aapl_data = ctx.state["temp:technical_data"]["AAPL"]
 
     # Both sub-keys must be present.
     assert "price_history" in aapl_data
@@ -86,7 +87,8 @@ async def test_fundamental_fetch_writes_state():
         result = await fundamental_fetch_callback(ctx)
 
     assert result is None
-    payload = ctx.state["fundamental_data"]["AAPL"]
+    # A2.6: fetch callback writes under the temp:-prefixed key.
+    payload = ctx.state["temp:fundamental_data"]["AAPL"]
 
     # New triad structure: ratios (not stats), filings, insider.
     assert "ratios" in payload
@@ -113,6 +115,7 @@ async def test_news_fetch_writes_state():
         result = await news_fetch_callback(ctx)
 
     assert result is None
-    assert "AAPL" in ctx.state["news_data"]
+    # A2.6: fetch callback writes under the temp:-prefixed key.
+    assert "AAPL" in ctx.state["temp:news_data"]
     # Social sentinel no longer present in the news payload.
-    assert "social" not in ctx.state["news_data"]["AAPL"]
+    assert "social" not in ctx.state["temp:news_data"]["AAPL"]

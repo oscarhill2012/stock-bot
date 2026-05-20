@@ -258,7 +258,7 @@ def news_hash_inputs(articles: list[NewsArticle]) -> str:
 
     Accepts both ``NewsArticle`` instances (attribute access) and plain dicts
     (key access) so it works whether the caller passes typed objects or the
-    ``model_dump()`` dicts stored in ``state["news_data"]``.
+    ``model_dump()`` dicts stored in ``state["temp:news_data"]``.
 
     Parameters
     ----------

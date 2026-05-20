@@ -7,11 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from agents.risk_gate.lifecycle import StrategistContractViolation
-from agents.strategist.agent import (
-    _evidence_view_before_callback,
-    _held_view_before_callback,
-    _strategist_validation_callback,
-)
+from agents.strategist.agent import _strategist_validation_callback
 from agents.strategist.schema import PositionThesis, StrategistDecision
 from agents.strategist.stance_schema import TickerStance
 from broker.portfolio import Portfolio, Position
@@ -49,62 +45,6 @@ def _ev(analyst: str, lean: str = "neutral", conf: float = 0.0,
             rationale="x", key_factors=[],
         ),
     )
-
-
-# ── before callback: held view ────────────────────────────────────────────────
-
-
-def test_before_callback_renders_no_holdings_message():
-    state = _State(positions={}, portfolio=_portfolio().model_dump(mode="json"))
-    _held_view_before_callback(_Ctx(state))
-    assert "No held positions" in state["held_positions_view"]
-
-
-def test_before_callback_renders_full_view_with_holdings():
-    thesis = PositionThesis(
-        ticker="AAPL",
-        opened_at=datetime(2026, 4, 22, 14, tzinfo=UTC),
-        opened_price=192.40,
-        opened_tag="open_aapl",
-        rationale="x",
-        horizon="swing",
-        target_price=210.0,
-        stop_price=185.0,
-        last_reviewed_at=datetime(2026, 4, 22, 14, tzinfo=UTC),
-    )
-    state = _State(
-        positions={"AAPL": thesis.model_dump(mode="json")},
-        portfolio=_portfolio({"AAPL": (10.0, 192.40, 198.50)}).model_dump(mode="json"),
-    )
-    _held_view_before_callback(_Ctx(state))
-    assert "AAPL" in state["held_positions_view"]
-    assert "192.40" in state["held_positions_view"]
-
-
-# ── before callback: ticker_evidence rendering ───────────────────────────────
-
-
-def test_evidence_view_callback_builds_ticker_evidence_from_per_analyst_state():
-    """The pipeline writes per-analyst evidence to state[{analyst}_evidence];
-    the callback assembles them into a TickerEvidence per ticker and renders."""
-    state = _State(
-        tickers=["AAPL"],
-        tick_id="t",
-        recorded_at="2026-05-08T14:00:00Z",
-        technical_evidence=[_ev("technical", "bullish", 0.6).model_dump(mode="json")],
-        fundamental_evidence=[_ev("fundamental", "bullish", 0.5).model_dump(mode="json")],
-        # Task 6: state key renamed from "sentiment_evidence" to "news_evidence".
-        news_evidence=[_ev("news", "neutral", 0.3).model_dump(mode="json")],
-        smart_money_evidence=[_ev("smart_money", "neutral", 0.0).model_dump(mode="json")],
-    )
-    _evidence_view_before_callback(_Ctx(state))
-    rendered = state["ticker_evidence"]
-    assert isinstance(rendered, str)
-    assert "AAPL" in rendered
-    # New renderer (Task 5) produces per-analyst blocks instead of an Aggregate header.
-    # Assert the section header and at least one analyst header are present.
-    assert "=== AAPL ===" in rendered
-    assert "[Technical]" in rendered or "[Fundamental]" in rendered or "[News]" in rendered
 
 
 # ── after callback: missing tickers ───────────────────────────────────────────

@@ -10,7 +10,7 @@ Two public entry points:
   for table-driven unit tests (no I/O, no globals).
 
 Input for the extractor: the dict that lives under
-``state["technical_data"][ticker]``.  Accepted shapes:
+``state["temp:technical_data"][ticker]``.  Accepted shapes:
 
 - Phase 7 (canonical): ``{"bars": [...], "ratios": dict}``
 - Phase 5 legacy: ``{"price_history": {"bars": [...]}}`` or ``{"price_history": [...]}``

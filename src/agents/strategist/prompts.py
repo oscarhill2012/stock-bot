@@ -40,10 +40,10 @@ Day Digest:   {day_digest}
 Thesis:       {thesis}
 
 ## Held Positions (your prior decisions)
-{held_positions_view}
+{temp:held_positions_view}
 
 ## Ticker Evidence (per-analyst breakdown — features, tags, and prose reports)
-{ticker_evidence}
+{temp:ticker_evidence}
 
 ## Reading analyst reports
 Where an analyst's report contradicts its lean, the lean is the analyst's

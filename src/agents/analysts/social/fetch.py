@@ -30,7 +30,7 @@ async def social_fetch_callback(
 
     Reads ``state["tickers"]``.  For each ticker, fetches the Finnhub
     Reddit + Twitter aggregates and stores the raw per-platform dicts in
-    ``state["social_data"]`` under the ticker symbol.
+    ``state["temp:social_data"]`` under the ticker symbol.
 
     Returns ``None`` so ADK continues into ``SocialAnalyst._run_async_impl``
     which handles verdict derivation.
@@ -72,7 +72,9 @@ async def social_fetch_callback(
         else:
             social_data[ticker] = {"snapshots": [], "aggregate_score": None}
 
-    state["social_data"] = social_data
+    # Prefixed ``temp:`` — consumed within the same invocation by
+    # ``SocialAnalyst._run_async_impl``; must not survive to the next tick.
+    state["temp:social_data"] = social_data
 
     # Surface trace — no-op unless state["_trace"] is set by trace_tick.py.
     _trace_maybe(state, "01_fetch_social", social_data)
