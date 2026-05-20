@@ -136,6 +136,7 @@ def _build_news_analyst(vocab: NewsVocabulary) -> YieldingAnalystWrapper:
         name="NewsAnalystBranch",
         inner=llm,
         evidence_state_key="news_evidence",
+        trace_key="02_news_verdict",
     )
 
 

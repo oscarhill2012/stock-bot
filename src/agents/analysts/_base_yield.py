@@ -33,6 +33,8 @@ from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event, EventActions
 
+from observability.trace import _trace_maybe
+
 
 class YieldingAnalystWrapper(BaseAgent):
     """Proxy an inner agent and republish its evidence write as a ``state_delta``.
@@ -54,6 +56,7 @@ class YieldingAnalystWrapper(BaseAgent):
     # ``heuristics`` field.
     inner: Any
     evidence_state_key: str
+    trace_key: str | None = None
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -63,6 +66,7 @@ class YieldingAnalystWrapper(BaseAgent):
         name: str,
         inner: Any,
         evidence_state_key: str,
+        trace_key: str | None = None,
     ) -> None:
         """Initialise the wrapper.
 
@@ -80,6 +84,7 @@ class YieldingAnalystWrapper(BaseAgent):
             name=name,
             inner=inner,
             evidence_state_key=evidence_state_key,
+            trace_key=trace_key,
         )
 
     async def _run_async_impl(
@@ -111,3 +116,23 @@ class YieldingAnalystWrapper(BaseAgent):
                     self.evidence_state_key: evidence_payload,
                 }),
             )
+
+            # Surface a per-tick verdict trace.  The other analyst BaseAgents
+            # (technical/social/smart_money) call ``_trace_maybe`` themselves;
+            # the wrapped LlmAgents (fundamental/news) never did, leaving a
+            # gap in the trace file (no ``02_fundamental_verdict`` /
+            # ``02_news_verdict`` sections).  This bridges that gap.
+            #
+            # ``evidence_payload`` is a list of ``AnalystEvidence`` dumps —
+            # we trace each row's verdict + identifying fields so the trace
+            # shape matches the other analysts' verdict traces.
+            if self.trace_key:
+                verdicts = []
+                for row in evidence_payload:
+                    if not isinstance(row, dict):
+                        continue
+                    verdict = dict(row.get("verdict") or {})
+                    verdict.setdefault("ticker", row.get("ticker"))
+                    verdict.setdefault("is_no_data", row.get("is_no_data", False))
+                    verdicts.append(verdict)
+                _trace_maybe(ctx.session.state, self.trace_key, verdicts)

@@ -181,6 +181,7 @@ def _build_fundamental_analyst(vocab: FundamentalVocabulary) -> YieldingAnalystW
         name="FundamentalAnalystBranch",
         inner=llm,
         evidence_state_key="fundamental_evidence",
+        trace_key="02_fundamental_verdict",
     )
 
 
