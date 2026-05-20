@@ -180,7 +180,8 @@ def test_evidence_writer_uses_as_of(db_session) -> None:
         "tick_id": "tick_ev",
         "as_of": _HISTORICAL_TS,
         "technical_evidence": [tech_ev],
-        "ticker_evidence_objects": [ticker_ev_obj],
+        # A2.6: EvidenceWriter reads from the temp:-prefixed key.
+        "temp:ticker_evidence_objects": [ticker_ev_obj],
     }
 
     writer = EvidenceWriter(db_session=db_session)

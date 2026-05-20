@@ -55,7 +55,8 @@ async def test_social_yields_state_delta_with_verdicts() -> None:
 
     # Empty payload — the agent emits an empty verdict list, but the
     # yielded Event must still appear (Rule 1 is shape-not-size).
-    state: dict = {"social_data": {}}
+    # A2.6: the fetch callback writes under the temp:-prefixed key; seed it here.
+    state: dict = {"temp:social_data": {}}
     ctx = _make_ctx(state)
 
     events: list = []

@@ -2,7 +2,7 @@
 
 ``EvidenceWriter`` is a lightweight ADK ``BaseAgent`` that reads five
 ``{analyst}_evidence`` keys (technical, fundamental, news, smart_money,
-social) and ``ticker_evidence_objects`` from session state, then calls the
+social) and ``temp:ticker_evidence_objects`` from session state, then calls the
 savers in ``orchestrator.persistence`` to write one ``AnalystEvidenceRow``
 per evidence item and one ``TickerEvidenceRow`` per ticker.  It yields no
 events — it is a pure side-effectful write step wired into the orchestrator
@@ -36,7 +36,7 @@ class EvidenceWriter(BaseAgent):
     """ADK agent that persists per-analyst and per-ticker evidence to the database.
 
     Reads ``state["{analyst}_evidence"]`` lists and
-    ``state["ticker_evidence_objects"]`` from the invocation context, then
+    ``state["temp:ticker_evidence_objects"]`` from the invocation context, then
     writes one ``AnalystEvidenceRow`` per evidence item and one
     ``TickerEvidenceRow`` per ticker via ``save_analyst_evidence`` and
     ``save_ticker_evidence``.
@@ -103,7 +103,10 @@ class EvidenceWriter(BaseAgent):
                 )
 
         # Persist one TickerEvidenceRow per ticker's aggregated cross-analyst stance.
-        for te in state.get("ticker_evidence_objects", []) or []:
+        # Key carries the ``temp:`` prefix — written by StrategistContextShim (A2.1)
+        # or the legacy strategist callbacks and stripped by ADK at the invocation
+        # boundary so it never leaks into the next tick.
+        for te in state.get("temp:ticker_evidence_objects", []) or []:
             # Same dict-vs-Pydantic duality as above.
             te_dict = te if isinstance(te, dict) else te.model_dump()
 

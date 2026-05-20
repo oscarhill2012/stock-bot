@@ -44,7 +44,7 @@ def test_writes_only_evidence_state_key():
     state = {
         "tick_id": "2026-05-08T14:00:00Z",
         "tickers": ["AAPL"],
-        "technical_data": {"AAPL": {"close": [100.0] * 30, "volume": [1.0e6] * 30}},
+        "temp:technical_data": {"AAPL": {"close": [100.0] * 30, "volume": [1.0e6] * 30}},
         "technical_verdicts": [
             {
                 "ticker": "AAPL",
@@ -85,7 +85,7 @@ def test_missing_verdict_synthesises_no_data_evidence():
     state = {
         "tick_id": "2026-05-08T14:00:00Z",
         "tickers": ["AAPL", "MSFT"],
-        "technical_data": {"AAPL": {}, "MSFT": {}},
+        "temp:technical_data": {"AAPL": {}, "MSFT": {}},
         "technical_verdicts": [
             {
                 "ticker": "AAPL",
@@ -130,7 +130,7 @@ def test_extractor_called_with_per_ticker_slice():
     state = {
         "tick_id": "t",
         "tickers": ["AAPL", "MSFT"],
-        "technical_data": {"AAPL": {"price": 100}, "MSFT": {"price": 200}},
+        "temp:technical_data": {"AAPL": {"price": 100}, "MSFT": {"price": 200}},
         "technical_verdicts": [
             {"ticker": "AAPL", "lean": "neutral", "magnitude": 0.0,
              "confidence": 0.0, "rationale": "x", "key_factors": [], "is_no_data": False},
@@ -159,7 +159,7 @@ def test_verdict_fields_round_trip():
     state = {
         "tick_id": "tick-abc",
         "tickers": ["AAPL"],
-        "technical_data": {"AAPL": {}},
+        "temp:technical_data": {"AAPL": {}},
         "technical_verdicts": [
             {
                 "ticker": "AAPL",
@@ -201,7 +201,7 @@ def test_empty_tickers_produces_empty_evidence():
     state = {
         "tick_id": "t",
         "tickers": [],
-        "technical_data": {},
+        "temp:technical_data": {},
         "technical_verdicts": [],
     }
     cb = make_evidence_callback(
@@ -227,7 +227,7 @@ def test_malformed_verdict_raises_validation_error():
     state = {
         "tick_id": "2026-05-08T14:00:00Z",
         "tickers": ["AAPL"],
-        "technical_data": {"AAPL": {}},
+        "temp:technical_data": {"AAPL": {}},
         "technical_verdicts": [
             {
                 "ticker": "AAPL",

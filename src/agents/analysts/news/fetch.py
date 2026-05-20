@@ -9,7 +9,7 @@ Phase 5 (Task 11) adds a second state write: ``state["news_context"]``, a
 human-readable multi-ticker text block that the News LLM instruction template
 references as the ``{news_context}`` ADK runtime placeholder.  This mirrors
 the ``fundamental_context`` pattern introduced in Task 10 — keeping the
-machine-readable raw dict (``news_data``) separate from the LLM-readable
+machine-readable raw dict (``temp:news_data``) separate from the LLM-readable
 formatted text (``news_context``) so the prompt stays compact.
 """
 from __future__ import annotations
@@ -107,7 +107,7 @@ async def news_fetch_callback(
     Reads ``state["tickers"]`` and calls the news provider for each ticker.
     Writes two state keys:
 
-    - ``state["news_data"]`` — machine-readable dict keyed by ticker, each
+    - ``state["temp:news_data"]`` — machine-readable dict keyed by ticker, each
       value containing a ``"news"`` list of serialised ``NewsArticle`` dicts.
       Consumed by the feature extractor after-callback.
     - ``state["news_context"]`` — human-readable multi-ticker text block that
@@ -151,7 +151,9 @@ async def news_fetch_callback(
         # Build the LLM-readable context block for this ticker and accumulate.
         context_blocks.append(_build_ticker_news_context(ticker, serialised))
 
-    state["news_data"] = news_data
+    # Prefixed ``temp:`` — consumed within the same invocation by the News
+    # analyst's LLM call and evidence callback; must not survive to the next tick.
+    state["temp:news_data"] = news_data
 
     # Join all per-ticker blocks into one string for the {news_context} ADK
     # instruction placeholder — mirrors the fundamental_context pattern.

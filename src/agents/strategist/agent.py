@@ -46,12 +46,13 @@ def _coerce_portfolio(value: Portfolio | dict | None) -> Portfolio:
 
 
 def _held_view_before_callback(callback_context: CallbackContext) -> genai_types.Content | None:
-    """Render the held-positions block into ``state["held_positions_view"]``.
+    """Render the held-positions block into ``state["temp:held_positions_view"]``.
 
     Reads ``state["positions"]`` (dict of ticker → PositionThesis dump) and
     ``state["portfolio"]`` (Portfolio dump or object), then writes a formatted
-    string to ``state["held_positions_view"]`` for the prompt template to
-    interpolate.
+    string to ``state["temp:held_positions_view"]`` for the prompt template to
+    interpolate (A2.6: ``temp:`` prefix so ADK strips it at the invocation
+    boundary).
 
     Args:
         callback_context: ADK callback context carrying the mutable pipeline state.
@@ -62,7 +63,9 @@ def _held_view_before_callback(callback_context: CallbackContext) -> genai_types
     state = callback_context.state
     positions = state.get("positions", {}) or {}
     portfolio = _coerce_portfolio(state.get("portfolio"))
-    state["held_positions_view"] = render_held_positions_view(positions, portfolio)
+    # ``temp:`` prefix — ADK strips this at the invocation boundary; the
+    # prompt template references ``{temp:held_positions_view}`` (A2.6).
+    state["temp:held_positions_view"] = render_held_positions_view(positions, portfolio)
     return None
 
 
@@ -75,9 +78,10 @@ def _evidence_view_before_callback(
     ``technical_evidence``, ``fundamental_evidence``, etc. This callback:
     1. Indexes each list by ticker.
     2. Calls ``build_ticker_evidence`` to aggregate them into a ``TickerEvidence`` per ticker.
-    3. Writes the rendered string to ``state["ticker_evidence"]`` for the prompt template.
-    4. Also writes the raw JSON-serialised objects to ``state["ticker_evidence_objects"]``
-       for any downstream code that needs the structured data.
+    3. Writes the rendered string to ``state["temp:ticker_evidence"]`` for the prompt template.
+    4. Also writes the raw JSON-serialised objects to ``state["temp:ticker_evidence_objects"]``
+       for any downstream code that needs the structured data (A2.6: ``temp:``
+       prefix so ADK strips both keys at the invocation boundary).
 
     Args:
         callback_context: ADK callback context carrying the mutable pipeline state.
@@ -168,11 +172,14 @@ def _evidence_view_before_callback(
     # The renderer (render_all_ticker_blocks) uses the feature-bullet registries in
     # contract.strategist_prompt to produce labelled, human-readable per-ticker blocks
     # that include feature values, rationale tags, and any prose AnalystReport.
-    state["ticker_evidence_objects"] = [te.model_dump(mode="json") for te in ticker_evidence]
-    state["ticker_evidence"] = render_all_ticker_blocks(ticker_evidence)
+    # ``temp:`` prefix — ADK strips these at the invocation boundary (A2.6).
+    # The prompt template references ``{temp:ticker_evidence}``, and
+    # ``EvidenceWriter`` reads ``temp:ticker_evidence_objects`` downstream.
+    state["temp:ticker_evidence_objects"] = [te.model_dump(mode="json") for te in ticker_evidence]
+    state["temp:ticker_evidence"] = render_all_ticker_blocks(ticker_evidence)
 
     # Surface trace — no-op unless state["_trace"] is set by trace_tick.py.
-    _trace_maybe(state, "04_digest", state["ticker_evidence_objects"])
+    _trace_maybe(state, "04_digest", state["temp:ticker_evidence_objects"])
 
     return None
 

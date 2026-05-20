@@ -1,7 +1,7 @@
 """Technical analyst data fetch callback.
 
 Fetches the OHLCV price history *and* scalar company ratios for every
-watchlist ticker. Writes ``state["technical_data"][ticker]`` with two sub-keys:
+watchlist ticker. Writes ``state["temp:technical_data"][ticker]`` with two sub-keys:
 
 - ``price_history`` — dict from ``PriceHistory.model_dump()``; the extractor
   reads bars from here.
@@ -37,7 +37,7 @@ async def technical_fetch_callback(
     independent provider calls. Partial failures are tolerated — each domain
     catches its own exception, logs a warning, and falls back to ``None``.
 
-    Writes ``state["technical_data"]`` as a dict keyed by ticker, each value
+    Writes ``state["temp:technical_data"]`` as a dict keyed by ticker, each value
     being a dict with ``"price_history"`` and ``"ratios"`` sub-keys.
 
     Parameters
@@ -84,7 +84,10 @@ async def technical_fetch_callback(
             "ratios":        cr_payload,
         }
 
-    state["technical_data"] = technical_data
+    # Prefixed ``temp:`` so ADK strips it at the invocation boundary — this
+    # dict never needs to survive to the next tick; the analyst reads it back
+    # within the same invocation via ``_run_async_impl``.
+    state["temp:technical_data"] = technical_data
 
     # Surface trace — no-op unless state["_trace"] is set by trace_tick.py.
     _trace_maybe(state, "01_fetch_technical", technical_data)

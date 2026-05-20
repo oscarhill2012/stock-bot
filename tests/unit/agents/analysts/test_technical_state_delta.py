@@ -56,7 +56,9 @@ async def test_technical_yields_state_delta_with_verdicts() -> None:
     # Empty ``technical_data`` is enough — the analyst still iterates the
     # ticker list and emits an empty list of verdicts.  Rule 1 fires
     # regardless of payload size.
-    state: dict = {"tickers": ["AAPL"], "technical_data": {}}
+    # A2.6: the fetch callback writes under the temp:-prefixed key; seed it here
+    # so _run_async_impl finds an empty-but-present dict to iterate over.
+    state: dict = {"tickers": ["AAPL"], "temp:technical_data": {}}
     ctx = _make_ctx(state)
 
     events: list = []

@@ -68,7 +68,7 @@ def _fundamental_hash_inputs_from_dict(ticker: str, triad: dict) -> str:
     ticker:
         Ticker symbol — used as the ``CompanyRatios`` fallback dict key.
     triad:
-        Per-ticker slice from ``state["fundamental_data"]``.
+        Per-ticker slice from ``state["temp:fundamental_data"]``.
 
     Returns
     -------
@@ -145,7 +145,7 @@ def _build_fundamental_analyst(vocab: FundamentalVocabulary) -> YieldingAnalystW
     cache_before, cache_after = make_report_cache_callbacks(
         analyst_name       = "fundamental",
         prompt_version     = FUNDAMENTAL_PROMPT_VERSION,
-        data_state_key     = "fundamental_data",
+        data_state_key     = "temp:fundamental_data",
         verdicts_state_key = "fundamental_verdicts",
         hash_inputs        = lambda d: _fundamental_hash_inputs_from_dict(
             ticker=((d or {}).get("ratios") or {}).get("ticker", ""),

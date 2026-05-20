@@ -57,7 +57,8 @@ def _ev(analyst: str, lean: str = "neutral", conf: float = 0.0,
 def test_before_callback_renders_no_holdings_message():
     state = _State(positions={}, portfolio=_portfolio().model_dump(mode="json"))
     _held_view_before_callback(_Ctx(state))
-    assert "No held positions" in state["held_positions_view"]
+    # A2.6: held_positions_view now lives under the temp:-prefixed key.
+    assert "No held positions" in state["temp:held_positions_view"]
 
 
 def test_before_callback_renders_full_view_with_holdings():
@@ -77,8 +78,9 @@ def test_before_callback_renders_full_view_with_holdings():
         portfolio=_portfolio({"AAPL": (10.0, 192.40, 198.50)}).model_dump(mode="json"),
     )
     _held_view_before_callback(_Ctx(state))
-    assert "AAPL" in state["held_positions_view"]
-    assert "192.40" in state["held_positions_view"]
+    # A2.6: held_positions_view now lives under the temp:-prefixed key.
+    assert "AAPL" in state["temp:held_positions_view"]
+    assert "192.40" in state["temp:held_positions_view"]
 
 
 # ── before callback: ticker_evidence rendering ───────────────────────────────
@@ -98,7 +100,8 @@ def test_evidence_view_callback_builds_ticker_evidence_from_per_analyst_state():
         smart_money_evidence=[_ev("smart_money", "neutral", 0.0).model_dump(mode="json")],
     )
     _evidence_view_before_callback(_Ctx(state))
-    rendered = state["ticker_evidence"]
+    # A2.6: ticker_evidence now lives under the temp:-prefixed key.
+    rendered = state["temp:ticker_evidence"]
     assert isinstance(rendered, str)
     assert "AAPL" in rendered
     # New renderer (Task 5) produces per-analyst blocks instead of an Aggregate header.

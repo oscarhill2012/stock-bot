@@ -13,7 +13,7 @@ Each domain is fetched independently.  A failure in one domain is logged and
 falls back to a safe empty value so that the other two domains are still
 available to the downstream extractor and LLM.
 
-The resulting ``state["fundamental_data"]`` layout per ticker is::
+The resulting ``state["temp:fundamental_data"]`` layout per ticker is::
 
     {
         "ratios":  <dict from CompanyRatios.model_dump() | None on failure>,
@@ -21,7 +21,7 @@ The resulting ``state["fundamental_data"]`` layout per ticker is::
         "insider": <Form4Bundle instance>,
     }
 
-In addition to ``state["fundamental_data"]``, the callback writes
+In addition to ``state["temp:fundamental_data"]``, the callback writes
 ``state["fundamental_context"]`` — a human-readable multi-ticker text block
 that the Fundamental LLM instruction template references as the runtime
 ``{fundamental_context}`` placeholder.  This block contains:
@@ -217,7 +217,7 @@ async def fundamental_fetch_callback(
 
     Writes two state keys:
 
-    - ``state["fundamental_data"]`` — machine-readable triad dict consumed by
+    - ``state["temp:fundamental_data"]`` — machine-readable triad dict consumed by
       the feature extractor and the after-callback.
     - ``state["fundamental_context"]`` — human-readable multi-ticker text block
       that ADK's instruction template fills into the LLM prompt via the
@@ -318,7 +318,10 @@ async def fundamental_fetch_callback(
             )
         )
 
-    state["fundamental_data"] = fundamental_data
+    # Prefixed ``temp:`` — consumed within the same invocation by the
+    # Fundamental analyst's LLM call and evidence callback; must not survive
+    # to the next tick.
+    state["temp:fundamental_data"] = fundamental_data
 
     # Join all per-ticker blocks into one string for the {fundamental_context}
     # ADK instruction placeholder.

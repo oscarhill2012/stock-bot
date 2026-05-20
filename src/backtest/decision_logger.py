@@ -215,15 +215,19 @@ class DecisionLogger:
             # Raw per-domain data fed to analysts — pulled from session state.
             # Fields are null when the analyst domain did not run (e.g. social
             # is disabled in backtest mode).
+            # A2.6: raw analyst-input dicts now live under ``temp:``-prefixed
+            # keys so ADK strips them at the invocation boundary.  The logger
+            # reads the same invocation's state, so the prefixed keys are still
+            # reachable here (they haven't been stripped yet).
             "analyst_inputs": {
-                "technical": state.get("technical_data", {}).get(ticker) if state.get("technical_data") else None,
-                "fundamental": state.get("fundamental_data", {}).get(ticker) if state.get("fundamental_data") else None,
-                "news": state.get("news_data", {}).get(ticker) if state.get("news_data") else None,
+                "technical": state.get("temp:technical_data", {}).get(ticker) if state.get("temp:technical_data") else None,
+                "fundamental": state.get("temp:fundamental_data", {}).get(ticker) if state.get("temp:fundamental_data") else None,
+                "news": state.get("temp:news_data", {}).get(ticker) if state.get("temp:news_data") else None,
                 # smart_money_data values are SmartMoneyRaw model instances
                 # (Phase 7.6) — coerce to dict so JSON dump gets structured
                 # fields rather than the model repr.
                 "smart_money": _coerce(state.get("smart_money_data", {}).get(ticker)) if state.get("smart_money_data") else None,
-                "social": state.get("social_data", {}).get(ticker) if state.get("social_data") else None,
+                "social": state.get("temp:social_data", {}).get(ticker) if state.get("temp:social_data") else None,
             },
 
             # Per-analyst verdict + rationale emitted into evidence_view.

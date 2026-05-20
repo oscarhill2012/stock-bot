@@ -103,7 +103,7 @@ def _build_news_analyst(vocab: NewsVocabulary) -> YieldingAnalystWrapper:
     cache_before, cache_after = make_report_cache_callbacks(
         analyst_name       = "news",
         prompt_version     = NEWS_PROMPT_VERSION,
-        data_state_key     = "news_data",
+        data_state_key     = "temp:news_data",
         verdicts_state_key = "news_verdicts",
         hash_inputs        = lambda d: news_hash_inputs((d or {}).get("news") or []),
         trace_label        = "03_news_llm",

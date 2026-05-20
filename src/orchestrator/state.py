@@ -61,6 +61,11 @@ class TickState(BaseModel):
     tickers: list[str] = Field(default_factory=list)
 
     # Written by analyst before_callbacks (raw data fetched from providers).
+    # NB: at runtime the state keys carry the ``temp:`` prefix
+    # (``temp:technical_data`` etc. — A2.6 rename) so ADK strips them at the
+    # invocation boundary.  These Pydantic field names are the Python
+    # identifiers used before serialisation; they are NOT the live session-
+    # state keys and must NOT be renamed here.
     technical_data: dict[str, Any]      = Field(default_factory=dict)
     fundamental_data: dict[str, Any]    = Field(default_factory=dict)
     news_data: dict[str, Any]           = Field(default_factory=dict)  # renamed from sentiment_data (Task 6)

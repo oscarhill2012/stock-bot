@@ -240,6 +240,15 @@ never for tick-to-tick state.
 **ADK grounding:** ADK documents the `temp:` prefix as invocation-scoped
 and not persisted by session services.
 
+**Concrete invocation-scoped keys (A2.6 rename, 2026-05-20):**
+the strategist's ``temp:held_positions_view``, ``temp:ticker_evidence``,
+``temp:ticker_evidence_objects``, and the four analyst raw-data keys
+``temp:technical_data`` / ``temp:fundamental_data`` / ``temp:news_data``
+/ ``temp:social_data``.  All written by callbacks or the
+``StrategistContextShim`` (Task A2.1); all consumed inside a single
+tick by the analyst's own ``_run_async_impl`` or by the Strategist's
+instruction template.
+
 ### Rule 3 — Callbacks never re-prompt
 
 The four callback hooks — `before_agent_callback`, `before_model_callback`,

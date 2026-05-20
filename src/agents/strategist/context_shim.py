@@ -10,8 +10,8 @@ requires every state write to ride on a yielded
 resolves the conflict: the same view-rendering work runs inside a
 ``BaseAgent._run_async_impl``, which can yield.  The shim slots in front
 of the Strategist LlmAgent inside a SequentialAgent so the LlmAgent's
-``inject_session_state`` resolves ``{held_positions_view}`` and
-``{ticker_evidence}`` against the freshly-written state.
+``inject_session_state`` resolves ``{temp:held_positions_view}`` and
+``{temp:ticker_evidence}`` against the freshly-written state.
 
 The three keys carry the ``temp:`` prefix mandated by §C-Rule 2 — they are
 invocation-scoped working state, never read across ticks.
