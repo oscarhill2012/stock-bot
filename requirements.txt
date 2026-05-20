@@ -5,7 +5,7 @@ edgartools>=3.0                 # get_insider_trades, get_company_filings — fr
 requests>=2.31.0                # Quiver Quant API + general HTTP
 
 # === Agent orchestration ===
-google-adk>=0.2.0               # multi-agent buy/sell decision pipeline
+google-adk>=1.34.0              # multi-agent buy/sell decision pipeline
 
 # === Data handling ===
 pandas>=2.2.0
