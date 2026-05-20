@@ -149,10 +149,14 @@ class StrategistContextShim(BaseAgent):
         ticker_evidence: list[TickerEvidence] = []
         for t in tickers:
             per_analyst: dict[str, AnalystEvidence] = {}
-            if t in tech: per_analyst["technical"]   = tech[t]
-            if t in fund: per_analyst["fundamental"] = fund[t]
-            if t in news: per_analyst["news"]        = news[t]
-            if t in sm:   per_analyst["smart_money"] = sm[t]
+            if t in tech:
+                per_analyst["technical"]   = tech[t]
+            if t in fund:
+                per_analyst["fundamental"] = fund[t]
+            if t in news:
+                per_analyst["news"]        = news[t]
+            if t in sm:
+                per_analyst["smart_money"] = sm[t]
 
             te = build_ticker_evidence(
                 per_analyst = per_analyst,
