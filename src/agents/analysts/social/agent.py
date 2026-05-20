@@ -9,8 +9,8 @@ run-loop is split cleanly across three hooks:
 
 2. ``_run_async_impl`` — reads ``state["social_data"]``, runs
    ``extract_social_features`` + ``derive_social_verdict`` deterministically
-   for every ticker, and writes ``state["social_verdicts"]`` directly to
-   session state (same pattern as ``RiskGateAgent`` and ``MemoryWriter``).
+   for every ticker, and yields an Event whose ``state_delta`` carries
+   ``social_verdicts``.
 
 3. ``make_evidence_callback`` (``after_agent_callback``) — converts the
    pre-seeded ``social_verdicts`` into ``AnalystEvidence`` records and writes
@@ -27,7 +27,7 @@ from typing import Any
 
 from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
-from google.adk.events import Event
+from google.adk.events import Event, EventActions
 
 from agents.analysts._common import make_evidence_callback
 from agents.analysts.heuristics import SocialHeuristics, load_heuristics
@@ -42,7 +42,7 @@ class SocialAnalyst(BaseAgent):
 
     Reads ``state["social_data"]`` (populated by the fetch callback), runs
     ``extract_social_features`` + ``derive_social_verdict`` for each ticker,
-    and writes ``state["social_verdicts"]``.  The registered
+    and yields an ``Event`` whose ``state_delta`` carries ``social_verdicts``.  The registered
     ``after_agent_callback`` (``make_evidence_callback``) then converts those
     verdicts into ``AnalystEvidence`` records under ``state["social_evidence"]``.
     """
@@ -94,8 +94,9 @@ class SocialAnalyst(BaseAgent):
             ctx: ADK invocation context providing access to session state.
 
         Yields:
-            Nothing — state mutation is written directly, matching the pattern
-            used by MemoryWriter, RiskGateAgent, and EvidenceWriter.
+            One ``Event`` whose ``actions.state_delta`` carries the
+            ``social_verdicts`` list.  Conforms to contract Rule 1; no
+            direct ``state[k] = v`` write is performed.
         """
         state = ctx.session.state
         social_data: dict[str, dict] = state.get("social_data") or {}
@@ -116,15 +117,20 @@ class SocialAnalyst(BaseAgent):
             v_dict["ticker"] = ticker
             verdicts.append(v_dict)
 
-        # Write the verdict list so the after_agent_callback can read it.
-        state["social_verdicts"] = verdicts
-
         # Surface trace — no-op unless state["_trace"] is set by trace_tick.py.
+        # Trace before the yield so the recorded payload matches the
+        # state_delta value.
         _trace_maybe(ctx.session.state, "02_social_verdict", verdicts)
 
-        # No events emitted — pure state mutation, same as RiskGateAgent.
-        return
-        yield  # required to make this an async generator
+        # Contract Rule 1 — yield the state_delta so the write survives
+        # ADK's SessionService.append_event boundary.  Direct dict
+        # mutation alone is lost on persistent session backends.  See
+        # ``docs/contract-invariants.md`` §C-Rule 1.
+        yield Event(
+            author        = self.name,
+            invocation_id = ctx.invocation_id,
+            actions       = EventActions(state_delta={"social_verdicts": verdicts}),
+        )
 
 
 # Module-level singleton — used directly by unit tests and the analyst_pool

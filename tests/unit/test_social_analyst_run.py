@@ -39,6 +39,7 @@ def _make_ctx(state: dict) -> MagicMock:
     """Build a minimal ADK InvocationContext mock with mutable session.state."""
     ctx = MagicMock()
     ctx.session.state = state
+    ctx.invocation_id = "test-invocation"
     return ctx
 
 
@@ -75,9 +76,10 @@ async def test_run_async_impl_writes_social_verdicts():
     }
     ctx = _make_ctx(state)
 
-    # Consume the async generator to drive execution.
-    async for _ in analyst._run_async_impl(ctx):
-        pass
+    # Drain the generator and merge the yielded state_delta into ``state``
+    # so the assertions below see the post-propagation view (Rule 1).
+    async for _event in analyst._run_async_impl(ctx):
+        state.update(_event.actions.state_delta)
 
     assert "social_verdicts" in state
     assert isinstance(state["social_verdicts"], list)
@@ -105,8 +107,10 @@ async def test_run_async_impl_verdict_has_ticker_key():
     }
     ctx = _make_ctx(state)
 
-    async for _ in analyst._run_async_impl(ctx):
-        pass
+    # Drain the generator and merge the yielded state_delta into ``state``
+    # so the assertions below see the post-propagation view (Rule 1).
+    async for _event in analyst._run_async_impl(ctx):
+        state.update(_event.actions.state_delta)
 
     verdicts = state["social_verdicts"]
     assert len(verdicts) == 1
@@ -125,8 +129,10 @@ async def test_run_async_impl_empty_social_data():
     state = {"social_data": {}}
     ctx = _make_ctx(state)
 
-    async for _ in analyst._run_async_impl(ctx):
-        pass
+    # Drain the generator and merge the yielded state_delta into ``state``
+    # so the assertions below see the post-propagation view (Rule 1).
+    async for _event in analyst._run_async_impl(ctx):
+        state.update(_event.actions.state_delta)
 
     assert state["social_verdicts"] == []
 
@@ -143,8 +149,10 @@ async def test_run_async_impl_no_data_ticker():
     }
     ctx = _make_ctx(state)
 
-    async for _ in analyst._run_async_impl(ctx):
-        pass
+    # Drain the generator and merge the yielded state_delta into ``state``
+    # so the assertions below see the post-propagation view (Rule 1).
+    async for _event in analyst._run_async_impl(ctx):
+        state.update(_event.actions.state_delta)
 
     verdicts = {v["ticker"]: v for v in state["social_verdicts"]}
     assert verdicts["GOOG"]["is_no_data"] is True
@@ -172,8 +180,10 @@ async def test_after_callback_fires_and_writes_evidence():
     ctx = _make_ctx(state)
 
     # Step 1 — run the agent body to populate social_verdicts.
-    async for _ in analyst._run_async_impl(ctx):
-        pass
+    # Drain the generator and merge the yielded state_delta into ``state``
+    # so the assertions below see the post-propagation view (Rule 1).
+    async for _event in analyst._run_async_impl(ctx):
+        state.update(_event.actions.state_delta)
 
     assert "social_verdicts" in state, "social_verdicts must be written by _run_async_impl"
 
