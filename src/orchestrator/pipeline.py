@@ -52,44 +52,51 @@ def _build_analyst_pool():
 
 
 def _build_strategist():
-    """Build a fresh Strategist LlmAgent each time.
+    """Build the Strategist branch — SequentialAgent[ContextShim, LlmAgent].
 
-    Wires both the v2 before-callback (held-view + evidence-view) and the
-    validation after-callback so the prompt template receives real holdings
-    and per-ticker evidence before the LLM runs.
+    The ContextShim hydrates ``temp:held_positions_view``,
+    ``temp:ticker_evidence``, and ``temp:ticker_evidence_objects`` via a
+    yielded ``Event(state_delta=…)`` (contract Rule 1).  The downstream
+    LlmAgent then resolves those keys via ADK's instruction-variable
+    substitution and emits its ``StrategistDecision``.  The validation +
+    derivation work stays as an ``after_agent_callback`` on the LlmAgent —
+    see the in-tick callback carve-out documented in
+    ``docs/contract-invariants.md`` §C-Rule 1.
     """
     import os
 
-    from google.adk.agents import LlmAgent
+    from google.adk.agents import LlmAgent, SequentialAgent
 
-    from agents.strategist.agent import (
-        _composite_before_callback,
-        _strategist_validation_callback,
-    )
+    from agents.strategist.agent import _strategist_validation_callback
+    from agents.strategist.context_shim import StrategistContextShim
     from agents.strategist.prompts import STRATEGIST_INSTRUCTION
     from agents.strategist.schema import StrategistDecision
     from observability.trace import make_llm_trace_callbacks
 
-    # Wire the LLM-trace callbacks only when STOCKBOT_TRACE=1.  On production
-    # runs both callbacks are ``None`` and ADK skips the hooks entirely.
     model_name = "gemini-2.5-pro"
     before_model = None
     after_model = None
     if os.environ.get("STOCKBOT_TRACE") == "1":
         before_model, after_model = make_llm_trace_callbacks(
-            "05_strategist_llm", model=model_name
+            "05_strategist_llm", model=model_name,
         )
 
-    return LlmAgent(
+    llm = LlmAgent(
         name="Strategist",
         model=model_name,
         instruction=STRATEGIST_INSTRUCTION,
         output_schema=StrategistDecision,
         output_key="strategist_decision",
-        before_agent_callback=_composite_before_callback,
+        # before_agent_callback intentionally None — StrategistContextShim
+        # now does the work that _composite_before_callback used to do.
         after_agent_callback=_strategist_validation_callback,
         before_model_callback=before_model,
         after_model_callback=after_model,
+    )
+
+    return SequentialAgent(
+        name="StrategistBranch",
+        sub_agents=[StrategistContextShim(), llm],
     )
 
 

@@ -315,13 +315,11 @@ def test_end_to_end_run_produces_full_artefact_tree(
     tickers = ["AAPL"]
 
     def _patched_build_strategist():
-        """Build strategist with a mock before_model_callback."""
-        from google.adk.agents import LlmAgent
+        """Build strategist as SequentialAgent[ContextShim, mock LlmAgent]."""
+        from google.adk.agents import LlmAgent, SequentialAgent
 
-        from agents.strategist.agent import (
-            _composite_before_callback,
-            _strategist_validation_callback,
-        )
+        from agents.strategist.agent import _strategist_validation_callback
+        from agents.strategist.context_shim import StrategistContextShim
         from agents.strategist.prompts import STRATEGIST_INSTRUCTION
         from agents.strategist.schema import StrategistDecision
 
@@ -332,15 +330,19 @@ def test_end_to_end_run_produces_full_artefact_tree(
             )
             return _make_strategist_llm_response(current_tickers)
 
-        return LlmAgent(
+        llm = LlmAgent(
             name="Strategist",
             model="gemini-2.5-pro",
             instruction=STRATEGIST_INSTRUCTION,
             output_schema=StrategistDecision,
             output_key="strategist_decision",
-            before_agent_callback=_composite_before_callback,
             after_agent_callback=_strategist_validation_callback,
             before_model_callback=_mock_before,
+        )
+
+        return SequentialAgent(
+            name="StrategistBranch",
+            sub_agents=[StrategistContextShim(), llm],
         )
 
     def _patched_build_analyst_pool():
