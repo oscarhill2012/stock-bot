@@ -67,13 +67,19 @@ Per stance:
   your confidence in the call, distinct from how much capital you want
   behind it.
 - rationale: ≤{{STANCE_RATIONALE_MAX}} chars, why.
-- If proposing to OPEN (current ≈ 0 → preferred > 0): include horizon,
-  target_price, stop_price; catalyst optional (≤{{STANCE_CATALYST_MAX}} chars).
+- Any non-zero stance (preferred_weight > 0) — whether opening a new
+  position, adding to one, holding, or trimming-but-still-held — MUST
+  include horizon, target_price, and stop_price.  These are the exit
+  discipline the executor and memory writer need to track the thesis;
+  the strategist must always articulate them when committing capital.
+  Catalyst is optional (≤{{STANCE_CATALYST_MAX}} chars).
 - If proposing to CLOSE (current > 0 → preferred ≈ 0): include close_reason
-  (≤{{STANCE_CLOSE_REASON_MAX}} chars).
+  (≤{{STANCE_CLOSE_REASON_MAX}} chars).  Lifecycle hint fields stay null
+  on full closes — there is no thesis to exit because you are exiting.
 - If proposing to TRIM (current > 0 → preferred meaningfully lower but still
-  held): include trim_reason (≤{{STANCE_TRIM_REASON_MAX}} chars).
-- If holding or adding: lifecycle hint fields stay null.
+  held): include trim_reason (≤{{STANCE_TRIM_REASON_MAX}} chars) AND the
+  lifecycle hint fields above — you are still holding, so the thesis
+  remains active.
 
 Treat the digested aggregate as a deterministic input; you may disagree with it
 based on context (held position thesis, memory, day digest) — call out the

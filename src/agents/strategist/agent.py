@@ -11,6 +11,7 @@ from google.adk.agents import LlmAgent
 from google.adk.agents.callback_context import CallbackContext
 from google.genai import types as genai_types
 
+from agents.risk_gate.lifecycle import StrategistContractViolation
 from agents.strategist.derivation import TickContext, derive_legacy_fields
 from agents.strategist.held_view import render_held_positions_view
 from agents.strategist.lifecycle import derive_lifecycle_action
@@ -181,18 +182,37 @@ def _evidence_view_before_callback(
     return None
 
 
-def _reprompt(text: str) -> genai_types.Content:  # always returns Content, not None
-    """Wrap a re-prompt message in the ADK Content envelope.
+def _log_offending_decision(
+    tick_id: str,
+    decision: StrategistDecision,
+    violation: str,
+) -> None:
+    """Emit a structured error log capturing the strategist's offending output.
+
+    Called immediately before every ``StrategistContractViolation`` raise so
+    that the LLM's own reasoning / decision_tag survives in the run log even
+    when ``STOCKBOT_TRACE=1`` is not set.  Without this, the raised exception
+    carries only the bad ticker(s) and the rest of the decision context
+    (decision_tag, reasoning, updated_thesis) is lost when the tick aborts.
 
     Args:
-        text: The corrective instruction to send back to the LLM.
-
-    Returns:
-        A ``genai_types.Content`` with role ``"user"`` containing a single text part.
+        tick_id: The tick identifier from state (or ``"unknown"`` fallback).
+        decision: The parsed ``StrategistDecision`` that failed validation.
+        violation: A short human-readable description of which contract was
+            broken — included verbatim in the log message so the line is
+            self-contained when grepping run logs.
     """
-    return genai_types.Content(
-        parts=[genai_types.Part(text=text)],
-        role="user",
+
+    logger.error(
+        "Strategist contract violation on tick=%s: %s | decision_tag=%r "
+        "reasoning=%r updated_thesis=%r confidence=%s n_stances=%d",
+        tick_id,
+        violation,
+        decision.decision_tag,
+        decision.reasoning,
+        decision.updated_thesis,
+        decision.confidence,
+        len(decision.stances),
     )
 
 
@@ -201,20 +221,40 @@ def _strategist_validation_callback(
 ) -> genai_types.Content | None:
     """Validate per-ticker stances; on success, derive legacy fields and write back.
 
-    Runs four validation passes in order:
-    1. Exhaustive — every watchlist ticker must have a stance.
-    2. No extras — no off-watchlist tickers may appear.
-    3. Lifecycle hint enforcement — open stances need horizon/target_price/stop_price;
-       close stances need close_reason; trim stances need trim_reason.
-    4. On a clean pass, derive legacy fields (target_weights, new_positions,
-       close_reasons, trim_reasons) and write the enriched decision back to state.
+    Runs the cross-stance checks that the schema can't express on its own
+    (exhaustiveness across the watchlist, no off-watchlist tickers, and
+    lifecycle-specific reason fields that depend on the current portfolio).
+    Per-stance discipline (non-zero stances must carry horizon/target_price/
+    stop_price) is enforced at the schema level by
+    ``TickerStance._require_lifecycle_hints_on_nonzero`` — failures there
+    raise during ADK's ``output_schema`` parse and never reach this
+    callback.
+
+    Why every failure raises rather than returning Content:
+
+        Returning a ``genai_types.Content`` from an ``after_agent_callback``
+        does NOT re-prompt the LLM in ADK — it replaces the agent's final
+        response and ends the agent.  The original implementation returned
+        ``_reprompt(...)`` Content intending to round-trip the validation
+        error back to the model, but ADK never did so.  The result was a
+        silent partial decision: stances persisted to the database, but
+        the after-callback's derivation step never ran, so
+        ``target_weights`` stayed at the schema default ``{}`` and the
+        RiskGate produced zero orders for every tick.  Raising
+        ``StrategistContractViolation`` instead makes the failure abort
+        the tick loudly so we can see the LLM misbehaving.
 
     Args:
         callback_context: ADK callback context carrying the mutable pipeline state.
 
     Returns:
-        A ``genai_types.Content`` re-prompt message if validation fails, or ``None``
-        if all checks pass (allowing the pipeline to continue).
+        ``None`` on success; never returns a value otherwise — failures raise.
+
+    Raises:
+        StrategistContractViolation: when the decision violates a
+            watchlist-level contract (missing tickers, off-watchlist
+            tickers, or missing close_reason/trim_reason for the
+            lifecycle action implied by current vs preferred weight).
     """
     state = callback_context.state
     raw = state.get("strategist_decision")
@@ -237,56 +277,67 @@ def _strategist_validation_callback(
     emitted = {s.ticker for s in decision.stances}
     missing = [t for t in tickers if t not in emitted]
     if missing:
-        return _reprompt(
-            f"You missed stances for these tickers: {missing}. "
-            f"Emit a TickerStance for EVERY watchlist ticker."
+
+        msg = (
+            f"Strategist missed stances for these tickers: {missing}.  "
+            f"The strategist must emit a TickerStance for EVERY watchlist ticker."
         )
+        _log_offending_decision(str(tick_id), decision, msg)
+        raise StrategistContractViolation(msg)
 
     # ── Pass 2: No off-watchlist tickers ─────────────────────────────────────
     # Prevents the model from inventing tickers not in the current watchlist.
     extras = [t for t in emitted if t not in tickers]
     if extras:
-        return _reprompt(
-            f"You included off-watchlist tickers: {extras}. "
+
+        msg = (
+            f"Strategist included off-watchlist tickers: {extras}.  "
             f"Only emit stances for the watchlist."
         )
+        _log_offending_decision(str(tick_id), decision, msg)
+        raise StrategistContractViolation(msg)
 
-    # ── Pass 3: Lifecycle hint enforcement ────────────────────────────────────
-    # The derived action for each stance is computed from current vs preferred weight.
-    # Certain actions require the stance to carry additional fields.
+    # ── Pass 3: Lifecycle reason enforcement ─────────────────────────────────
+    # The derived action for each stance is computed from current vs preferred
+    # weight.  Closes and trims need an explicit reason in the audit trail —
+    # these checks live here (not in the schema) because they depend on the
+    # current portfolio state, which the schema validator can't see.
+    #
+    # Non-zero stances missing horizon/target_price/stop_price are caught
+    # earlier by ``TickerStance._require_lifecycle_hints_on_nonzero`` at
+    # schema-validation time.
+    #
+    # We also accumulate the per-action counts here so the success log at the
+    # end of the callback can summarise the tick in one line without a second
+    # pass over the stance list.
+    action_counts: dict[str, int] = {
+        "open": 0, "close": 0, "trim": 0, "add": 0, "hold": 0,
+    }
+
     for stance in decision.stances:
         curr = current_weights.get(stance.ticker, 0.0)
         action = derive_lifecycle_action(curr, stance.preferred_weight)
+        action_counts[action] = action_counts.get(action, 0) + 1
 
-        if action == "open":
-            # Opening a new position requires horizon, target_price, and stop_price
-            # so the executor and memory writer can populate PositionThesis correctly.
-            missing_fields = [
-                name for name, val in (
-                    ("horizon", stance.horizon),
-                    ("target_price", stance.target_price),
-                    ("stop_price", stance.stop_price),
-                ) if val is None
-            ]
-            if missing_fields:
-                return _reprompt(
-                    f"Stance for {stance.ticker} opens a position but is missing: "
-                    f"{missing_fields}. Include horizon, target_price, and stop_price on opens."
-                )
+        if action == "close" and not stance.close_reason:
 
-        elif action == "close":
             # Full exit requires an explicit close_reason for audit trail.
-            if not stance.close_reason:
-                return _reprompt(
-                    f"Stance for {stance.ticker} closes a position but is missing close_reason."
-                )
+            msg = (
+                f"Stance for {stance.ticker} closes a position but is missing "
+                f"close_reason."
+            )
+            _log_offending_decision(str(tick_id), decision, msg)
+            raise StrategistContractViolation(msg)
 
-        elif action == "trim":
+        if action == "trim" and not stance.trim_reason:
+
             # Partial reduction requires an explicit trim_reason for audit trail.
-            if not stance.trim_reason:
-                return _reprompt(
-                    f"Stance for {stance.ticker} trims a position but is missing trim_reason."
-                )
+            msg = (
+                f"Stance for {stance.ticker} trims a position but is missing "
+                f"trim_reason."
+            )
+            _log_offending_decision(str(tick_id), decision, msg)
+            raise StrategistContractViolation(msg)
 
     # ── Pass 4: Derive legacy fields ─────────────────────────────────────────
     # All validation passed — derive the flat legacy fields from the stances
@@ -313,6 +364,27 @@ def _strategist_validation_callback(
     decision.new_positions = derived.new_positions
     decision.close_reasons = derived.close_reasons
     decision.trim_reasons = derived.trim_reasons
+
+    # ── Per-tick success summary ─────────────────────────────────────────────
+    # One concise INFO line so you can scan a run log and immediately see
+    # whether the strategist is actually committing capital or just
+    # hold-flat-ing the entire watchlist.  Useful sanity check after the
+    # silent-zero-orders bug fixed in this same change — if the new
+    # target_weights are still empty post-derivation, this line will say so.
+    nonzero_weight_sum = sum(w for w in derived.target_weights.values() if w > 0.0)
+    logger.info(
+        "Strategist tick=%s: opens=%d closes=%d trims=%d adds=%d holds=%d "
+        "| nonzero_weight_sum=%.4f decision_tag=%r confidence=%s",
+        tick_id,
+        action_counts["open"],
+        action_counts["close"],
+        action_counts["trim"],
+        action_counts["add"],
+        action_counts["hold"],
+        nonzero_weight_sum,
+        decision.decision_tag,
+        decision.confidence,
+    )
 
     # Write the enriched decision (with legacy fields populated) back to state.
     state["strategist_decision"] = decision.model_dump(mode="json")

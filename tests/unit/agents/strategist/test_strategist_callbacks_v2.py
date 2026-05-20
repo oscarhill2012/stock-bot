@@ -3,6 +3,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
+from pydantic import ValidationError
+
+from agents.risk_gate.lifecycle import StrategistContractViolation
 from agents.strategist.agent import (
     _evidence_view_before_callback,
     _held_view_before_callback,
@@ -106,7 +110,15 @@ def test_evidence_view_callback_builds_ticker_evidence_from_per_analyst_state():
 # ── after callback: missing tickers ───────────────────────────────────────────
 
 
-def test_after_reprompts_on_missing_tickers():
+def test_after_raises_on_missing_tickers():
+    """Watchlist-exhaustiveness violations abort the tick.
+
+    The after-callback used to ``return _reprompt(...)`` Content here, but
+    ADK does not interpret that as a re-prompt — see the docstring of
+    ``_strategist_validation_callback``.  We now raise
+    ``StrategistContractViolation`` so the failure surfaces loudly instead
+    of producing a silent partial decision.
+    """
     state = _State(
         tickers=["AAPL", "MSFT"],
         positions={},
@@ -118,12 +130,12 @@ def test_after_reprompts_on_missing_tickers():
             decision_tag="x", reasoning="x", updated_thesis="y", confidence=0.5,
         ).model_dump(mode="json"),
     )
-    out = _strategist_validation_callback(_Ctx(state))
-    assert out is not None
-    assert "MSFT" in out.parts[0].text
+    with pytest.raises(StrategistContractViolation, match="MSFT"):
+        _strategist_validation_callback(_Ctx(state))
 
 
-def test_after_reprompts_on_extras():
+def test_after_raises_on_extras():
+    """Off-watchlist tickers in the decision abort the tick."""
     state = _State(
         tickers=["AAPL"],
         positions={}, portfolio=_portfolio().model_dump(mode="json"), tick_id="t",
@@ -137,29 +149,39 @@ def test_after_reprompts_on_extras():
             decision_tag="x", reasoning="x", updated_thesis="y", confidence=0.5,
         ).model_dump(mode="json"),
     )
-    out = _strategist_validation_callback(_Ctx(state))
-    assert out is not None
-    assert "GOOG" in out.parts[0].text
+    with pytest.raises(StrategistContractViolation, match="GOOG"):
+        _strategist_validation_callback(_Ctx(state))
 
 
-def test_after_reprompts_on_open_without_lifecycle_fields():
-    state = _State(
-        tickers=["AAPL"],
-        positions={}, portfolio=_portfolio().model_dump(mode="json"), tick_id="t",
-        strategist_decision=StrategistDecision(
-            stances=[TickerStance(ticker="AAPL", preferred_weight=0.05,
-                                  conviction=0.7, rationale="open")],
-            decision_tag="x", reasoning="x", updated_thesis="y", confidence=0.5,
-        ).model_dump(mode="json"),
-    )
-    out = _strategist_validation_callback(_Ctx(state))
-    assert out is not None
-    text = out.parts[0].text
-    assert "AAPL" in text
-    assert ("horizon" in text or "target_price" in text or "stop_price" in text)
+def test_nonzero_stance_without_lifecycle_fields_fails_at_schema():
+    """Non-zero stances missing horizon/target_price/stop_price fail at the
+    schema level — they never reach the after-callback.
+
+    The validator on ``TickerStance`` enforces this so a malformed LLM
+    response fails ADK's ``output_schema`` parse loudly instead of
+    silently degrading.  This test pins that contract.
+    """
+    with pytest.raises(ValidationError) as excinfo:
+        TickerStance(
+            ticker="AAPL",
+            preferred_weight=0.05,
+            conviction=0.7,
+            rationale="open",
+        )
+    msg = str(excinfo.value)
+    assert "AAPL" in msg
+    assert "horizon" in msg
+    assert "target_price" in msg
+    assert "stop_price" in msg
 
 
-def test_after_reprompts_on_close_without_close_reason():
+def test_after_raises_on_close_without_close_reason():
+    """Full closes missing close_reason abort the tick.
+
+    The schema can't enforce this on its own — it depends on the current
+    portfolio (a zero-weight stance is only a "close" if the position is
+    currently held) — so the callback raises here instead.
+    """
     thesis = PositionThesis(
         ticker="AAPL", opened_at=datetime.now(tz=UTC),
         opened_price=192.40, opened_tag="x", rationale="x", horizon="swing",
@@ -176,12 +198,17 @@ def test_after_reprompts_on_close_without_close_reason():
             decision_tag="x", reasoning="x", updated_thesis="y", confidence=0.5,
         ).model_dump(mode="json"),
     )
-    out = _strategist_validation_callback(_Ctx(state))
-    assert out is not None
-    assert "close_reason" in out.parts[0].text
+    with pytest.raises(StrategistContractViolation, match="close_reason"):
+        _strategist_validation_callback(_Ctx(state))
 
 
-def test_after_reprompts_on_trim_without_trim_reason():
+def test_after_raises_on_trim_without_trim_reason():
+    """Trims (positive but lower than current weight) missing trim_reason
+    abort the tick.
+
+    The stance carries the now-mandatory lifecycle hint fields because
+    it is still holding capital — only the trim_reason is absent.
+    """
     thesis = PositionThesis(
         ticker="MSFT", opened_at=datetime.now(tz=UTC),
         opened_price=410.0, opened_tag="x", rationale="x", horizon="swing",
@@ -194,13 +221,14 @@ def test_after_reprompts_on_trim_without_trim_reason():
         tick_id="t",
         strategist_decision=StrategistDecision(
             stances=[TickerStance(ticker="MSFT", preferred_weight=0.30,
-                                  conviction=0.5, rationale="reduce")],
+                                  conviction=0.5, rationale="reduce",
+                                  horizon="swing",
+                                  target_price=450.0, stop_price=395.0)],
             decision_tag="x", reasoning="x", updated_thesis="y", confidence=0.5,
         ).model_dump(mode="json"),
     )
-    out = _strategist_validation_callback(_Ctx(state))
-    assert out is not None
-    assert "trim_reason" in out.parts[0].text
+    with pytest.raises(StrategistContractViolation, match="trim_reason"):
+        _strategist_validation_callback(_Ctx(state))
 
 
 def test_after_derives_legacy_fields_on_valid_input():

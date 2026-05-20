@@ -48,11 +48,30 @@ def test_template_instructs_per_ticker_stance_output():
 
 
 def test_template_documents_lifecycle_hint_rules():
+    """The prompt must communicate the lifecycle-hint contract:
+
+    - any non-zero stance carries horizon / target_price / stop_price;
+    - CLOSE stances carry close_reason;
+    - TRIM stances carry trim_reason.
+
+    The "non-zero ⇒ lifecycle hints" rule was tightened (any positive
+    weight, not just opens) when ``TickerStance._require_lifecycle_hints_on_nonzero``
+    was added — see ``stance_schema.py``.  The prompt mirrors that change.
+    """
+
     text = STRATEGIST_INSTRUCTION
-    assert "OPEN" in text and "CLOSE" in text and "TRIM" in text
+
+    # Lifecycle action vocabulary still surfaces — CLOSE and TRIM remain
+    # explicit because they each carry a distinct reason field.
+    assert "CLOSE" in text and "TRIM" in text
+
+    # Non-zero stances require the exit-discipline triple.
+    assert "non-zero" in text
     assert "horizon" in text
     assert "target_price" in text
     assert "stop_price" in text
+
+    # Reason fields keyed to the lifecycle action.
     assert "close_reason" in text
     assert "trim_reason" in text
 

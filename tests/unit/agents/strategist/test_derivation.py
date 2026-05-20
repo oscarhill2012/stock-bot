@@ -85,12 +85,20 @@ def test_close_records_close_reason():
 
 
 def test_trim_records_trim_reason():
-    """A trim stance (preferred_weight below current by >δ) should record the trim_reason."""
+    """A trim stance (preferred_weight below current by >δ) should record the trim_reason.
+
+    Non-zero stances must also carry the lifecycle hint fields (horizon,
+    target_price, stop_price) per ``TickerStance._require_lifecycle_hints_on_nonzero``
+    — a trim is still holding capital and so still needs an exit discipline.
+    """
     stance = TickerStance(
         ticker="MSFT",
         preferred_weight=0.05,
         conviction=0.5,
         rationale="reduce",
+        horizon="swing",
+        target_price=450.0,
+        stop_price=395.0,
         trim_reason="lock in profits",
     )
     ctx = _ctx(weights={"MSFT": 0.12})
@@ -103,12 +111,19 @@ def test_trim_records_trim_reason():
 
 
 def test_hold_yields_only_target_weight():
-    """A hold stance (no meaningful weight change) should only populate target_weights."""
+    """A hold stance (no meaningful weight change) should only populate target_weights.
+
+    Even on a pure hold, the strategist is still holding capital, so the
+    schema-level validator requires horizon/target_price/stop_price.
+    """
     stance = TickerStance(
         ticker="MSFT",
         preferred_weight=0.06,
         conviction=0.5,
         rationale="hold",
+        horizon="swing",
+        target_price=450.0,
+        stop_price=395.0,
     )
     ctx = _ctx(weights={"MSFT": 0.06})
     out = derive_legacy_fields([stance], ctx)
@@ -143,6 +158,9 @@ def test_multiple_stances_aggregate_correctly():
             preferred_weight=0.05,
             conviction=0.5,
             rationale="trim",
+            horizon="swing",
+            target_price=950.0,
+            stop_price=800.0,
             trim_reason="overweight",
         ),
     ]
@@ -191,6 +209,9 @@ def test_add_action_only_populates_target_weight():
         preferred_weight=0.15,
         conviction=0.8,
         rationale="add to winner",
+        horizon="swing",
+        target_price=240.0,
+        stop_price=190.0,
     )
     # Current weight 0.08 → preferred 0.15; difference 0.07 > SIZE_CHANGE_EPSILON (0.02)
     # → derive_lifecycle_action returns "add"
