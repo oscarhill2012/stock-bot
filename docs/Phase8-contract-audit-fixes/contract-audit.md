@@ -39,7 +39,7 @@ deviation becomes a live failure mode.
 | §A | `memory_buffer` | deviation | high | Cross-tick field; seeded `[]` in both. No persistence read/write. |
 | §A | `day_digest` | deviation | high | Cross-tick field; seeded `""` in both. No persistence read/write. |
 | §A | `thesis` | deviation | high | Cross-tick field; seeded `""` in both. No persistence read/write. |
-| §A | `strategist_decision` | deviation | medium | LlmAgent `output_key` is correct; but `_strategist_validation_callback` re-writes the field via direct mutation (Rule 1). |
+| §A | `strategist_decision` | conformant (in-tick carve-out) | — | LlmAgent `output_key` is correct; `_strategist_validation_callback` direct-writes the derived fields but its only consumer (RiskGate) is in the same tick — conformant under the §C-Rule 1 in-tick carve-out. |
 | §A | `technical_verdicts` / `fundamental_verdicts` / `news_verdicts` / `social_verdicts` | resolved (A1.5) | — | Spec aligned to the code's plural form 2026-05-20. Technical + social still write via `state_delta` (Rule 1), not `output_key` (resolved by A1.1 / A1.2). |
 | §A | `as_of`, `tick_phase` | unmodelled | medium | Set by backtest driver; read by writers + analysts. Not in §A. Live never sets either. |
 | §A | `last_executed_tick_id`, `last_snapshot` | unmodelled | low | Used by Executor idempotency + driver assertion. Not in §A. |
@@ -163,22 +163,24 @@ the running code but not in §A.
   Strategist as owner. Worth resolving in the persistence design.
 - **Persistence:** absent; same masking pattern.
 
-### `strategist_decision` — DEVIATION (medium)
+### `strategist_decision` — CONFORMANT (in-tick carve-out)
 
 - **Owner (per spec):** Strategist via `output_key`.
 - **Code (output_key):** `src/orchestrator/pipeline.py:88` sets
   `output_key="strategist_decision"` on the Strategist LlmAgent.
 - **Code (callback that ALSO writes):**
   `_strategist_validation_callback` in
-  `src/agents/strategist/agent.py:388` performs
+  `src/agents/strategist/agent.py:383` performs
   `state["strategist_decision"] = decision.model_dump(mode="json")` after
-  validation. This is **direct mutation** with no `state_delta` event —
-  a Rule 1 deviation.
-- **Why it exists today:** the callback normalises the decision into a
-  JSON-friendly dict so downstream agents (RiskGate, Executor) see a
-  stable shape rather than the ADK-internal `LlmResponse`. The fix is
-  either (a) yield a `state_delta` from a wrapping agent, or (b) remove
-  the callback's re-write and let consumers handle both shapes.
+  validation. This is a direct dict mutation — normally a Rule 1 deviation.
+- **Why it is conformant:** the callback is an `after_agent_callback`,
+  which cannot yield Events (Rule 3). It is the only place where the
+  decision can be normalised into a JSON-friendly dict using runtime access
+  to ``state["portfolio"]`` and ``state["tickers"]``. The rewritten key's
+  sole consumer (RiskGate) is in the same tick; the key is tick-scoped and
+  never crosses a tick boundary. This satisfies the §C-Rule 1 **in-tick
+  callback carve-out** — see ``contract-invariants.md`` §C-Rule 1 for the
+  canonical definition.
 
 ### `technical_verdicts` / `fundamental_verdicts` / `news_verdicts` / `social_verdicts` — RESOLVED (A1.5 + A1.1/A1.2)
 
@@ -444,7 +446,7 @@ following direct-mutation sites in production code paths:
 |---|---|---|---|
 | Strategist held-view callback | `src/agents/strategist/agent.py:70` | `state["held_positions_view"]` | medium |
 | Strategist evidence-view callback | `src/agents/strategist/agent.py:176-177` | `state["ticker_evidence"]`, `state["ticker_evidence_objects"]` | medium |
-| Strategist validation callback | `src/agents/strategist/agent.py:388` | `state["strategist_decision"]` (overwriting the `output_key` write) | medium |
+| Strategist validation callback (conformant — in-tick carve-out) | `src/agents/strategist/agent.py:383` | `state["strategist_decision"]` (overwriting the `output_key` write) | conformant (in-tick carve-out) |
 | RiskGate | (single-tick consumer; no state_delta yield) | `state["final_orders"]`, `state["risk_clamps_applied"]` | low |
 | Executor | `src/agents/executor/agent.py:169-171` | `state["executions"]`, `state["positions"]`, `state["last_executed_tick_id"]` (then ALSO yields state_delta at 202-210 — **defensive double write**) | low |
 | MemoryWriter | `src/agents/memory/writer.py:165-167` | `state["memory_buffer"]`, `state["day_digest"]`, `state["thesis"]` (then ALSO yields state_delta at 181-189) | low |
@@ -718,8 +720,11 @@ Ordered by dependency. Items in bold are blocking for §A conformance.
 
 4. **Fix Rule 1 deviations** in callbacks and BaseAgent analysts:
    - Convert Strategist callback writes
-     (`src/agents/strategist/agent.py:70,176-177,388`) to yield-based
+     (`src/agents/strategist/agent.py:70,176-177`) to yield-based
      writes.
+   - The strategist validation callback at :383 is now documented as
+     conformant under the in-tick carve-out — see
+     ``contract-invariants.md`` §C-Rule 1.
    - Convert Technical / Social analysts'
      `_run_async_impl` writes to yield `state_delta`.
    - Convert RiskGate writes (currently single-tick consumer) to

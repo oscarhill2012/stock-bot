@@ -212,6 +212,24 @@ persistence channel for state updates.
 **Implication:** Strategist's `after_agent_callback` writing the thesis
 book must emit a `state_delta`, not poke the dict.
 
+**In-tick callback carve-out (added 2026-05-20).**  ADK
+``after_agent_callback``s cannot yield Events (Rule 3) but are the only
+place certain LLM-output validation + derivation can run (they need
+runtime access to ``state["portfolio"]`` and ``state["tickers"]``, which
+``output_schema`` does not see).  Where such a callback writes to a
+state key whose only consumer is **another agent in the same tick**,
+that direct write is conformant.  The carve-out does NOT apply if the
+key escapes the tick — cross-tick keys must still go through
+``state_delta``.
+
+The canonical instance today is the Strategist's
+``_strategist_validation_callback`` (see
+``src/agents/strategist/agent.py:383``), which rewrites
+``state["strategist_decision"]`` with the derived legacy fields
+(``target_weights``, ``new_positions``, ``close_reasons``,
+``trim_reasons``).  Its only consumer is the downstream RiskGate agent
+in the same tick.
+
 ### Rule 2 — `temp:` is invocation-scoped only
 
 State keys prefixed with `temp:` are scoped to a single invocation (one
