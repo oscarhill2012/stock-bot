@@ -6,7 +6,7 @@ from typing import Any
 
 from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
-from google.adk.events import Event
+from google.adk.events import Event, EventActions
 
 from observability.trace import _trace_maybe
 from orchestrator.state import MIN_HELD_WEIGHT
@@ -85,18 +85,37 @@ class RiskGateAgent(BaseAgent):
 
         orders = weights_to_orders(proposed, portfolio, prices) if self.broker else []
 
-        state["final_orders"] = [o.model_dump() for o in orders]
-        state["risk_clamps_applied"] = [c.model_dump() for c in clamps]
+        # Snapshot the JSON-friendly payloads into local variables so the
+        # trace (below) and the yielded ``state_delta`` (further below)
+        # both reference the same in-memory list rather than reading
+        # back through ``state`` (which, post-Rule-1, the agent no longer
+        # writes to directly).
+        final_orders        = [o.model_dump() for o in orders]
+        risk_clamps_applied = [c.model_dump() for c in clamps]
 
         # Surface trace — record clamped weights and generated orders.
+        # Reads from the local variables, not from ``state``, because the
+        # state_delta has not been merged yet at this point.
         _trace_maybe(state, "06_risk_gate_out", {
             "clamped_weights": proposed,
-            "orders": state["final_orders"],
-            "clamps": state["risk_clamps_applied"],
+            "orders":          final_orders,
+            "clamps":          risk_clamps_applied,
         })
 
-        return
-        yield  # required to make this an async generator
+        # Contract Rule 1 — yield a single Event whose state_delta
+        # carries both writes.  RiskGate's output handshake to the
+        # Executor (final_orders) and to observability
+        # (risk_clamps_applied) is one logical step; co-emitting keeps
+        # the merge atomic on the SessionService.  See
+        # ``docs/contract-invariants.md`` §C-Rule 1.
+        yield Event(
+            author        = self.name,
+            invocation_id = ctx.invocation_id,
+            actions       = EventActions(state_delta={
+                "final_orders":        final_orders,
+                "risk_clamps_applied": risk_clamps_applied,
+            }),
+        )
 
 
 # Module-level singleton — pipeline uses RiskGateAgent(broker=...) factory instead.

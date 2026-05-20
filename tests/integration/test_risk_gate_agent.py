@@ -12,6 +12,7 @@ def _make_ctx(state: dict) -> MagicMock:
     session.state = state
     ctx = MagicMock()
     ctx.session = session
+    ctx.invocation_id = "test-invocation"
     return ctx
 
 
@@ -32,7 +33,9 @@ async def test_risk_gate_applies_constraints_and_sets_orders():
         "positions": {},
     }
     ctx = _make_ctx(state)
-    async for _ in agent._run_async_impl(ctx):
-        pass
+    # Drain the generator and merge the yielded state_delta into ``state``
+    # so the assertions below see the post-propagation view (Rule 1).
+    async for _event in agent._run_async_impl(ctx):
+        state.update(_event.actions.state_delta)
     assert "final_orders" in state
     assert "risk_clamps_applied" in state
