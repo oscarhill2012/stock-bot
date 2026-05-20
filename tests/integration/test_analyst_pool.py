@@ -16,8 +16,15 @@ def test_analyst_pool_has_five_agents():
 
 
 def test_analyst_pool_agent_names():
+    """A2.5: Fund and News slots are now YieldingAnalystWrapper branches.
+
+    Their names changed from the inner LlmAgent names ("FundamentalAnalyst",
+    "NewsAnalyst") to the wrapper names ("FundamentalAnalystBranch",
+    "NewsAnalystBranch").  TechnicalAnalyst, SocialAnalyst, and
+    SmartMoneyAnalyst are unchanged.
+    """
     names = {a.name for a in analyst_pool.sub_agents}
     assert names == {
-        "TechnicalAnalyst", "FundamentalAnalyst", "NewsAnalyst",
+        "TechnicalAnalyst", "FundamentalAnalystBranch", "NewsAnalystBranch",
         "SocialAnalyst", "SmartMoneyAnalyst",
     }

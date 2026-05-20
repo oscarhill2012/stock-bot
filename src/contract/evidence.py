@@ -145,6 +145,12 @@ class AnalystEvidence(BaseModel):
     extractor-emitted issues (missing data window, NaN replacement, etc.) so
     downstream consumers can tell "extractor returned 0.0 because the input
     was missing" apart from "extractor returned a real 0.0".
+
+    `raw_text` is an optional pass-through of the raw provider text the LLM
+    analyst saw (News headlines, Fundamental filing excerpts).  Empty / None
+    for deterministic analysts (Technical, Social, SmartMoney) where there
+    is no provider prose.  Capped at 10 000 characters to keep the strategist
+    prompt bounded.
     """
 
     ticker: str
@@ -154,3 +160,4 @@ class AnalystEvidence(BaseModel):
     features: dict[str, float]
     feature_warnings: list[str] = Field(default_factory=list)
     verdict: AnalystVerdict
+    raw_text: str | None = Field(default=None, max_length=10_000)
