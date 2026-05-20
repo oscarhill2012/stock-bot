@@ -11,15 +11,12 @@ from agents.strategist.stance_schema import TickerStance
 
 
 def _ctx(
-    prices: dict[str, float] | None = None,
     weights: dict[str, float] | None = None,
 ) -> TickContext:
     """Build a minimal TickContext for test use.
 
     Parameters
     ----------
-    prices:
-        Optional mapping of ticker → current market price.
     weights:
         Optional mapping of ticker → current portfolio weight.
 
@@ -28,12 +25,18 @@ def _ctx(
     TickContext
         A TickContext seeded with ``tick_id="tick_X"``, ``decision_tag="x"``,
         and a fixed datetime of 2026-05-08 14:00 UTC.
+
+    Notes
+    -----
+    ``current_prices`` is no longer carried on ``TickContext`` — the strategist
+    deliberately does not stamp ``opened_price`` on freshly-opened positions;
+    the executor does that post-fill.  See ``PositionThesis`` docstring for
+    the responsibility split.
     """
     return TickContext(
         tick_id="tick_X",
         decision_tag="x",
         now=datetime(2026, 5, 8, 14, 0, tzinfo=UTC),
-        current_prices=prices or {},
         current_weights=weights or {},
     )
 
@@ -49,7 +52,7 @@ def test_open_creates_position_thesis():
         target_price=210.0,
         stop_price=185.0,
     )
-    ctx = _ctx(prices={"AAPL": 200.0}, weights={})
+    ctx = _ctx(weights={})
     out = derive_legacy_fields([stance], ctx)
 
     assert out.target_weights == {"AAPL": 0.08}
@@ -57,7 +60,9 @@ def test_open_creates_position_thesis():
 
     pt = out.new_positions["AAPL"]
     assert pt.opened_at == ctx.now
-    assert pt.opened_price == 200.0
+    # ``opened_price`` is deliberately left unset by the strategist — the
+    # executor stamps the real fill price post-BUY.  See PositionThesis docs.
+    assert pt.opened_price is None
     assert pt.opened_tag == "x"
     assert pt.opened_tick_id == "tick_X"
     assert pt.target_price == 210.0
@@ -164,10 +169,7 @@ def test_multiple_stances_aggregate_correctly():
             trim_reason="overweight",
         ),
     ]
-    ctx = _ctx(
-        prices={"AAPL": 200.0, "MSFT": 410.0, "NVDA": 850.0},
-        weights={"MSFT": 0.10, "NVDA": 0.15},
-    )
+    ctx = _ctx(weights={"MSFT": 0.10, "NVDA": 0.15})
     out = derive_legacy_fields(stances, ctx)
 
     assert out.target_weights == {"AAPL": 0.08, "MSFT": 0.0, "NVDA": 0.05}
@@ -176,11 +178,22 @@ def test_multiple_stances_aggregate_correctly():
     assert out.trim_reasons == {"NVDA": "overweight"}
 
 
-def test_open_falls_back_to_zero_when_no_price():
-    """If the prices dict has no entry for the ticker, opened_price defaults to 0.0.
+def test_open_leaves_opened_price_none_for_executor_to_stamp():
+    """The strategist never sets ``opened_price`` — that is the executor's job.
 
-    This is intentional — the caller is responsible for ensuring the prices
-    dict is populated.  The derivation function does not raise.
+    Rationale: at strategist-time the order has not yet been submitted to the
+    broker, so any "open price" we might pick (last-trade, midpoint, etc.)
+    would be a guess that diverges from the real fill price the executor
+    later observes.  Worse, when the open is for a *new* ticker not yet in
+    ``current_prices``, the old derivation silently fell back to ``0.0``,
+    which then propagated into persistence and crashed the next tick's
+    held-view renderer with a divide-by-zero.
+
+    The architectural fix splits responsibility cleanly:
+      - strategist emits intent (target_price, stop_price, horizon, rationale)
+      - executor stamps the fact (opened_price) post-fill
+
+    This test pins the strategist side of that contract.
     """
     stance = TickerStance(
         ticker="AAPL",
@@ -191,10 +204,10 @@ def test_open_falls_back_to_zero_when_no_price():
         target_price=210.0,
         stop_price=185.0,
     )
-    ctx = _ctx(prices={}, weights={})
+    ctx = _ctx(weights={})
     out = derive_legacy_fields([stance], ctx)
 
-    assert out.new_positions["AAPL"].opened_price == 0.0
+    assert out.new_positions["AAPL"].opened_price is None
 
 
 def test_add_action_only_populates_target_weight():
@@ -215,7 +228,7 @@ def test_add_action_only_populates_target_weight():
     )
     # Current weight 0.08 → preferred 0.15; difference 0.07 > SIZE_CHANGE_EPSILON (0.02)
     # → derive_lifecycle_action returns "add"
-    ctx = _ctx(prices={"AAPL": 210.0}, weights={"AAPL": 0.08})
+    ctx = _ctx(weights={"AAPL": 0.08})
     out = derive_legacy_fields([stance], ctx)
 
     assert out.target_weights == {"AAPL": 0.15}

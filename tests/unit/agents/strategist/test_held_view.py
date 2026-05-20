@@ -10,7 +10,7 @@ from broker.portfolio import Portfolio, Position
 
 def _thesis(
     ticker: str = "AAPL",
-    opened_price: float = 192.40,
+    opened_price: float | None = 192.40,
     target_price: float | None = 210.0,
     stop_price: float | None = 185.0,
     catalyst: str | None = "Q3 earnings",
@@ -153,6 +153,63 @@ def test_accepts_thesis_instance_or_dict():
     )
     out = render_held_positions_view(positions={"AAPL": thesis_inst}, portfolio=pf)
     assert "AAPL" in out
+
+
+def test_none_opened_price_renders_pending_placeholders_without_raising():
+    """When ``opened_price`` is ``None`` (executor has not yet stamped the fill
+    price) the renderer must avoid every divide-by-zero path and instead emit
+    explicit "pending" placeholders.
+
+    Concretely, on a freshly-opened position the strategist emits
+    ``opened_price=None`` (see ``PositionThesis`` docstring for the executor
+    handoff).  Within the same tick, before the executor's BUY clears, the
+    held-view renderer used to divide ``(target_price - None) / None`` and
+    crash the tick — the pre-fix backtest produced exactly this
+    ``ZeroDivisionError``.  This test pins the post-fix behaviour:
+
+      - the header line shows "(open price pending)" instead of "$0.00"
+      - the Aim line shows absolute target / stop prices but omits the
+        signed percent-from-open (no honest denominator)
+      - the Now line shows the live price + weight and an
+        "(unrealised pending open price)" placeholder
+    """
+    thesis = _thesis(opened_price=None)
+    pf = Portfolio(
+        cash=900.0,
+        positions={"AAPL": Position(quantity=10.0, avg_cost=0.0, last_price=198.50)},
+    )
+    out = render_held_positions_view(
+        positions={"AAPL": thesis.model_dump(mode="json")}, portfolio=pf
+    )
+    assert "(open price pending)" in out
+    assert "$210.00" in out                    # absolute target still shown
+    assert "$185.00" in out                    # absolute stop still shown
+    assert "from open" not in out              # percent-from-open suppressed
+    assert "(unrealised pending open price)" in out
+    assert "$198.50" in out                    # live price still rendered
+
+
+def test_zero_opened_price_treated_as_unknown():
+    """Legacy persistence rows may still carry ``opened_price=0.0``; the
+    renderer must treat ``0.0`` the same as ``None`` to avoid the
+    divide-by-zero that the pre-fix code produced.
+
+    The architectural fix made ``opened_price`` Optional, but rows persisted
+    before the fix can still appear with ``0.0`` after a round-trip through
+    ``model_dump`` / DB.  Treating both values identically is the single
+    guard the renderer needs.
+    """
+    thesis = _thesis(opened_price=0.0)
+    pf = Portfolio(
+        cash=900.0,
+        positions={"AAPL": Position(quantity=10.0, avg_cost=0.0, last_price=198.50)},
+    )
+    out = render_held_positions_view(
+        positions={"AAPL": thesis.model_dump(mode="json")}, portfolio=pf
+    )
+    assert "(open price pending)" in out
+    assert "from open" not in out
+    assert "(unrealised pending open price)" in out
 
 
 def test_corrupt_thesis_dict_is_skipped_without_raising():

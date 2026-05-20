@@ -269,7 +269,6 @@ def _strategist_validation_callback(
     tickers: list[str] = state.get("tickers", []) or []
     portfolio = _coerce_portfolio(state.get("portfolio"))
     current_weights = portfolio.current_weights()
-    current_prices = {t: pos.last_price for t, pos in portfolio.positions.items()}
     tick_id: str = state.get("tick_id") or state.get("recorded_at", "unknown")
 
     # ── Pass 1: Exhaustive ────────────────────────────────────────────────────
@@ -356,7 +355,6 @@ def _strategist_validation_callback(
         tick_id=str(tick_id),
         decision_tag=decision.decision_tag,
         now=derivation_now,
-        current_prices=current_prices,
         current_weights=current_weights,
     )
     derived = derive_legacy_fields(decision.stances, ctx)

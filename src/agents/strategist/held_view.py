@@ -61,16 +61,35 @@ def _format_one(thesis: PositionThesis, portfolio: Portfolio) -> str:
 
     lines: list[str] = [ticker]
 
+    # ``opened_price`` may legitimately be ``None`` (strategist proposed an
+    # open and the executor hasn't stamped the fill price yet — only
+    # observable within a single tick) or ``0.0`` (legacy persistence from
+    # before the executor took ownership of opened_price).  In either case
+    # we treat the open price as unknown and skip the percent-from-open
+    # arithmetic that used to divide by zero.  ``has_open_price`` is the
+    # single guard for every code path that would have done the division.
+    has_open_price = (
+        thesis.opened_price is not None and thesis.opened_price > 0.0
+    )
+
     # Header line — when the position was opened and at what price.  We surface
     # the *current* portfolio weight on this line (not the weight at open) so
     # the LLM can see entry-price alongside present portfolio weight in a
     # single glance; the same weight reappears on the "Now:" line for symmetry
     # with the live-price block.
     opened_str = thesis.opened_at.strftime("%Y-%m-%d %H:%M")
-    lines.append(
-        f"  Opened:    {opened_str} at ${thesis.opened_price:.2f}, "
-        f"weight {curr_weight:.3f}"
-    )
+    if has_open_price:
+        lines.append(
+            f"  Opened:    {opened_str} at ${thesis.opened_price:.2f}, "
+            f"weight {curr_weight:.3f}"
+        )
+    else:
+        # Price not yet known — show the timestamp and the placeholder so
+        # the prompt still communicates *when* the position was opened.
+        lines.append(
+            f"  Opened:    {opened_str} (open price pending), "
+            f"weight {curr_weight:.3f}"
+        )
 
     lines.append(f"  Why:       {thesis.rationale}")
 
@@ -78,19 +97,30 @@ def _format_one(thesis: PositionThesis, portfolio: Portfolio) -> str:
     if thesis.target_price is None and thesis.stop_price is None:
         lines.append("  Aim:       (none set at open)")
     else:
-        # Signed percentage from the open price for both target and stop.
-        target_part = (
-            f"target ${thesis.target_price:.2f} "
-            f"({(thesis.target_price - thesis.opened_price) / thesis.opened_price * 100:+.1f}% from open)"
-            if thesis.target_price is not None
-            else "target (none)"
-        )
-        stop_part = (
-            f"stop ${thesis.stop_price:.2f} "
-            f"({(thesis.stop_price - thesis.opened_price) / thesis.opened_price * 100:+.1f}% from open)"
-            if thesis.stop_price is not None
-            else "stop (none)"
-        )
+
+        # Show the absolute target / stop price always; suffix the signed
+        # percent-from-open only when we actually have an open price to
+        # divide by.  This keeps the LLM-facing prompt informative for
+        # positions that were just opened this tick (no fill stamp yet)
+        # without crashing on the divide-by-zero we hit pre-fix.
+        if thesis.target_price is not None:
+            if has_open_price:
+                target_pct = (thesis.target_price - thesis.opened_price) / thesis.opened_price * 100
+                target_part = f"target ${thesis.target_price:.2f} ({target_pct:+.1f}% from open)"
+            else:
+                target_part = f"target ${thesis.target_price:.2f}"
+        else:
+            target_part = "target (none)"
+
+        if thesis.stop_price is not None:
+            if has_open_price:
+                stop_pct = (thesis.stop_price - thesis.opened_price) / thesis.opened_price * 100
+                stop_part = f"stop ${thesis.stop_price:.2f} ({stop_pct:+.1f}% from open)"
+            else:
+                stop_part = f"stop ${thesis.stop_price:.2f}"
+        else:
+            stop_part = "stop (none)"
+
         lines.append(f"  Aim:       {target_part}  |  {stop_part}")
 
     lines.append(f"  Horizon:   {thesis.horizon}")
@@ -99,16 +129,25 @@ def _format_one(thesis: PositionThesis, portfolio: Portfolio) -> str:
     if thesis.catalyst:
         lines.append(f"  Catalyst:  {thesis.catalyst}")
 
-    # Live price and unrealised P&L — omit if price is unavailable or zero.
+    # Live price and unrealised P&L — omit if price is unavailable or zero,
+    # and drop the unrealised-pct portion if we have no open price to compare
+    # against (same divide-by-zero defence as the target / stop block).
     if pos is None or pos.last_price <= 0:
         lines.append("  Now:       (price unavailable)")
-    else:
+    elif has_open_price:
         # Signed percentage from the open price (not avg_cost) — convention:
         # we track performance against *our decision price*, not blended cost.
         pnl_pct = (pos.last_price - thesis.opened_price) / thesis.opened_price * 100
         lines.append(
             f"  Now:       ${pos.last_price:.2f}  |  weight {curr_weight:.3f}  "
             f"|  {pnl_pct:+.2f}% unrealised"
+        )
+    else:
+        # We have a live price but no open price yet — show the live price
+        # and weight, but skip the unrealised-pct (nothing to compare to).
+        lines.append(
+            f"  Now:       ${pos.last_price:.2f}  |  weight {curr_weight:.3f}  "
+            f"|  (unrealised pending open price)"
         )
 
     return "\n".join(lines)

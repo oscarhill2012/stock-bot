@@ -69,11 +69,29 @@ class ExecutorAgent(BaseAgent):
                     ),
                 )
 
-                # BUY: record the thesis in the position book so SELL can later recover it.
+                # BUY: record the thesis in the position book so SELL can later
+                # recover it.  Stamp ``opened_price`` with the actual fill price
+                # here — the strategist could not know the fill price at decision
+                # time, so ``PositionThesis.opened_price`` arrives as ``None``
+                # from ``derive_legacy_fields`` and is filled in below.  Without
+                # this stamp, the next tick's held-view renderer would divide
+                # ``(target_price - None) / None`` and crash.
+                #
+                # The thesis arrives as a JSON-serialised dict (the strategist's
+                # after-callback dumps it before re-writing state), so we mutate
+                # the dict directly rather than reconstructing the model.  A
+                # defensive copy avoids mutating the strategist's decision
+                # payload, which downstream code (decision snapshot logger) may
+                # still inspect.
                 if order.action == "BUY":
                     decision = state.get("strategist_decision") or {}
                     thesis_dict = (decision.get("new_positions") or {}).get(order.ticker)
                     if thesis_dict is not None:
+
+                        # Shallow copy — PositionThesis fields are all scalars
+                        # (no nested mutables to worry about).
+                        thesis_dict = dict(thesis_dict)
+                        thesis_dict["opened_price"] = fill.price
                         positions[order.ticker] = thesis_dict
 
                 # SELL: write the closing trade-log entry and remove from the position book.

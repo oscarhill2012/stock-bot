@@ -27,16 +27,20 @@ class TickContext:
         decision_tag: Snake-case label attached to this tick's decision
             (e.g. ``"morning_sweep_2026_05_08"``).
         now: Timestamp of the current tick, used as ``opened_at`` for new positions.
-        current_prices: Mapping of ticker → current market price. Used to
-            populate ``PositionThesis.opened_price`` when opening a position.
         current_weights: Mapping of ticker → current portfolio weight. Used to
             determine the lifecycle action (open / close / trim / add / hold).
+
+    Note:
+        ``current_prices`` deliberately omitted: the strategist no longer
+        stamps ``opened_price`` on freshly-opened ``PositionThesis``
+        rows.  That field is the executor's responsibility now, since
+        the strategist runs before the order fills and has no honest
+        price to record.  See ``PositionThesis`` docstring.
     """
 
     tick_id: str
     decision_tag: str
     now: datetime
-    current_prices: dict[str, float]
     current_weights: dict[str, float]
 
 
@@ -75,17 +79,20 @@ def derive_legacy_fields(
     This function is **pure** — it reads from ``stances`` and ``ctx`` and returns
     a ``DerivedFields`` snapshot with no side effects. It is called from the
     strategist's after-callback (C9), which is responsible for validating the
-    stances and ensuring ``ctx.current_prices`` is populated before calling here.
+    stances before calling here.
 
     Each stance is processed independently:
 
     - ``target_weights`` is populated for *every* stance regardless of action,
       including holds.
     - ``new_positions`` fires only on ``"open"`` (current weight flat →
-      preferred weight live).  The ``horizon`` field on ``PositionThesis`` is
-      required and non-Optional, so ``stance.horizon or "swing"`` provides a
-      safe fallback if the LLM omitted it; the after-callback in C9 will
-      reprompt for a proper value before persisting in production.
+      preferred weight live).  The constructed ``PositionThesis`` carries
+      no ``opened_price`` — that field is stamped by the executor after
+      the BUY fill clears the broker (see the ``PositionThesis``
+      docstring for the responsibility split).  ``stance.horizon or
+      "swing"`` provides a safe fallback if the LLM somehow omitted it,
+      though the stance schema's lifecycle-hint validator should reject
+      any non-zero stance lacking ``horizon`` long before we reach here.
     - ``close_reasons`` fires only on ``"close"`` and only when the stance
       actually carries a ``close_reason``.  An empty ``close_reason`` on a
       close action is a silent skip here; the after-callback rejects such
@@ -122,15 +129,17 @@ def derive_legacy_fields(
 
         if action == "open":
             # Construct a PositionThesis for the newly opened position.
-            # `stance.horizon or "swing"` is a defensive fallback: PositionThesis
-            # requires a non-None Literal horizon, but the LLM may omit it on an
-            # open stance.  The after-callback will reprompt in production; here we
-            # default to "swing" to keep the function total (never raises).
-            opened_price = ctx.current_prices.get(stance.ticker, 0.0)
+            # ``opened_price`` is intentionally omitted (defaults to None on
+            # the schema) — the strategist runs before the order fills, so
+            # the executor is the one that knows the fill price and stamps
+            # it post-fill.  ``stance.horizon or "swing"`` is a defensive
+            # fallback: the stance schema's lifecycle-hint validator should
+            # reject any non-zero stance lacking ``horizon`` long before
+            # we reach here, so this fallback should never fire in
+            # production — kept only to keep the function total.
             new_positions[stance.ticker] = PositionThesis(
                 ticker=stance.ticker,
                 opened_at=ctx.now,
-                opened_price=opened_price,
                 opened_tag=ctx.decision_tag,
                 rationale=stance.rationale,
                 horizon=stance.horizon or "swing",
