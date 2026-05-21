@@ -19,8 +19,8 @@ from google.adk.agents import LlmAgent
 
 from agents.analysts._common import _chain_after, _chain_before
 from agents.analysts.cache_callbacks import make_report_cache_callbacks
-from agents.analysts.fundamental.agent import _fundamental_hash_inputs_from_dict
 from agents.analysts.heuristics import FundamentalVocabulary
+from agents.analysts.report_cache import fundamental_hash_inputs_from_dict
 from agents.analysts.fundamental.prompts import build_fundamental_instruction
 from agents.analysts.report_cache import (
     FUNDAMENTAL_PROMPT_VERSION,
@@ -75,7 +75,7 @@ def build_fundamental_branch_for_ticker(
     #
     # The hash_inputs lambda receives the per-ticker slice from
     # state["temp:fundamental_data"] and delegates to
-    # _fundamental_hash_inputs_from_dict (imported directly from agent.py).
+    # fundamental_hash_inputs_from_dict (imported directly from agent.py).
     # That helper re-validates the stored model_dump() dicts back into typed
     # CompanyRatios / Filing / Form4Bundle objects before computing the digest.
     # -----------------------------------------------------------------------
@@ -86,7 +86,7 @@ def build_fundamental_branch_for_ticker(
         verdicts_state_key = f"temp:fundamental_verdict_{ticker}",
         ticker             = ticker,
         output_schema      = TickerVerdict,
-        hash_inputs        = lambda d: _fundamental_hash_inputs_from_dict(
+        hash_inputs        = lambda d: fundamental_hash_inputs_from_dict(
             ticker=ticker,
             triad=(d or {}),
         ),

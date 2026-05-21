@@ -1,162 +1,63 @@
-"""News analyst LlmAgent — closed-vocab narrowed (Phase 5 Task 11).
+"""News analyst SequentialAgent branch — per-ticker fan-out (Phase 9).
 
-The LLM is instructed to emit ``AnalystVerdict``-shaped dicts keyed as
-``news_verdicts`` in session state.  The ``make_evidence_callback`` after-
-callback then converts those verdicts into ``AnalystEvidence`` records and
-writes them to ``state["news_evidence"]``.
+Builds: SequentialAgent[NewsFetchAgent, *per-ticker branches, NewsJoinerAgent]
 
-Renamed from SentimentAnalyst in Task 6.  Provider input narrowed to
-``news/`` only; social_sentiment migrates to the new Social analyst (Task 7).
+Where each per-ticker branch is
+``IsolatedFailureWrapper(RetryingAgentWrapper(LlmAgent))`` constructed via
+``build_news_branch_for_ticker``.  Composition is done here rather than in
+``orchestrator.pipeline`` so the per-tick pipeline build (driver.py /
+tick.py) calls a single factory.
 
-The agent factory :func:`build_news_analyst` accepts a ``NewsVocabulary`` at
-construction time and renders the closed-vocab prompt via
-``build_news_instruction`` before wiring the ``LlmAgent``.  This factory is
-the **single construction path** — production wiring goes through it from
-``orchestrator.pipeline``, and the structural tests in
-``tests/analysts/test_news.py`` call it directly via the
-``news_analyst_fixture`` conftest helper.  Pre-2026-05-21 this module
-exposed a module-level ``news_analyst`` singleton built at import time; it
-ran ``load_heuristics()`` on import (a disk read), and
-``src/agents/analysts/report_cache.py:104`` documented its circular-import
-footgun.  Both the singleton and the hardcoded model literal are gone — the
-model ID is read from ``config/models.json::news_analyst`` via
-``src.config.models.get_models_config``.
-
-Phase 5 Task 6 adds a disk-backed memoisation cache.  The cache layer is now
-wired via the shared ``make_report_cache_callbacks`` factory in
-``agents.analysts.cache_callbacks`` — see that module's docstring for the
-lifecycle details and the B22 bug-fix that motivates centralising the logic
-(specifically, ``_after`` must parse ``llm_response`` directly rather than
-reading state, because ADK's ``__maybe_save_output_to_state`` runs after the
-after-model-callback chain).
-
-When the environment variable ``STOCKBOT_TRACE=1`` is set, the factory also
-attaches trace hooks (after the cache layer) that capture the raw LLM prompt
-and response into a ``TraceWriter`` (if one is present in session state under
-the ``"_trace"`` key).
+The legacy ``build_news_analyst`` factory (one LlmAgent over a
+``VerdictBatch``) is retired in Phase 9 — every call site (pipeline, tests)
+is updated to use ``build_news_branch`` instead.  See
+``docs/Phase9-agent-fanning-per-ticker/spec.md``.
 """
 from __future__ import annotations
 
-import os
+from google.adk.agents import SequentialAgent
 
-from google.adk.agents import LlmAgent
-
-from agents.analysts._base_yield import YieldingAnalystWrapper
-from agents.analysts._common import (
-    _chain_after,
-    _chain_before,
-    make_evidence_callback,
-)
-from agents.analysts.cache_callbacks import make_report_cache_callbacks
 from agents.analysts.heuristics import NewsVocabulary
-from agents.analysts.report_cache import (
-    NEWS_PROMPT_VERSION,
-    news_hash_inputs,
-)
-from config.models import get_models_config
-from contract.evidence import VerdictBatch
-from contract.extractors.news import extract_news_features
-from observability.trace import make_llm_trace_callbacks
+from agents.analysts.news.fetch_agent import NewsFetchAgent
+from agents.analysts.news.joiner import NewsJoinerAgent
+from agents.analysts.news.per_ticker import build_news_branch_for_ticker
 
-from .fetch import news_fetch_callback
-from .prompts import build_news_instruction
 
-# ---------------------------------------------------------------------------
-# Agent factory
-# ---------------------------------------------------------------------------
+def build_news_branch(
+    vocab: NewsVocabulary,
+    *,
+    tickers: list[str],
+) -> SequentialAgent:
+    """Construct the per-tick News analyst branch from the current watchlist.
 
-def build_news_analyst(vocab: NewsVocabulary) -> YieldingAnalystWrapper:
-    """Construct a fresh ``NewsAnalyst`` LlmAgent with closed-vocab prompt + cache.
+    Args:
+        vocab:    Validated NewsVocabulary holding closed-vocab tag lists.
+        tickers:  The watchlist as known at pipeline-build time.  An empty
+                  list is permitted — the branch becomes a fetch+joiner
+                  no-op that still emits canonical (empty) news_verdicts /
+                  news_evidence so downstream consumers see consistent
+                  shapes.
 
-    Renders the instruction by substituting the three closed-vocabulary lists
-    (catalysts, novelty, direction) into the prompt template.  The resulting
-    instruction still contains ADK runtime placeholders ``{news_context}`` and
-    ``{tickers}`` which ADK's ``inject_session_state`` fills each tick from
-    session state written by ``news_fetch_callback``.
+    Returns:
+        SequentialAgent named ``"NewsAnalystBranch"`` composed of
+        ``[NewsFetchAgent, *per-ticker branches, NewsJoinerAgent]``.
 
-    Cache layer:
-        ``make_report_cache_callbacks(...)`` (from ``agents.analysts.cache_callbacks``)
-        returns before/after hooks that consult the disk cache.  A full cache hit
-        short-circuits the LLM call; a miss falls through to the real model.
-
-    Trace layer:
-        When ``STOCKBOT_TRACE=1`` is set, trace hooks are chained *after* the
-        cache hook so that cache hits are recorded as ``model="cache"`` in the
-        trace log.
-
-    Parameters
-    ----------
-    vocab:
-        Validated ``NewsVocabulary`` holding the closed-vocab tag lists.
-
-    Returns
-    -------
-    YieldingAnalystWrapper
-        A fully-wired ``NewsAnalystBranch`` ready to be added to the
-        ``AnalystPool`` ``ParallelAgent``.  The inner ``LlmAgent`` is
-        accessible via ``.inner`` for tests that need to inspect it directly.
+    The caller (``orchestrator.pipeline._build_analyst_pool``) is
+    responsible for invoking this once per tick with the current watchlist
+    — see the Phase 9 spec §7 for the per-tick rebuild rationale.
     """
-    instruction = build_news_instruction(vocab)
+    # Build one isolated per-ticker LlmAgent branch for every ticker in
+    # the watchlist.  An empty watchlist is valid — the SequentialAgent
+    # then contains only [FetchAgent, JoinerAgent] which is a no-op pass.
+    per_ticker = [
+        build_news_branch_for_ticker(ticker, vocab) for ticker in tickers
+    ]
 
-    # Read the News analyst's model ID from the central config — the only
-    # source of truth.  See ``config/models.json`` and the
-    # ``src/config/models.py`` loader for the rationale.
-    model = get_models_config().news_analyst
-
-    # Attach LLM trace callbacks only in trace mode — zero-cost gate.
-    trace_before = None
-    trace_after  = None
-    if os.environ.get("STOCKBOT_TRACE") == "1":
-        trace_before, trace_after = make_llm_trace_callbacks("03_news_llm", model=model)
-
-    # Build cache hooks via the shared factory — these run before the trace hooks
-    # so a cache hit is still visible in the trace log (the _before hook emits
-    # its own marker).  The lambda unpacks the per-ticker news-data dict and
-    # passes the article list to the domain-specific hash function.
-    cache_before, cache_after = make_report_cache_callbacks(
-        analyst_name       = "news",
-        prompt_version     = NEWS_PROMPT_VERSION,
-        data_state_key     = "temp:news_data",
-        verdicts_state_key = "news_verdicts",
-        hash_inputs        = lambda d: news_hash_inputs((d or {}).get("news") or []),
-        trace_label        = "03_news_llm",
-    )
-
-    # Chain: cache first (may short-circuit), then trace.
-    before_cb = _chain_before(cache_before, trace_before)
-    after_cb  = _chain_after(cache_after, trace_after)
-
-    # Build the inner LlmAgent — all callbacks and config are unchanged from
-    # the pre-A2.5 version.  The outer YieldingAnalystWrapper republishes the
-    # after_agent_callback's evidence write as a ``state_delta`` yield so the
-    # write is durable on persistent ADK session backends (Rule 1 compliance).
-    llm = LlmAgent(
-        name="NewsAnalyst",
-        model=model,
-        instruction=instruction,
-        output_schema=VerdictBatch,
-        output_key="news_verdicts",
-        before_agent_callback=news_fetch_callback,
-        after_agent_callback=make_evidence_callback(
-            analyst="news",
-            extractor=extract_news_features,
-            verdicts_state_key="news_verdicts",
-        ),
-        before_model_callback=before_cb,
-        after_model_callback=after_cb,
-    )
-    return YieldingAnalystWrapper(
+    return SequentialAgent(
         name="NewsAnalystBranch",
-        inner=llm,
-        evidence_state_key="news_evidence",
-        trace_key="02_news_verdict",
+        sub_agents=[
+            NewsFetchAgent(name="NewsFetch"),
+            *per_ticker,
+            NewsJoinerAgent(name="NewsJoiner"),
+        ],
     )
-
-
-# Module-level singleton removed 2026-05-21.  Previously a
-# ``news_analyst = _build_news_analyst(load_heuristics().news_vocabulary)``
-# was constructed at import time; it carried a disk-read side effect
-# (``load_heuristics``) and a circular-import footgun documented in
-# ``agents/analysts/report_cache.py:104``.  All callers — production
-# pipeline and structural tests alike — now invoke :func:`build_news_analyst`
-# explicitly.
