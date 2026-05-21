@@ -86,13 +86,24 @@ def _strategist_validation_callback(
     """Validate per-ticker stances; on success, derive legacy fields and write back.
 
     Runs the cross-stance checks that the schema can't express on its own
-    (exhaustiveness across the watchlist, no off-watchlist tickers, and
-    lifecycle-specific reason fields that depend on the current portfolio).
-    Per-stance discipline (non-zero stances must carry horizon/target_price/
-    stop_price) is enforced at the schema level by
-    ``TickerStance._require_lifecycle_hints_on_nonzero`` — failures there
-    raise during ADK's ``output_schema`` parse and never reach this
-    callback.
+    (no off-watchlist tickers, and lifecycle-specific reason fields that
+    depend on the current portfolio).  Per-stance discipline (non-zero
+    stances must carry horizon/target_price/stop_price) is enforced at the
+    schema level by ``TickerStance._require_lifecycle_hints_on_nonzero`` —
+    failures there raise during ADK's ``output_schema`` parse and never
+    reach this callback.
+
+    Active-stances contract (from the 2026-05-21 simplification):
+
+        The strategist no longer needs to emit a stance for *every*
+        watchlist ticker.  It emits stances only for tickers it wants to
+        *change* (open / add / trim / close); any watchlist ticker the
+        strategist does NOT emit a stance for is treated as a carry-forward
+        (held → keep holding, flat → stay flat).  Derivation pads
+        ``target_weights`` accordingly so downstream agents still see an
+        exhaustive dict.  This callback therefore does NOT enforce
+        exhaustiveness — only that whatever IS emitted is on-watchlist and
+        carries the required lifecycle reasons.
 
     Why every failure raises rather than returning Content:
 
@@ -116,9 +127,9 @@ def _strategist_validation_callback(
 
     Raises:
         StrategistContractViolation: when the decision violates a
-            watchlist-level contract (missing tickers, off-watchlist
-            tickers, or missing close_reason/trim_reason for the
-            lifecycle action implied by current vs preferred weight).
+            watchlist-level contract (off-watchlist tickers, or missing
+            close_reason/trim_reason for the lifecycle action implied by
+            current vs preferred weight).
     """
     state = callback_context.state
     raw = state.get("strategist_decision")
@@ -135,21 +146,12 @@ def _strategist_validation_callback(
     current_weights = portfolio.current_weights()
     tick_id: str = state.get("tick_id") or state.get("recorded_at", "unknown")
 
-    # ── Pass 1: Exhaustive ────────────────────────────────────────────────────
-    # Every watchlist ticker must have exactly one stance.
-    emitted = {s.ticker for s in decision.stances}
-    missing = [t for t in tickers if t not in emitted]
-    if missing:
-
-        msg = (
-            f"Strategist missed stances for these tickers: {missing}.  "
-            f"The strategist must emit a TickerStance for EVERY watchlist ticker."
-        )
-        _log_offending_decision(str(tick_id), decision, msg)
-        raise StrategistContractViolation(msg)
-
-    # ── Pass 2: No off-watchlist tickers ─────────────────────────────────────
+    # ── Pass 1: No off-watchlist tickers ─────────────────────────────────────
     # Prevents the model from inventing tickers not in the current watchlist.
+    # No exhaustiveness check — omission is read as an implicit hold by
+    # ``derive_legacy_fields`` (active-stances contract); the strategist only
+    # emits stances for the tickers it wants to *change*.
+    emitted = {s.ticker for s in decision.stances}
     extras = [t for t in emitted if t not in tickers]
     if extras:
 
@@ -160,7 +162,7 @@ def _strategist_validation_callback(
         _log_offending_decision(str(tick_id), decision, msg)
         raise StrategistContractViolation(msg)
 
-    # ── Pass 3: Lifecycle reason enforcement ─────────────────────────────────
+    # ── Pass 2: Lifecycle reason enforcement ─────────────────────────────────
     # The derived action for each stance is computed from current vs preferred
     # weight.  Closes and trims need an explicit reason in the audit trail —
     # these checks live here (not in the schema) because they depend on the
@@ -202,13 +204,17 @@ def _strategist_validation_callback(
             _log_offending_decision(str(tick_id), decision, msg)
             raise StrategistContractViolation(msg)
 
-    # ── Pass 4: Derive legacy fields ─────────────────────────────────────────
+    # ── Pass 3: Derive legacy fields ─────────────────────────────────────────
     # All validation passed — derive the flat legacy fields from the stances
     # so downstream consumers (executor, persistence) see the shape they expect.
     #
     # Use state["as_of"] as the derivation timestamp when available (backtest
     # replay path) so PositionThesis.opened_at is deterministic.  Fall back to
     # wall-clock on live runs where as_of is absent.
+    #
+    # ``watchlist`` is passed through so the derivation's carry-forward pass
+    # can pad ``target_weights`` for tickers the strategist did not emit a
+    # stance for (active-stances contract).
     raw_as_of = state.get("as_of")
     derivation_now = resolve_as_of(
         raw_as_of if isinstance(raw_as_of, datetime) else None,
@@ -220,6 +226,7 @@ def _strategist_validation_callback(
         decision_tag=decision.decision_tag,
         now=derivation_now,
         current_weights=current_weights,
+        watchlist=tickers,
     )
     derived = derive_legacy_fields(decision.stances, ctx)
     decision.target_weights = derived.target_weights

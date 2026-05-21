@@ -42,30 +42,50 @@ Thesis:       {thesis}
 ## Held Positions (your prior decisions)
 {temp:held_positions_view}
 
-REMINDER — for every ticker listed above (currently held, weight > 0):
-- If you drop its preferred_weight to 0.0 → that is a CLOSE → close_reason MUST be set.
-- If you lower its preferred_weight but keep it > 0 → that is a TRIM → trim_reason MUST be set.
-Forgetting either field aborts the entire tick.  No exceptions.
-
 ## Ticker Evidence (per-analyst breakdown — features, tags, and prose reports)
 {temp:ticker_evidence}
 
 ## Reading analyst reports
 Where an analyst's report contradicts its lean, the lean is the analyst's
 final call — treat the report as their reasoning, not their conclusion. You
-may still override an analyst, but you must write down which signal you chose
-to overweight and why.
+may still override an analyst, but write down which signal you overweighted
+and why.
+
+Treat the digested aggregate as a deterministic input; you may disagree with
+it based on context (held position thesis, memory, day digest) — call out
+the disagreement in your rationale when you do.
 
 ## Your Job
-Emit a TickerStance for EVERY watchlist ticker: {tickers}.
 
-## OUTPUT CONTRACT — every rule below is enforced; violations abort the tick
+Watchlist for this tick: {tickers}.
+
+Emit a TickerStance ONLY for tickers you want to *change* (open / add / trim /
+close).  Tickers you DON'T emit a stance for are read as a carry-forward:
+- currently held → keep holding at the current weight, same thesis;
+- currently flat → stay flat.
+So a "no action" tick is a legitimate empty stances list — do not invent
+stances just to fill the watchlist.
+
+## OUTPUT CONTRACT — every rule is enforced; violations abort the tick
+
+The lifecycle action for each emitted stance is derived from current weight
+vs your ``preferred_weight``.  The table below is the single source of truth
+for which fields must be set per action; the worked examples at the bottom
+are illustrations, not a separate ruleset.
+
+| Action | Current → Preferred         | Required fields (in addition to ticker / preferred_weight / conviction / rationale)         |
+|--------|-----------------------------|---------------------------------------------------------------------------------------------|
+| OPEN   | 0       → > 0               | horizon, target_price, stop_price (+ optional catalyst)                                      |
+| ADD    | > 0     → higher (> 0)      | horizon, target_price, stop_price                                                            |
+| HOLD   | > 0     → same              | horizon, target_price, stop_price (still holding capital → still need exit discipline)       |
+| TRIM   | > 0     → lower (still > 0) | horizon, target_price, stop_price, **trim_reason**                                           |
+| CLOSE  | > 0     → 0                 | **close_reason**.  horizon / target_price / stop_price stay null — you are exiting.          |
 
 Schema-level rules (failing these means ADK rejects your response):
-- preferred_weight: float in [0.0, 1.0].  This bot is long-only — 0.0 is the
-  floor.  Downstream caps single-ticker weight at 20% and keeps ≥10% cash, so
-  realistic non-zero stances sit well below 1.0 and the sum across the
-  watchlist cannot exceed 90%.
+- preferred_weight: float in [0.0, 1.0].  Long-only — 0.0 is the floor.
+  Downstream caps single-ticker weight at 20% and keeps ≥10% cash, so
+  realistic non-zero stances sit well below 1.0 and the watchlist sum cannot
+  exceed 90%.
 - conviction: float in [0.0, 1.0].
 - confidence (decision-level): float in [0.0, 1.0].
 - horizon: one of "intraday", "swing", "long_term" — or null.
@@ -76,69 +96,24 @@ Schema-level rules (failing these means ADK rejects your response):
 - reasoning (decision-level): ≤{{DECISION_REASONING_MAX}} chars.
 - updated_thesis (decision-level): ≤{{DECISION_THESIS_MAX}} chars.
 - decision_tag (decision-level): snake_case label, ≤40 chars.
-- NON-ZERO RULE: if preferred_weight > 0, you MUST set horizon AND
-  target_price AND stop_price.  No exceptions — opens, adds, holds,
-  trims-still-held all need all three.
+- Off-watchlist tickers are rejected.
 
-Cross-stance rules (checked after parse; failing these aborts the tick):
-- EXHAUSTIVENESS: emit exactly one TickerStance per watchlist ticker, no more
-  no fewer.  Off-watchlist tickers are rejected.
-- CLOSE RULE: if the ticker is currently held (see "Held Positions" above) and
-  your preferred_weight is 0.0, you MUST set close_reason.  Lifecycle hint
-  fields (horizon/target_price/stop_price) stay null on full closes — there
-  is no thesis to exit because you are exiting.
-- TRIM RULE: if the ticker is currently held and your preferred_weight is
-  lower than its current weight but still > 0, you MUST set trim_reason AND
-  populate horizon/target_price/stop_price (you are still holding, so the
-  thesis remains active).
+## Two worked examples (the rest follow the table above)
 
-Treat the digested aggregate as a deterministic input; you may disagree with
-it based on context (held position thesis, memory, day digest) — call out
-the disagreement in your rationale when you do.
-
-## Stance examples (one per lifecycle action)
-
-OPEN (currently flat, preferred_weight > 0 — need horizon + target + stop):
+OPEN (currently flat, opening at 0.05):
 {{"ticker": "AAPL", "preferred_weight": 0.05, "conviction": 0.7,
 "rationale": "Strong fundamentals, bullish technical setup",
 "horizon": "swing", "target_price": 215.0, "stop_price": 180.0,
 "catalyst": "earnings beat expected next week",
 "close_reason": null, "trim_reason": null}}
 
-ADD (already held at 0.05, adding to 0.08 — same shape as OPEN):
-{{"ticker": "AAPL", "preferred_weight": 0.08, "conviction": 0.8,
-"rationale": "Thesis intact, accumulating on dip",
-"horizon": "swing", "target_price": 215.0, "stop_price": 180.0,
-"catalyst": null, "close_reason": null, "trim_reason": null}}
-
-HOLD (already held at 0.05, keeping at 0.05 — same shape as OPEN):
-{{"ticker": "AAPL", "preferred_weight": 0.05, "conviction": 0.6,
-"rationale": "No change in thesis, signals mixed",
-"horizon": "swing", "target_price": 215.0, "stop_price": 180.0,
-"catalyst": null, "close_reason": null, "trim_reason": null}}
-
-TRIM (held at 0.08, reducing to 0.04 — needs trim_reason AND lifecycle hints):
-{{"ticker": "AAPL", "preferred_weight": 0.04, "conviction": 0.5,
-"rationale": "De-risking on weakening technicals",
-"horizon": "swing", "target_price": 210.0, "stop_price": 185.0,
-"catalyst": null, "close_reason": null,
-"trim_reason": "rsi divergence, taking profit"}}
-
-CLOSE (held at 0.05, exiting to 0.0 — needs close_reason, lifecycle hints null):
+CLOSE (held at 0.05, exiting to 0.0):
 {{"ticker": "AAPL", "preferred_weight": 0.0, "conviction": 0.7,
 "rationale": "Thesis invalidated by guidance cut",
 "horizon": null, "target_price": null, "stop_price": null,
 "catalyst": null,
 "close_reason": "guidance cut invalidates thesis",
 "trim_reason": null}}
-
-NO-HOLD (currently flat, staying flat — preferred_weight 0.0, all hints null):
-{{"ticker": "AAPL", "preferred_weight": 0.0, "conviction": 0.4,
-"rationale": "No edge, waiting for clearer signal",
-"horizon": null, "target_price": null, "stop_price": null,
-"catalyst": null, "close_reason": null, "trim_reason": null}}
-
-Watchlist: {tickers}
 """
 
 # Build-time substitution of the cap markers.  ``str.replace`` is used rather

@@ -10,7 +10,7 @@ flat legacy fields.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from agents.strategist.lifecycle import derive_lifecycle_action
@@ -29,6 +29,11 @@ class TickContext:
         now: Timestamp of the current tick, used as ``opened_at`` for new positions.
         current_weights: Mapping of ticker → current portfolio weight. Used to
             determine the lifecycle action (open / close / trim / add / hold).
+        watchlist: The full watchlist for this tick.  Derivation pads
+            ``target_weights`` for every watchlist ticker so downstream
+            agents (risk_gate, executor) always see an exhaustive dict:
+            tickers the strategist did not emit a stance for are filled
+            with their current weight (held → carry-forward; flat → 0.0).
 
     Note:
         ``current_prices`` deliberately omitted: the strategist no longer
@@ -42,6 +47,7 @@ class TickContext:
     decision_tag: str
     now: datetime
     current_weights: dict[str, float]
+    watchlist: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -81,10 +87,21 @@ def derive_legacy_fields(
     strategist's after-callback (C9), which is responsible for validating the
     stances before calling here.
 
-    Each stance is processed independently:
+    Active-stances model (from #2):
 
-    - ``target_weights`` is populated for *every* stance regardless of action,
-      including holds.
+        The strategist only emits stances for tickers it wants to *change*
+        (open / add / trim / close).  Any watchlist ticker the strategist
+        does NOT emit a stance for is treated as carry-forward — held
+        positions stay held at their current weight; flat tickers stay
+        flat.  Derivation pads ``target_weights`` accordingly so
+        downstream agents (risk_gate, executor) always see an exhaustive
+        dict, matching the shape they consumed pre-#2 without their own
+        code changing.
+
+    Each emitted stance is processed independently:
+
+    - ``target_weights`` is populated for *every* emitted stance regardless
+      of action.
     - ``new_positions`` fires only on ``"open"`` (current weight flat →
       preferred weight live).  The constructed ``PositionThesis`` carries
       no ``opened_price`` — that field is stamped by the executor after
@@ -100,12 +117,17 @@ def derive_legacy_fields(
     - ``trim_reasons`` mirrors ``close_reasons`` for the ``"trim"`` action.
     - ``"add"`` and ``"hold"`` actions only contribute to ``target_weights``.
 
+    Then ``target_weights`` is padded for un-emitted watchlist tickers
+    using carry-forward semantics (current weight if held; 0.0 if flat).
+
     Parameters
     ----------
     stances:
-        Iterable of ``TickerStance`` objects — one per watchlist ticker per tick.
+        Iterable of ``TickerStance`` objects — one per *active* ticker for
+        this tick (not every watchlist ticker; omissions = carry-forward).
     ctx:
-        ``TickContext`` carrying tick metadata and current portfolio state.
+        ``TickContext`` carrying tick metadata, current portfolio state,
+        and the full watchlist used for carry-forward padding.
 
     Returns
     -------
@@ -118,7 +140,13 @@ def derive_legacy_fields(
     close_reasons: dict[str, str] = {}
     trim_reasons: dict[str, str] = {}
 
+    # ── Pass 1: emitted stances ───────────────────────────────────────────────
+    # Whatever the strategist explicitly said about a ticker takes precedence
+    # over the carry-forward default applied in Pass 2 below.
+    emitted: set[str] = set()
     for stance in stances:
+
+        emitted.add(stance.ticker)
 
         # Every stance contributes its preferred weight regardless of action.
         target_weights[stance.ticker] = stance.preferred_weight
@@ -160,6 +188,16 @@ def derive_legacy_fields(
             trim_reasons[stance.ticker] = stance.trim_reason
 
         # "add" and "hold" actions: target_weights already set above; nothing else needed.
+
+    # ── Pass 2: carry-forward padding ────────────────────────────────────────
+    # Any watchlist ticker the strategist did NOT emit a stance for keeps its
+    # current weight (held → continue holding; flat → continue flat).  This
+    # is what makes "omission = implicit hold" safe — downstream sees a full
+    # target_weights dict and the risk_gate / executor do not need to know
+    # the difference between "explicit hold" and "implicit hold".
+    for ticker in ctx.watchlist:
+        if ticker not in emitted:
+            target_weights[ticker] = ctx.current_weights.get(ticker, 0.0)
 
     return DerivedFields(
         target_weights=target_weights,

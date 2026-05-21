@@ -12,6 +12,7 @@ from agents.strategist.stance_schema import TickerStance
 
 def _ctx(
     weights: dict[str, float] | None = None,
+    watchlist: list[str] | None = None,
 ) -> TickContext:
     """Build a minimal TickContext for test use.
 
@@ -19,6 +20,10 @@ def _ctx(
     ----------
     weights:
         Optional mapping of ticker → current portfolio weight.
+    watchlist:
+        Optional full watchlist for this tick.  Defaults to an empty list,
+        which disables the carry-forward padding pass — keeping legacy
+        single-stance tests focused on the per-stance dispatch logic.
 
     Returns
     -------
@@ -38,6 +43,7 @@ def _ctx(
         decision_tag="x",
         now=datetime(2026, 5, 8, 14, 0, tzinfo=UTC),
         current_weights=weights or {},
+        watchlist=watchlist or [],
     )
 
 
@@ -208,6 +214,69 @@ def test_open_leaves_opened_price_none_for_executor_to_stamp():
     out = derive_legacy_fields([stance], ctx)
 
     assert out.new_positions["AAPL"].opened_price is None
+
+
+def test_carry_forward_pads_unemitted_watchlist_tickers():
+    """Watchlist tickers the strategist did NOT emit a stance for keep their current weight.
+
+    This pins the "active-stances only" contract: the strategist emits a stance
+    only when it wants to *change* a ticker's exposure (open / add / trim /
+    close).  Omission is read as an *implicit hold* — held positions stay held
+    at their current weight, flat tickers stay flat.
+
+    Derivation pads ``target_weights`` for every watchlist ticker so downstream
+    (risk_gate, executor) keeps seeing an exhaustive dict; no other field
+    (``new_positions`` / ``close_reasons`` / ``trim_reasons``) is touched on a
+    carry-forward, because no lifecycle action is happening.
+    """
+    # One explicit close stance; AAPL (held) and TSLA (flat) are NOT in stances.
+    stances = [
+        TickerStance(
+            ticker="MSFT",
+            preferred_weight=0.0,
+            conviction=0.6,
+            rationale="exit",
+            close_reason="rotate",
+        ),
+    ]
+    ctx = _ctx(
+        weights={"AAPL": 0.08, "MSFT": 0.10},          # AAPL held, MSFT held, TSLA flat
+        watchlist=["AAPL", "MSFT", "TSLA"],
+    )
+    out = derive_legacy_fields(stances, ctx)
+
+    # MSFT closed explicitly, AAPL carried forward, TSLA padded at flat (0.0).
+    assert out.target_weights == {"AAPL": 0.08, "MSFT": 0.0, "TSLA": 0.0}
+
+    # The carry-forward pass must NOT invent positions, close-reasons, or trim-reasons.
+    assert out.new_positions == {}
+    assert out.close_reasons == {"MSFT": "rotate"}
+    assert out.trim_reasons == {}
+
+
+def test_carry_forward_does_not_override_emitted_stances():
+    """When a ticker IS emitted, the strategist's preferred weight wins over the carry-forward default.
+
+    Guards against a Pass-2 bug where the padding loop could clobber a freshly
+    set ``target_weights`` entry if the order-of-operations were inverted.
+    """
+    stance = TickerStance(
+        ticker="AAPL",
+        preferred_weight=0.15,
+        conviction=0.8,
+        rationale="add",
+        horizon="swing",
+        target_price=240.0,
+        stop_price=190.0,
+    )
+    ctx = _ctx(
+        weights={"AAPL": 0.08},
+        watchlist=["AAPL"],
+    )
+    out = derive_legacy_fields([stance], ctx)
+
+    # Emitted preferred_weight (0.15) — NOT the current weight (0.08) — must survive.
+    assert out.target_weights == {"AAPL": 0.15}
 
 
 def test_add_action_only_populates_target_weight():

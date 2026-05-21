@@ -47,31 +47,56 @@ def _ev(analyst: str, lean: str = "neutral", conf: float = 0.0,
     )
 
 
-# ── after callback: missing tickers ───────────────────────────────────────────
+# ── after callback: active-stances contract ──────────────────────────────────
 
 
-def test_after_raises_on_missing_tickers():
-    """Watchlist-exhaustiveness violations abort the tick.
+def test_after_does_not_require_exhaustive_stances():
+    """Omitted watchlist tickers are treated as implicit holds — not an error.
 
-    The after-callback used to ``return _reprompt(...)`` Content here, but
-    ADK does not interpret that as a re-prompt — see the docstring of
-    ``_strategist_validation_callback``.  We now raise
-    ``StrategistContractViolation`` so the failure surfaces loudly instead
-    of producing a silent partial decision.
+    Pre-2026-05-21 the callback required a TickerStance for every watchlist
+    ticker.  The active-stances simplification drops that: the strategist
+    emits stances only for tickers it wants to *change* (open / add /
+    trim / close); any omitted ticker is read as a carry-forward
+    (held → keep holding at current weight, flat → stay flat).
+
+    This test pins that contract on the callback side: a one-stance
+    decision against a two-ticker watchlist must NOT raise, and the
+    derived ``target_weights`` must pad the omitted ticker using its
+    current weight (here: MSFT held at 0.10 carries forward; AAPL stays
+    at its emitted 0.05).
     """
     state = _State(
         tickers=["AAPL", "MSFT"],
         positions={},
-        portfolio=_portfolio().model_dump(mode="json"),
+        portfolio=_portfolio({"MSFT": (5.0, 410.0, 420.0)}, cash=900.0).model_dump(mode="json"),
         tick_id="t",
         strategist_decision=StrategistDecision(
-            stances=[TickerStance(ticker="AAPL", preferred_weight=0.0,
-                                  conviction=0.5, rationale="hold")],
+            stances=[
+                TickerStance(
+                    ticker="AAPL",
+                    preferred_weight=0.05,
+                    conviction=0.7,
+                    rationale="open",
+                    horizon="swing",
+                    target_price=210.0,
+                    stop_price=185.0,
+                ),
+            ],
             decision_tag="x", reasoning="x", updated_thesis="y", confidence=0.5,
         ).model_dump(mode="json"),
     )
-    with pytest.raises(StrategistContractViolation, match="MSFT"):
-        _strategist_validation_callback(_Ctx(state))
+
+    # Must not raise — omission is read as implicit hold.
+    assert _strategist_validation_callback(_Ctx(state)) is None
+
+    # Derived target_weights pads MSFT with its current weight (carry-forward).
+    decided = state["strategist_decision"]
+    target_weights = decided["target_weights"]
+    assert target_weights["AAPL"] == 0.05          # emitted preferred wins
+    # MSFT was held going in (5 shares × 420 last_price = $2100; total = $3000) → ~0.7
+    # We only check that it's non-zero and matches the portfolio's current weight.
+    assert target_weights["MSFT"] > 0.0
+    assert "MSFT" in target_weights                # NOT dropped, padded
 
 
 def test_after_raises_on_extras():
