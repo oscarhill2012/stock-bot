@@ -265,7 +265,7 @@ def _strategist_validation_callback(
 
 
 def build_strategist():
-    """Construct the production Strategist branch — ``SequentialAgent[ContextShim, LlmAgent]``.
+    """Construct the production Strategist branch — ``SequentialAgent[ContextShim, RetryingAgentWrapper[LlmAgent]]``.
 
     This factory is the **single construction path** for the strategist.  Both
     the live pipeline (``orchestrator.pipeline._build_strategist``) and any
@@ -277,13 +277,33 @@ def build_strategist():
     no-op'd on the other.  Centralising via ``config/models.json`` plus this
     factory closes that footgun.
 
-    The branch shape mirrors what ``pipeline.py`` used to build inline:
+    The branch shape:
 
     - ``StrategistContextShim`` runs first and hydrates ``temp:held_positions_view``,
       ``temp:ticker_evidence``, and ``temp:ticker_evidence_objects`` via a
       yielded ``Event(state_delta=…)`` (contract Rule 1).
-    - The downstream ``LlmAgent`` resolves those keys via ADK's
-      instruction-variable substitution and emits its ``StrategistDecision``.
+    - The downstream ``LlmAgent`` (wrapped in ``RetryingAgentWrapper``)
+      resolves those keys via ADK's instruction-variable substitution and
+      emits its ``StrategistDecision``.
+
+    Why the retry wrap is **inside** the SequentialAgent
+    ----------------------------------------------------
+    The original implementation wrapped the whole SequentialAgent in a
+    ``RetryingAgentWrapper`` at the pipeline-composition layer.  That broke
+    the strategist with ``KeyError: 'Context variable not found:
+    temp:held_positions_view'`` because the retry wrapper buffers every
+    event the inner yields, then forwards them only on success.  When the
+    inner is a SequentialAgent, ContextShim's ``state_delta`` event is
+    buffered — the ADK Runner never sees it, never applies it to
+    ``ctx.session.state``, and the LlmAgent's
+    ``inject_session_state`` step fails before any 429 risk even
+    materialises.
+
+    The fix: wrap only the ``LlmAgent`` (the unit that can actually 429).
+    ContextShim runs unwrapped — its ``state_delta`` event flows to the
+    outer Runner via the SequentialAgent, the Runner applies it, and the
+    wrapped LlmAgent then reads it from a hydrated session state.  See
+    :mod:`agents.llm_retry` for the wrap's invariants.
 
     The model identifier is read from ``config/models.json::strategist`` via
     :func:`src.config.models.get_models_config`.  Trace callbacks are wired
@@ -294,8 +314,9 @@ def build_strategist():
     -------
     google.adk.agents.SequentialAgent
         The ``"StrategistBranch"`` SequentialAgent ready to be added to the
-        pipeline's top-level SequentialAgent.  The inner ``LlmAgent`` is
-        accessible via ``branch.sub_agents[1]`` for tests that need to inspect
+        pipeline's top-level SequentialAgent.  ``branch.sub_agents[1]`` is a
+        ``RetryingAgentWrapper``; the inner ``LlmAgent`` is at
+        ``branch.sub_agents[1].inner`` for tests that need to inspect
         LlmAgent attributes (model, callbacks, output_key, etc.).
     """
 
@@ -303,6 +324,7 @@ def build_strategist():
 
     from google.adk.agents import SequentialAgent
 
+    from agents.llm_retry import RetryingAgentWrapper
     from agents.strategist.context_shim import StrategistContextShim
     from config.models import get_models_config
     from observability.trace import make_llm_trace_callbacks
@@ -339,7 +361,15 @@ def build_strategist():
         after_model_callback  = after_model,
     )
 
+    # Wrap the LlmAgent in the retry layer so transient Vertex 429s trigger
+    # exponential backoff.  The wrap goes here (inside the SequentialAgent),
+    # not around the SequentialAgent itself — see the docstring for why.
+    wrapped_llm = RetryingAgentWrapper(
+        name  = "StrategistLlmRetrying",
+        inner = llm,
+    )
+
     return SequentialAgent(
         name       = "StrategistBranch",
-        sub_agents = [StrategistContextShim(), llm],
+        sub_agents = [StrategistContextShim(), wrapped_llm],
     )

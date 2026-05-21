@@ -33,11 +33,16 @@ def test_analyst_pool_first_child_is_parallel():
 
 
 def test_analyst_pool_agent_names():
-    """A2.7 topology: Parallel[Tech,Social] + sequential Fund + News branches.
+    """A2.7 topology + retry wrap: Parallel[Tech,Social] + Retrying Fund + News.
 
-    Fund and News slots are YieldingAnalystWrapper instances whose names end
-    in "Branch".  Technical and Social are deterministic BaseAgent analysts
-    in the parallel tier.
+    Fund and News are wrapped in ``RetryingAgentWrapper`` at the pipeline level
+    so a Vertex 429 on the underlying LLM is retried with exponential backoff.
+    The retry wrapper's name ends in "Retrying" (e.g. "FundamentalAnalystRetrying")
+    — its inner ``YieldingAnalystWrapper`` still uses the "*Branch" name, but
+    that's not what the pool's ``sub_agents`` exposes.
+
+    Technical and Social are deterministic BaseAgent analysts in the parallel
+    tier — no LLM, so no retry wrapper.
     """
     pool = _build_analyst_pool()
 
@@ -45,6 +50,6 @@ def test_analyst_pool_agent_names():
     parallel_names = {a.name for a in pool.sub_agents[0].sub_agents}
     assert parallel_names == {"TechnicalAnalyst", "SocialAnalyst"}
 
-    # Sequential tier — LLM-backed wrapped analysts.
+    # Sequential tier — LLM-backed analysts, each wrapped in RetryingAgentWrapper.
     sequential_names = {a.name for a in pool.sub_agents[1:]}
-    assert sequential_names == {"FundamentalAnalystBranch", "NewsAnalystBranch"}
+    assert sequential_names == {"FundamentalAnalystRetrying", "NewsAnalystRetrying"}

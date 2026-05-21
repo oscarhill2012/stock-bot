@@ -28,9 +28,12 @@ def test_pipeline_stage_names():
     """Stage order: analyst pool → evidence writer → strategist branch → decision writer →
     risk gate → executor → memory writer → snapshotter.
 
-    The strategist slot is now a ``SequentialAgent`` named ``StrategistBranch``
-    (containing ``StrategistContextShim`` and the ``Strategist`` ``LlmAgent``).
-    The outer pipeline still sees eight top-level stages.
+    The strategist slot is a ``SequentialAgent`` named ``StrategistBranch``
+    containing ``StrategistContextShim`` and a ``RetryingAgentWrapper``
+    around the ``Strategist`` ``LlmAgent``.  The retry wrap lives *inside*
+    the SequentialAgent so ContextShim's ``state_delta`` event reaches the
+    ADK Runner before the LlmAgent reads it.  The outer pipeline still sees
+    eight top-level stages.
     """
     broker = FakeBroker(starting_cash=10_000.0, prices={})
     pipeline = build_pipeline(broker)

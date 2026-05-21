@@ -36,9 +36,14 @@ def test_pipeline_strategist_branch_has_no_after_model_callback_by_default() -> 
         from orchestrator.pipeline import _build_strategist
 
         branch = _build_strategist()
-        # branch is SequentialAgent[ContextShim, LlmAgent]; LlmAgent is the
-        # second child.
-        llm = branch.sub_agents[1]
+        # branch is SequentialAgent[ContextShim, RetryingAgentWrapper[LlmAgent]].
+        # The LlmAgent is at sub_agents[1].inner — the retry wrapper around
+        # it is structural, not behavioural, so the after-model callback
+        # check still applies to the underlying LlmAgent.  Wrapping the
+        # LlmAgent (rather than the whole SequentialAgent) is required so
+        # ContextShim's state_delta event reaches the ADK Runner; see
+        # ``build_strategist``'s docstring.
+        llm = branch.sub_agents[1].inner
         assert llm.after_model_callback is None, (
             "Strategist LlmAgent has after_model_callback wired in default env "
             "(STOCKBOT_TRACE not set) — that should be None."

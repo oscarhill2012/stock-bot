@@ -7,11 +7,12 @@ from orchestrator.pipeline import build_pipeline
 
 def test_pipeline_includes_strategist_decision_writer():
     """The pipeline must include the StrategistDecisionWriter stage between
-    StrategistBranch and RiskGate, so per-ticker stances are persisted before
-    risk-gating runs.
+    StrategistBranch and RiskGate, so per-ticker stances are persisted
+    before risk-gating runs.
 
-    The strategist slot is now a ``SequentialAgent`` named ``StrategistBranch``
-    (containing ``StrategistContextShim`` + the ``Strategist`` ``LlmAgent``).
+    The strategist slot is a ``SequentialAgent`` named ``StrategistBranch``
+    containing ``StrategistContextShim`` + a ``RetryingAgentWrapper``
+    around the ``Strategist`` ``LlmAgent``.
     """
     pipe = build_pipeline(broker=FakeBroker(starting_cash=1000.0, prices={}), db_session=None)
     names = [a.name for a in pipe.sub_agents]

@@ -39,9 +39,14 @@ def test_analyst_pool_topology() -> None:
         "TechnicalAnalyst", "SocialAnalyst",
     }
 
-    # Second and third children are the Fund + News branches (wrapped by
-    # YieldingAnalystWrapper, so their names end in "Branch").
+    # Second and third children are the Fund + News branches.  Each is now
+    # wrapped in a ``RetryingAgentWrapper`` at the pipeline-composition layer
+    # so a Vertex 429 on the inner LlmAgent triggers exponential backoff;
+    # those wrappers' names end in "Retrying".  The retry wrapper's
+    # ``.inner`` still points at the original ``YieldingAnalystWrapper``
+    # whose name ends in "Branch", but that's an implementation detail
+    # below the pipeline level.
     branch_names = {a.name for a in pool.sub_agents[1:]}
-    assert branch_names == {"FundamentalAnalystBranch", "NewsAnalystBranch"}, (
-        f"Sequential branches must be Fund + News wrappers; got {branch_names}"
+    assert branch_names == {"FundamentalAnalystRetrying", "NewsAnalystRetrying"}, (
+        f"Sequential branches must be Fund + News retry wrappers; got {branch_names}"
     )

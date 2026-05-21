@@ -1,0 +1,6 @@
+{
+  "_comment": "Retry policy for LLM agent calls — applies whenever Vertex AI Gemini returns RESOURCE_EXHAUSTED (HTTP 429). Wraps the Fundamental, News, and Strategist agents via src/agents/llm_retry.py::RetryingAgentWrapper. base_delay and max_delay are the bounds of an exponential-with-jitter backoff; max_attempts is the total number of tries (not the number of retries after the first failure).",
+  "max_attempts": 5,
+  "base_delay_seconds": 2.0,
+  "max_delay_seconds": 30.0
+}

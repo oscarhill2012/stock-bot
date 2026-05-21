@@ -12,6 +12,7 @@ and reference these files by relative path (resolved from the project root).
 | `schedule.json` | Tick cadence — how many ticks per day and their ET times | `src/config/schedule.py` (`get_schedule_config()`) |
 | `strategist.json` | Character caps on strategist LLM free-text fields | `src/config/strategist.py` (`get_strategist_config()`) |
 | `models.json` | LLM + embedding model IDs for every model-using component | `src/config/models.py` (`get_models_config()`) |
+| `llm_retry.json` | Backoff + retry policy applied to every LLM agent call (Vertex 429 handling) | `src/config/llm_retry.py` (`get_retry_config()`) |
 | `backtest_windows.json` | Era-keyed historical date windows for the backtest harness | `src/backtest/windows.py` (`load_windows()`) |
 | `backtest_settings.json` | Backtests root (cache + runs nest per-window underneath), tick schedule, and lookback defaults for backtesting | `src/backtest/settings.py` (`get_backtest_settings()`) |
 
@@ -371,6 +372,40 @@ docstring or behind a `# noqa: model-literal` comment.
 
 A leading `_comment` field is permitted at the top of `models.json` for an
 operator-facing note; the loader strips it before validation.
+
+---
+
+## `llm_retry.json` — LLM 429 backoff + retry policy
+
+Retry policy applied to every LLM-bearing agent in the pipeline (Fundamental,
+News, Strategist). Wraps each branch in
+`src/agents/llm_retry.py::RetryingAgentWrapper`, which catches Vertex AI
+`HTTP 429 RESOURCE_EXHAUSTED` responses and re-runs the inner agent with
+exponential-with-jitter backoff before failing the tick.
+
+Loaded once at boot via `src/config/llm_retry.py::get_retry_config()`
+(`lru_cache(maxsize=1)`); a process restart is required after edits.
+
+**Why this is needed.** Vertex AI's Gemini models share capacity via Dynamic
+Shared Quota by default — transient 429s are a normal operating condition
+even at modest call volume, because the global pool can saturate from other
+customers' traffic. Google's own guidance is that the *client* implements
+exponential backoff; ADK does not, and the underlying `google.genai` SDK's
+tenacity wrapper excludes 429 from its retry set.
+
+**Scope of retry.** Only 429 (`_ResourceExhaustedError` /
+`ClientError(status_code=429)`) triggers retry. 5xx responses and other 4xx
+errors propagate immediately — they typically signal a real outage or a
+malformed request that retrying cannot fix.
+
+| Setting | Type | Meaning |
+|---|---|---|
+| `max_attempts` | int ≥1 | Total number of attempts (not retries after the first failure). `1` disables retries entirely. Default 5. |
+| `base_delay_seconds` | float >0 | Initial wait before the first retry, in seconds. Subsequent retries grow exponentially with jitter, capped at `max_delay_seconds`. Default 2.0. |
+| `max_delay_seconds` | float ≥ `base_delay_seconds` | Upper bound on any single inter-retry wait, in seconds. Default 30.0. |
+
+A leading `_comment` field is permitted at the top of `llm_retry.json`; the
+loader strips it before validation.
 
 ---
 
