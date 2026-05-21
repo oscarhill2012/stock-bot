@@ -26,7 +26,7 @@ from config.analysts import get_analysts_config
 # ---------------------------------------------------------------------------
 # Vocabulary tokens (single-brace) are substituted at agent-construction time
 # by ``build_news_instruction``.  Runtime state tokens ``{news_context}`` and
-# ``{tickers}`` are left intact as single-brace so ADK's state injector fills
+# ``{ticker}`` are left intact as single-brace so ADK's state injector fills
 # them each tick.  Char-cap placeholders (e.g. ``{rationale_max}``) are
 # substituted at build time from ``config/analysts.json`` so the value the
 # LLM is told stays in sync with the prompt-facing cap.  The schema's
