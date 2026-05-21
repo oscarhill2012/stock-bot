@@ -1,18 +1,18 @@
-"""News analyst prompt — Phase 5 (closed-vocab, prose-only mandate).
+"""News analyst prompt — Phase 9 (single-ticker per-branch, closed-vocab mandate).
 
-The narrowed News LLM reads headlines and article summaries only.  Polarity
-statistics (positive_score, negative_score, mention_count) that previously
-lived in the prompt are removed; those numeric features flow through the
-extractor channel instead.
+The narrowed News LLM reads headlines and article summaries for ONE ticker
+per call.  Polarity statistics (positive_score, negative_score,
+mention_count) that previously lived in the prompt are removed; those
+numeric features flow through the extractor channel instead.
 
 Runtime context is delivered via two ADK session-state keys that the
-``news_fetch_callback`` populates before this agent runs:
+per-ticker ``NewsFetchAgent`` populates before this branch's analyst runs:
 
-- ``news_context`` — a formatted multi-ticker block containing each ticker's
+- ``news_context`` — a single-ticker block containing that ticker's
   headline list and article summaries.
-- ``tickers`` — the watchlist (standard pipeline state key).
+- ``ticker`` — the single ticker bound to this branch.
 
-These appear as ``{news_context}`` and ``{tickers}`` in the rendered
+These appear as ``{news_context}`` and ``{ticker}`` in the rendered
 instruction string so ADK's ``inject_session_state`` substitutes them at
 agent-run time.
 """
@@ -37,8 +37,10 @@ from config.analysts import get_analysts_config
 
 _TEMPLATE = """You are the News analyst.
 
-For each ticker in the batch, read the supplied headlines and article
-summaries. Output a structured verdict per ticker using ONLY the closed
+You are focused on a SINGLE ticker for this call: {ticker}
+
+Read the supplied headlines and article summaries for that ticker.
+Output ONE JSON object — a single verdict — using ONLY the closed
 vocabulary below.
 
 Closed vocabulary (use these tags ONLY in key_factors):
@@ -48,8 +50,8 @@ Closed vocabulary (use these tags ONLY in key_factors):
   direction:<value>   ∈ {direction_options}
   material:<bool>     when material to a long-only fund
 
-For each ticker output a JSON object with fields:
-  ticker       string (must be one of the watchlist tickers)
+Output ONE JSON object with fields:
+  ticker       string — MUST be exactly "{ticker}"
   lean         ∈ {{bullish, bearish, neutral}}
   magnitude    ∈ [0, 1]
   confidence   ∈ [0, 1]
@@ -78,9 +80,7 @@ Decision rule:
 - Confidence scales with headline count; fewer than 3 articles caps confidence low.
 - Conflicting direction signals across articles → mixed → neutral with low confidence.
 
-MUST cover ALL tickers: {tickers}
-
---- HEADLINES & SUMMARIES ---
+--- HEADLINES & SUMMARIES FOR {ticker} ---
 {news_context}
 """
 
@@ -90,9 +90,12 @@ def build_news_instruction(vocab: NewsVocabulary) -> str:
 
     Substitutes the three vocab placeholder tokens (``{catalyst_options}``,
     ``{novelty_options}``, ``{direction_options}``) using ``str.format``.
-    The two runtime state tokens — ``{news_context}`` and ``{tickers}`` — are
-    left intact in the returned string; ADK's ``inject_session_state`` fills
-    them each tick from session state written by ``news_fetch_callback``.
+    The two runtime state tokens — ``{news_context}`` and ``{ticker}`` —
+    are left intact in the returned string; the per-ticker branch factory
+    substitutes ``{ticker}`` at build time, and ADK's
+    ``inject_session_state`` substitutes ``{news_context}`` from
+    ``state["news_context"]`` at run time (the per-ticker fetch agent
+    writes a single-ticker block into that key — see Phase 9 spec §1).
 
     Parameters
     ----------
@@ -104,7 +107,7 @@ def build_news_instruction(vocab: NewsVocabulary) -> str:
     -------
     str
         The rendered instruction string.  Contains exactly two remaining
-        single-brace tokens: ``{news_context}`` and ``{tickers}``.
+        single-brace tokens: ``{news_context}`` and ``{ticker}``.
     """
     # Prompt-facing rationale cap — what we tell the LLM.  The schema in
     # ``contract/evidence.py`` accepts up to ``schema_cap(rationale_max)``
@@ -117,8 +120,8 @@ def build_news_instruction(vocab: NewsVocabulary) -> str:
         novelty_options  ="{" + " | ".join(vocab.novelty)   + "}",
         direction_options="{" + " | ".join(vocab.direction)  + "}",
         rationale_max    = out_caps.verdict_rationale_max_chars,
-        # Protect the two ADK runtime placeholders from str.format substitution
+        # Protect the two runtime placeholders from str.format substitution
         # by passing them back as themselves.
         news_context="{news_context}",
-        tickers     ="{tickers}",
+        ticker      ="{ticker}",
     )
