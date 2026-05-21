@@ -1,5 +1,5 @@
 {
-  "slack_percent": 10,
+  "slack_percent": 15,
   "news": {
     "max_articles_per_ticker": 20,
     "max_summary_chars": 500
@@ -11,7 +11,7 @@
     "max_insider_footnote_chars": 400
   },
   "output_caps": {
-    "verdict_rationale_max_chars":   160,
+    "verdict_rationale_max_chars":   200,
     "report_summary_max_chars":     2000,
     "report_driver_name_max_chars":   60,
     "report_driver_body_max_chars": 1000
