@@ -1,14 +1,21 @@
-"""Terminal logging for live smoke runs of the StockBot tick pipeline.
+"""Terminal logging for the StockBot tick pipeline (live + backtest).
 
 Installs a single stderr handler that emits human-readable banners and per-LLM
 call rows on the ``stockbot.tick`` logger, while silencing the chatty ADK
 framework loggers that produce unhelpful "Sending out request" / "Response
 received" noise.
 
-Designed for ``scripts/smoke_run.py`` only.  Do **not** import in backtest
-or production paths — those have their own logging configurations.
+Used by both entrypoints:
 
-Usage (at the top of ``smoke_run.main()``, before any agent code runs)::
+- ``scripts/smoke_run.py``       — live tick loop
+- ``scripts/backtest_run.py``    — backtest replay
+
+Backtest callers should also bump the root logger to ``DEBUG`` after calling
+``setup_terminal_logging`` so the buffered observability handlers can capture
+DEBUG records into ``runs/<id>/obs/logs/<tick>.json``.  The stderr handler
+this module installs stays at INFO regardless, so the terminal stays clean.
+
+Usage (at the top of the entrypoint, before any agent code runs)::
 
     from observability.terminal_log import setup_terminal_logging
     setup_terminal_logging()

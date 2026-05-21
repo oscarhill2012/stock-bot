@@ -48,16 +48,20 @@ def main() -> None:
     #   (``google_adk``, ``agents``, ``backtest`` …) can pass DEBUG records
     #   through to the buffered handlers attached by ``install_observability``
     #   — those land in ``runs/<id>/obs/logs/<tick>.json`` for forensics.
-    # - The *console handler* is pinned at INFO so the terminal stays clean.
-    #   Without this, ADK's DEBUG-level prompt / response dumps would flood
-    #   the terminal during a backtest because the root StreamHandler created
-    #   by ``basicConfig`` defaults to NOTSET (= pass everything).
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    console_handler.setFormatter(
-        logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"),
-    )
-    logging.basicConfig(level=logging.DEBUG, handlers=[console_handler])
+    # - The *console handler* is installed by ``setup_terminal_logging`` —
+    #   the same one ``scripts/smoke_run.py`` uses so live and backtest share
+    #   the per-LLM-call latency + token rows.  Its custom formatter prints
+    #   ``stockbot.tick`` records verbatim (no timestamp prefix) while
+    #   everything else gets the standard ``YYYY-MM-DD HH:MM:SS LEVEL …``
+    #   format.  It also silences ``google_adk`` / ``google.adk`` to WARNING.
+    from observability.terminal_log import setup_terminal_logging
+    setup_terminal_logging()                                                   # adds stderr handler at INFO + silences ADK
+    logging.getLogger().setLevel(logging.DEBUG)                                # root stays at DEBUG so obs/ buffer captures everything
+
+    # Enable the per-LLM-call ``before/after`` observability callbacks so the
+    # branch builders chain them into the existing cache + trace callbacks.
+    # Live ``scripts/smoke_run.py`` sets the same env var for the same reason.
+    os.environ["STOCKBOT_TERMINAL_LOG"] = "1"
 
     # Quiet down a few notoriously verbose third-party loggers that emit
     # at INFO during a normal backtest (each per-request log line adds
