@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncGenerator
-from typing import Any
 
 from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
@@ -46,7 +45,7 @@ class IsolatedFailureWrapper(BaseAgent):
         Ticker symbol this branch is bound to.  Surfaced in the failure log.
     """
 
-    inner: Any
+    inner: BaseAgent
     analyst: str
     ticker: str
 
@@ -56,7 +55,7 @@ class IsolatedFailureWrapper(BaseAgent):
         self,
         *,
         name: str,
-        inner: Any,
+        inner: BaseAgent,
         analyst: str,
         ticker: str,
     ) -> None:
