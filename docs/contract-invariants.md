@@ -59,6 +59,12 @@ same tick) is allowed to exist; it is implementation, not contract.
 Such fields still obey §C — most importantly, any mutation must ride
 on `state_delta` (Rule 1).
 
+<!-- Phase 9 (per-ticker analyst fan-out): the canonical `news_verdicts` and
+     `fundamental_verdicts` keys are now written by joiner agents that consolidate
+     per-ticker working keys.  The keys' contract values and lifetimes are unchanged —
+     only ownership shifted from a batched LlmAgent to a downstream BaseAgent.
+     See `docs/Phase9-agent-fanning-per-ticker/spec.md`. -->
+
 ### Schema table
 
 | Field | Owner | Lifetime | Source of truth | Refresh point | Persistence | Notes |
@@ -73,8 +79,8 @@ on `state_delta` (Rule 1).
 | `thesis` | Strategist (via `state_delta`) | **cross-tick** | Persistence layer (see §E) | Phase 2 (read), Phase 4 (write) | Persistence subsystem — see §E. | Strategist's standing market thesis. |
 | `strategist_decision` | Strategist (`output_key`) | tick-scoped | Strategist LLM call | Phase 3 (during-tick) | n/a | Consumed by RiskGate and Executor downstream in the same tick. |
 | `technical_verdicts` | TechnicalAnalyst (`state_delta`) | tick-scoped | TechnicalAnalyst deterministic extractor | Phase 3 | n/a | Unique key — see §C-Rule 4. Yielded as a list of per-ticker verdict dicts; written via `state_delta` (Rule 1) — TechnicalAnalyst is a BaseAgent, not an LlmAgent, so no `output_key`. |
-| `fundamental_verdicts` | FundamentalAnalyst (`output_key`) | tick-scoped | FundamentalAnalyst LLM call | Phase 3 | n/a | Unique key — see §C-Rule 4. |
-| `news_verdicts` | NewsAnalyst (`output_key`) | tick-scoped | NewsAnalyst LLM call | Phase 3 | n/a | Unique key — see §C-Rule 4. |
+| `fundamental_verdicts` | FundamentalJoinerAgent (`state_delta`) | tick-scoped | FundamentalJoinerAgent consolidation of per-ticker working keys | Phase 3 | n/a | Unique key — see §C-Rule 4. |
+| `news_verdicts` | NewsJoinerAgent (`state_delta`) | tick-scoped | NewsJoinerAgent consolidation of per-ticker working keys | Phase 3 | n/a | Unique key — see §C-Rule 4. |
 | `social_verdicts` | SocialAnalyst (`state_delta`) | tick-scoped | SocialAnalyst deterministic extractor | Phase 3 | n/a | Unique key — see §C-Rule 4. Yielded as a list of per-ticker verdict dicts; written via `state_delta` (Rule 1) — SocialAnalyst is a BaseAgent, not an LlmAgent, so no `output_key`. |
 | `tick_phase` | Tick bootstrap | tick-scoped | Lifecycle wrapper | Phase 2 | n/a | Literal string — live sets `"live"`; backtest sets the schedule's `tick.phase` (`"open"` / `"close"`). Decorative for the pipeline today; consumed by observability/tracing surfaces. Documented in §A so future agents that branch on phase have a contractual hook. |
 | `last_executed_tick_id` | Executor (`state_delta`) | tick-scoped | Executor's idempotency handshake | Phase 3 | n/a | Set to the current `tick_id` after the Executor finishes its run. Read by the Executor itself at the top of the next invocation as an idempotency guard. Written via `state_delta` (Rule 1); a paired direct write is currently retained as defensive belt-and-braces (out of A1 scope — see todo-fixes 2.5.x). |
@@ -279,11 +285,13 @@ Each branch's `state_delta` is appended in completion order.
 **Implication:** the AnalystPool's four analysts must each have a unique
 output key. The §A table records the four current keys
 (`technical_verdicts`, `fundamental_verdicts`, `news_verdicts`,
-`social_verdicts`) explicitly to prevent future drift. Two analysts
-(FundamentalAnalyst, NewsAnalyst) use ADK's `output_key` mechanism;
-the other two (TechnicalAnalyst, SocialAnalyst) are BaseAgent
-subclasses and yield their writes via `state_delta` (Rule 1) — the
-uniqueness requirement of Rule 4 is satisfied regardless of mechanism.
+`social_verdicts`) explicitly to prevent future drift. All four keys are
+now written via `state_delta` (Rule 1): `TechnicalAnalyst` and
+`SocialAnalyst` are BaseAgent subclasses that have always used this
+mechanism; `NewsJoinerAgent` and `FundamentalJoinerAgent` (Phase 9
+per-ticker fan-out) replaced the former batched `NewsAnalyst` /
+`FundamentalAnalyst` LlmAgents that used ADK's `output_key` mechanism.
+The uniqueness requirement of Rule 4 is satisfied regardless of mechanism.
 
 ### Rule 5 — `LoopAgent` must have a terminating condition
 
