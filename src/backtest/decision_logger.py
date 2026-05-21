@@ -97,7 +97,11 @@ class DecisionLogger:
         state:
             The session state dict produced by the executor after the tick.
             Expected keys: ``executions``, ``as_of``, ``tick_phase``,
-            ``tick_id``, ``evidence_view``, ``strategist_decision``, ``clamps``.
+            ``tick_id``, ``temp:ticker_evidence_objects`` (list of per-ticker
+            TickerEvidence dumps), ``strategist_decision`` (with ``stances``
+            list, ``reasoning``, ``updated_thesis``, ``decision_tag``,
+            ``confidence``), ``positions`` (held-position thesis book keyed
+            by ticker), ``clamps``.
         """
         executions = state.get("executions", [])
         as_of = state.get("as_of")
@@ -175,13 +179,26 @@ class DecisionLogger:
         dict
             The JSON-serialisable decision snapshot.
         """
-        # Pull analyst evidence for this ticker (may be absent — logs null).
-        ev_view = state.get("evidence_view", {}).get(ticker, {})
+        # Pull analyst evidence for this ticker.  The context shim writes a
+        # *list* of TickerEvidence dumps under ``temp:ticker_evidence_objects``;
+        # find the entry whose ``ticker`` field matches.  Absent / empty list →
+        # empty dict so downstream serialisation does not see ``None``.
+        ev_objects = state.get("temp:ticker_evidence_objects") or []
+        ev_view: dict = next(
+            (e for e in ev_objects if isinstance(e, dict) and e.get("ticker") == ticker),
+            {},
+        )
 
-        # Strategist decision fields.
-        decision = state.get("strategist_decision") or {}
-        stance = (decision.get("ticker_stances") or {}).get(ticker, {})
-        close_reason = (decision.get("close_reasons") or {}).get(ticker, "")
+        # Strategist decision fields.  The strategist emits a *list* of
+        # ``TickerStance`` objects under ``stances`` (not a per-ticker dict
+        # under ``ticker_stances``); find the stance whose ``ticker`` matches.
+        decision      = state.get("strategist_decision") or {}
+        stances_list  = decision.get("stances") or []
+        stance: dict  = next(
+            (s for s in stances_list if isinstance(s, dict) and s.get("ticker") == ticker),
+            {},
+        )
+        close_reason  = (decision.get("close_reasons") or {}).get(ticker, "")
 
         # Risk-gate clamps that concern this ticker specifically.
         all_clamps = state.get("clamps", []) or []
@@ -239,19 +256,28 @@ class DecisionLogger:
                 # TickerEvidence aggregate — same as analyst_outputs in v1;
                 # kept as a distinct field so the schema can diverge later.
                 "ticker_evidence": _coerce(ev_view),
-                # Previously-held stance (from prior tick) — null if first tick
-                # or if the state key is absent.
+                # Full PositionThesis dump for the held position at fill time.
+                # The strategist's context shim writes the structured book
+                # under ``state["positions"]`` (a dict[ticker → thesis_dump]);
+                # ``None`` here means the ticker was flat going into the tick.
                 "held_view_at_decision": _coerce(
-                    state.get("held_view", {}).get(ticker)
-                    if state.get("held_view") else None
+                    (state.get("positions") or {}).get(ticker)
                 ),
             },
 
+            # Full strategist accountability payload — used by the future
+            # persistent-memory loop to retrieve past decisions by reasoning /
+            # decision_tag and compare against realised outcomes.  Keep the
+            # tick-level reasoning and updated_thesis as full strings (not
+            # truncated excerpts): the RAG corpus needs the real text, and
+            # one decision per fill is the right granularity to pay that cost.
             "strategist_decision": {
-                "stance": _coerce(stance),
-                "close_reason": close_reason,
-                # Short excerpt from the LLM reasoning string, if available.
-                "reasoning_excerpt": decision.get("reasoning_excerpt", ""),
+                "stance":         _coerce(stance),
+                "close_reason":   close_reason,
+                "reasoning":      decision.get("reasoning", ""),
+                "updated_thesis": decision.get("updated_thesis", ""),
+                "decision_tag":   decision.get("decision_tag", ""),
+                "confidence":     decision.get("confidence"),
             },
 
             "risk_gate": {
