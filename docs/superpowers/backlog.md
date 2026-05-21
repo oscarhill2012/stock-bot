@@ -676,6 +676,30 @@ The drift was harmless before today because nothing cross-referenced the three s
 
 ---
 
+### B33. Per-ticker state-key sanitiser — fix silent context drop for dotted/hyphenated tickers  *(small, latent-bug fix)*
+
+**Origin:** Surfaced during the Phase 9 final Opus review (commit `d820e4a`). The per-ticker branch factories build their LLM instructions with placeholders of the form `{temp:news_context_<TICKER>}` and `{temp:fundamental_context_<TICKER>}` so ADK's `inject_session_state` resolves the right per-ticker state key at run time. ADK's `_is_valid_state_name` requires the part after `temp:` to be a valid Python identifier (`parts[1].isidentifier()`); when it isn't, `inject_session_state` silently returns the unsubstituted placeholder and the LLM receives the literal token `{temp:news_context_BRK.B}` instead of the news context block. For tickers like `BRK.B`, `BF.B`, or `BRK-B`, the branch completes without error but the model gets zero data — likely emitting `is_no_data=true` or hallucinating. The current watchlist has no dotted tickers, so the bug is latent.
+
+**The goal:** sanitise the ticker into an identifier-safe slug *only* for state-key construction (e.g. `BRK.B` → `BRK_B`), at both the placeholder build site (`per_ticker.py`) and the matching state-write site (`fetch_agent.py`). Verify the same constraint also applies to `output_key=f"temp:news_verdict_{ticker}"` — if so, the verdict key needs sanitising too, and the joiner's read site must use the same slug. The visible `ticker` field on every `TickerVerdict` must remain the original string (`BRK.B`) — only the state key suffix changes. Add a regression test that builds a branch for `BRK.B` and asserts the rendered instruction substitutes correctly when the matching state key is populated.
+
+**Effort:** small. ~3-line helper, applied at 4–6 call sites, plus one regression test per analyst. No config or contract change.
+
+**Dependencies:** None. Should land before any non-identifier-compatible ticker enters `config/watchlist.json`.
+
+---
+
+### B34. End-to-end failure-isolation integration test for per-ticker fan-out  *(small, test-only)*
+
+**Origin:** Surfaced during the Phase 9 final Opus review (commit `d820e4a`). Failure containment is unit-tested at two levels separately — `tests/agents/test_isolated_failure.py` proves `IsolatedFailureWrapper` swallows + structured-logs exceptions, and `tests/analysts/news/test_joiner.py` / `tests/analysts/fundamental/test_joiner.py` prove the joiner synthesises a no-data verdict for any missing `temp:*_verdict_<T>` key. What's missing is a test that wires the two together at the `SequentialAgent` level: one per-ticker branch raises (after retries), and the test asserts the joiner produces a no-data verdict for that ticker AND a real verdict for every surviving ticker, in the same tick, with the correct evidence rows present.
+
+**The goal:** add a focused integration test under `tests/integration/` (or `tests/analysts/`) that constructs a real `build_news_branch` / `build_fundamental_branch` with ≥3 tickers, stubs one branch's LLM to raise (or wraps it to bypass `RetryingAgentWrapper` and force the failure path), runs the full sub-pipeline, and asserts: (a) the failing ticker has `is_no_data=True` in `news_verdicts`; (b) the surviving tickers have real verdicts; (c) `news_evidence` has one row per ticker; (d) the structured `branch_failed` log was emitted with the correct `ticker` / `analyst` / `exc_type` extras.
+
+**Effort:** small. ~80–120 lines of test code; no production-code change. Mostly a fixture exercise — the production surface is correct and the unit-level pieces all pass.
+
+**Dependencies:** None. Pure tidy-up of the test pyramid; protects against future regressions to either the wrapper or the joiner.
+
+---
+
 ## How segments interact
 
 ```
@@ -727,7 +751,9 @@ Phase 4 (Goals 1 + 2 — strategist v2 + analyst contract, plans A→B→C→D)
          spec: docs/Phase9-agent-fanning-per-ticker/spec.md
          ├── B31 (cross-ticker context aggregator — restores relative reasoning;
          │        overlaps with B12, gated by B16)
-         └── B32 (analyst output-cap diet — small follow-up cleanup)
+         ├── B32 (analyst output-cap diet — small follow-up cleanup)
+         ├── B33 (per-ticker state-key sanitiser — latent dotted-ticker fix)
+         └── B34 (end-to-end failure-isolation integration test)
 ```
 
 **Rough order if doing them in series:** Phase 4 plans A → B → C → D → Phase 5 (analyst re-categorisation) → B16 (ratchet policy operationalised by Phase 5's surface trace) → analyst-surface-redesign (consolidates B9 + half of B14) → **B26** (architectural cleanup — high priority before more providers land) → B27 / B28 / B30 (related provider/cache contract follow-ups) → B6 → B7 → B11 → B18 (co-specced with B11) → B10 → B2 (long arc) → B5 → B17 (likely folds into B2) → B4 → B3 → B8 → B29 (test-only cleanup, rule-of-three). B12/B13/B14-deterministic-narrator/B15 fold in only as trace data justifies, ordered ad-hoc against [[B16]]'s checklist.
