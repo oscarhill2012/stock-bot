@@ -504,6 +504,23 @@ The drift was harmless before today because nothing cross-referenced the three s
 
 ---
 
+### B31. Cross-ticker context aggregator — restore relative reasoning after per-ticker fan-out
+
+**Origin:** Surfaced during the Phase 9 per-ticker fan-out brainstorm (`docs/Phase9-agent-fanning-per-ticker/spec.md`). The batched News / Fundamental LLM prompt let the model notice relative leans across the watchlist ("MSFT beat, GOOG flat, AAPL guided down" → adjust each lean relatively). Phase 9 trades that ability for per-ticker focus by emitting one `LlmAgent` per ticker. The aggregator was explicitly named as the natural place to restore cross-ticker reasoning *without* giving up per-ticker focus, and explicitly out-of-scope of Phase 9.
+
+**The goal:** add a second-pass agent that reads the joined `news_verdicts` / `fundamental_verdicts` after Phase 9's joiner, plus any per-ticker raw context the joiner kept around (`temp:news_data` etc.), and emits sector- or watchlist-relative annotations — e.g. "AAPL bearish lean is the weakest in MegaCap-Tech this tick", "fundamental surprises cluster around semis". The annotation lands in a sibling state key the Strategist also reads (probably an `evidence_overlays` map), not in the canonical verdicts themselves.
+
+**Key questions to brainstorm:**
+- One aggregator per analyst (NewsAggregator + FundamentalAggregator) or a single cross-analyst aggregator that sees both digests?
+- Per-tick vs sparse: only fire when the digest's `disagreement_score` or relative spread crosses a threshold (overlap with [[B9]])?
+- LLM vs deterministic: is the relative comparison cheap to do mechanically (z-score each ticker's lean, flag outliers) or does it want narrative reasoning?
+- Contract surface: new §A row for `evidence_overlays`, or attach annotations to existing `news_verdicts` entries via an optional `relative_note` field on `TickerVerdict`?
+- Strategist coupling: prompt block, or sizing input?
+
+**Dependencies:** Phase 9 per-ticker fan-out shipped. Strong overlap with [[B12]] (Bull/Bear debate) — both restore cross-ticker context post-narrowing. Goes through [[B16]]'s ratchet (this is a new LLM hop).
+
+---
+
 ## Tier 3 — Small follow-ups & easy wins
 
 ### B6. Persist `risk_clamps_applied`
@@ -647,6 +664,18 @@ The drift was harmless before today because nothing cross-referenced the three s
 
 ---
 
+### B32. Analyst output-cap diet — per-ticker output budget tightening
+
+**Origin:** Surfaced during the Phase 9 per-ticker fan-out brainstorm (`docs/Phase9-agent-fanning-per-ticker/spec.md`). Phase 9 fixes the *batched* output-overflow crash by emitting one verdict per LLM call; that resolves the immediate budget pressure but leaves the per-ticker caps as-is (`report_summary_max_chars: 2000`, `report_driver_body_max_chars: 1000`, ≤4 drivers). Each per-ticker output budget is now ~1,750 tokens against an 8,192-token Flash-Lite ceiling — well within budget, but the caps were sized for a regime that no longer exists.
+
+**The goal:** halve (or further) `report_summary_max_chars` and `report_driver_body_max_chars`, drop max-drivers from 4 to 3, and re-verify no signal is lost on a surface-trace A/B. Cheaper prompts, faster ticks, tighter prose.
+
+**Effort:** small. Two values in `config/analysts.json`, one re-run of the SVB-stress backtest, A/B the verdict distribution against the pre-diet baseline.
+
+**Dependencies:** Phase 9 shipped (so the per-ticker baseline is the comparison floor). Independent of everything else.
+
+---
+
 ## How segments interact
 
 ```
@@ -687,12 +716,18 @@ Phase 4 (Goals 1 + 2 — strategist v2 + analyst contract, plans A→B→C→D)
    ├── B7 (cost observability)   — independent, low priority but feeds B2
    ├── B24 (persistence schema refresh — after first backtest runs; depends on backtest harness completing)
    │
-   └── Provider/cache contract cleanup (from providers-and-silent-gaps-v1):
-         ├── B26 (Provider Protocol return-type unification — HIGH PRIORITY)
-         ├── B27 (smart_money state shape normalisation)
-         ├── B28 (cache Form 4 Table II derivative trades)
-         ├── B29 (integration smoke-test scaffolding dedup — test-only)
-         └── B30 (single-source-of-truth for analyst lookback days — fill ⇆ replay parity)
+   ├── Provider/cache contract cleanup (from providers-and-silent-gaps-v1):
+   │     ├── B26 (Provider Protocol return-type unification — HIGH PRIORITY)
+   │     ├── B27 (smart_money state shape normalisation)
+   │     ├── B28 (cache Form 4 Table II derivative trades)
+   │     ├── B29 (integration smoke-test scaffolding dedup — test-only)
+   │     └── B30 (single-source-of-truth for analyst lookback days — fill ⇆ replay parity)
+   │
+   └── Phase 9 (per-ticker fan-out for News + Fundamental LLM analysts):
+         spec: docs/Phase9-agent-fanning-per-ticker/spec.md
+         ├── B31 (cross-ticker context aggregator — restores relative reasoning;
+         │        overlaps with B12, gated by B16)
+         └── B32 (analyst output-cap diet — small follow-up cleanup)
 ```
 
 **Rough order if doing them in series:** Phase 4 plans A → B → C → D → Phase 5 (analyst re-categorisation) → B16 (ratchet policy operationalised by Phase 5's surface trace) → analyst-surface-redesign (consolidates B9 + half of B14) → **B26** (architectural cleanup — high priority before more providers land) → B27 / B28 / B30 (related provider/cache contract follow-ups) → B6 → B7 → B11 → B18 (co-specced with B11) → B10 → B2 (long arc) → B5 → B17 (likely folds into B2) → B4 → B3 → B8 → B29 (test-only cleanup, rule-of-three). B12/B13/B14-deterministic-narrator/B15 fold in only as trace data justifies, ordered ad-hoc against [[B16]]'s checklist.
