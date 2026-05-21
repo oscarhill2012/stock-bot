@@ -197,8 +197,19 @@ class Driver:
         schedule:
             Ordered list of ``Tick`` objects (``as_of`` + ``phase``).
         """
+        total_ticks = len(schedule)
         for tick in schedule:
             self._total += 1
+
+            # One human-readable header per tick — paired with the
+            # per-agent "Foo done in N ms" lines emitted by
+            # ``observability.otel_setup.AgentLifecycleLogger`` it gives
+            # the operator a clean play-by-play in the terminal without
+            # leaking ADK's DEBUG-level prompt dumps.
+            logger.info(
+                "── tick %d/%d — %s %s ──",
+                self._total, total_ticks, tick.as_of.isoformat(), tick.phase,
+            )
 
             tw = TraceWriter()
             state["_trace"]           = tw

@@ -26,7 +26,7 @@ from opentelemetry import metrics, trace
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace import ReadableSpan, SpanProcessor, TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 
 from observability.exporters import (
@@ -34,6 +34,53 @@ from observability.exporters import (
     TickBufferedSpanExporter,
 )
 from observability.log_handler import TickBufferedLogHandler
+
+# Dedicated logger for one-line per-agent lifecycle messages — kept on its
+# own namespace so the user can mute it without affecting unrelated INFO
+# logging via ``logging.getLogger("stockbot.lifecycle").setLevel(WARNING)``.
+_LIFECYCLE_LOG = logging.getLogger("stockbot.lifecycle")
+
+
+class AgentLifecycleLogger(SpanProcessor):
+    """Emit one INFO log per ADK ``invoke_agent`` span ending.
+
+    ADK already produces the spans we need — name, duration, agent label.
+    This processor turns each closed ``invoke_agent`` span into a single
+    human-readable line on whatever console handler is attached to the
+    ``stockbot.lifecycle`` logger, e.g.::
+
+        2026-02-10 14:30:01 INFO stockbot.lifecycle NewsAnalyst done in 1234 ms
+
+    Everything else (``generate_content`` spans, nested agent spans, etc.)
+    is ignored — the goal is one line per top-level agent invocation, not
+    a play-by-play.  The full structural detail stays in the per-tick
+    ``traces/<tick>.json`` file.
+    """
+
+    def on_start(self, span, parent_context = None) -> None:  # noqa: D401 — interface contract
+        """OTEL ``SpanProcessor`` hook — no-op (we only log on end)."""
+        return None
+
+    def on_end(self, span: ReadableSpan) -> None:
+        """Emit one INFO line for every ``invoke_agent`` span that closes."""
+
+        if span.name != "invoke_agent":
+            return
+
+        attrs        = span.attributes or {}
+        agent_name   = attrs.get("gen_ai.agent.name", "<unknown>")
+        # ``start_time`` / ``end_time`` are ns since epoch; convert to ms.
+        duration_ms  = (span.end_time - span.start_time) / 1_000_000
+
+        _LIFECYCLE_LOG.info("%s done in %.0f ms", agent_name, duration_ms)
+
+    def shutdown(self) -> None:
+        """OTEL ``SpanProcessor`` hook — nothing to release."""
+        return None
+
+    def force_flush(self, timeout_millis: int = 30_000) -> bool:  # noqa: ARG002 — interface contract
+        """OTEL ``SpanProcessor`` hook — synchronous, always flushed."""
+        return True
 
 # ── Public bundle returned to the driver ──────────────────────────────────────
 
@@ -104,6 +151,10 @@ def install_observability(*, service_name: str = "stockbot") -> ObservabilityHan
     span_exporter   = TickBufferedSpanExporter()
     tracer_provider = TracerProvider(resource=resource)
     tracer_provider.add_span_processor(SimpleSpanProcessor(span_exporter))
+    # Console-side companion: emits one INFO line per ``invoke_agent`` span.
+    # The buffered exporter above still captures the full span tree for
+    # ``obs/traces/`` — this is purely a derived, human-readable surface.
+    tracer_provider.add_span_processor(AgentLifecycleLogger())
     trace.set_tracer_provider(tracer_provider)
 
     # ── Meter provider ─────────────────────────────────────────────────────

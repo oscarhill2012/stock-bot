@@ -42,10 +42,34 @@ def main() -> None:
     # wall-clock substitute.  See src/data/timeguard.py.
     os.environ["STOCKBOT_STRICT_AS_OF"] = "1"
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    # Console / file handler split for observability:
+    #
+    # - The *root logger* runs at DEBUG so every captured-namespace logger
+    #   (``google_adk``, ``agents``, ``backtest`` …) can pass DEBUG records
+    #   through to the buffered handlers attached by ``install_observability``
+    #   — those land in ``runs/<id>/obs/logs/<tick>.json`` for forensics.
+    # - The *console handler* is pinned at INFO so the terminal stays clean.
+    #   Without this, ADK's DEBUG-level prompt / response dumps would flood
+    #   the terminal during a backtest because the root StreamHandler created
+    #   by ``basicConfig`` defaults to NOTSET (= pass everything).
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"),
     )
+    logging.basicConfig(level=logging.DEBUG, handlers=[console_handler])
+
+    # Quiet down a few notoriously verbose third-party loggers that emit
+    # at INFO during a normal backtest (each per-request log line adds
+    # noise without forensic value — the obs/ files still capture
+    # everything at DEBUG via the buffered handler).
+    for noisy in (
+        "google_genai",                   # POST request / streaming chunks
+        "google.adk.tools",               # tool-discovery announcements
+        "urllib3.connectionpool",         # HTTPS connection re-use
+        "matplotlib",                     # font-fallback warnings
+    ):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
     parser = argparse.ArgumentParser(
         description="Run one full backtest window.",
