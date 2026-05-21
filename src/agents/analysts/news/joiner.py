@@ -105,7 +105,7 @@ class NewsJoinerAgent(BaseAgent):
 
         batch = VerdictBatch(verdicts=verdicts_list)
 
-        # Surface trace — mirrors the old YieldingAnalystWrapper.trace_key behaviour.
+        # Surface trace — records the aggregated verdicts for debugging/auditing.
         _trace_maybe(state, "02_news_verdict", [v.model_dump() for v in verdicts_list])
 
         yield Event(

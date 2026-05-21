@@ -65,11 +65,13 @@ def test_news_branch_instruction_pins_ticker():
     branch = build_news_branch_for_ticker("AAPL", _news_vocab())
     llm = branch.inner.inner
 
-    # {ticker} must be substituted at construction time; only ADK's
-    # {news_context} runtime placeholder remains as a single-brace token.
+    # {ticker} must be substituted at construction time.
+    # {news_context} is also remapped to the ticker-specific ADK state key
+    # {temp:news_context_AAPL} so ADK's inject_session_state reads the right
+    # per-ticker block written by NewsFetchAgent.
     assert "{ticker}" not in llm.instruction
     assert "AAPL" in llm.instruction
-    assert "{news_context}" in llm.instruction
+    assert "{temp:news_context_AAPL}" in llm.instruction
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +134,8 @@ def test_fundamental_branch_composition():
     assert llm.output_key   == "temp:fundamental_verdict_AAPL"
     assert llm.before_agent_callback is None
     assert llm.after_agent_callback  is None
+    # {ticker} must be substituted at build time; {fundamental_context} is also
+    # remapped to the ticker-specific ADK state key {temp:fundamental_context_AAPL}.
     assert "{ticker}" not in llm.instruction
     assert "AAPL" in llm.instruction
-    assert "{fundamental_context}" in llm.instruction
+    assert "{temp:fundamental_context_AAPL}" in llm.instruction

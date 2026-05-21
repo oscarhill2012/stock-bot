@@ -5,15 +5,21 @@ closed-vocabulary tokens and produces a prompt containing:
 
 - No residual vocab-slot ``{..}`` tokens (all three vocab groups resolved).
 - All closed-vocab terms from the test vocabulary.
-- The two expected ADK runtime placeholders ``{news_context}`` and
-  ``{tickers}`` that remain for ADK's ``inject_session_state`` to fill.
+- The two expected runtime placeholders ``{news_context}`` and ``{ticker}``
+  that survive vocab substitution intact (the per-ticker branch factory
+  substitutes both of these at branch-construction time — ``{ticker}``
+  becomes the literal ticker symbol and ``{news_context}`` becomes the
+  ADK state key ``{temp:news_context_<TICKER>}``).
 - No polarity-numeric phrasing (positive_score, negative_score, mention_count)
   that was removed in the Phase 5 narrowing.
 
 Note on runtime placeholders
 -----------------------------
-``{news_context}`` and ``{tickers}`` are intentionally preserved in the rendered
-string so ADK's ``inject_session_state`` fills them with live data each tick.
+Phase 9 changed the delivery mechanism: the base template preserves
+``{news_context}`` and ``{ticker}``.  The per-ticker factory
+(``build_news_branch_for_ticker``) then substitutes both at build time
+so each branch's instruction is already specialised.  ``{tickers}`` (the
+old multi-ticker watchlist key) is gone from the Phase 9 template.
 All other ``{..}`` tokens must be resolved at construction time.
 """
 from __future__ import annotations
@@ -41,15 +47,18 @@ def test_placeholders_resolve() -> None:
     for tok in ("{catalyst_options}", "{novelty_options}", "{direction_options}"):
         assert tok not in rendered, f"Vocab token '{tok}' should be resolved but is still present"
 
-    # Strip the two known ADK runtime keys and confirm nothing else remains.
+    # Strip the two known per-ticker-factory-substituted placeholders and
+    # confirm nothing else remains.  Phase 9 uses {news_context} and {ticker}
+    # (the per-ticker factory then replaces both at branch-construction time).
+    # {tickers} (the old multi-ticker watchlist key) is gone from the template.
     stripped = (
         rendered
         .replace("{news_context}", "")
-        .replace("{tickers}", "")
+        .replace("{ticker}", "")
     )
     assert not re.search(r"\{[a-z_]+\}", stripped), (
         "Unexpected single-brace token found in rendered prompt "
-        "(only {news_context} and {tickers} are allowed)"
+        "(only {news_context} and {ticker} are allowed to survive vocab substitution)"
     )
 
 
@@ -71,15 +80,26 @@ def test_no_polarity_numerics_in_prompt() -> None:
 
 
 def test_runtime_placeholders_present() -> None:
-    """The ADK state placeholders survive vocab substitution intact."""
+    """The per-ticker-factory placeholders survive vocab substitution intact.
+
+    Phase 9: the base template preserves ``{news_context}`` and ``{ticker}``
+    after vocab substitution.  The per-ticker branch factory
+    (``build_news_branch_for_ticker``) then substitutes both at build time —
+    ``{ticker}`` becomes the literal symbol and ``{news_context}`` becomes
+    ``{temp:news_context_<TICKER>}`` (the ADK state key written by
+    ``NewsFetchAgent``).
+
+    Note: ``{tickers}`` (the old multi-ticker watchlist key) is absent from
+    the Phase 9 per-ticker template.
+    """
     rendered = build_news_instruction(_vocab())
 
-    # ADK fills these from session state each tick.
+    # Both placeholders must survive vocab substitution intact.
     assert "{news_context}" in rendered, (
-        "ADK runtime placeholder {news_context} is missing from rendered prompt"
+        "Placeholder {news_context} is missing from rendered prompt"
     )
-    assert "{tickers}" in rendered, (
-        "ADK runtime placeholder {tickers} is missing from rendered prompt"
+    assert "{ticker}" in rendered, (
+        "Placeholder {ticker} is missing from rendered prompt"
     )
 
 
