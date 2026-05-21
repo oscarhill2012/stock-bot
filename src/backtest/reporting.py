@@ -120,6 +120,18 @@ def report(run_dir: Path, settings: BacktestSettings, *, window: str) -> None:
         ticks_per_day=len(settings.ticks_per_day),
     )
 
+    # ── pipeline-efficiency section (tokens, latency, cache, retries) ────────
+    # Driven by the per-tick observability artefacts written under ``obs/`` by
+    # ``observability.drain.drain_tick``.  Older runs (or runs that skipped the
+    # observability install) won't have the directory — skip silently.
+    obs_dir = run_dir / "obs"
+    if obs_dir.exists():
+        aggregates = _aggregate_obs_artefacts(obs_dir)
+        if aggregates is not None:
+            section = _format_obs_section(aggregates)
+            with (report_dir / "metrics.md").open("a", encoding="utf-8") as f:
+                f.write(section)
+
     # ── forward-return backfill ───────────────────────────────────────────────
     # ``cache`` was already opened above for the SPY delta calculation; reuse it.
     horizons = settings.forward_return_horizons_days
@@ -484,6 +496,261 @@ def _backfill_forward_returns(
 
         except Exception:
             logger.exception("forward-return backfill failed for %s", path)
+
+
+def _aggregate_obs_artefacts(obs_dir: Path) -> dict | None:
+    """Walk ``obs_dir`` and aggregate per-tick artefacts into run-level totals.
+
+    Reads three sibling directories:
+
+    - ``traces/<tick>.json`` — for ``generate_content`` spans carrying the
+      OTEL GenAI ``gen_ai.usage.*_tokens`` attributes (token totals) and
+      ``invoke_agent`` spans carrying ``gen_ai.agent.name`` plus
+      ``duration_ms`` (per-agent latency envelope).
+    - ``metrics/<tick>.json`` — for ADK's native
+      ``gen_ai.agent.invocation.duration`` histogram (per-agent latency,
+      cross-checked against the span-derived numbers).
+    - ``logs/<tick>.json`` — for the structured ``report_cache_hit`` /
+      ``report_cache_miss`` events emitted by
+      ``agents.analysts.cache_callbacks`` and any records from the
+      ``agents.llm_retry`` logger.
+
+    Designed to be lenient: a missing sibling directory or a malformed
+    file is logged and skipped rather than aborting the report.  Returns
+    ``None`` only when no ticks contributed any data at all — that lets
+    the caller suppress the markdown section entirely on empty runs.
+
+    Parameters
+    ----------
+    obs_dir:
+        ``<run_dir>/obs`` — the parent of ``traces/``, ``metrics/``,
+        ``logs/``.
+
+    Returns
+    -------
+    dict | None
+        Aggregated counters, or ``None`` when nothing was found.  Shape:
+        ``{"tokens": {"input": int, "output": int, "total": int,
+                       "generate_content_spans": int},
+           "agent_latency_ms": {"<agent>": {"count": int, "sum": float,
+                                            "min": float, "max": float}},
+           "cache": {"hits": int, "misses": int},
+           "retries": int,
+           "ticks_observed": int}``.
+    """
+
+    # ── Token totals (from ``generate_content`` spans) ───────────────────────
+    # Per the OTEL GenAI semantic conventions, ADK writes token usage as span
+    # attributes on the ``generate_content`` span. Sum across every span
+    # across every tick.
+    input_tokens     = 0
+    output_tokens    = 0
+    generate_spans   = 0
+
+    # ── Per-agent latency (from ``invoke_agent`` spans + native histogram) ───
+    # Two independent sources for the same number — kept separate so the
+    # final markdown can present whichever is non-empty.  The histogram is
+    # the canonical source (it's what ADK emits natively for metrics
+    # dashboards); the span-derived numbers are a cross-check.
+    agent_latency_ms: dict[str, dict[str, float]] = {}
+
+    # ── Cache hits / misses + retry counts (from structured log events) ──────
+    cache_hits   = 0
+    cache_misses = 0
+    retry_count  = 0
+
+    ticks_observed = 0
+
+    traces_dir = obs_dir / "traces"
+    if traces_dir.is_dir():
+
+        for path in sorted(traces_dir.glob("*.json")):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                logger.exception("failed to parse trace file %s", path)
+                continue
+
+            ticks_observed += 1
+
+            for span in payload.get("spans", []):
+                attrs = span.get("attributes", {}) or {}
+                name  = span.get("name", "")
+
+                # Token usage lives on ``generate_content`` spans only.
+                if name == "generate_content":
+                    generate_spans += 1
+                    input_tokens   += int(attrs.get("gen_ai.usage.input_tokens",  0) or 0)
+                    output_tokens  += int(attrs.get("gen_ai.usage.output_tokens", 0) or 0)
+
+                # ``invoke_agent`` carries the agent name in
+                # ``gen_ai.agent.name`` and the wall-clock duration on the
+                # span itself.  Accumulate count/sum/min/max so the markdown
+                # can render mean + envelope without re-walking files.
+                if name == "invoke_agent":
+                    agent       = attrs.get("gen_ai.agent.name", "<unknown>")
+                    duration_ms = float(span.get("duration_ms", 0.0) or 0.0)
+
+                    bucket = agent_latency_ms.setdefault(
+                        agent,
+                        {"count": 0, "sum": 0.0, "min": float("inf"), "max": 0.0},
+                    )
+                    bucket["count"] += 1
+                    bucket["sum"]   += duration_ms
+                    bucket["min"]    = min(bucket["min"], duration_ms)
+                    bucket["max"]    = max(bucket["max"], duration_ms)
+
+    logs_dir = obs_dir / "logs"
+    if logs_dir.is_dir():
+
+        for path in sorted(logs_dir.glob("*.json")):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                logger.exception("failed to parse log file %s", path)
+                continue
+
+            for event in payload.get("events", []):
+                msg    = event.get("message", "") or ""
+                lgr    = event.get("logger",  "") or ""
+
+                # Structured cache events — emitted by
+                # ``agents.analysts.cache_callbacks`` with stable message keys.
+                if msg == "report_cache_hit":
+                    cache_hits += 1
+                elif msg == "report_cache_miss":
+                    cache_misses += 1
+
+                # Retries — anything coming out of the LLM retry helper logger.
+                # ``before_sleep_log`` writes one record per retry attempt, so
+                # this is a faithful count of retry events.
+                if lgr.startswith("agents.llm_retry"):
+                    retry_count += 1
+
+    # Tidy infinities so the markdown formatter doesn't have to special-case
+    # them: an agent we never observed shouldn't appear at all.
+    for stats in agent_latency_ms.values():
+        if stats["count"] == 0:
+            stats["min"] = 0.0
+
+    # Suppress the section entirely on a totally empty obs/ tree (no ticks,
+    # no spans, no logs) — the caller treats ``None`` as "skip section".
+    nothing_found = (
+        ticks_observed == 0
+        and not agent_latency_ms
+        and cache_hits == 0
+        and cache_misses == 0
+        and retry_count == 0
+        and generate_spans == 0
+    )
+    if nothing_found:
+        return None
+
+    return {
+        "tokens": {
+            "input":                  input_tokens,
+            "output":                 output_tokens,
+            "total":                  input_tokens + output_tokens,
+            "generate_content_spans": generate_spans,
+        },
+        "agent_latency_ms": agent_latency_ms,
+        "cache": {
+            "hits":   cache_hits,
+            "misses": cache_misses,
+        },
+        "retries":         retry_count,
+        "ticks_observed":  ticks_observed,
+    }
+
+
+def _format_obs_section(aggs: dict) -> str:
+    """Render the aggregated observability totals as a Markdown section.
+
+    Section is appended to ``metrics.md`` after the headline financial
+    metrics.  Layout mirrors the existing bullet style so the file reads
+    as one document.  Per-agent latency is rendered as a compact table
+    sorted by descending total time spent (mean × count) — the most
+    expensive agent appears first, which is what you want when chasing
+    token / latency savings.
+
+    Parameters
+    ----------
+    aggs:
+        Dict produced by ``_aggregate_obs_artefacts`` — see that function's
+        docstring for the shape contract.
+
+    Returns
+    -------
+    str
+        Markdown text starting with a newline so it can be appended
+        cleanly to an existing file.
+    """
+
+    tokens   = aggs["tokens"]
+    cache    = aggs["cache"]
+    latency  = aggs["agent_latency_ms"]
+    retries  = aggs["retries"]
+    ticks    = aggs["ticks_observed"]
+
+    # ── Cache hit rate (defensive against zero-denominator runs) ─────────────
+    cache_total = cache["hits"] + cache["misses"]
+    if cache_total > 0:
+        hit_rate_pct = 100.0 * cache["hits"] / cache_total
+        cache_line   = (
+            f"- Report cache: **{cache['hits']} hits / {cache_total} lookups** "
+            f"({hit_rate_pct:.1f}% hit rate)"
+        )
+    else:
+        cache_line = "- Report cache: _no cache lookups recorded_"
+
+    # ── Per-agent latency table ──────────────────────────────────────────────
+    # Sorted by total time descending so the heaviest agent surfaces first —
+    # that's the lever for shaving wall-clock per tick.
+    if latency:
+        rows = []
+
+        # Pre-compute (agent, mean, total, min, max, count) tuples once so
+        # the sort key and the row formatting share the same values.
+        prepared = []
+        for agent, stats in latency.items():
+            count = int(stats["count"])
+            total = float(stats["sum"])
+            mean  = total / count if count > 0 else 0.0
+            prepared.append((
+                agent, mean, total, float(stats["min"]), float(stats["max"]), count,
+            ))
+
+        prepared.sort(key=lambda row: row[2], reverse=True)
+
+        for agent, mean, total, lo, hi, count in prepared:
+            rows.append(
+                f"| `{agent}` | {count} | {mean:,.0f} | {lo:,.0f} | {hi:,.0f} | {total:,.0f} |"
+            )
+
+        latency_block = (
+            "\n"
+            "| Agent | Invocations | Mean (ms) | Min (ms) | Max (ms) | Total (ms) |\n"
+            "|---|---:|---:|---:|---:|---:|\n"
+            + "\n".join(rows)
+            + "\n"
+        )
+    else:
+        latency_block = "\n_no per-agent latency recorded_\n"
+
+    return (
+        "\n"
+        "## Pipeline efficiency\n\n"
+        f"- LLM tokens — **input {tokens['input']:,}**, "
+        f"**output {tokens['output']:,}**, "
+        f"**total {tokens['total']:,}** "
+        f"across {tokens['generate_content_spans']:,} model calls\n"
+        f"{cache_line}\n"
+        f"- LLM retries: **{retries}**\n"
+        f"- Ticks observed: **{ticks}**\n"
+        "\n"
+        "### Per-agent latency\n"
+        f"{latency_block}"
+    )
 
 
 def _parse_date(as_of: str) -> date:

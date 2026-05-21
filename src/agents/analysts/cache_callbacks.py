@@ -181,6 +181,17 @@ def make_report_cache_callbacks(
             if hit is None:
                 # Any single miss forces a full LLM call — do not partial-load
                 # a mixed cache/LLM batch (the LLM would then re-score everyone).
+                # Surface the miss for the cache-hit-rate aggregate.
+                _log.info(
+                    "report_cache_miss",
+                    extra={
+                        "analyst":        analyst_name,
+                        "ticker":         ticker,
+                        "input_hash":     input_hash,
+                        "prompt_version": prompt_version,
+                        "kind":           "report_cache_miss",
+                    },
+                )
                 return None
 
             # Log the cache hit for audit telemetry — records which tick the
@@ -192,6 +203,20 @@ def make_report_cache_callbacks(
                 ticker=ticker,
                 input_hash=input_hash,
                 originating_as_of=hit.get("originating_as_of"),
+            )
+
+            # Surface the hit on the per-tick observability log too — gives
+            # the cache-hit-rate aggregate a structured event to count from.
+            _log.info(
+                "report_cache_hit",
+                extra={
+                    "analyst":           analyst_name,
+                    "ticker":            ticker,
+                    "input_hash":        input_hash,
+                    "originating_as_of": hit.get("originating_as_of"),
+                    "prompt_version":    prompt_version,
+                    "kind":              "report_cache_hit",
+                },
             )
 
             # Merge the report blob back into the verdict dict if one was stored

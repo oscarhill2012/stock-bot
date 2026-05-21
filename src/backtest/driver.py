@@ -30,6 +30,8 @@ from google.genai import types as genai_types
 
 from backtest.schedule import Tick
 from data.timeguard import drain_wallclock_fallback_count
+from observability.drain import drain_tick
+from observability.otel_setup import install_observability
 from observability.trace import TraceWriter
 from orchestrator.pipeline import build_pipeline
 
@@ -156,6 +158,15 @@ class Driver:
         # Audit artefacts go alongside traces under runs/<id>/audit/.
         self._audit_dir = self._run_dir / "audit"
         self._audit_dir.mkdir(parents=True, exist_ok=True)
+
+        # OTEL-shaped observability artefacts go under runs/<id>/obs/
+        # ({logs,traces,metrics}/<tick>.json), separate from the legacy
+        # TraceWriter output at runs/<id>/traces/<tick>.json.  Install the
+        # OTEL providers + log handler exactly once per process — the call
+        # is idempotent across Driver instances.
+        self._obs_dir = self._run_dir / "obs"
+        self._obs_dir.mkdir(parents=True, exist_ok=True)
+        self._obs_handles = install_observability(service_name="stockbot-backtest")
 
         # Build the live pipeline once per run — same pipeline, fresh runner
         # per tick (ADK InMemorySessionService is per-runner).
@@ -289,6 +300,18 @@ class Driver:
                 wall_clock_fallback_fired=wallclock_fallback_count > 0,
             )
             write_telemetry_record(self._audit_dir, telemetry)
+
+            # ── per-tick OTEL drain ───────────────────────────────────────────
+            # Flush the three buffered observability artefacts (logs, OTEL
+            # spans, OTEL metrics) into runs/<id>/obs/{logs,traces,metrics}/.
+            # The drain is best-effort — failures are logged inside drain_tick
+            # and never propagate, so the tick loop is unaffected.
+            drain_tick(
+                self._obs_handles,
+                self._obs_dir,
+                tick_slug = _slug(tick.as_of) + f"-{tick.phase}",
+                tick_id   = state["tick_id"],
+            )
 
             # Reset the per-tick report-cache-hits capture for the next tick.
             state.pop("_report_cache_hits_for_audit", None)
