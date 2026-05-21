@@ -61,15 +61,15 @@ Output ONE JSON object with fields:
   report       object — see schema below; omit only when is_no_data=true.
 
 Report schema:
-  summary  3-5 sentences of connective tissue covering the gestalt this
-           tick — not a bullet list. Argue your lean.
+  summary  string ≤{summary_max} chars of connective tissue covering the
+           gestalt this tick — not a bullet list. Argue your lean.
   drivers  2-4 entries. Each driver:
-    name       short label (4-6 words)
+    name       string ≤{driver_name_max} chars — short label for the driver
     direction  ∈ {{bull, bear, neutral}}
     weight     ∈ [0, 1] — relative importance vs other drivers; should sum
                roughly to 1.0 but is not strictly normalised
-    body       2-3 sentences explaining the driver. Do NOT cite source URLs;
-               synthesise.
+    body       string ≤{driver_body_max} chars explaining the driver. Do
+               NOT cite source URLs; synthesise.
 
 The report is your reasoning; the verdict is your conclusion. They must be
 consistent — the lean and direction-weighted driver mix should agree.
@@ -119,7 +119,13 @@ def build_news_instruction(vocab: NewsVocabulary) -> str:
         catalyst_options ="{" + " | ".join(vocab.catalysts) + "}",
         novelty_options  ="{" + " | ".join(vocab.novelty)   + "}",
         direction_options="{" + " | ".join(vocab.direction)  + "}",
+        # Char-cap placeholders — kept in sync with the schema's
+        # ``Field(max_length=...)`` via the two-tier ``schema_cap()`` convention
+        # so the value the LLM is told never exceeds what the schema accepts.
         rationale_max    = out_caps.verdict_rationale_max_chars,
+        summary_max      = out_caps.report_summary_max_chars,
+        driver_name_max  = out_caps.report_driver_name_max_chars,
+        driver_body_max  = out_caps.report_driver_body_max_chars,
         # Protect the two runtime placeholders from str.format substitution
         # by passing them back as themselves.
         news_context="{news_context}",

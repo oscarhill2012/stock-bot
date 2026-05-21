@@ -51,7 +51,7 @@ class ReportDriver(BaseModel):
     Parameters
     ----------
     name:
-        Short label for the driver (4-6 words).  Capped at
+        Short label for the driver. Capped at
         ``output_caps.report_driver_name_max_chars`` (prompt-facing) plus
         ``slack_percent`` schema headroom.
     direction:
@@ -62,7 +62,7 @@ class ReportDriver(BaseModel):
         Drivers within a report should sum roughly to 1.0 but the
         constraint is not strictly enforced.
     body:
-        2-3 sentence explanation of the driver. No source URLs — synthesise.
+        Prose explanation of the driver. No source URLs — synthesise.
         Capped at ``output_caps.report_driver_body_max_chars`` (prompt-facing)
         plus ``slack_percent`` schema headroom.
     """
@@ -84,8 +84,8 @@ class AnalystReport(BaseModel):
     Parameters
     ----------
     summary:
-        3-5 sentences of connective tissue covering the gestalt this tick.
-        Not a bullet list — must argue the lean.  Capped at
+        Connective tissue covering the gestalt this tick. Not a bullet list
+        — must argue the lean. Capped at
         ``output_caps.report_summary_max_chars`` (prompt-facing) plus
         ``slack_percent`` schema headroom.
     drivers:
