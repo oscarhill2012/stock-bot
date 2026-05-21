@@ -42,22 +42,6 @@ def main() -> None:
     # wall-clock substitute.  See src/data/timeguard.py.
     os.environ["STOCKBOT_STRICT_AS_OF"] = "1"
 
-    # Console / file handler split for observability:
-    #
-    # - The *root logger* runs at DEBUG so every captured-namespace logger
-    #   (``google_adk``, ``agents``, ``backtest`` …) can pass DEBUG records
-    #   through to the buffered handlers attached by ``install_observability``
-    #   — those land in ``runs/<id>/obs/logs/<tick>.json`` for forensics.
-    # - The *console handler* is installed by ``setup_terminal_logging`` —
-    #   the same one ``scripts/smoke_run.py`` uses so live and backtest share
-    #   the per-LLM-call latency + token rows.  Its custom formatter prints
-    #   ``stockbot.tick`` records verbatim (no timestamp prefix) while
-    #   everything else gets the standard ``YYYY-MM-DD HH:MM:SS LEVEL …``
-    #   format.  It also silences ``google_adk`` / ``google.adk`` to WARNING.
-    from observability.terminal_log import setup_terminal_logging
-    setup_terminal_logging()                                                   # adds stderr handler at INFO + silences ADK
-    logging.getLogger().setLevel(logging.DEBUG)                                # root stays at DEBUG so obs/ buffer captures everything
-
     # Enable the per-LLM-call ``before/after`` observability callbacks so the
     # branch builders chain them into the existing cache + trace callbacks.
     # Live ``scripts/smoke_run.py`` sets the same env var for the same reason.
@@ -110,7 +94,36 @@ def main() -> None:
             "directory name).  Default: <window>-<git-sha7>."
         ),
     )
+    parser.add_argument(
+        "--log-level",
+        choices=("minimal", "info", "debug"),
+        default="minimal",
+        help=(
+            "verbosity of terminal output (the obs/ buffered capture always "
+            "records full DEBUG detail regardless):\n"
+            "  minimal (default) — tick banners + per-analyst summary rows + real WARNINGs.\n"
+            "  info              — also show cache hits/misses and per-branch failures.\n"
+            "  debug             — full firehose, including ADK request/response chatter."
+        ),
+    )
     args = parser.parse_args()
+
+    # Console / file handler split for observability:
+    #
+    # - The *root logger* runs at DEBUG so every captured-namespace logger
+    #   (``google_adk``, ``agents``, ``backtest`` …) can pass DEBUG records
+    #   through to the buffered handlers attached by ``install_observability``
+    #   — those land in ``runs/<id>/obs/logs/<tick>.json`` for forensics.
+    # - The *console handler* is installed by ``setup_terminal_logging`` —
+    #   the same one ``scripts/smoke_run.py`` uses so live and backtest share
+    #   the per-LLM-call latency + token rows.  Its custom formatter prints
+    #   ``stockbot.tick`` records verbatim (no timestamp prefix) while
+    #   everything else gets the standard ``YYYY-MM-DD HH:MM:SS LEVEL …``
+    #   format.  ``--log-level`` chooses which records reach the terminal;
+    #   the default ``minimal`` mode applies an allowlist filter.
+    from observability.terminal_log import setup_terminal_logging
+    setup_terminal_logging(mode=args.log_level)                                # adds stderr handler at INFO + (in minimal/info) silences ADK
+    logging.getLogger().setLevel(logging.DEBUG)                                # root stays at DEBUG so obs/ buffer captures everything
 
     result = Runner().run(
         args.window,

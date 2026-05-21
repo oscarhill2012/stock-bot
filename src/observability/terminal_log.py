@@ -104,8 +104,12 @@ class _TickFormatter(logging.Formatter):
 # Public setup function
 # ---------------------------------------------------------------------------
 
-def setup_terminal_logging(level: int = logging.INFO) -> None:
-    """Install a stderr handler and silence ADK's chatty INFO loggers.
+def setup_terminal_logging(
+    level: int = logging.INFO,
+    *,
+    mode: str = "minimal",
+) -> None:
+    """Install a stderr handler and (optionally) silence ADK's chatty INFO loggers.
 
     Safe to call multiple times — subsequent calls are no-ops because the
     root logger already has the handler attached.
@@ -114,8 +118,23 @@ def setup_terminal_logging(level: int = logging.INFO) -> None:
     ----------
     level:
         The minimum log level for the stderr handler.  Defaults to
-        ``logging.INFO``.  Pass ``logging.DEBUG`` to see ADK debug output
-        (note: ADK loggers are clamped to WARNING regardless of this setting).
+        ``logging.INFO``.  Pass ``logging.DEBUG`` to see DEBUG records
+        (note: ADK loggers are clamped to WARNING when ``mode`` is
+        ``"minimal"`` or ``"info"`` regardless of this setting).
+    mode:
+        Verbosity profile for the terminal handler:
+
+        - ``"minimal"`` (default): allowlist filter passes only
+          ``stockbot.tick`` records (tick banners + analyst summary rows)
+          plus any record at WARNING or above.  ADK loggers clamped to
+          WARNING.  Cleanest terminal.
+        - ``"info"``: drop the allowlist filter so cache callbacks,
+          ``agents.isolated_failure`` WARNINGs, and other agent INFO
+          records reach the terminal.  ADK loggers still clamped to
+          WARNING so request/response chatter stays suppressed.
+        - ``"debug"``: drop the filter AND do not clamp ADK loggers.
+          Full firehose — every ADK request/response line, every cache
+          hit/miss.  Use sparingly.
     """
     root = logging.getLogger()
 
@@ -156,17 +175,23 @@ def setup_terminal_logging(level: int = logging.INFO) -> None:
             return False
         return record.levelno >= logging.WARNING
 
-    handler.addFilter(_terminal_filter)
+    # The allowlist filter is only attached in ``minimal`` mode.  In
+    # ``info`` / ``debug`` modes every record at ``level`` or above reaches
+    # the terminal.
+    if mode == "minimal":
+        handler.addFilter(_terminal_filter)
     root.addHandler(handler)
 
-    # Silence the ADK framework loggers — they produce a pair of INFO lines
-    # per LLM call ("Sending out request" / "Response received") which drown
-    # out our structured output with no useful information.  We clamp the
-    # logger (not just the handler filter) because the obs/ buffered capture
-    # also doesn't want this volume — ADK request/response details are
-    # surfaced via the structured callback path instead.
-    for name in _ADK_NOISY_LOGGERS:
-        logging.getLogger(name).setLevel(logging.WARNING)
+    # Silence the ADK framework loggers in ``minimal`` and ``info`` modes —
+    # they produce a pair of INFO lines per LLM call ("Sending out request"
+    # / "Response received") which drown out our structured output with no
+    # useful information.  We clamp the logger (not just the handler filter)
+    # because the obs/ buffered capture also doesn't want this volume —
+    # ADK request/response details are surfaced via the structured callback
+    # path instead.  ``debug`` mode leaves them at their default INFO level.
+    if mode in ("minimal", "info"):
+        for name in _ADK_NOISY_LOGGERS:
+            logging.getLogger(name).setLevel(logging.WARNING)
 
 
 # ---------------------------------------------------------------------------

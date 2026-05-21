@@ -31,6 +31,16 @@ def build_runner_args(argv: list[str] | None = None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--ticks", type=int, default=3)
     p.add_argument("--starting-cash", type=float, default=10_000.0)
+    p.add_argument(
+        "--log-level",
+        choices=("minimal", "info", "debug"),
+        default="minimal",
+        help=(
+            "verbosity of terminal output: minimal (default) = tick banners + "
+            "summary rows + WARNINGs; info = also cache + per-branch failures; "
+            "debug = full firehose including ADK chatter."
+        ),
+    )
     return p.parse_args(argv)
 
 
@@ -81,7 +91,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Install human-readable terminal logging BEFORE any agent code runs so
     # the ADK noisy loggers are muted from the first import.
-    setup_terminal_logging()
+    setup_terminal_logging(mode=args.log_level)
 
     # Activate the per-call observability callbacks in the analyst branches.
     # The env-var gate keeps backtest runs and unit tests free of this overhead.
