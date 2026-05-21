@@ -13,6 +13,7 @@ import pytest
 
 from backtest.reporting import (
     _backfill_forward_returns,
+    _build_equity_figure,
     _compute_vs_spy_delta,
     _parse_date,
     _write_metrics,
@@ -411,3 +412,113 @@ class TestComputeVsSpyDelta:
 
         assert isinstance(delta, str)
         mock_cache.read_ohlcv.assert_not_called()
+
+
+# ── _build_equity_figure ─────────────────────────────────────────────────────
+
+class TestBuildEquityFigure:
+    """Unit tests for the equity-curve Figure builder (portfolio + SPY + initial-funds)."""
+
+    # Simple two-tick portfolio series shared across all tests in this class.
+    _SERIES = [
+        (datetime(2026, 2, 2,  9, 30, tzinfo=UTC), 100_000.0),
+        (datetime(2026, 2, 2, 16,  0, tzinfo=UTC), 101_000.0),
+        (datetime(2026, 2, 3,  9, 30, tzinfo=UTC),  99_500.0),
+        (datetime(2026, 2, 3, 16,  0, tzinfo=UTC), 100_200.0),
+    ]
+
+    @staticmethod
+    def _legend_texts(fig) -> list[str]:
+        """Return legend label text strings in order — small readability helper."""
+        return [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
+
+    def test_three_lines_when_spy_present(self) -> None:
+        """With SPY bars in the cache, legend contains all three labels in order."""
+        from unittest.mock import MagicMock
+
+        import matplotlib.pyplot as plt
+
+        from data.models import OHLCBar
+
+        # Two SPY bars: first close anchors the rebase, second moves +5%.
+        bar1 = MagicMock(spec=OHLCBar)
+        bar1.timestamp = datetime(2026, 2, 2, tzinfo=UTC)
+        bar1.close     = 400.0
+        bar2 = MagicMock(spec=OHLCBar)
+        bar2.timestamp = datetime(2026, 2, 3, tzinfo=UTC)
+        bar2.close     = 420.0     # +5%
+
+        cache = MagicMock()
+        cache.read_ohlcv.return_value = [bar1, bar2]
+
+        fig = _build_equity_figure(self._SERIES, cache=cache, starting_cash=100_000.0)
+        try:
+            assert self._legend_texts(fig) == [
+                "Portfolio", "SPY (rebased)", "Initial funds",
+            ]
+            # SPY line is the second plotted Line2D; first y-value equals starting_cash.
+            spy_line = fig.axes[0].lines[1]
+            assert spy_line.get_ydata()[0] == pytest.approx(100_000.0, rel=1e-9)
+            # Second SPY point grew +5% from the anchor.
+            assert spy_line.get_ydata()[1] == pytest.approx(105_000.0, rel=1e-9)
+        finally:
+            plt.close(fig)
+
+    def test_two_lines_when_spy_empty(self) -> None:
+        """When SPY is absent from the cache, the SPY line is skipped silently."""
+        from unittest.mock import MagicMock
+
+        import matplotlib.pyplot as plt
+
+        cache = MagicMock()
+        cache.read_ohlcv.return_value = []  # SPY not in cache
+
+        fig = _build_equity_figure(self._SERIES, cache=cache, starting_cash=100_000.0)
+        try:
+            assert self._legend_texts(fig) == ["Portfolio", "Initial funds"]
+        finally:
+            plt.close(fig)
+
+    def test_two_lines_and_logs_when_spy_raises(self, caplog) -> None:
+        """When cache.read_ohlcv raises, SPY is skipped and the error is logged."""
+        import logging
+        from unittest.mock import MagicMock
+
+        import matplotlib.pyplot as plt
+
+        cache = MagicMock()
+        cache.read_ohlcv.side_effect = RuntimeError("db locked")
+
+        with caplog.at_level(logging.ERROR, logger="backtest.reporting"):
+            fig = _build_equity_figure(
+                self._SERIES, cache=cache, starting_cash=100_000.0,
+            )
+        try:
+            assert self._legend_texts(fig) == ["Portfolio", "Initial funds"]
+            # logger.exception(...) emits at ERROR level with traceback info.
+            assert any(
+                "SPY" in r.getMessage() for r in caplog.records
+            ), f"Expected an SPY error log; got: {[r.getMessage() for r in caplog.records]}"
+        finally:
+            plt.close(fig)
+
+    def test_initial_funds_is_dashed(self) -> None:
+        """The initial-funds line is rendered with a dashed linestyle for visual distinction."""
+        from unittest.mock import MagicMock
+
+        import matplotlib.pyplot as plt
+
+        cache = MagicMock()
+        cache.read_ohlcv.return_value = []
+
+        fig = _build_equity_figure(self._SERIES, cache=cache, starting_cash=100_000.0)
+        try:
+            # axhline produces a Line2D; locate it by its label.
+            initial_line = next(
+                ln for ln in fig.axes[0].lines if ln.get_label() == "Initial funds"
+            )
+            # matplotlib normalises '--' to 'dashed' or keeps it as '--' depending
+            # on call site; accept either to keep the test robust.
+            assert initial_line.get_linestyle() in {"--", "dashed"}
+        finally:
+            plt.close(fig)

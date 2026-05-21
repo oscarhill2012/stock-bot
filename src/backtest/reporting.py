@@ -34,7 +34,9 @@ from pathlib import Path
 import matplotlib
 
 matplotlib.use("Agg")  # headless rendering for CI / nightly cron
+import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
@@ -103,7 +105,12 @@ def report(run_dir: Path, settings: BacktestSettings, *, window: str) -> None:
     cache          = CachedDataStore(cache_path_for_window(settings, window))
     vs_spy_delta   = _compute_vs_spy_delta(equity, cache)
 
-    _write_equity_curve(equity, report_dir / "equity_curve.png")
+    _write_equity_curve(
+        equity,
+        report_dir / "equity_curve.png",
+        cache=cache,
+        starting_cash=equity[0][1],
+    )
     _write_metrics(
         equity,
         report_dir / "metrics.md",
@@ -122,9 +129,17 @@ def report(run_dir: Path, settings: BacktestSettings, *, window: str) -> None:
 # ── Private helpers ───────────────────────────────────────────────────────────
 
 def _write_equity_curve(
-    series: list[tuple[datetime, float]], outpath: Path,
+    series: list[tuple[datetime, float]],
+    outpath: Path,
+    *,
+    cache: CachedDataStore,
+    starting_cash: float,
 ) -> None:
-    """Render a portfolio equity curve PNG to ``outpath``.
+    """Render a portfolio equity curve PNG (with SPY overlay) to ``outpath``.
+
+    Thin wrapper around ``_build_equity_figure`` that handles file I/O and
+    figure teardown.  All layout decisions live in the helper so unit tests
+    can inspect the figure directly without going through ``savefig``.
 
     Parameters
     ----------
@@ -132,18 +147,121 @@ def _write_equity_curve(
         Ordered list of (timestamp, portfolio_value) pairs.
     outpath:
         Destination file path (e.g. ``report/equity_curve.png``).
+    cache:
+        The golden ``CachedDataStore`` to query for SPY OHLCV data.  Passed
+        through to the helper; missing or unreadable SPY data is handled
+        silently there.
+    starting_cash:
+        Starting equity used as the anchor for the dashed initial-funds
+        line and as the rebasing target for the SPY overlay.  Pass
+        ``series[0][1]`` so both reference lines sit exactly at the
+        portfolio's day-one value.
     """
+    fig = _build_equity_figure(
+        series, cache=cache, starting_cash=starting_cash,
+    )
+    fig.tight_layout()
+    fig.savefig(outpath)
+    plt.close(fig)
+
+
+def _build_equity_figure(
+    series: list[tuple[datetime, float]],
+    *,
+    cache: CachedDataStore,
+    starting_cash: float,
+) -> Figure:
+    """Build the equity-curve ``Figure`` with portfolio, SPY, and initial-funds lines.
+
+    Renders three lines on a single ``$`` axis:
+
+    - **Portfolio** — solid blue, the raw ``series`` values.
+    - **SPY (rebased)** — solid orange, SPY buy-and-hold rebased so the
+      first point equals ``starting_cash``.  Skipped silently if SPY is
+      absent from the cache or the read raises (a descriptive ``N/A`` row
+      is already written into ``metrics.md`` by ``_compute_vs_spy_delta``).
+    - **Initial funds** — grey dashed horizontal at ``starting_cash``, so
+      the "above the line / below the line" signal is immediate.
+
+    The time axis uses weekly major ticks (Mondays) with a concise date
+    formatter and daily minor ticks, plus a faint grid on both levels.
+
+    Parameters
+    ----------
+    series:
+        Ordered list of (timestamp, portfolio_value) pairs.  May contain
+        multiple intra-day ticks per trading day.
+    cache:
+        Golden ``CachedDataStore`` to read SPY OHLCV bars from.
+    starting_cash:
+        Anchor value for the dashed initial-funds line and the SPY
+        rebasing target.
+
+    Returns
+    -------
+    Figure
+        The composed matplotlib ``Figure``.  Caller is responsible for
+        saving and closing it.
+    """
+    # ── Portfolio line ───────────────────────────────────────────────────────
     xs = [t for t, _ in series]
     ys = [v for _, v in series]
 
     fig, ax = plt.subplots(figsize=(10, 5))
-    ax.plot(xs, ys, label="Portfolio")
+    ax.plot(xs, ys, label="Portfolio", color="tab:blue")
+
+    # ── SPY overlay (rebased to starting_cash) ───────────────────────────────
+    # Best-effort: missing or broken SPY data must not abort the report — the
+    # metrics file already surfaces "SPY not in cache" so a noisy chart
+    # annotation would add clutter without conveying anything new.
+    start_date = xs[0].date()
+    end_date   = xs[-1].date()
+    try:
+        spy_bars = cache.read_ohlcv("SPY", start_date, end_date)
+    except Exception:
+        logger.exception("Failed to read SPY OHLCV for equity-curve overlay")
+        spy_bars = []
+
+    if spy_bars:
+        # Rebase so the first plotted SPY point sits exactly at starting_cash.
+        # Using close-of-every-bar (including the first) anchors both lines
+        # visually at (t0, starting_cash) — intentionally different from
+        # _compute_vs_spy_delta which uses open-of-first-bar for its metric.
+        spy_anchor = spy_bars[0].close
+        if spy_anchor > 0:
+            spy_xs = [b.timestamp for b in spy_bars]
+            spy_ys = [starting_cash * b.close / spy_anchor for b in spy_bars]
+            ax.plot(spy_xs, spy_ys, label="SPY (rebased)", color="tab:orange")
+
+    # ── Initial-funds reference line ─────────────────────────────────────────
+    ax.axhline(
+        starting_cash,
+        linestyle="--",
+        color="grey",
+        linewidth=1,
+        alpha=0.6,
+        label="Initial funds",
+    )
+
+    # ── Axis cosmetics ───────────────────────────────────────────────────────
     ax.set_xlabel("Time")
     ax.set_ylabel("Portfolio value ($)")
     ax.legend()
-    fig.tight_layout()
-    fig.savefig(outpath)
-    plt.close(fig)
+
+    # Weekly major ticks (Monday) with concise labels; daily minor ticks.
+    major_locator = mdates.WeekdayLocator(byweekday=mdates.MO)
+    ax.xaxis.set_major_locator(major_locator)
+    ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(major_locator))
+    ax.xaxis.set_minor_locator(mdates.DayLocator())
+
+    # Faint two-level grid: stronger on weekly majors, almost-invisible on days.
+    ax.grid(True, which="major", alpha=0.3)
+    ax.grid(True, which="minor", alpha=0.1)
+
+    # Rotate labels automatically if they would overlap at this figure width.
+    fig.autofmt_xdate()
+
+    return fig
 
 
 def _write_metrics(
