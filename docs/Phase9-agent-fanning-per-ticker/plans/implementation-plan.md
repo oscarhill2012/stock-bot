@@ -50,8 +50,8 @@
 
 | Path | Reason |
 |---|---|
-| `src/agents/analysts/_base_yield.py::YieldingAnalystWrapper` | News/Fundamental no longer have an `after_agent_callback` to republish. Other analysts (Technical, Social) never used it. Delete once `grep YieldingAnalystWrapper src/ tests/` returns only the deletion site. |
-| `src/agents/analysts/_common.py::make_evidence_callback` | Replaced by the joiners. The body moves into each joiner's `_run_async_impl`. |
+| `src/agents/analysts/_base_yield.py::YieldingAnalystWrapper` | News/Fundamental no longer have an `after_agent_callback` to republish. Technical, Social, SmartMoney never used it. After Task 11 rewrites the News/Fundamental factories, the wrapper has zero remaining consumers (verified via grep — only docstring mentions in `src/agents/llm_retry.py` remain, plus dedicated unit tests). Delete the module **and** the two dedicated unit-test files (`tests/unit/agents/analysts/test_news_yield.py`, `tests/unit/agents/analysts/test_fundamental_yield.py`). |
+| `src/agents/analysts/_common.py::make_evidence_callback` **— call sites in News/Fundamental only** | News/Fundamental shed the `after_agent_callback`; the body moves into the joiners. **Do NOT delete the factory itself** — Technical, Social, and SmartMoney still register it as their `after_agent_callback` (see `src/agents/analysts/technical/agent.py:73`, `src/agents/analysts/social/agent.py:74`, `src/agents/analysts/smart_money/agent.py:80`). `tests/agents/analysts/test_evidence_callback.py` also stays. |
 
 ---
 
@@ -355,6 +355,28 @@ def test_instruction_describes_single_verdict_output():
     assert "Output ONE JSON object" in instruction or \
            "Emit one verdict" in instruction or \
            "single verdict" in instruction.lower()
+
+
+def test_instruction_honours_output_caps_from_config():
+    """`config/analysts.json::output_caps.verdict_rationale_max_chars`
+    must still be substituted into the rendered instruction — the per-
+    ticker rewrite must NOT bypass the config-driven character cap that
+    bounds each analyst's free-text output.
+    """
+
+    from config.analysts import get_analysts_config
+
+    instruction = build_news_instruction(_vocab())
+    cap = get_analysts_config().output_caps.verdict_rationale_max_chars
+
+    # The literal cap value should appear in the prompt (the template
+    # writes "≤{rationale_max} chars" — `str.format` substitutes the int).
+    assert f"≤{cap} chars" in instruction or f"{cap} chars" in instruction, (
+        f"rendered prompt does not contain configured rationale cap {cap}; "
+        "the per-ticker rewrite must preserve the config/analysts.json "
+        "output_caps substitution path (see Phase 9 spec — config control "
+        "of analyst output budgets is an invariant)."
+    )
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -524,6 +546,26 @@ def test_instruction_describes_single_verdict_output():
 
     assert "Output ONE JSON object" in instruction or \
            "single verdict" in instruction.lower()
+
+
+def test_instruction_honours_output_caps_from_config():
+    """`config/analysts.json::output_caps.verdict_rationale_max_chars`
+    must still be substituted into the rendered instruction — the per-
+    ticker rewrite must NOT bypass the config-driven character cap that
+    bounds each analyst's free-text output.
+    """
+
+    from config.analysts import get_analysts_config
+
+    instruction = build_fundamental_instruction(_vocab())
+    cap = get_analysts_config().output_caps.verdict_rationale_max_chars
+
+    assert f"≤{cap} chars" in instruction or f"{cap} chars" in instruction, (
+        f"rendered prompt does not contain configured rationale cap {cap}; "
+        "the per-ticker rewrite must preserve the config/analysts.json "
+        "output_caps substitution path (see Phase 9 spec — config control "
+        "of analyst output budgets is an invariant)."
+    )
 ```
 
 > **Note:** the `_vocab()` stub raises `NotImplementedError`. Read `src/agents/analysts/heuristics.py` for the `FundamentalVocabulary` definition, populate the lists, then run the tests.
@@ -772,6 +814,14 @@ class NewsFetchAgent(BaseAgent):
         for ticker, block in per_ticker_blocks.items():
             delta[f"temp:news_context_{ticker}"] = block
 
+        # Retain the plain ``news_context`` key — multi-ticker joined
+        # block — for trace/debug surfaces (per Phase 9 spec §1).  Each
+        # per-ticker LlmAgent reads its OWN ``temp:news_context_<TICKER>``;
+        # this aggregate is only for human-readable traces.
+        delta["temp:news_context"] = "\n\n".join(
+            f"=== {t} ===\n{per_ticker_blocks[t]}" for t in tickers
+        )
+
         # Surface trace — no-op unless state["_trace"] is set.
         _trace_maybe(state, "01_fetch_news", news_data)
 
@@ -780,6 +830,38 @@ class NewsFetchAgent(BaseAgent):
             invocation_id=ctx.invocation_id,
             actions=EventActions(state_delta=delta),
         )
+```
+
+Also add a test assertion confirming the aggregate key is written:
+
+```python
+@pytest.mark.asyncio
+async def test_fetch_writes_aggregate_news_context_for_trace():
+    """The aggregate ``temp:news_context`` key (multi-ticker joined block) is
+    retained for trace/debug surfaces — see Phase 9 spec §1.
+    """
+
+    async def _mock(ticker, as_of=None):
+        return [{"title": f"{ticker} hed", "summary": "body", "published_at": "2026-05-21"}]
+
+    svc = InMemorySessionService()
+    session = await svc.create_session(
+        app_name="test", user_id="test",
+        state={"tickers": ["AAPL", "MSFT"], "as_of": datetime(2026, 5, 21)},
+        session_id="t1",
+    )
+    agent = NewsFetchAgent(name="NewsFetch")
+    ctx = InvocationContext(session_service=svc, session=session,
+                            invocation_id="inv-1", agent=agent)
+
+    with patch("agents.analysts.news.fetch_agent.get_stock_news", _mock):
+        events = [ev async for ev in agent.run_async(ctx)]
+
+    sd = events[0].actions.state_delta
+    assert "temp:news_context" in sd
+    # Both ticker headers appear in the joined block.
+    assert "=== AAPL ===" in sd["temp:news_context"]
+    assert "=== MSFT ===" in sd["temp:news_context"]
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -884,6 +966,15 @@ class FundamentalFetchAgent(BaseAgent):
         delta: dict[str, object] = {"temp:fundamental_data": fundamental_data}
         for ticker, block in per_ticker_blocks.items():
             delta[f"temp:fundamental_context_{ticker}"] = block
+
+        # Retain the aggregate ``temp:fundamental_context`` key — multi-
+        # ticker joined block — for trace/debug surfaces (per Phase 9 spec
+        # §1).  The per-ticker LlmAgents read their OWN
+        # ``temp:fundamental_context_<TICKER>`` keys; this aggregate is
+        # only for human-readable traces.
+        delta["temp:fundamental_context"] = "\n\n".join(
+            f"=== {t} ===\n{per_ticker_blocks[t]}" for t in tickers
+        )
 
         _trace_maybe(state, "01_fetch_fundamental", fundamental_data)
 
@@ -1661,6 +1752,47 @@ async def test_joiner_synthesises_no_data_for_missing_key():
 
     msft_ev = next(row for row in delta["news_evidence"] if row["ticker"] == "MSFT")
     assert msft_ev["verdict"]["is_no_data"] is True
+
+
+@pytest.mark.asyncio
+async def test_joiner_output_consumable_by_strategist_index_evidence():
+    """The joiner's `news_evidence` list must round-trip through
+    Strategist's ``_index_evidence`` without shape errors.  This locks in the
+    contract verified at plan-time (``context_shim._index_evidence`` accepts
+    either a raw ``dict`` or a validated ``AnalystEvidence``).  If a future
+    edit changes ``ev.model_dump(mode="json")`` to a non-dict payload, this
+    test catches it before the strategist crashes mid-tick.
+    """
+
+    from agents.strategist.context_shim import _index_evidence
+
+    state = {
+        "tickers": ["AAPL"],
+        "tick_id": "t-1",
+        "as_of":   "2026-05-21T14:00",
+        "temp:news_data": {"AAPL": {"news": [{"title": "AAPL beats"}]}},
+        "temp:news_verdict_AAPL": {
+            "ticker": "AAPL", "lean": "bullish", "magnitude": 0.7,
+            "confidence": 0.8, "rationale": "ok", "key_factors": [],
+            "is_no_data": False,
+        },
+    }
+
+    svc = InMemorySessionService()
+    session = await svc.create_session(
+        app_name="test", user_id="test", state=state, session_id="t1",
+    )
+    agent = NewsJoinerAgent(name="NewsJoiner")
+    ctx = InvocationContext(
+        session_service=svc, session=session, invocation_id="inv-1", agent=agent,
+    )
+
+    delta = (await agent.run_async(ctx).__anext__()).actions.state_delta
+
+    # Simulate Strategist downstream consumption.
+    indexed = _index_evidence({"news_evidence": delta["news_evidence"]}, "news_evidence")
+    assert "AAPL" in indexed
+    assert indexed["AAPL"].ticker == "AAPL"
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -2172,35 +2304,54 @@ git commit -m "refactor(pipeline): tickers parameter; per-tick analyst fan-out c
 
 ---
 
-## Task 13: Live tick — pass watchlist into `build_pipeline`
+## Task 13: Live tick + every other `build_pipeline` caller — pass `tickers=`
 
 **Files:**
 - Modify: `src/orchestrator/tick.py`
+- Modify: `tests/unit/orchestrator/test_pipeline_wiring_v2.py`
+- Modify: `tests/integration/test_pipeline_composition.py`
+- Modify: `scripts/trace_tick.py`
 
-- [ ] **Step 1: Locate the current `build_pipeline` call site**
+> **Why this task touches multiple files:** Task 12 made `tickers=` a required kwarg on `build_pipeline`. Every existing caller across the codebase must be updated in the same commit or `pytest -q` will fail at collection. The enumerated list below was generated by `grep -rn "build_pipeline" src/ tests/ scripts/` on 2026-05-21 — if the grep returns additional sites at implementation time, patch them too.
 
-Run: `grep -n "build_pipeline" src/orchestrator/tick.py`
+- [ ] **Step 1: Enumerate every `build_pipeline` call site**
 
-- [ ] **Step 2: Add the watchlist argument**
+Run: `grep -rn "build_pipeline(" src/ tests/ scripts/`
 
-At the line where `tick.py` calls `build_pipeline(broker, session)`, change to:
+The known-at-plan-time sites (from the audit grep) are:
+
+| File | Line(s) | Current call | New call |
+|---|---|---|---|
+| `src/orchestrator/tick.py` | 138 | `build_pipeline(broker, session)` | `build_pipeline(broker, session, tickers=state["tickers"])` |
+| `src/backtest/driver.py` | 173 | `build_pipeline(broker, db_session)` | _Handled by Task 14 — moves into per-tick loop._ |
+| `tests/unit/orchestrator/test_pipeline_wiring_v2.py` | 17, 35 | `build_pipeline(broker=..., db_session=None)` | add `tickers=["AAPL"]` (or whatever tickers the assertion checks against) |
+| `tests/integration/test_pipeline_composition.py` | 10, 16, 23, 39 | `build_pipeline(broker)` | `build_pipeline(broker, tickers=["AAPL"])` |
+| `scripts/trace_tick.py` | 115 | `build_pipeline(broker)` | `build_pipeline(broker, tickers=state["tickers"])` (the script already builds `state` before this line) |
+
+- [ ] **Step 2: Patch the live tick**
+
+Change `src/orchestrator/tick.py:138` from `build_pipeline(broker, session)` to:
 
 ```python
 pipeline = build_pipeline(broker, session, tickers=state["tickers"])
 ```
 
-`state["tickers"]` is already populated upstream by `_build_initial_state` — no other change needed.
+`state["tickers"]` is already populated upstream by `_build_initial_state` — no other change in `tick.py` needed.
 
-- [ ] **Step 3: Run the live-orchestrator test suite**
+- [ ] **Step 3: Patch every test/script caller**
 
-Run: `PYTHONPATH=src .venv/bin/python -m pytest tests/orchestrator/ -v`
-Expected: PASS (any tests that previously stubbed `build_pipeline` need their stub signatures updated to accept `tickers` — fix those inline).
+For each file listed in Step 1, add `tickers=[...]` (a single-ticker list like `["AAPL"]` is fine for tests that only check pipeline wiring shape; pass `state["tickers"]` for `scripts/trace_tick.py`). Do **not** stub `build_pipeline` itself — update real call sites.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: Run the full unit + orchestrator suite**
+
+Run: `PYTHONPATH=src .venv/bin/python -m pytest tests/unit/ tests/integration/test_pipeline_composition.py tests/orchestrator/ -v`
+Expected: PASS (any collection-time `TypeError: missing keyword 'tickers'` means a call site was missed — go back to Step 1 and grep again).
+
+- [ ] **Step 5: Commit**
 
 ```bash
-git add src/orchestrator/tick.py tests/orchestrator/
-git commit -m "refactor(orchestrator/tick): thread watchlist into per-tick pipeline build"
+git add src/orchestrator/tick.py tests/unit/orchestrator/test_pipeline_wiring_v2.py tests/integration/test_pipeline_composition.py scripts/trace_tick.py
+git commit -m "refactor(orchestrator): thread watchlist into per-tick build_pipeline calls"
 ```
 
 ---
@@ -2321,11 +2472,14 @@ git commit -m "refactor(backtest/driver): rebuild pipeline per tick to honour wa
 
 ---
 
-## Task 15: Update integration smoke-test stubs
+## Task 15: Update integration tests — direct imports + stub shims
 
 **Files:**
 - Modify: `tests/integration/backtest/test_end_to_end_smoke.py`
+- Modify: `tests/integration/backtest/test_no_silent_zero_features.py`
 - Modify: any conftest stub shims for News/Fundamental LLMs
+
+> **Why this task touches two integration tests:** both files directly import `build_news_analyst` / `build_fundamental_analyst` and construct them with the old no-tickers signature. Task 11 deletes those symbols and replaces them with `build_news_branch(vocab, tickers)` / `build_fundamental_branch(vocab, tickers)`. If we patched only the smoke test, the second file would crash at import. Verified at plan-time via `grep -rn "build_news_analyst\|build_fundamental_analyst" tests/`.
 
 - [ ] **Step 1: Identify per-ticker agent name patterns in stub shims**
 
@@ -2363,54 +2517,135 @@ synthetic_text = json.dumps({
 
 Where `ticker_from_agent_name(name)` strips the `NewsAnalyst_` / `FundamentalAnalyst_` prefix.
 
-- [ ] **Step 3: Run the smoke test**
+- [ ] **Step 3: Swap the direct factory imports**
 
-Run: `PYTHONPATH=src .venv/bin/python -m pytest tests/integration/backtest/test_end_to_end_smoke.py -v -m slow`
+Two integration tests import the deleted factories directly:
+
+| File | Lines | Change |
+|---|---|---|
+| `tests/integration/backtest/test_end_to_end_smoke.py` | 359, 361, 373, 374 | `from agents.analysts.fundamental.agent import build_fundamental_analyst` → `build_fundamental_branch`; `from agents.analysts.news.agent import build_news_analyst` → `build_news_branch`; call sites become `build_fundamental_branch(h.fundamental_vocabulary, tickers=tickers)` / `build_news_branch(h.news_vocabulary, tickers=tickers)`. `tickers` is the watchlist already in scope from the surrounding fixture. |
+| `tests/integration/backtest/test_no_silent_zero_features.py` | 270, 272, 285, 286 | Same swap, same kwarg. |
+
+Both files use the constructed branches to assert pipeline composition / observability — the assertion targets may need adjusting since the new branch is a `SequentialAgent[Fetch, *per-ticker branches, Joiner]` rather than the old `YieldingAnalystWrapper(LlmAgent)`. Read the surrounding asserts and update them to walk `sub_agents` instead of `.inner`.
+
+- [ ] **Step 4: Run the smoke test + the no-silent-zero check**
+
+Run:
+```bash
+PYTHONPATH=src .venv/bin/python -m pytest \
+    tests/integration/backtest/test_end_to_end_smoke.py \
+    tests/integration/backtest/test_no_silent_zero_features.py \
+    -v -m slow
+```
 Expected: PASS.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add tests/integration/backtest/ tests/conftest.py
-git commit -m "test(integration): adapt stubs for per-ticker analyst names"
+git commit -m "test(integration): adapt stubs + direct imports for per-ticker fan-out"
 ```
 
 ---
 
-## Task 16: Retire `YieldingAnalystWrapper` and `make_evidence_callback`
+## Task 16: Retire `YieldingAnalystWrapper`; clean up dead exports/comments
+
+> **Scope correction (audit fix):** `make_evidence_callback` is **NOT** deleted in this task — Technical, Social, and SmartMoney still register it as their `after_agent_callback`. This task only removes the News/Fundamental call sites (which Task 11's rewrite has already done in-source) and retires the now-unused `YieldingAnalystWrapper`. The `make_evidence_callback` factory in `src/agents/analysts/_common.py` stays.
 
 **Files:**
 - Delete: `src/agents/analysts/_base_yield.py`
-- Modify: `src/agents/analysts/_common.py`
+- Delete: `tests/unit/agents/analysts/test_news_yield.py`
+- Delete: `tests/unit/agents/analysts/test_fundamental_yield.py`
+- Modify: `src/agents/analysts/__init__.py` — drop `build_news_analyst` / `build_fundamental_analyst` re-exports; add `build_news_branch` / `build_fundamental_branch`
+- Modify: `src/agents/analysts/news/__init__.py` — same swap
+- Modify: `src/agents/analysts/fundamental/__init__.py` — same swap
+- Modify: `src/agents/llm_retry.py` — purge the five `YieldingAnalystWrapper` docstring/comment references (lines 14, 46, 149, 165, 206 at plan-time)
+- Modify: `src/contract/extractors/social.py` — fix the `make_evidence_callback`-related comment at line 12 if it references the retired wrapper (read context to confirm)
+- Modify: `tests/unit/orchestrator/test_pipeline_sequential_branches.py` — fix the line 46 comment that mentions `.inner` pointing at a `YieldingAnalystWrapper`
+- Modify: `tests/integration/test_analyst_pool.py` — fix the line 41 comment referencing `YieldingAnalystWrapper`
+- Modify: `tests/analysts/test_news.py`, `tests/analysts/test_fundamental.py` — these structural tests assert `isinstance(branch, YieldingAnalystWrapper)`. Rewrite to assert the new `SequentialAgent[Fetch, *per-ticker branches, Joiner]` shape (or delete if Task 11/12 already covered the structural assertions in the new branch-factory tests).
+- Modify: `src/config/models.py` — fix docstring references at lines 61, 64 from `build_news_analyst` / `build_fundamental_analyst` to `build_news_branch` / `build_fundamental_branch`
 
-- [ ] **Step 1: Confirm no remaining consumers**
+- [ ] **Step 1: Confirm `YieldingAnalystWrapper` has no remaining live consumers**
 
 Run:
 ```bash
-grep -rn "YieldingAnalystWrapper" src/ tests/
-grep -rn "make_evidence_callback" src/ tests/
+grep -rn "YieldingAnalystWrapper" src/ tests/ scripts/
 ```
 
-Expected: every match should be a definition site or a deletion target. If anything else still imports either symbol, fix it before continuing.
+After Task 11, every match should be either:
+- the definition site (`src/agents/analysts/_base_yield.py`) — about to be deleted
+- one of the two dedicated test files — about to be deleted
+- a docstring/comment reference — about to be cleaned up in this task
 
-- [ ] **Step 2: Delete the modules**
+If anything else still imports the symbol, find the missed call site and fix it before continuing — **do not push through**.
+
+- [ ] **Step 2: Delete the module and its dedicated tests**
 
 ```bash
-git rm src/agents/analysts/_base_yield.py
+git rm src/agents/analysts/_base_yield.py \
+       tests/unit/agents/analysts/test_news_yield.py \
+       tests/unit/agents/analysts/test_fundamental_yield.py
 ```
 
-In `src/agents/analysts/_common.py`, delete the `make_evidence_callback` function and the unused imports it relied on. Keep `_chain_before` / `_chain_after` — they are still used by `per_ticker.py`.
+- [ ] **Step 3: Update the analyst-package re-exports**
 
-- [ ] **Step 3: Run the full fast test suite**
+`src/agents/analysts/__init__.py` — replace:
+
+```python
+from .fundamental.agent import build_fundamental_analyst
+from .news.agent        import build_news_analyst
+
+__all__ = [
+    "build_fundamental_analyst",
+    "build_news_analyst",
+]
+```
+
+with:
+
+```python
+from .fundamental.agent import build_fundamental_branch
+from .news.agent        import build_news_branch
+
+__all__ = [
+    "build_fundamental_branch",
+    "build_news_branch",
+]
+```
+
+Do the same surgery to `src/agents/analysts/news/__init__.py` and `src/agents/analysts/fundamental/__init__.py`. Also update the module docstrings — they currently describe the returned object as a `YieldingAnalystWrapper`; change to "a `SequentialAgent[FetchAgent, per-ticker branches, JoinerAgent]`".
+
+- [ ] **Step 4: Clean up docstring/comment references**
+
+For each file listed above, replace `YieldingAnalystWrapper` mentions with accurate descriptions of the new structure. Concretely:
+
+- `src/agents/llm_retry.py` lines 14, 46, 149, 165, 206 — the docstrings explain that `RetryingAgentWrapper` works on `LlmAgent` or `YieldingAnalystWrapper(LlmAgent)`. The new wrapping pattern is `IsolatedFailureWrapper(RetryingAgentWrapper(LlmAgent))`. Update accordingly.
+- `tests/unit/orchestrator/test_pipeline_sequential_branches.py:46` — the comment refers to `.inner` pointing at the wrapper. With per-ticker branches that no-longer-exist, the assertion itself is probably wrong too — read the test, update the assertion to walk the new `SequentialAgent` shape, and rewrite the comment to match.
+- `tests/integration/test_analyst_pool.py:41` — same kind of comment fix.
+- `src/config/models.py` lines 61, 64 — change the cross-references in the docstring to the new factory names.
+
+- [ ] **Step 5: Rewrite the News/Fundamental structural tests**
+
+`tests/analysts/test_news.py` and `tests/analysts/test_fundamental.py` today assert the factory returns a `YieldingAnalystWrapper` named `"NewsAnalystBranch"` / `"FundamentalAnalystBranch"` and walk `.inner` to check the underlying `LlmAgent`. After Phase 9 the factory returns a `SequentialAgent[FetchAgent, *per-ticker branches, JoinerAgent]`. Rewrite each test to:
+
+1. Call the new factory with a small `tickers=["AAPL", "MSFT"]` list.
+2. Assert the returned agent is a `SequentialAgent`.
+3. Assert `sub_agents[0]` is the fetch agent and `sub_agents[-1]` is the joiner.
+4. Assert the middle slice is exactly `len(tickers)` per-ticker branches, each named `"NewsAnalyst_<TICKER>"` / `"FundamentalAnalyst_<TICKER>"`.
+
+If Task 11's new branch-factory tests already cover all of this, just delete `test_news.py` / `test_fundamental.py` — do not maintain duplicate structural tests.
+
+- [ ] **Step 6: Run the full fast test suite**
 
 Run: `PYTHONPATH=src .venv/bin/python -m pytest tests/ -m "not slow and not integration" -q`
-Expected: PASS (any test still importing the deleted symbols must be fixed or removed).
+Expected: PASS. Any `ImportError: cannot import name 'build_news_analyst'` means a re-export was missed — go back to Step 3.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add -A src/agents/analysts/
-git commit -m "refactor(analysts): retire YieldingAnalystWrapper and make_evidence_callback"
+git add -A src/agents/ src/config/models.py tests/analysts/ tests/unit/agents/ tests/unit/orchestrator/ tests/integration/test_analyst_pool.py
+git commit -m "refactor(analysts): retire YieldingAnalystWrapper; clean up dead docstrings/exports"
 ```
 
 ---
@@ -2461,6 +2696,93 @@ Expected: PASS (no warnings).
 
 Run: `PYTHONPATH=src .venv/bin/python -m pytest tests/integration/backtest/test_end_to_end_smoke.py -v -m slow`
 Expected: PASS.
+
+- [ ] **Step 3b: `config/analysts.json` still controls per-analyst output caps — end-to-end check**
+
+> **Why this step exists:** The audit flagged that `config/analysts.json::output_caps` (rationale chars, summary chars, driver name/body chars) must still bound each per-ticker LlmAgent's output after the fan-out. Output caps flow into the system via two paths — (a) prompt-facing text written by `build_news_instruction` / `build_fundamental_instruction` (`prompts.py`), and (b) Pydantic schema enforcement on `AnalystVerdict` / `DriverReport` / `DriverEvidence` (`src/contract/evidence.py:40-106`). `TickerVerdict` inherits from `AnalystVerdict` so the schema-side cap survives automatically — but only if no task accidentally bypassed `AnalystVerdict` for a new ad-hoc schema. This step locks both paths down.
+
+Add (or extend) `tests/agents/test_output_caps_per_ticker.py`:
+
+```python
+"""Per-ticker analysts honour ``config/analysts.json::output_caps``.
+
+Two assertions:
+  1. Prompt-facing — the literal rationale-char cap is substituted into
+     the rendered single-ticker instruction.
+  2. Schema-facing — the per-ticker LlmAgent's ``output_schema`` is
+     ``TickerVerdict`` (or a subclass) and inherits the
+     ``rationale`` ``max_length`` from ``AnalystVerdict``.
+"""
+from __future__ import annotations
+
+from agents.analysts.fundamental.per_ticker import build_fundamental_branch_for_ticker
+from agents.analysts.heuristics import load_heuristics
+from agents.analysts.news.per_ticker import build_news_branch_for_ticker
+from config.analysts import get_analysts_config
+from contract.evidence import AnalystVerdict, TickerVerdict
+
+
+def _walk_to_llm_agent(branch):
+    """Return the inner ``LlmAgent`` regardless of wrapper nesting."""
+
+    cur = branch
+    while not hasattr(cur, "instruction") or not hasattr(cur, "output_schema"):
+        cur = getattr(cur, "inner", None)
+        assert cur is not None, "could not locate inner LlmAgent"
+    return cur
+
+
+def test_news_per_ticker_prompt_contains_config_rationale_cap():
+    """Rendered News instruction substitutes ``verdict_rationale_max_chars``."""
+
+    h = load_heuristics()
+    branch = build_news_branch_for_ticker("AAPL", h.news_vocabulary)
+    llm = _walk_to_llm_agent(branch)
+
+    cap = get_analysts_config().output_caps.verdict_rationale_max_chars
+    assert f"{cap}" in llm.instruction, (
+        "news per-ticker instruction does not carry the configured "
+        "rationale cap — output_caps config path is broken"
+    )
+
+
+def test_fundamental_per_ticker_prompt_contains_config_rationale_cap():
+    """Mirror for fundamental."""
+
+    h = load_heuristics()
+    branch = build_fundamental_branch_for_ticker("AAPL", h.fundamental_vocabulary)
+    llm = _walk_to_llm_agent(branch)
+
+    cap = get_analysts_config().output_caps.verdict_rationale_max_chars
+    assert f"{cap}" in llm.instruction
+
+
+def test_per_ticker_output_schema_inherits_analyst_verdict_caps():
+    """`output_schema` must be (or extend) ``AnalystVerdict`` so Pydantic
+    enforces the schema-side ``rationale`` ``max_length``."""
+
+    h = load_heuristics()
+    for branch in (
+        build_news_branch_for_ticker("AAPL", h.news_vocabulary),
+        build_fundamental_branch_for_ticker("AAPL", h.fundamental_vocabulary),
+    ):
+        llm = _walk_to_llm_agent(branch)
+        assert issubclass(llm.output_schema, AnalystVerdict), (
+            f"{llm.name} bypassed AnalystVerdict — schema-side output caps "
+            f"are no longer enforced.  Got: {llm.output_schema!r}"
+        )
+        # Sanity — confirm the per-ticker variant in current use.
+        assert llm.output_schema is TickerVerdict
+```
+
+Run: `PYTHONPATH=src .venv/bin/python -m pytest tests/agents/test_output_caps_per_ticker.py -v`
+Expected: PASS.
+
+Commit:
+```bash
+git add tests/agents/test_output_caps_per_ticker.py
+git commit -m "test(analysts): lock in config/analysts.json output_caps end-to-end (Phase 9)"
+```
 
 - [ ] **Step 4: Run a real backtest on the SVB-stress window**
 
@@ -2523,14 +2845,31 @@ Done after writing the plan; issues fixed inline.
 | §9 Observability reshape | Task 18 (verified during backtest run) |
 | §10 §A invariant table updates | Task 17 |
 | Testing strategy | Tests embedded in every task; integration suite updated in Task 15 |
+| **Config control — `config/analysts.json::output_caps` (audit add-on)** | Tasks 2, 3 (prompt-side cap substitution test) + Task 18 Step 3b (end-to-end lock-in test) |
+| **Strategist `_index_evidence` shape compat (audit add-on)** | Task 9 (explicit round-trip test in the joiner suite); confirmed at plan-time that `context_shim._index_evidence` accepts both `dict` and `AnalystEvidence` |
 
 **Type / name consistency checks:**
 - `temp:news_verdict_<TICKER>` / `temp:fundamental_verdict_<TICKER>` — used consistently across Tasks 6, 7, 8, 9, 10, 11.
 - `temp:news_context_<TICKER>` / `temp:fundamental_context_<TICKER>` — Task 4 (writer) ↔ Task 7 (reader via instruction placeholder).
-- `build_news_branch` / `build_fundamental_branch` — Task 11 (definition) ↔ Task 12 (caller).
+- `temp:news_context` / `temp:fundamental_context` (aggregate) — written by Tasks 4 and 5 for trace/debug, per spec §1.
+- `build_news_branch` / `build_fundamental_branch` — Task 11 (definition) ↔ Task 12 (caller) ↔ Task 15 (integration tests) ↔ Task 16 (re-export update).
 - `IsolatedFailureWrapper(name=, inner=, analyst=, ticker=)` — kwargs match across Task 1 (definition), Task 7 (News use), Task 8 (Fundamental use).
 - `make_report_cache_callbacks(... ticker=, output_schema=, ...)` — Task 6 (signature) ↔ Tasks 7, 8 (callers).
 
 **Placeholder scan:** The `_vocab()` stubs in Tasks 3 and 8 are flagged with `raise NotImplementedError` and an explicit instruction to populate at implementation time — acceptable since the implementer reads the real class to fill them. All other code blocks are complete.
+
+**Audit fix-ups (applied after first audit pass):**
+
+| Audit finding | Where fixed in this plan |
+|---|---|
+| Task 16 wrongly proposed deleting `make_evidence_callback` (still used by Tech/Social/SmartMoney) | Task 16 rewritten — factory stays; only News/Fundamental call sites are removed (which Task 11 already does in-source). |
+| Task 16 did not enumerate `tests/unit/agents/analysts/test_news_yield.py` / `test_fundamental_yield.py` for deletion | Task 16 now lists both for explicit `git rm`. |
+| `__init__.py` re-exports of `build_news_analyst` / `build_fundamental_analyst` left dangling | Task 16 now updates `src/agents/analysts/__init__.py`, `news/__init__.py`, `fundamental/__init__.py`. |
+| `tests/integration/backtest/test_no_silent_zero_features.py` directly imports the deleted factories | Task 15 now enumerates this file alongside the smoke test. |
+| Several other `build_pipeline(broker)` callers (test_pipeline_wiring_v2, test_pipeline_composition, scripts/trace_tick.py) needed `tickers=` kwarg added | Task 13 now enumerates every known caller in a table. |
+| `news_context` / `fundamental_context` plain keys (spec §1) no longer written | Tasks 4 and 5 now retain the aggregate `temp:news_context` / `temp:fundamental_context` for trace/debug. |
+| `tests/analysts/test_news.py`, `tests/analysts/test_fundamental.py`, `test_pipeline_sequential_branches.py:46`, `test_analyst_pool.py:41`, `src/agents/llm_retry.py` docstrings, `src/config/models.py:61,64` carry stale `YieldingAnalystWrapper` / old-factory references | Task 16 enumerates each file for cleanup/rewrite. |
+| Config-control of analyst output budgets (`config/analysts.json::output_caps`) at risk if the per-ticker rewrite bypassed `out_caps` substitution | Tasks 2 + 3 each gain an `output_caps` substitution test; Task 18 adds a Step 3b end-to-end lock-in test asserting both the prompt-side cap and the schema-side cap (via `issubclass(output_schema, AnalystVerdict)`). |
+| `_index_evidence` shape compat (does it accept `ev.model_dump(mode="json")`?) | Verified at plan-time: `src/agents/strategist/context_shim.py:74-76` tolerates both `dict` and `AnalystEvidence`. Task 9 gains an explicit round-trip test as a regression guard. |
 
 **Scope check:** One cohesive refactor (News + Fundamental fan-out + supporting infrastructure). Single plan is correct.
