@@ -11,13 +11,20 @@ Lifecycle bug fixed here (B22)
 The original per-analyst ``_after`` hooks read ``state[verdicts_state_key]``
 to discover what the LLM returned.  However, ADK's ``__maybe_save_output_to_state``
 (in ``google.adk.agents.llm_agent``) — which parses the LLM JSON against
-``output_schema=VerdictBatch`` and writes to state — fires **after** the
-after-model-callback chain.  So ``_after`` was seeing an empty state key,
-iterating over zero verdicts, and writing nothing to the cache.
+``output_schema=TickerVerdict`` and writes to state — fires **after** the
+after-model-callback chain.  So ``_after`` was seeing an empty state key
+and writing nothing to the cache.
 
 The factory's ``_after`` hook fixes this by parsing ``llm_response.content``
 directly — the raw model output is available immediately, independent of ADK's
 state-save timing.
+
+Phase 9 change — per-ticker shape
+----------------------------------
+Each LlmAgent is now bound to a SINGLE ticker.  Both hooks therefore look up a
+single per-ticker cache entry rather than iterating every watchlist ticker.
+``output_schema`` (a Pydantic model class) is passed by the caller so the
+factory stays free of analyst-specific imports — typically ``TickerVerdict``.
 
 How to wire a new analyst's cache
 ----------------------------------
@@ -33,20 +40,23 @@ Three steps:
    in ``report_cache.py``.  Bump this string whenever the prompt template or
    closed vocabulary changes to invalidate every cached entry automatically.
 
-3. **Wire the factory** — in ``<name>/agent.py``, replace the inline
-   ``_build_<name>_cache_callbacks`` helper with::
+3. **Wire the factory** — in the per-ticker factory (Tasks 7/8), build the
+   callback pair as::
 
        from agents.analysts.cache_callbacks import make_report_cache_callbacks
        from agents.analysts.report_cache import (
            <NAME>_PROMPT_VERSION,
            <name>_hash_inputs,
        )
+       from contract.evidence import TickerVerdict
 
        cache_before, cache_after = make_report_cache_callbacks(
            analyst_name       = "<name>",
            prompt_version     = <NAME>_PROMPT_VERSION,
            data_state_key     = "temp:<name>_data",  # A2.6: temp: prefix required
-           verdicts_state_key = "<name>_verdicts",
+           verdicts_state_key = "temp:<name>_verdict_<TICKER>",
+           ticker             = ticker,
+           output_schema      = TickerVerdict,
            hash_inputs        = lambda d: <name>_hash_inputs(...),
            trace_label        = "NN_<name>_llm",
        )
@@ -68,7 +78,6 @@ from google.genai import types as genai_types
 
 from agents.analysts.report_cache import log_cache_hit_to_state, read_cache, write_cache
 from config.analysts import get_analysts_config
-from contract.evidence import VerdictBatch
 from observability.trace import TraceWriter
 
 # Module-level logger — disk errors after a paid LLM call must warn, not crash.
@@ -81,13 +90,21 @@ def make_report_cache_callbacks(
     prompt_version: str,
     data_state_key: str,
     verdicts_state_key: str,
+    ticker: str,
+    output_schema: type,
     hash_inputs: Callable[[dict], str],
     trace_label: str | None = None,
 ) -> tuple[Callable, Callable]:
-    """Build ``(before_model_callback, after_model_callback)`` for a cache-aware analyst.
+    """Build ``(before_model_callback, after_model_callback)`` for a single-ticker cache-aware LlmAgent.
 
-    Both hooks share the same config snapshot and cache root so they behave
-    consistently within a single agent construction.
+    Changed in Phase 9: each LlmAgent is bound to ONE ticker.  Both hooks
+    therefore look up a single per-ticker cache entry rather than iterating
+    every watchlist ticker.  ``output_schema`` is the Pydantic model used
+    to validate the cached payload and to shape the synthetic LlmResponse
+    text — typically ``TickerVerdict`` for the per-ticker News and
+    Fundamental analysts.
+
+    See module docstring for the broader cache lifecycle.
 
     Parameters
     ----------
@@ -103,10 +120,18 @@ def make_report_cache_callbacks(
         ``"temp:news_data"`` or ``"temp:fundamental_data"`` (A2.6: ``temp:``
         prefix required so ADK strips the key at the invocation boundary).
     verdicts_state_key:
-        Key in session state where the LLM-emitted ``VerdictBatch`` eventually
-        lands, e.g. ``"news_verdicts"``.  Used by ``_before`` to write cache
-        hits into state; **never read by** ``_after`` (see lifecycle bug note
-        in the module docstring).
+        Key in session state where this agent's single ``TickerVerdict``
+        eventually lands, e.g. ``"temp:news_verdict_AAPL"``.  Used by
+        ``_before`` to write cache hits into state; **never read by** ``_after``
+        (see lifecycle bug note in the module docstring).
+    ticker:
+        The single ticker this callback pair is bound to.  Set at LlmAgent
+        construction time by the per-ticker factory.
+    output_schema:
+        Pydantic model class that the synthetic ``LlmResponse`` text must
+        validate against — must match the agent's ``output_schema`` so
+        ADK's ``__maybe_save_output_to_state`` parses cleanly.  Typically
+        ``TickerVerdict``.
     hash_inputs:
         Callable that accepts the per-ticker raw-data dict (the value at
         ``state[data_state_key].get(ticker, {}) or {}``) and returns a blake2b
@@ -131,13 +156,13 @@ def make_report_cache_callbacks(
     # -----------------------------------------------------------------------
 
     def _before(callback_context, llm_request):
-        """Short-circuit the LLM if every watchlist ticker hits the cache.
+        """Short-circuit if this single ticker's cache hits.
 
-        Iterates all tickers in state.  For each, computes the input hash from
-        the per-ticker raw data slice and checks the cache.  A single miss
-        returns ``None`` immediately (forces a full LLM call — no partial
-        loads).  All-hit returns a synthetic ``Content`` that ADK treats as
-        the model's response, bypassing the actual model call.
+        Computes the input hash from the per-ticker raw data slice and checks
+        the cache.  A miss returns ``None`` immediately (forces an LLM call).
+        A hit returns a synthetic ``LlmResponse`` wrapping the cached verdict
+        JSON — ADK treats this as the model's response, bypassing the actual
+        model call.
 
         Parameters
         ----------
@@ -149,101 +174,80 @@ def make_report_cache_callbacks(
         Returns
         -------
         google.adk.models.LlmResponse | None
-            A synthetic ``LlmResponse`` on a full cache hit; ``None`` on any
-            miss.  ADK's downstream post-processors (notably ``_nl_planning``)
+            A synthetic ``LlmResponse`` on a cache hit; ``None`` on a miss.
+            ADK's downstream post-processors (notably ``_nl_planning``)
             read ``llm_response.content`` on the return value, so the synthetic
             ``Content`` MUST be wrapped in an ``LlmResponse`` — returning a
             bare ``Content`` here crashes the agent flow with ``AttributeError:
             'Content' object has no attribute 'content'`` the moment a cache
-            hit actually occurs.  See the regression test
-            ``test_before_full_hit_returns_llm_response`` for the pinned
-            contract.
+            hit actually occurs.
         """
         if not cfg.enabled:
             return None
 
-        state   = callback_context.state
-        tickers: list[str] = state.get("tickers", []) or []
-        data:    dict      = state.get(data_state_key, {}) or {}
+        state      = callback_context.state
+        data: dict = state.get(data_state_key, {}) or {}
+        per_ticker = data.get(ticker, {}) or {}
+        input_hash = hash_inputs(per_ticker)
 
-        cached_verdicts: list[dict] = []
+        hit = read_cache(
+            root, analyst_name, ticker,
+            input_hash=input_hash,
+            prompt_version=prompt_version,
+        )
 
-        for ticker in tickers:
-            per_ticker = data.get(ticker, {}) or {}
-            input_hash = hash_inputs(per_ticker)
-
-            hit = read_cache(
-                root, analyst_name, ticker,
-                input_hash=input_hash,
-                prompt_version=prompt_version,
-            )
-
-            if hit is None:
-                # Any single miss forces a full LLM call — do not partial-load
-                # a mixed cache/LLM batch (the LLM would then re-score everyone).
-                # Surface the miss for the cache-hit-rate aggregate.
-                _log.info(
-                    "report_cache_miss",
-                    extra={
-                        "analyst":        analyst_name,
-                        "ticker":         ticker,
-                        "input_hash":     input_hash,
-                        "prompt_version": prompt_version,
-                        "kind":           "report_cache_miss",
-                    },
-                )
-                return None
-
-            # Log the cache hit for audit telemetry — records which tick the
-            # verdict was originally computed under so reviewers can see when
-            # a cached result spans multiple ticks.
-            log_cache_hit_to_state(
-                state,
-                analyst=analyst_name,
-                ticker=ticker,
-                input_hash=input_hash,
-                originating_as_of=hit.get("originating_as_of"),
-            )
-
-            # Surface the hit on the per-tick observability log too — gives
-            # the cache-hit-rate aggregate a structured event to count from.
+        if hit is None:
+            # Cache miss — let the LLM run.
             _log.info(
-                "report_cache_hit",
+                "report_cache_miss",
                 extra={
-                    "analyst":           analyst_name,
-                    "ticker":            ticker,
-                    "input_hash":        input_hash,
-                    "originating_as_of": hit.get("originating_as_of"),
-                    "prompt_version":    prompt_version,
-                    "kind":              "report_cache_hit",
+                    "analyst":        analyst_name,
+                    "ticker":         ticker,
+                    "input_hash":     input_hash,
+                    "prompt_version": prompt_version,
+                    "kind":           "report_cache_miss",
                 },
             )
+            return None
 
-            # Merge the report blob back into the verdict dict if one was stored
-            # — caches can omit the report on analysts that don't emit reports.
-            v = hit["verdict"]
-            if hit["report"] is not None:
-                v = {**v, "report": hit["report"]}
+        # Audit telemetry — records which tick the cached verdict originated from.
+        log_cache_hit_to_state(
+            state,
+            analyst=analyst_name,
+            ticker=ticker,
+            input_hash=input_hash,
+            originating_as_of=hit.get("originating_as_of"),
+        )
 
-            cached_verdicts.append({**v, "ticker": ticker})
+        _log.info(
+            "report_cache_hit",
+            extra={
+                "analyst":           analyst_name,
+                "ticker":            ticker,
+                "input_hash":        input_hash,
+                "originating_as_of": hit.get("originating_as_of"),
+                "prompt_version":    prompt_version,
+                "kind":              "report_cache_hit",
+            },
+        )
 
-        # All tickers hit — validate the assembled batch.  We need the parsed
-        # object (to write to state) AND the JSON string (to feed back as the
-        # synthetic LLM response text — see the comment block above the
-        # ``return LlmResponse(...)`` at the bottom of this function).
-        batch      = VerdictBatch.model_validate({"verdicts": cached_verdicts})
-        batch_json = batch.model_dump_json()
+        # Merge report blob into verdict if one was stored.
+        v = hit["verdict"]
+        if hit["report"] is not None:
+            v = {**v, "report": hit["report"]}
+        v = {**v, "ticker": ticker}
 
-        # Write to state so that make_evidence_callback (after_agent_callback)
-        # sees populated verdicts.  Note: ADK's ``__maybe_save_output_to_state``
-        # will ALSO parse ``batch_json`` below and write it to
-        # ``state[output_key]`` — which for our analysts is the same key as
-        # ``verdicts_state_key`` — so this manual write is technically
-        # redundant.  It is kept as defence-in-depth in case an analyst is ever
-        # configured without ``output_key`` set.
-        state[verdicts_state_key] = batch.model_dump()
+        # Validate against the per-ticker schema — same shape ADK's
+        # __maybe_save_output_to_state will expect from the response text.
+        validated    = output_schema.model_validate(v)
+        verdict_json = validated.model_dump_json()
 
-        # Emit a trace marker so the trace log reflects that the LLM was bypassed.
+        # Write to state so any downstream consumer that reads
+        # state[verdicts_state_key] sees the populated value.  Note: ADK's
+        # __maybe_save_output_to_state will also write the same JSON to the
+        # agent's output_key — kept as defence-in-depth.
+        state[verdicts_state_key] = validated.model_dump()
+
         if trace_label is not None:
             try:
                 tw = state.get("_trace")
@@ -253,8 +257,8 @@ def make_report_cache_callbacks(
             if isinstance(tw, TraceWriter):
                 tw.llm_pair(
                     trace_label,
-                    prompt=f"(cache hit — all tickers, prompt_version={prompt_version})",
-                    response=f"(loaded from cache/reports/{analyst_name}/<ticker>.json)",
+                    prompt=f"(cache hit — {ticker}, prompt_version={prompt_version})",
+                    response=f"(loaded from cache/reports/{analyst_name}/{ticker}.json)",
                     model="cache",
                 )
 
@@ -265,23 +269,14 @@ def make_report_cache_callbacks(
         #    Returning a raw ``Content`` crashes the flow with
         #    ``AttributeError: 'Content' object has no attribute 'content'``.
         #
-        # 2. ADK's ``__maybe_save_output_to_state`` (in
-        #    ``google.adk.agents.llm_agent``) then validates the response's
-        #    text against the agent's ``output_schema``.  Our analysts declare
-        #    ``output_schema=VerdictBatch``, so the text MUST be valid JSON
-        #    that parses cleanly as a ``VerdictBatch`` — a placeholder string
-        #    like ``"(cached)"`` raises ``pydantic.ValidationError: Invalid
-        #    JSON`` and tanks the tick.
-        #
-        # Both bugs were latent while B22 was unfixed (cache writes never
-        # landed, so this code path never fired); they surfaced the first time
-        # a real cache hit was attempted after B22 + B23 landed.  The
-        # regression tests ``test_before_full_hit_returns_llm_response`` and
-        # ``test_before_full_hit_content_is_valid_verdict_batch_json`` pin
-        # both invariants.
+        # 2. ADK's ``__maybe_save_output_to_state`` then validates the
+        #    response's text against the agent's declared ``output_schema``.
+        #    The text MUST be valid JSON that parses cleanly as the passed
+        #    ``output_schema`` — a placeholder like ``"(cached)"`` raises
+        #    ``pydantic.ValidationError`` and tanks the tick.
         return LlmResponse(
             content=genai_types.Content(
-                parts=[genai_types.Part.from_text(text=batch_json)]
+                parts=[genai_types.Part.from_text(text=verdict_json)]
             )
         )
 
@@ -290,15 +285,15 @@ def make_report_cache_callbacks(
     # -----------------------------------------------------------------------
 
     def _after(callback_context, llm_response):
-        """Persist fresh verdicts from a real LLM call to the cache.
+        """Persist the fresh single-ticker verdict to the cache.
 
         Invoked only after an actual model call — when ``_before`` returns a
-        non-None ``Content``, ADK short-circuits and does **not** invoke this hook.
-        So there is no double-write risk for cache hits.
+        non-None ``LlmResponse``, ADK short-circuits and does **not** invoke
+        this hook.  So there is no double-write risk for cache hits.
 
         NEVER read state[verdicts_state_key] here.  ADK's __maybe_save_output_to_state
         (see google.adk.agents.llm_agent) runs AFTER after_model_callback, so the
-        output_schema-parsed verdicts are not yet in state at this point.  Parse
+        output_schema-parsed verdict is not yet in state at this point.  Parse
         llm_response directly instead — its shape comes straight from the model and
         is independent of ADK's state-save timing.
 
@@ -318,73 +313,54 @@ def make_report_cache_callbacks(
         if not cfg.enabled:
             return None
 
-        state = callback_context.state
+        state      = callback_context.state
         data: dict = state.get(data_state_key, {}) or {}
 
-        # --- Parse verdicts from the LLM response, NOT from state -----------
-        #
-        # NEVER read state[verdicts_state_key] here.  ADK's __maybe_save_output_to_state
-        # (see google.adk.agents.llm_agent) runs AFTER after_model_callback, so the
-        # output_schema-parsed verdicts are not yet in state at this point.  Parse
-        # llm_response directly instead — its shape comes straight from the model and
-        # is independent of ADK's state-save timing.
+        # Parse the single-verdict JSON directly from the response — NOT from
+        # state.  See the lifecycle bug note in the module docstring (B22).
         try:
-            text     = llm_response.content.parts[0].text
-            payload  = json.loads(text)
-            verdicts = payload.get("verdicts", []) or []
+            text    = llm_response.content.parts[0].text
+            payload = json.loads(text)
         except (AttributeError, IndexError, TypeError, json.JSONDecodeError):
-            # LLM response shape is unexpected — skip cache write.  Verdicts will
-            # still land in state via __maybe_save_output_to_state and this tick
-            # is just uncached, which is acceptable degradation.
+            # LLM response shape is unexpected — skip cache write.  The verdict
+            # will still land in state via ADK's __maybe_save_output_to_state;
+            # this tick is just uncached, which is acceptable degradation.
             _log.warning(
-                "%s cache: could not parse LLM response — cache write skipped for "
-                "this tick.  The verdict will be populated by ADK's state-save "
-                "machinery but will not be cached.",
-                analyst_name,
+                "%s cache: could not parse LLM response — cache write skipped for %s.",
+                analyst_name, ticker,
             )
             return None
 
-        for v in verdicts:
-            # Tolerate both dict and non-dict entries defensively.
-            v_dict = v if isinstance(v, dict) else {}
-            ticker = v_dict.get("ticker")
-            if not ticker:
-                continue
+        # Payload is a single TickerVerdict dict (NOT {verdicts: [...]}).
+        v_dict = payload if isinstance(payload, dict) else {}
 
-            # Recompute the input hash from the per-ticker raw slice — this
-            # must match what _before computed so the next tick's cache check
-            # produces a hit for the same input data.
-            per_ticker = data.get(ticker, {}) or {}
-            input_hash = hash_inputs(per_ticker)
+        per_ticker = data.get(ticker, {}) or {}
+        input_hash = hash_inputs(per_ticker)
 
-            # Store verdict and report separately so each is independently
-            # addressable by the cache reader (report can be large; some callers
-            # only want the verdict summary).
-            verdict_payload = {k: val for k, val in v_dict.items() if k != "report"}
-            report_payload  = v_dict.get("report")
+        # Separate the report blob from the core verdict fields so each is
+        # independently addressable by the cache reader.
+        verdict_payload = {k: val for k, val in v_dict.items() if k != "report"}
+        report_payload  = v_dict.get("report")
 
-            try:
-                write_cache(
-                    root, analyst_name, ticker,
-                    input_hash=input_hash,
-                    prompt_version=prompt_version,
-                    verdict=verdict_payload,
-                    report=report_payload,
-                    # Pass the tick's as_of so future cache hits can surface the
-                    # originating tick in the audit telemetry.
-                    originating_as_of=state.get("as_of"),
-                )
-            except OSError:
-                # Disk errors after a paid LLM call must not crash the agent
-                # tick.  The verdict is still usable in-session; only the cache
-                # misses on the next run.
-                _log.warning(
-                    "%s cache write failed for ticker %s — disk error, "
-                    "verdict will not be cached for this tick.",
-                    analyst_name,
-                    ticker,
-                    exc_info=True,
-                )
+        try:
+            write_cache(
+                root, analyst_name, ticker,
+                input_hash=input_hash,
+                prompt_version=prompt_version,
+                verdict=verdict_payload,
+                report=report_payload,
+                # Pass the tick's as_of so future cache hits can surface the
+                # originating tick in the audit telemetry.
+                originating_as_of=state.get("as_of"),
+            )
+        except OSError:
+            # Disk errors after a paid LLM call must not crash the agent tick.
+            # The verdict is still usable in-session; only the cache misses on
+            # the next run.
+            _log.warning(
+                "%s cache write failed for ticker %s — disk error.",
+                analyst_name, ticker, exc_info=True,
+            )
 
         return None
 

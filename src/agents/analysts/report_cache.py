@@ -502,6 +502,48 @@ def write_cache(
     os.replace(tmp, path)
 
 
+# ---------------------------------------------------------------------------
+# Fundamental hash helper — shared between fundamental/agent.py (legacy
+# batch path) and fundamental/per_ticker.py (Phase 9 per-ticker path).
+# Defined here rather than in either agent module to avoid a circular import
+# between per_ticker.py and agent.py once agent.py no longer imports
+# anything from per_ticker.py.
+# ---------------------------------------------------------------------------
+
+def fundamental_hash_inputs_from_dict(ticker: str, triad: dict) -> str:
+    """Reconstruct typed objects from a per-ticker state dict and hash them.
+
+    The fetch callback stores ``ratios`` as a ``CompanyRatios.model_dump()``
+    dict (or ``None`` on failure), ``filings`` as a list of
+    ``Filing.model_dump()`` dicts, and ``insider`` as a typed
+    ``Form4Bundle`` instance.  This function re-validates the stored dicts
+    so ``fundamental_hash_inputs`` receives the proper typed objects.
+
+    Parameters
+    ----------
+    ticker:
+        Ticker symbol — used as the ``CompanyRatios`` fallback dict key.
+    triad:
+        Per-ticker slice from ``state["temp:fundamental_data"]``.
+
+    Returns
+    -------
+    str
+        Blake2b hex digest over the combined fundamental input payload.
+    """
+    ratios_dict = triad.get("ratios") or {"ticker": ticker}
+    filings_raw = triad.get("filings") or []
+    insider_obj = triad.get("insider") or Form4Bundle(trades=[], derivatives=[])
+
+    ratios  = CompanyRatios.model_validate(ratios_dict)
+    filings = [
+        Filing.model_validate(f) if isinstance(f, dict) else f
+        for f in filings_raw
+    ]
+
+    return fundamental_hash_inputs(ratios, filings, insider_obj)
+
+
 def log_cache_hit_to_state(
     state: dict,
     *,

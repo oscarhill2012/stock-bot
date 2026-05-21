@@ -1,12 +1,13 @@
-"""Fundamental analyst package.
+"""Fundamental analyst package — per-ticker fan-out (Phase 9).
 
 Public API:
-- ``build_fundamental_analyst``: factory returning a ``YieldingAnalystWrapper``
-  over the Fundamental ``LlmAgent``.  Reads its model ID from
-  ``config/models.json`` via ``src.config.models.get_models_config``.  The
-  single construction path for both production and tests — there is no
-  module-level singleton (removed 2026-05-21).
-"""
-from .agent import build_fundamental_analyst
+- ``build_fundamental_branch``: factory returning a ``SequentialAgent``
+  of ``[FundamentalFetchAgent, *per-ticker branches, FundamentalJoinerAgent]``.
+  The single construction path for both production and tests.
 
-__all__ = ["build_fundamental_analyst"]
+The legacy ``build_fundamental_analyst`` (one LlmAgent over a VerdictBatch)
+is retired in Phase 9; call sites are updated in Tasks 12–15.
+"""
+from .agent import build_fundamental_branch
+
+__all__ = ["build_fundamental_branch"]

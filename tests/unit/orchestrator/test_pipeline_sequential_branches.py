@@ -4,17 +4,31 @@ A2.7 changes the analyst pool from a single 4-wide ParallelAgent into a
 sequential chain so Fundamental and News each own the state_delta rail
 unambiguously.  Technical and Social remain parallel (no shared writes
 after A1's BaseAgent state_delta conversion).
+
+Phase 9 update: Fundamental and News are now per-ticker fan-out branches
+(``SequentialAgent[FetchAgent, *per-ticker branches, JoinerAgent]``).  The
+``RetryingAgentWrapper`` wrap previously applied at the pool level is gone —
+retries now live inside each per-ticker child (``IsolatedFailureWrapper(Retrying(LlmAgent))``).
+Branch names are now ``"FundamentalAnalystBranch"`` / ``"NewsAnalystBranch"``.
 """
 from __future__ import annotations
 
 
 def test_analyst_pool_topology() -> None:
-    """Pool is SequentialAgent whose first child is a 2-wide ParallelAgent."""
+    """Pool is SequentialAgent whose first child is a 2-wide ParallelAgent.
+
+    Phase 9: ``_build_analyst_pool`` requires the ``tickers`` argument.
+    Branches are now named ``FundamentalAnalystBranch`` / ``NewsAnalystBranch``
+    (SequentialAgent fan-outs) rather than the pre-Phase-9 ``RetryingAgentWrapper``
+    wrappers.
+    """
     from google.adk.agents import ParallelAgent, SequentialAgent
 
     from orchestrator.pipeline import _build_analyst_pool
 
-    pool = _build_analyst_pool()
+    # Phase 9: tickers= is required; a single-ticker list is sufficient for
+    # topology assertions that do not inspect per-ticker fan-out count.
+    pool = _build_analyst_pool(tickers=["AAPL"])
 
     assert isinstance(pool, SequentialAgent), (
         f"AnalystPool root must be SequentialAgent, got {type(pool).__name__}"
@@ -39,14 +53,12 @@ def test_analyst_pool_topology() -> None:
         "TechnicalAnalyst", "SocialAnalyst",
     }
 
-    # Second and third children are the Fund + News branches.  Each is now
-    # wrapped in a ``RetryingAgentWrapper`` at the pipeline-composition layer
-    # so a Vertex 429 on the inner LlmAgent triggers exponential backoff;
-    # those wrappers' names end in "Retrying".  The retry wrapper's
-    # ``.inner`` still points at the original ``YieldingAnalystWrapper``
-    # whose name ends in "Branch", but that's an implementation detail
-    # below the pipeline level.
+    # Phase 9: Fund + News are now SequentialAgent fan-out branches named
+    # ``FundamentalAnalystBranch`` and ``NewsAnalystBranch``.  The pre-Phase-9
+    # ``RetryingAgentWrapper`` wrappers (``FundamentalAnalystRetrying``,
+    # ``NewsAnalystRetrying``) are gone — retries live inside each per-ticker
+    # child at the ``IsolatedFailureWrapper(Retrying(LlmAgent))`` layer.
     branch_names = {a.name for a in pool.sub_agents[1:]}
-    assert branch_names == {"FundamentalAnalystRetrying", "NewsAnalystRetrying"}, (
-        f"Sequential branches must be Fund + News retry wrappers; got {branch_names}"
+    assert branch_names == {"FundamentalAnalystBranch", "NewsAnalystBranch"}, (
+        f"Sequential branches must be Fund + News fan-out branches; got {branch_names}"
     )

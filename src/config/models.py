@@ -58,10 +58,10 @@ class ModelsConfig(BaseModel):
         ``src/agents/strategist/agent.py::build_strategist``).
     news_analyst:
         Model ID for the News analyst ``LlmAgent`` (consumed by
-        ``src/agents/analysts/news/agent.py::build_news_analyst``).
+        ``src/agents/analysts/news/agent.py::build_news_branch``).
     fundamental_analyst:
         Model ID for the Fundamental analyst ``LlmAgent`` (consumed by
-        ``src/agents/analysts/fundamental/agent.py::build_fundamental_analyst``).
+        ``src/agents/analysts/fundamental/agent.py::build_fundamental_branch``).
     memory_compressor:
         Model ID for the day-digest LLM compressor (consumed by
         ``src/agents/memory/compress.py::_default_llm_compress``).  Only

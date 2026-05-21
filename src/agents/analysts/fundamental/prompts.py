@@ -1,19 +1,19 @@
-"""Fundamental analyst prompt — Phase 5 (closed vocab + insider supplement).
+"""Fundamental analyst prompt — Phase 9 (single-ticker per-branch, closed vocab + insider supplement).
 
 The narrowed Fundamental LLM reads MD&A excerpts, risk-factor excerpts, and
-Form 4 footnotes (prose). It also receives a structured block of insider
-numerics (10b5-1 ratio, cluster flags, role rank, derivative counts) to
-anchor its prose reasoning in quant context. It emits closed-vocabulary
-tags only — no free text in ``key_factors``.
+Form 4 footnotes (prose) for ONE ticker per call.  It also receives a
+structured block of insider numerics (10b5-1 ratio, cluster flags, role rank,
+derivative counts) to anchor its prose reasoning in quant context.  It emits
+closed-vocabulary tags only — no free text in ``key_factors``.
 
 Runtime context is delivered via two ADK session-state keys that the
-``fundamental_fetch_callback`` populates before this agent runs:
+per-ticker ``FundamentalFetchAgent`` populates before this branch's analyst runs:
 
-- ``fundamental_context`` — a formatted multi-ticker block containing each
-  ticker's filings excerpts and insider activity (numerics + footnotes).
-- ``tickers`` — the watchlist (standard pipeline state key).
+- ``fundamental_context`` — a single-ticker block containing that ticker's
+  filings excerpts and insider activity (numerics + footnotes).
+- ``ticker`` — the single ticker bound to this branch.
 
-These appear as ``{fundamental_context}`` and ``{tickers}`` in the rendered
+These appear as ``{fundamental_context}`` and ``{ticker}`` in the rendered
 instruction string so ADK's ``inject_session_state`` substitutes them at
 agent-run time.
 """
@@ -27,7 +27,7 @@ from config.analysts import get_analysts_config
 # ---------------------------------------------------------------------------
 # Vocabulary tokens (single-brace) are substituted at agent-construction time
 # by ``build_fundamental_instruction``.  Runtime state tokens
-# ``{fundamental_context}`` and ``{tickers}`` are left intact as single-brace
+# ``{fundamental_context}`` and ``{ticker}`` are left intact as single-brace
 # so ADK's state injector fills them each tick.  Char-cap placeholders (e.g.
 # ``{rationale_max}``) are substituted at build time from
 # ``config/analysts.json`` so the value the LLM is told stays in sync with
@@ -38,11 +38,13 @@ from config.analysts import get_analysts_config
 
 _TEMPLATE = """You are the Fundamental analyst.
 
-For each ticker in the batch, reason over the company's filings prose
-(MD&A excerpts, risk factors) AND the INSIDER ACTIVITY block (numeric flows
-+ footnote prose). You must produce a structured verdict per ticker.
+You are focused on a SINGLE ticker for this call: {ticker}
 
-Each ticker's data block contains:
+Reason over the company's filings prose (MD&A excerpts, risk factors) AND
+the INSIDER ACTIVITY block (numeric flows + footnote prose). You must produce
+a structured verdict for that single ticker.
+
+The data block for {ticker} contains:
 
   -- COMPANY FILINGS (PROSE) --
     MD&A and risk-factor excerpts from recent 10-K / 10-Q / 8-K filings.
@@ -64,8 +66,8 @@ Closed vocabulary (use these tags ONLY in key_factors):
   insider:<value>             ∈ {insider_signals}
   going_concern:true          when going-concern language is present
 
-For each ticker output a JSON object with fields:
-  ticker       string (must be one of the watchlist tickers)
+Output ONE JSON object — a single verdict — with fields:
+  ticker       string — MUST be exactly "{ticker}"
   lean         ∈ {{bullish, bearish, neutral}}
   magnitude    ∈ [0, 1]
   confidence   ∈ [0, 1]
@@ -98,11 +100,7 @@ Decision rule:
 - Treat exercise-and-dump as bearish.
 - Conflicting inputs → neutral with low confidence.
 
-Emit all verdicts as a top-level JSON array under the key
-``fundamental_verdicts``. Each object must include a ``ticker`` field.
-MUST cover ALL tickers: {tickers}
-
---- TICKER DATA ---
+--- TICKER DATA FOR {ticker} ---
 {fundamental_context}
 """
 
@@ -113,8 +111,11 @@ def build_fundamental_instruction(vocab: FundamentalVocabulary) -> str:
     Substitutes the four vocab placeholder tokens (``{guidance_options}``,
     ``{tone_options}``, ``{risk_tags}``, ``{insider_signals}``) using
     ``str.format``.  The two runtime state tokens — ``{fundamental_context}``
-    and ``{tickers}`` — are left intact in the returned string; ADK's
-    ``inject_session_state`` fills them each tick from session state.
+    and ``{ticker}`` — are left intact in the returned string; the per-ticker
+    branch factory substitutes ``{ticker}`` at build time, and ADK's
+    ``inject_session_state`` substitutes ``{fundamental_context}`` from
+    ``state["fundamental_context"]`` at run time (the per-ticker fetch agent
+    writes a single-ticker block into that key — see Phase 9 spec §1).
 
     Parameters
     ----------
@@ -126,7 +127,7 @@ def build_fundamental_instruction(vocab: FundamentalVocabulary) -> str:
     -------
     str
         The rendered instruction string.  Contains exactly two remaining
-        single-brace tokens: ``{fundamental_context}`` and ``{tickers}``.
+        single-brace tokens: ``{fundamental_context}`` and ``{ticker}``.
     """
     # Prompt-facing rationale cap — what we tell the LLM.  The schema in
     # ``contract/evidence.py`` accepts up to ``schema_cap(rationale_max)``
@@ -140,8 +141,8 @@ def build_fundamental_instruction(vocab: FundamentalVocabulary) -> str:
         risk_tags        =" | ".join(vocab.risks),
         insider_signals  =" | ".join(vocab.insider_signals),
         rationale_max    = out_caps.verdict_rationale_max_chars,
-        # Protect the two ADK runtime placeholders from str.format substitution
+        # Protect the two runtime placeholders from str.format substitution
         # by passing them back as themselves.
         fundamental_context="{fundamental_context}",
-        tickers            ="{tickers}",
+        ticker             ="{ticker}",
     )

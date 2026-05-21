@@ -7,16 +7,22 @@ substitutes closed-vocabulary tokens and produces a prompt containing:
 - All closed-vocab terms from the test vocabulary.
 - The INSIDER ACTIVITY and INSIDER FOOTNOTES section headings.
 - The two expected ADK runtime placeholders ``{fundamental_context}`` and
-  ``{tickers}`` that remain for ADK's ``inject_session_state`` to fill.
+  ``{ticker}`` that remain for ADK's ``inject_session_state`` to fill.
 
 Note on the plan's original regex assertion
 -------------------------------------------
 The plan's draft included ``assert not re.search(r"\\{[a-z_]+\\}", rendered)``
 to assert no single-brace tokens remain.  That assertion is incompatible with
 the two ADK runtime state placeholders ``{fundamental_context}`` and
-``{tickers}`` that are intentionally preserved so ADK can inject per-tick
+``{ticker}`` that are intentionally preserved so ADK can inject per-tick
 data.  The tests below replace that blanket assertion with explicit positive
 checks for the expected runtime tokens instead.
+
+Phase 9 update
+--------------
+The prompt was refactored from a multi-ticker batch design to a single-ticker
+per-branch design.  ``{tickers}`` (plural) is removed; ``{ticker}`` (singular)
+is the new runtime key that the branch factory substitutes at build time.
 """
 from __future__ import annotations
 
@@ -47,11 +53,11 @@ def test_vocabulary_placeholders_resolve() -> None:
     assert "{insider_signals}" not in rendered
 
     # Only the two known ADK runtime keys may remain as single-brace tokens.
-    # Strip them out and confirm nothing else is left.
-    stripped = rendered.replace("{fundamental_context}", "").replace("{tickers}", "")
+    # Phase 9: {tickers} (plural) is gone; {ticker} (singular) is the new key.
+    stripped = rendered.replace("{fundamental_context}", "").replace("{ticker}", "")
     assert not re.search(r"\{[a-z_]+\}", stripped), (
         "Unexpected single-brace token found in rendered prompt "
-        "(only {fundamental_context} and {tickers} are allowed)"
+        "(only {fundamental_context} and {ticker} are allowed)"
     )
 
 
@@ -80,15 +86,27 @@ def test_insider_supplement_block_present() -> None:
 
 
 def test_runtime_placeholders_present() -> None:
-    """The ADK state placeholders survive vocab substitution intact."""
+    """The ADK state placeholders survive vocab substitution intact.
+
+    Phase 9: the multi-ticker ``{tickers}`` placeholder is replaced by the
+    single-ticker ``{ticker}`` key that the per-branch factory substitutes.
+    ``{fundamental_context}`` remains — the per-ticker fetch agent writes a
+    single-ticker block into ``state["fundamental_context"]`` at run time.
+    """
     rendered = build_fundamental_instruction(_vocab())
 
-    # ADK fills these from session state each tick.
+    # ADK fills fundamental_context from session state each tick.
     assert "{fundamental_context}" in rendered, (
         "ADK runtime placeholder {fundamental_context} is missing from rendered prompt"
     )
-    assert "{tickers}" in rendered, (
-        "ADK runtime placeholder {tickers} is missing from rendered prompt"
+    # Per-branch ticker placeholder — substituted by the branch factory.
+    assert "{ticker}" in rendered, (
+        "Per-branch runtime placeholder {ticker} is missing from rendered prompt"
+    )
+    # The old multi-ticker placeholder must not be present.
+    assert "{tickers}" not in rendered, (
+        "Stale multi-ticker placeholder {tickers} still present — Phase 9 "
+        "requires per-branch single-ticker phrasing"
     )
 
 

@@ -1,31 +1,21 @@
-"""News analyst data fetch callback.
+"""News analyst fetch helpers.
 
-Fetches news headlines for every watchlist ticker before the LLM runs.
-Narrowed from the old sentiment_fetch_callback to ``news/`` only — the
-``social_sentiment/`` branch is removed here and migrates to the new
-Social analyst (Task 7).
+Provides the per-ticker formatting helpers used by ``NewsFetchAgent``
+(``agents.analysts.news.fetch_agent``).
 
-Phase 5 (Task 11) adds a second state write: ``state["news_context"]``, a
-human-readable multi-ticker text block that the News LLM instruction template
-references as the ``{news_context}`` ADK runtime placeholder.  This mirrors
-the ``fundamental_context`` pattern introduced in Task 10 — keeping the
-machine-readable raw dict (``temp:news_data``) separate from the LLM-readable
-formatted text (``news_context``) so the prompt stays compact.
+The legacy ``news_fetch_callback`` (an ADK ``before_agent_callback``) was
+retired in Phase 9 when the per-ticker fan-out design replaced the batched
+``NewsAnalyst`` LlmAgent.  Only the formatting helpers remain here so that
+``NewsFetchAgent`` can reuse the article-truncation and context-block logic
+without duplicating it.
 """
 from __future__ import annotations
 
 import logging
-from datetime import datetime
-
-from google.adk.agents.callback_context import CallbackContext
-from google.genai import types as genai_types
 
 from config.analysts import NewsCaps, get_analysts_config
-from data import get_stock_news
-from data.timeguard import resolve_as_of
-from observability.trace import _trace_maybe
 
-logger = logging.getLogger(__name__)
+_logger = logging.getLogger(__name__)
 
 
 def _caps() -> NewsCaps:
@@ -97,69 +87,3 @@ def _build_ticker_news_context(ticker: str, articles: list) -> str:
             lines.append(f"       {summary[:caps.max_summary_chars]}")
 
     return "\n".join(lines)
-
-
-async def news_fetch_callback(
-    callback_context: CallbackContext,
-) -> genai_types.Content | None:
-    """Fetch news headlines for every watchlist ticker before the LLM runs.
-
-    Reads ``state["tickers"]`` and calls the news provider for each ticker.
-    Writes two state keys:
-
-    - ``state["temp:news_data"]`` — machine-readable dict keyed by ticker, each
-      value containing a ``"news"`` list of serialised ``NewsArticle`` dicts.
-      Consumed by the feature extractor after-callback.
-    - ``state["news_context"]`` — human-readable multi-ticker text block that
-      ADK's instruction template fills into the LLM prompt via the
-      ``{news_context}`` placeholder each tick.
-
-    The social_sentiment branch has been removed — that data now belongs to
-    the Social analyst (Task 7).
-
-    Args:
-        callback_context: ADK callback context carrying the mutable pipeline state.
-
-    Returns:
-        None — this callback never short-circuits the agent run.
-    """
-    state = callback_context.state
-    tickers: list[str] = state.get("tickers", [])
-
-    # Pull the historical clock from session state; default to wall-clock for live.
-    as_of: datetime = resolve_as_of(
-        state.get("as_of"), allow_wallclock=True, site="news/fetch",
-    )
-
-    news_data: dict[str, dict] = {}
-    context_blocks: list[str] = []
-
-    for ticker in tickers:
-        try:
-            news = await get_stock_news(ticker, as_of=as_of)
-        except Exception as exc:
-            logger.warning("news fetch failed for %s: %s", ticker, exc)
-            news = []
-
-        # Serialise to dicts for the machine-readable store.
-        serialised = [
-            a.model_dump() if hasattr(a, "model_dump") else a for a in news
-        ]
-
-        news_data[ticker] = {"news": serialised}
-
-        # Build the LLM-readable context block for this ticker and accumulate.
-        context_blocks.append(_build_ticker_news_context(ticker, serialised))
-
-    # Prefixed ``temp:`` — consumed within the same invocation by the News
-    # analyst's LLM call and evidence callback; must not survive to the next tick.
-    state["temp:news_data"] = news_data
-
-    # Join all per-ticker blocks into one string for the {news_context} ADK
-    # instruction placeholder — mirrors the fundamental_context pattern.
-    state["news_context"] = "\n\n".join(context_blocks) if context_blocks else "(no news data)"
-
-    # Surface trace — no-op unless state["_trace"] is set by trace_tick.py.
-    _trace_maybe(state, "01_fetch_news", news_data)
-
-    return None

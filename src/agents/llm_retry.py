@@ -10,10 +10,10 @@ exponential backoff and re-tries the call; the ADK runtime does not do
 this for us, and the underlying ``google.genai`` SDK's tenacity wrapper
 explicitly excludes 429 from its own retry policy.
 
-This wrapper bridges the gap.  It composes with the existing
-:class:`agents.analysts._base_yield.YieldingAnalystWrapper` (the retry
-wrapper sits *outside* the yield wrapper) and applies equally well to the
-strategist's bare ``LlmAgent``.  See
+This wrapper bridges the gap.  It applies to any single LLM-calling
+agent — the per-ticker analyst pattern wraps it as
+``IsolatedFailureWrapper(RetryingAgentWrapper(LlmAgent))``, and the
+strategist's bare ``LlmAgent`` is wrapped the same way.  See
 ``docs/superpowers/specs/`` if/when a dedicated spec lands; the design
 rationale lives in commit history alongside this file's introduction.
 
@@ -42,8 +42,8 @@ never sees ContextShim's event during the inner run, never applies the
 ``inject_session_state`` raises ``KeyError: 'Context variable not
 found: …'``.
 
-Rule: only wrap units that are single LLM-calling agents (an
-``LlmAgent`` or an ``LlmAgent``-wrapping ``YieldingAnalystWrapper``).
+Rule: only wrap units that are single LLM-calling agents (a bare
+``LlmAgent``).
 For the strategist, the retry wrap goes *inside* the
 ``SequentialAgent`` so ContextShim runs unwrapped (see
 :func:`agents.strategist.agent.build_strategist`).
@@ -145,10 +145,10 @@ class RetryingAgentWrapper(BaseAgent):
 
     The wrapper subclasses :class:`google.adk.agents.BaseAgent` so it can
     be slotted into any ADK pipeline at the same level as the agent it
-    wraps.  It composes cleanly with
-    :class:`agents.analysts._base_yield.YieldingAnalystWrapper` — wrap
-    the yield wrapper, not the bare ``LlmAgent``, so the analyst's
-    state-publishing semantics remain intact on success.
+    wraps.  Per-ticker analyst branches compose it as
+    ``IsolatedFailureWrapper(RetryingAgentWrapper(LlmAgent))`` —
+    the retry wrapper sits *inside* the isolation wrapper so a 429
+    is retried within the same isolated failure boundary.
 
     Attributes
     ----------
@@ -161,9 +161,8 @@ class RetryingAgentWrapper(BaseAgent):
         from ``config/llm_retry.json``.
     """
 
-    # Pydantic field declarations — mirror the
-    # ``YieldingAnalystWrapper`` pattern.  ``arbitrary_types_allowed``
-    # is required because ``inner`` is typically an ADK agent (not a
+    # Pydantic field declarations — ``arbitrary_types_allowed`` is
+    # required because ``inner`` is typically an ADK agent (not a
     # Pydantic model) and ``retry_config`` is our own Pydantic model
     # which is fine on its own but lives alongside the arbitrary
     # ``inner``.
@@ -202,8 +201,7 @@ class RetryingAgentWrapper(BaseAgent):
         cfg = retry_config if retry_config is not None else get_retry_config()
 
         # Pass every field through super().__init__() so Pydantic sets
-        # them via its normal validated path — same convention as
-        # YieldingAnalystWrapper.
+        # them via its normal validated path.
         super().__init__(
             name         = name,
             inner        = inner,

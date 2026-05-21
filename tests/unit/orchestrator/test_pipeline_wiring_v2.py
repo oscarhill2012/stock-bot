@@ -14,7 +14,13 @@ def test_pipeline_includes_strategist_decision_writer():
     containing ``StrategistContextShim`` + a ``RetryingAgentWrapper``
     around the ``Strategist`` ``LlmAgent``.
     """
-    pipe = build_pipeline(broker=FakeBroker(starting_cash=1000.0, prices={}), db_session=None)
+    # Phase 9: tickers= is now required; a single-ticker list is sufficient
+    # for structural wiring assertions that do not inspect fan-out count.
+    pipe = build_pipeline(
+        broker=FakeBroker(starting_cash=1000.0, prices={}),
+        db_session=None,
+        tickers=["AAPL"],
+    )
     names = [a.name for a in pipe.sub_agents]
     assert "StrategistBranch" in names
     assert "StrategistDecisionWriter" in names
@@ -32,5 +38,9 @@ def test_pipeline_stage_count_increased_by_one():
     Post-D5 pipeline has 8 sub_agents: AnalystPool, EvidenceWriter, Strategist,
     StrategistDecisionWriter, RiskGate, Executor, MemoryWriter, Snapshotter.
     """
-    pipe = build_pipeline(broker=FakeBroker(starting_cash=1000.0, prices={}), db_session=None)
+    pipe = build_pipeline(
+        broker=FakeBroker(starting_cash=1000.0, prices={}),
+        db_session=None,
+        tickers=["AAPL"],
+    )
     assert len(pipe.sub_agents) == 8

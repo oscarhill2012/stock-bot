@@ -129,11 +129,16 @@ async def test_smart_money_fetch_uses_config_lookbacks_and_limit(monkeypatch) ->
 
 
 @pytest.mark.asyncio
-async def test_fundamental_fetch_uses_config_insider_and_filings(monkeypatch) -> None:
-    """``fundamental_fetch_callback`` forwards every config sentinel for its three domains.
+async def test_fundamental_fetch_agent_uses_config_insider_and_filings(monkeypatch) -> None:
+    """``FundamentalFetchAgent`` forwards every config sentinel for its three domains.
+
+    Phase 9 retired ``fundamental_fetch_callback`` and replaced it with the
+    ``FundamentalFetchAgent`` BaseAgent.  This test preserves the same
+    config-forwarding contract — the ``as_of`` plumbing and config-sentinel
+    pass-through are the meaningful invariant, not which surface carries them.
 
     Replaces the ``_cache`` singleton with a sentinel ``DataConfig`` and stubs
-    out all three provider calls in ``fundamental.fetch``.  Asserts that:
+    out all three provider calls in ``fundamental.fetch_agent``.  Asserts that:
 
     - The insider stub receives ``lookback_days = SENTINEL_INSIDER``.
     - The filings stub receives ``limit = SENTINEL_FILINGS_PER_FORM`` and
@@ -147,7 +152,11 @@ async def test_fundamental_fetch_uses_config_insider_and_filings(monkeypatch) ->
     monkeypatch:
         pytest ``monkeypatch`` fixture.
     """
-    from agents.analysts.fundamental import fetch as fundamental_fetch
+    from google.adk.agents.invocation_context import InvocationContext
+    from google.adk.sessions import InMemorySessionService
+
+    from agents.analysts.fundamental import fetch_agent as fundamental_fetch_agent_mod
+    from agents.analysts.fundamental.fetch_agent import FundamentalFetchAgent
     from data import config as data_config_mod
     from data.models import Form4Bundle
 
@@ -167,17 +176,33 @@ async def test_fundamental_fetch_uses_config_insider_and_filings(monkeypatch) ->
         captured["filings_include_excerpts"] = include_excerpts
         return []
 
-    monkeypatch.setattr(fundamental_fetch, "get_insider_trades",  fake_insider)
-    monkeypatch.setattr(fundamental_fetch, "get_company_ratios",  fake_ratios)
-    monkeypatch.setattr(fundamental_fetch, "get_company_filings", fake_filings)
+    monkeypatch.setattr(fundamental_fetch_agent_mod, "get_insider_trades",  fake_insider)
+    monkeypatch.setattr(fundamental_fetch_agent_mod, "get_company_ratios",  fake_ratios)
+    monkeypatch.setattr(fundamental_fetch_agent_mod, "get_company_filings", fake_filings)
 
-    class FakeCtx:
-        state = {"tickers": ["AAPL"], "as_of": datetime.now(UTC)}
+    # Build an ADK session so ``FundamentalFetchAgent.run_async`` has a real
+    # InvocationContext rather than a bare namespace.
+    svc = InMemorySessionService()
+    session = await svc.create_session(
+        app_name="contract_test",
+        user_id="test",
+        state={"tickers": ["AAPL"], "as_of": datetime.now(UTC)},
+        session_id="cfg-sentinel",
+    )
 
-    await fundamental_fetch.fundamental_fetch_callback(FakeCtx())
+    agent = FundamentalFetchAgent(name="FundamentalFetch")
+    ctx = InvocationContext(
+        session_service=svc,
+        session=session,
+        invocation_id="inv-cfg",
+        agent=agent,
+    )
 
-    assert captured["insider_lookback"]        == SENTINEL_INSIDER
-    assert captured["filings_limit"]           == SENTINEL_FILINGS_PER_FORM
+    # Exhaust the async generator — the agent yields exactly one event.
+    _ = [ev async for ev in agent.run_async(ctx)]
+
+    assert captured["insider_lookback"]         == SENTINEL_INSIDER
+    assert captured["filings_limit"]            == SENTINEL_FILINGS_PER_FORM
     assert captured["filings_include_excerpts"] is SENTINEL_INCLUDE_EXCERPTS
 
 
