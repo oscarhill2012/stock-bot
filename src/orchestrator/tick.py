@@ -135,7 +135,11 @@ async def run_once(broker, session=None) -> dict:
     )
     tickers = get_watchlist()
 
-    pipeline = build_pipeline(broker, session)
+    # Phase 9: pass the current watchlist so the News and Fundamental analyst
+    # branches are built with per-ticker fan-out for exactly these tickers.
+    # ``tickers`` was resolved above via ``get_watchlist()`` and is also
+    # seeded into the ADK session state by ``_build_initial_state`` below.
+    pipeline = build_pipeline(broker, session, tickers=tickers)
     session_service = make_session_service()
     runner = Runner(
         agent=pipeline,

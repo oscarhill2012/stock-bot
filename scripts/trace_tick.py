@@ -112,20 +112,9 @@ async def main_async(argv: list[str] | None = None) -> int:
         f"-{uuid.uuid4().hex[:8]}"
     )
 
-    pipeline = build_pipeline(broker)
-    # In-memory session — the trace harness is a single-shot local debug run,
-    # so we deliberately avoid the DB-backed session service. That matters
-    # because the production DatabaseSessionService JSON-serialises state on
-    # every flush, and ``state["_trace"]`` holds a TraceWriter (not JSON-safe).
-    session_service = InMemorySessionService()
-    runner = Runner(
-        agent=pipeline,
-        app_name="StockBot",
-        session_service=session_service,
-    )
-
-    # Build the initial state, mirroring orchestrator/tick.py _build_initial_state,
-    # but scoped to the single requested ticker and with _trace injected.
+    # Build the initial state first so we can pass state["tickers"] to
+    # build_pipeline.  Phase 9 requires tickers= to be explicit so that the
+    # News and Fundamental analyst branches fan out per ticker.
     tw = TraceWriter()
     portfolio = await broker.get_portfolio()
     initial_state = {
@@ -140,6 +129,21 @@ async def main_async(argv: list[str] | None = None) -> int:
         # through this writer.  Absent on production ticks.
         "_trace":        tw,
     }
+
+    # Phase 9: pass the current watchlist so the analyst branches fan out
+    # across exactly these tickers.  ``initial_state`` is now available.
+    pipeline = build_pipeline(broker, tickers=initial_state["tickers"])
+
+    # In-memory session — the trace harness is a single-shot local debug run,
+    # so we deliberately avoid the DB-backed session service. That matters
+    # because the production DatabaseSessionService JSON-serialises state on
+    # every flush, and ``state["_trace"]`` holds a TraceWriter (not JSON-safe).
+    session_service = InMemorySessionService()
+    runner = Runner(
+        agent=pipeline,
+        app_name="StockBot",
+        session_service=session_service,
+    )
 
     adk_session = await session_service.create_session(
         app_name="StockBot",

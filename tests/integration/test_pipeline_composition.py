@@ -7,20 +7,20 @@ from orchestrator.pipeline import build_pipeline
 
 def test_build_pipeline_returns_sequential_agent():
     broker = FakeBroker(starting_cash=10_000.0, prices={})
-    pipeline = build_pipeline(broker)
+    pipeline = build_pipeline(broker, tickers=["AAPL"])
     assert isinstance(pipeline, SequentialAgent)
 
 
 def test_pipeline_name():
     broker = FakeBroker(starting_cash=10_000.0, prices={})
-    pipeline = build_pipeline(broker)
+    pipeline = build_pipeline(broker, tickers=["AAPL"])
     assert pipeline.name == "HourlyTick"
 
 
 def test_pipeline_has_eight_stages():
     """Plan C adds StrategistDecisionWriter between Strategist and RiskGate → 8 stages."""
     broker = FakeBroker(starting_cash=10_000.0, prices={})
-    pipeline = build_pipeline(broker)
+    pipeline = build_pipeline(broker, tickers=["AAPL"])
     assert len(pipeline.sub_agents) == 8
 
 
@@ -36,7 +36,7 @@ def test_pipeline_stage_names():
     eight top-level stages.
     """
     broker = FakeBroker(starting_cash=10_000.0, prices={})
-    pipeline = build_pipeline(broker)
+    pipeline = build_pipeline(broker, tickers=["AAPL"])
     names = [a.name for a in pipeline.sub_agents]
     assert names[0] == "AnalystPool"
     assert names[1] == "EvidenceWriter"
