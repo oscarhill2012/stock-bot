@@ -15,6 +15,7 @@ from agents.strategist.prompts import STRATEGIST_INSTRUCTION
 from agents.strategist.schema import StrategistDecision
 from broker.portfolio import Portfolio
 from data.timeguard import resolve_as_of
+from observability.terminal_log import emit_analyst_summary
 from observability.trace import _trace_maybe
 
 # Module-level logger for the validation callback and any future callbacks.
@@ -264,6 +265,20 @@ def _strategist_validation_callback(
     # the full stance set, decision_tag, reasoning, and derived weights.
     # No-op unless state["_trace"] is set by the backtest driver.
     _trace_maybe(state, "03_strategist", decision_dump)
+
+    # ── Terminal summary row ──────────────────────────────────────────────────
+    # Emit one singleton summary row ("strategist: 1/1 ✓ · 2.1s · 8.4k tok")
+    # using the accumulator written by the after_model_callback.  This mirrors
+    # the same pattern used in news/joiner.py and fundamental/joiner.py, keeping
+    # all three analysts' summary rows visually consistent.
+    import os
+    if os.environ.get("STOCKBOT_TERMINAL_LOG") == "1":
+        _strat_calls: list[dict] = state.get("temp:_obs_strategist_calls") or []
+        emit_analyst_summary(
+            "strategist",
+            calls=_strat_calls,
+            ticker_count=1,
+        )
 
     return None
 

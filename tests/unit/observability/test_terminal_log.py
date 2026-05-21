@@ -3,11 +3,12 @@
 Covers:
 - ``format_tokens`` — compact k-suffix formatting.
 - ``format_latency`` — fixed-width seconds formatting.
-- ``make_observability_callbacks`` factory — correct log emission and state
-  mutation with a synthetic ``LlmResponse``.
+- ``make_observability_callbacks`` factory — accumulator behaviour and
+  correct DEBUG emission without INFO rows on ``stockbot.tick``.
+- ``emit_analyst_summary`` — singleton vs multi-ticker shapes, failure
+  counting, and missing-token-field defensiveness.
 - Cache + observability callback composition — verifies that ``_chain_before``
-  short-circuits correctly and ``_chain_after`` runs all hooks unconditionally,
-  and that the ``stockbot.tick`` logger receives the expected row.
+  short-circuits correctly and ``_chain_after`` runs all hooks unconditionally.
 """
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ import types
 import pytest
 
 from observability.terminal_log import (
+    emit_analyst_summary,
     format_latency,
     format_tokens,
     make_observability_callbacks,
@@ -104,7 +106,7 @@ class TestFormatLatency:
 
 
 # ---------------------------------------------------------------------------
-# make_observability_callbacks — basic contract
+# Helpers shared across callback tests
 # ---------------------------------------------------------------------------
 
 def _make_fake_context(state: dict | None = None):
@@ -151,8 +153,20 @@ def _make_fake_llm_response(
     return resp
 
 
+# ---------------------------------------------------------------------------
+# make_observability_callbacks — accumulator behaviour
+# ---------------------------------------------------------------------------
+
 class TestMakeObservabilityCallbacks:
-    """Tests for the ``make_observability_callbacks`` factory."""
+    """Tests for the ``make_observability_callbacks`` factory.
+
+    The key behavioural change (post-parallelism refactor):
+    - ``after_cb`` must NOT emit an INFO row on ``stockbot.tick``.
+    - ``after_cb`` must append a structured record to the accumulator list
+      at ``state["temp:_obs_<analyst>_calls"]``.
+    - ``after_cb`` MUST emit at DEBUG level on ``stockbot.tick.calls`` so the
+      buffered obs/ capture still gets fine-grained per-call detail.
+    """
 
     def test_returns_two_callables(self):
         """Factory must return exactly two callables."""
@@ -181,12 +195,12 @@ class TestMakeObservabilityCallbacks:
         # The before-callback must not short-circuit (must return None).
         assert result is None
 
-        # The start timestamp must be stamped in state.
+        # The start timestamp must be stamped in state under the temp: key.
         assert "temp:_llm_start_news_AAPL" in ctx.state
         assert isinstance(ctx.state["temp:_llm_start_news_AAPL"], float)
 
-    def test_after_cb_emits_log_line(self, caplog):
-        """``after_cb`` must emit exactly one INFO record on ``stockbot.tick``."""
+    def test_after_cb_does_not_emit_info_on_tick_logger(self, caplog):
+        """``after_cb`` must NOT emit any INFO record on ``stockbot.tick``."""
         before_cb, after_cb = make_observability_callbacks(
             analyst="news",
             ticker="AAPL",
@@ -195,31 +209,95 @@ class TestMakeObservabilityCallbacks:
             model_name="gemini-test",
         )
         ctx = _make_fake_context()
-
-        # Stamp start time so elapsed is computable.
         before_cb(callback_context=ctx, llm_request=None)
-
         resp = _make_fake_llm_response(prompt_tokens=8500, candidate_tokens=1100)
 
         with caplog.at_level(logging.INFO, logger="stockbot.tick"):
             result = after_cb(callback_context=ctx, llm_response=resp)
 
-        # after-callback must not short-circuit.
         assert result is None
 
-        # Exactly one log record on the tick logger.
-        tick_records = [r for r in caplog.records if r.name == "stockbot.tick"]
-        assert len(tick_records) == 1
+        # No INFO records on stockbot.tick — the per-call row is gone.
+        tick_info_records = [
+            r for r in caplog.records
+            if r.name == "stockbot.tick" and r.levelno >= logging.INFO
+        ]
+        assert len(tick_info_records) == 0
 
-        msg = tick_records[0].getMessage()
-        # Progress counter.
-        assert "2/20" in msg
-        # Ticker symbol.
+    def test_after_cb_emits_debug_on_calls_logger(self, caplog):
+        """``after_cb`` must emit exactly one DEBUG record on ``stockbot.tick.calls``."""
+        before_cb, after_cb = make_observability_callbacks(
+            analyst="news",
+            ticker="AAPL",
+            ticker_index=2,
+            ticker_count=20,
+            model_name="gemini-test",
+        )
+        ctx = _make_fake_context()
+        before_cb(callback_context=ctx, llm_request=None)
+        resp = _make_fake_llm_response(prompt_tokens=8500, candidate_tokens=1100)
+
+        with caplog.at_level(logging.DEBUG, logger="stockbot.tick.calls"):
+            after_cb(callback_context=ctx, llm_response=resp)
+
+        calls_records = [r for r in caplog.records if r.name == "stockbot.tick.calls"]
+        assert len(calls_records) == 1
+        msg = calls_records[0].getMessage()
+        # Per-call detail should include analyst name and ticker.
+        assert "news" in msg
         assert "AAPL" in msg
-        # Status symbol.
-        assert "✓" in msg
 
-    def test_after_cb_handles_missing_usage_metadata(self, caplog):
+    def test_after_cb_appends_to_accumulator(self):
+        """``after_cb`` must append a record to ``state["temp:_obs_<analyst>_calls"]``."""
+        before_cb, after_cb = make_observability_callbacks(
+            analyst="news",
+            ticker="AAPL",
+            ticker_index=1,
+            ticker_count=5,
+            model_name="gemini-test",
+        )
+        ctx = _make_fake_context()
+        before_cb(callback_context=ctx, llm_request=None)
+        resp = _make_fake_llm_response(prompt_tokens=8500, candidate_tokens=1100)
+
+        after_cb(callback_context=ctx, llm_response=resp)
+
+        accum = ctx.state.get("temp:_obs_news_calls")
+        assert isinstance(accum, list)
+        assert len(accum) == 1
+
+        record = accum[0]
+        assert record["ticker"] == "AAPL"
+        assert record["ok"] is True
+        # Elapsed should be a small positive float (we just ran before_cb).
+        assert isinstance(record["elapsed"], float)
+        assert record["elapsed"] >= 0.0
+        assert record["prompt_tokens"] == 8500
+        assert record["candidate_tokens"] == 1100
+
+    def test_after_cb_accumulates_multiple_calls(self):
+        """Multiple after_cb calls must append to the same accumulator list."""
+        _, after_cb_aapl = make_observability_callbacks(
+            analyst="news", ticker="AAPL",
+            ticker_index=1, ticker_count=3, model_name="gemini-test",
+        )
+        _, after_cb_msft = make_observability_callbacks(
+            analyst="news", ticker="MSFT",
+            ticker_index=2, ticker_count=3, model_name="gemini-test",
+        )
+
+        # Share a single context (simulates shared session state).
+        ctx = _make_fake_context()
+
+        after_cb_aapl(callback_context=ctx, llm_response=_make_fake_llm_response(1000, 100))
+        after_cb_msft(callback_context=ctx, llm_response=_make_fake_llm_response(2000, 200))
+
+        accum = ctx.state.get("temp:_obs_news_calls")
+        assert len(accum) == 2
+        tickers_in_accum = {r["ticker"] for r in accum}
+        assert tickers_in_accum == {"AAPL", "MSFT"}
+
+    def test_after_cb_handles_missing_usage_metadata(self):
         """``after_cb`` must not crash when ``usage_metadata`` is ``None``."""
         before_cb, after_cb = make_observability_callbacks(
             analyst="fundamental",
@@ -231,17 +309,17 @@ class TestMakeObservabilityCallbacks:
         ctx = _make_fake_context()
         before_cb(callback_context=ctx, llm_request=None)
 
-        # LlmResponse with no usage_metadata.
         resp = types.SimpleNamespace(usage_metadata=None)
-
-        with caplog.at_level(logging.INFO, logger="stockbot.tick"):
-            result = after_cb(callback_context=ctx, llm_response=resp)
+        result = after_cb(callback_context=ctx, llm_response=resp)
 
         assert result is None
-        tick_records = [r for r in caplog.records if r.name == "stockbot.tick"]
-        assert len(tick_records) == 1
+        # Record still appended — token fields will be None.
+        accum = ctx.state.get("temp:_obs_fundamental_calls")
+        assert len(accum) == 1
+        assert accum[0]["prompt_tokens"] is None
+        assert accum[0]["candidate_tokens"] is None
 
-    def test_after_cb_handles_missing_start_stamp(self, caplog):
+    def test_after_cb_handles_missing_start_stamp(self):
         """``after_cb`` must not crash when the start stamp is absent."""
         _, after_cb = make_observability_callbacks(
             analyst="news",
@@ -250,19 +328,18 @@ class TestMakeObservabilityCallbacks:
             ticker_count=5,
             model_name="gemini-test",
         )
-        # Context with NO start timestamp (simulates test setups that skip before_cb).
-        ctx = _make_fake_context()
+        ctx = _make_fake_context()  # no start timestamp stamped
         resp = _make_fake_llm_response()
 
-        with caplog.at_level(logging.INFO, logger="stockbot.tick"):
-            result = after_cb(callback_context=ctx, llm_response=resp)
+        result = after_cb(callback_context=ctx, llm_response=resp)
 
         assert result is None
-        # Should still emit a row.
-        tick_records = [r for r in caplog.records if r.name == "stockbot.tick"]
-        assert len(tick_records) == 1
+        # Record appended with elapsed=None.
+        accum = ctx.state.get("temp:_obs_news_calls")
+        assert len(accum) == 1
+        assert accum[0]["elapsed"] is None
 
-    def test_after_cb_handles_none_token_fields(self, caplog):
+    def test_after_cb_handles_none_token_fields(self):
         """``after_cb`` must not crash when token count fields are ``None``."""
         before_cb, after_cb = make_observability_callbacks(
             analyst="news",
@@ -275,8 +352,219 @@ class TestMakeObservabilityCallbacks:
         before_cb(callback_context=ctx, llm_request=None)
         resp = _make_fake_llm_response(prompt_tokens=None, candidate_tokens=None)
 
+        after_cb(callback_context=ctx, llm_response=resp)
+
+        accum = ctx.state.get("temp:_obs_news_calls")
+        assert len(accum) == 1
+        assert accum[0]["prompt_tokens"] is None
+        assert accum[0]["candidate_tokens"] is None
+
+    def test_accumulator_key_uses_temp_prefix(self):
+        """The accumulator state key must start with ``temp:`` so ADK strips it."""
+        before_cb, after_cb = make_observability_callbacks(
+            analyst="fundamental",
+            ticker="NVDA",
+            ticker_index=1,
+            ticker_count=1,
+            model_name="gemini-test",
+        )
+        ctx = _make_fake_context()
+        before_cb(callback_context=ctx, llm_request=None)
+        after_cb(callback_context=ctx, llm_response=_make_fake_llm_response())
+
+        # Accumulator must live under a temp: key.
+        accum_keys = [k for k in ctx.state if k.startswith("temp:_obs_")]
+        assert len(accum_keys) == 1
+        assert accum_keys[0] == "temp:_obs_fundamental_calls"
+
+
+# ---------------------------------------------------------------------------
+# emit_analyst_summary
+# ---------------------------------------------------------------------------
+
+def _make_calls(
+    n: int,
+    *,
+    elapsed: float = 1.0,
+    prompt_tokens: int | None = 5000,
+    candidate_tokens: int | None = 500,
+) -> list[dict]:
+    """Build a synthetic list of n successful call records.
+
+    Parameters
+    ----------
+    n:
+        Number of records to generate.
+    elapsed:
+        Latency in seconds for each record (all identical for test simplicity).
+    prompt_tokens:
+        Prompt token count per record, or None to simulate missing metadata.
+    candidate_tokens:
+        Candidate token count per record, or None to simulate missing metadata.
+
+    Returns
+    -------
+    list[dict]
+        List of per-call record dicts matching the accumulator format.
+    """
+    return [
+        {
+            "ticker":           f"TICK{i}",
+            "elapsed":          elapsed,
+            "prompt_tokens":    prompt_tokens,
+            "candidate_tokens": candidate_tokens,
+            "ok":               True,
+        }
+        for i in range(n)
+    ]
+
+
+class TestEmitAnalystSummary:
+    """Tests for the ``emit_analyst_summary`` function."""
+
+    def test_multi_ticker_emits_one_info_row(self, caplog):
+        """Multi-ticker path must emit exactly one INFO record on ``stockbot.tick``."""
+        calls = _make_calls(18, elapsed=1.4, prompt_tokens=20000, candidate_tokens=3600)
+
         with caplog.at_level(logging.INFO, logger="stockbot.tick"):
-            after_cb(callback_context=ctx, llm_response=resp)
+            emit_analyst_summary("news", calls=calls, ticker_count=20)
+
+        tick_records = [r for r in caplog.records if r.name == "stockbot.tick"]
+        assert len(tick_records) == 1
+
+    def test_multi_ticker_row_contains_label(self, caplog):
+        """The emitted row must contain the analyst label."""
+        calls = _make_calls(5, elapsed=1.0)
+
+        with caplog.at_level(logging.INFO, logger="stockbot.tick"):
+            emit_analyst_summary("fundamental", calls=calls, ticker_count=5)
+
+        msg = caplog.records[-1].getMessage()
+        assert "fundamental" in msg
+
+    def test_multi_ticker_row_shows_succeeded_of_total(self, caplog):
+        """Row must show ``succeeded/total`` count."""
+        calls = _make_calls(18, elapsed=1.0)
+
+        with caplog.at_level(logging.INFO, logger="stockbot.tick"):
+            emit_analyst_summary("news", calls=calls, ticker_count=20)
+
+        msg = caplog.records[-1].getMessage()
+        assert "18/20" in msg
+
+    def test_multi_ticker_row_shows_failed_count(self, caplog):
+        """Row must show failure count when some branches failed."""
+        calls = _make_calls(18, elapsed=1.0)
+
+        with caplog.at_level(logging.INFO, logger="stockbot.tick"):
+            emit_analyst_summary("news", calls=calls, ticker_count=20)
+
+        msg = caplog.records[-1].getMessage()
+        assert "2 failed" in msg
+
+    def test_multi_ticker_no_failed_annotation_when_all_succeeded(self, caplog):
+        """Row must NOT contain 'failed' when all tickers succeeded."""
+        calls = _make_calls(5, elapsed=1.0)
+
+        with caplog.at_level(logging.INFO, logger="stockbot.tick"):
+            emit_analyst_summary("news", calls=calls, ticker_count=5)
+
+        msg = caplog.records[-1].getMessage()
+        assert "failed" not in msg
+
+    def test_multi_ticker_row_contains_median_and_max_latency(self, caplog):
+        """Multi-ticker row must contain median and max latency markers."""
+        calls = _make_calls(3, elapsed=1.5)
+
+        with caplog.at_level(logging.INFO, logger="stockbot.tick"):
+            emit_analyst_summary("news", calls=calls, ticker_count=3)
+
+        msg = caplog.records[-1].getMessage()
+        assert "median" in msg
+        assert "max" in msg
+
+    def test_multi_ticker_row_contains_tok_total(self, caplog):
+        """Multi-ticker row must include total token count."""
+        # 3 calls × (5000 prompt + 500 candidate) = 16.5k total
+        calls = _make_calls(3, elapsed=1.0, prompt_tokens=5000, candidate_tokens=500)
+
+        with caplog.at_level(logging.INFO, logger="stockbot.tick"):
+            emit_analyst_summary("news", calls=calls, ticker_count=3)
+
+        msg = caplog.records[-1].getMessage()
+        assert "tok" in msg
+
+    def test_singleton_emits_one_info_row(self, caplog):
+        """Singleton path must emit exactly one INFO record on ``stockbot.tick``."""
+        calls = _make_calls(1, elapsed=2.1, prompt_tokens=8000, candidate_tokens=400)
+
+        with caplog.at_level(logging.INFO, logger="stockbot.tick"):
+            emit_analyst_summary("strategist", calls=calls, ticker_count=1)
+
+        tick_records = [r for r in caplog.records if r.name == "stockbot.tick"]
+        assert len(tick_records) == 1
+
+    def test_singleton_row_contains_label(self, caplog):
+        """Singleton row must contain the analyst label."""
+        calls = _make_calls(1, elapsed=2.1)
+
+        with caplog.at_level(logging.INFO, logger="stockbot.tick"):
+            emit_analyst_summary("strategist", calls=calls, ticker_count=1)
+
+        msg = caplog.records[-1].getMessage()
+        assert "strategist" in msg
+
+    def test_singleton_row_shows_one_of_one(self, caplog):
+        """Singleton row must show ``1/1`` count."""
+        calls = _make_calls(1, elapsed=2.1)
+
+        with caplog.at_level(logging.INFO, logger="stockbot.tick"):
+            emit_analyst_summary("strategist", calls=calls, ticker_count=1)
+
+        msg = caplog.records[-1].getMessage()
+        assert "1/1" in msg
+
+    def test_singleton_row_no_median_no_max(self, caplog):
+        """Singleton row must NOT contain 'median' or 'max' latency labels."""
+        calls = _make_calls(1, elapsed=2.1)
+
+        with caplog.at_level(logging.INFO, logger="stockbot.tick"):
+            emit_analyst_summary("strategist", calls=calls, ticker_count=1)
+
+        msg = caplog.records[-1].getMessage()
+        assert "median" not in msg
+        assert "max" not in msg
+
+    def test_empty_calls_all_failed(self, caplog):
+        """When the accumulator is empty, all tickers count as failed."""
+        with caplog.at_level(logging.INFO, logger="stockbot.tick"):
+            emit_analyst_summary("news", calls=[], ticker_count=20)
+
+        tick_records = [r for r in caplog.records if r.name == "stockbot.tick"]
+        assert len(tick_records) == 1
+        msg = tick_records[0].getMessage()
+        assert "0/20" in msg
+
+    def test_missing_token_fields_do_not_crash(self, caplog):
+        """Calls with ``None`` token fields must not cause an exception."""
+        calls = _make_calls(3, elapsed=1.0, prompt_tokens=None, candidate_tokens=None)
+
+        # Should not raise.
+        with caplog.at_level(logging.INFO, logger="stockbot.tick"):
+            emit_analyst_summary("news", calls=calls, ticker_count=3)
+
+        tick_records = [r for r in caplog.records if r.name == "stockbot.tick"]
+        assert len(tick_records) == 1
+
+    def test_missing_elapsed_do_not_crash(self, caplog):
+        """Calls with ``elapsed=None`` must not cause a statistics error."""
+        calls = [
+            {"ticker": "AAPL", "elapsed": None, "prompt_tokens": 100, "candidate_tokens": 10, "ok": True},
+            {"ticker": "MSFT", "elapsed": 1.2,  "prompt_tokens": 200, "candidate_tokens": 20, "ok": True},
+        ]
+
+        with caplog.at_level(logging.INFO, logger="stockbot.tick"):
+            emit_analyst_summary("news", calls=calls, ticker_count=2)
 
         tick_records = [r for r in caplog.records if r.name == "stockbot.tick"]
         assert len(tick_records) == 1
@@ -296,8 +584,8 @@ class TestCacheObservabilityComposition:
        short-circuits BEFORE ``obs_before`` fires, so no start timestamp is
        stamped and ADK never invokes the after-model chain.
     2. When the cache misses (``before_cache`` returns ``None``), both
-       ``obs_before`` (stamps start time) and ``obs_after`` (emits log row)
-       fire in the correct order.
+       ``obs_before`` (stamps start time) and ``obs_after`` (appends to
+       accumulator) fire in the correct order.
     """
 
     def test_cache_hit_short_circuits_before_obs_before(self):
@@ -327,8 +615,8 @@ class TestCacheObservabilityComposition:
         # obs_before must NOT have stamped the state key — it was skipped.
         assert "temp:_llm_start_news_AAPL" not in ctx.state
 
-    def test_cache_miss_allows_obs_before_and_after(self, caplog):
-        """On a cache miss, both obs callbacks must fire normally."""
+    def test_cache_miss_stamps_start_time_and_appends_to_accumulator(self, caplog):
+        """On a cache miss, obs callbacks must fire and append a record to the accumulator."""
         from agents.analysts._common import _chain_after, _chain_before
 
         def cache_miss_before(callback_context, llm_request):
@@ -360,10 +648,17 @@ class TestCacheObservabilityComposition:
         assert "temp:_llm_start_news_AAPL" in ctx.state
 
         resp = _make_fake_llm_response(prompt_tokens=5000, candidate_tokens=800)
+        chained_after(callback_context=ctx, llm_response=resp)
 
-        with caplog.at_level(logging.INFO, logger="stockbot.tick"):
-            chained_after(callback_context=ctx, llm_response=resp)
+        # Accumulator must have one record with correct ticker.
+        accum = ctx.state.get("temp:_obs_news_calls")
+        assert isinstance(accum, list)
+        assert len(accum) == 1
+        assert accum[0]["ticker"] == "AAPL"
 
-        tick_records = [r for r in caplog.records if r.name == "stockbot.tick"]
-        assert len(tick_records) == 1
-        assert "AAPL" in tick_records[0].getMessage()
+        # No INFO records on stockbot.tick — per-call row has been removed.
+        tick_info = [
+            r for r in caplog.records
+            if r.name == "stockbot.tick" and r.levelno >= logging.INFO
+        ]
+        assert len(tick_info) == 0

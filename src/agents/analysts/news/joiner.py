@@ -23,6 +23,7 @@ from google.adk.events import Event, EventActions
 from contract.evidence import AnalystEvidence, AnalystVerdict, TickerVerdict, VerdictBatch
 from contract.extractors.news import extract_news_features
 from data.timeguard import resolve_as_of
+from observability.terminal_log import emit_analyst_summary
 from observability.trace import _trace_maybe
 
 
@@ -104,6 +105,26 @@ class NewsJoinerAgent(BaseAgent):
             evidence_list.append(ev.model_dump(mode="json"))
 
         batch = VerdictBatch(verdicts=verdicts_list)
+
+        # ── Terminal summary row ──────────────────────────────────────────────
+        # Read the accumulator written by the per-ticker after_model callbacks.
+        # Each record was appended by ``make_observability_callbacks``'s after_cb
+        # when a branch completed successfully.  Branches that crashed never
+        # appended — they are counted as failures via the difference between
+        # ticker_count and len(calls).
+        #
+        # Only emit when STOCKBOT_TERMINAL_LOG=1 (accumulator key present).
+        _obs_calls: list[dict] = state.get("temp:_obs_news_calls") or []
+        if _obs_calls or tickers:
+            # Always emit the summary when there are tickers — even if all failed
+            # (empty accumulator) so the operator knows the analyst ran.
+            import os
+            if os.environ.get("STOCKBOT_TERMINAL_LOG") == "1":
+                emit_analyst_summary(
+                    "news",
+                    calls=_obs_calls,
+                    ticker_count=len(tickers),
+                )
 
         # Surface trace — records the aggregated verdicts for debugging/auditing.
         _trace_maybe(state, "02_news_verdict", [v.model_dump() for v in verdicts_list])
