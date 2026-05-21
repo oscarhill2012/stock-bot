@@ -1,10 +1,15 @@
-"""FundamentalFetchAgent — BaseAgent variant of fundamental_fetch_callback.
+"""FundamentalFetchAgent — BaseAgent that fetches fundamental data for every watchlist ticker.
 
-Phase 9 replaces the batched ``FundamentalAnalyst`` LlmAgent (one prompt for
-all tickers) with a fan-out of per-ticker LlmAgents.  Each branch needs its
-own context key — ``temp:fundamental_context_<TICKER>`` — populated with only
-that ticker's data so ADK's ``inject_session_state`` fills
-``{fundamental_context}`` with single-ticker text.
+Phase 9 introduced the per-ticker fan-out design: the batched
+``FundamentalAnalyst`` LlmAgent (one prompt for all tickers) was replaced with
+a fan-out of per-ticker LlmAgents.  Each branch needs its own context key —
+``temp:fundamental_context_<TICKER>`` — populated with only that ticker's data
+so ADK's ``inject_session_state`` fills ``{fundamental_context}`` with
+single-ticker text.
+
+The legacy ``fundamental_fetch_callback`` (a ``before_agent_callback`` on the
+batched ``FundamentalAnalyst`` LlmAgent) was retired when this agent landed
+— see ``agents.analysts.fundamental.fetch`` for the retained formatting helpers.
 
 This agent runs ONCE per tick, fetching ratios, filings, and insider trades
 for every watchlist ticker, then writing one context key per ticker.  The
@@ -42,9 +47,9 @@ from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event, EventActions
 
-# Reuse the per-ticker formatter and the provider-interface adapter from the
-# legacy callback module.  Keeping the formatter in one place ensures the
-# context text is identical whether produced by the callback or this agent.
+# Reuse the per-ticker formatter and provider-interface adapter from the
+# shared helpers module.  Keeping the formatter in one place ensures the
+# context text is consistent across all call sites.
 from agents.analysts.fundamental.fetch import _build_ticker_fundamental_context
 from data import get_company_filings, get_company_ratios, get_insider_trades
 from data.config import get_config

@@ -1,19 +1,9 @@
-"""Fundamental analyst data fetch callback.
+"""Fundamental analyst fetch helpers.
 
-Phase 5 introduces a triad of data domains for the Fundamental analyst:
+Provides the per-ticker context-building helpers used by ``FundamentalFetchAgent``
+(``agents.analysts.fundamental.fetch_agent``).
 
-- **ratios** — scalar company fundamentals (P/E, beta, market cap, etc.) via the
-  active company_ratios provider. The 252-row OHLCV history is deliberately
-  excluded — Fundamental never uses it and the Phase 5 data-model split removes it
-  from the payload to avoid dragging inert data through state.
-- **filings** — recent SEC filings (10-K, 10-Q, 8-K) with MD&A / risk-factor excerpts.
-- **insider** — Form 4 insider trades and derivative transactions as a ``Form4Bundle``.
-
-Each domain is fetched independently.  A failure in one domain is logged and
-falls back to a safe empty value so that the other two domains are still
-available to the downstream extractor and LLM.
-
-The resulting ``state["temp:fundamental_data"]`` layout per ticker is::
+The per-ticker triad payload layout is::
 
     {
         "ratios":  <dict from CompanyRatios.model_dump() | None on failure>,
@@ -21,34 +11,30 @@ The resulting ``state["temp:fundamental_data"]`` layout per ticker is::
         "insider": <Form4Bundle instance>,
     }
 
-In addition to ``state["temp:fundamental_data"]``, the callback writes
-``state["fundamental_context"]`` — a human-readable multi-ticker text block
-that the Fundamental LLM instruction template references as the runtime
-``{fundamental_context}`` placeholder.  This block contains:
+The context block written into state combines:
 
 - Filing excerpts (MD&A + risk factors) for each ticker.
-- A structured insider activity block (numeric flows + footnote prose).
+- A structured insider activity section (numeric flows + footnote prose).
 
 Separating the LLM-readable context from the machine-readable data dict
 keeps the prompt compact and avoids serialising the entire ``Form4Bundle``
 object graph into the instruction.
+
+The legacy ``fundamental_fetch_callback`` (an ADK ``before_agent_callback``)
+was retired in Phase 9 when the per-ticker fan-out design replaced the batched
+``FundamentalAnalyst`` LlmAgent.  Only the formatting helpers and the
+``_build_ticker_fundamental_context`` adapter shim remain here so that
+``FundamentalFetchAgent`` can reuse the logic without duplication.
 """
 from __future__ import annotations
 
 import logging
-from datetime import datetime
-
-from google.adk.agents.callback_context import CallbackContext
-from google.genai import types as genai_types
 
 from config.analysts import FundamentalCaps, get_analysts_config
-from data import get_company_filings, get_company_ratios, get_insider_trades
 from data.config import get_config
 from data.models import Form4Bundle, InsiderTrade
-from data.timeguard import resolve_as_of
-from observability.trace import _trace_maybe
 
-logger = logging.getLogger(__name__)
+_logger = logging.getLogger(__name__)
 
 
 def _caps() -> FundamentalCaps:
@@ -242,131 +228,3 @@ def _build_ticker_fundamental_context(ticker: str, data: dict) -> str:
         insider_bundle,
         insider_lookback_days=insider_lookback_days,
     )
-
-
-async def fundamental_fetch_callback(
-    callback_context: CallbackContext,
-) -> genai_types.Content | None:
-    """Fetch stats, SEC filings, and insider trades for every watchlist ticker.
-
-    Iterates ``state["tickers"]`` and, for each ticker, dispatches three
-    independent provider calls.  Partial failures are tolerated — each domain
-    catches its own exception, logs a warning, and falls back to an empty
-    payload rather than aborting the entire ticker's fetch.
-
-    Writes two state keys:
-
-    - ``state["temp:fundamental_data"]`` — machine-readable triad dict consumed by
-      the feature extractor and the after-callback.
-    - ``state["fundamental_context"]`` — human-readable multi-ticker text block
-      that ADK's instruction template fills into the LLM prompt via the
-      ``{fundamental_context}`` placeholder.
-
-    Parameters
-    ----------
-    callback_context:
-        ADK callback context.  ``callback_context.state["tickers"]`` must be a
-        list of ticker strings.
-
-    Returns
-    -------
-    google.genai.types.Content | None
-        Always ``None`` — this callback never short-circuits the LLM call.
-    """
-    state = callback_context.state
-    tickers: list[str] = state.get("tickers", [])
-
-    # Pull the historical clock from session state; default to wall-clock for live.
-    as_of: datetime = resolve_as_of(
-        state.get("as_of"), allow_wallclock=True, site="fundamental/fetch",
-    )
-
-    # Source lookback from config once per callback invocation — config/data.json
-    # owns the value so all call sites agree and there is no parallel constant.
-    defaults = get_config().defaults
-    insider_lookback_days    = defaults.insider_lookback_days
-    # ``filings_per_form`` and ``include_filing_excerpts`` are *also* config-owned:
-    # the dispatcher's hardcoded defaults (5, True) would otherwise silently
-    # override whatever data.json says.  Reading them here keeps the live tick
-    # in lock-step with the backtest cache-fill, which reads the same keys.
-    filings_per_form         = defaults.filings_per_form
-    include_filing_excerpts  = defaults.include_filing_excerpts
-
-    fundamental_data: dict[str, dict] = {}
-    context_blocks: list[str] = []
-
-    for ticker in tickers:
-        # --- ratios ---
-        # Fundamental no longer drags the 252-row OHLCV history with it; the
-        # split data-model (Phase 5 redesign) means only the scalar ratios
-        # come along. The Technical analyst is the sole consumer of bars.
-        try:
-            ratios_obj = await get_company_ratios(ticker, as_of=as_of)
-            ratios_payload = (
-                ratios_obj.model_dump() if hasattr(ratios_obj, "model_dump") else ratios_obj
-            )
-        except Exception as exc:
-            logger.warning("company_ratios fetch failed for %s: %s", ticker, exc)
-            ratios_payload = None
-
-        # --- filings ---
-        try:
-            filings = await get_company_filings(
-                ticker,
-                as_of=as_of,
-                limit=filings_per_form,
-                include_excerpts=include_filing_excerpts,
-            )
-            filings_payload = [
-                f.model_dump() if hasattr(f, "model_dump") else f for f in filings
-            ]
-        except Exception as exc:
-            logger.warning("filings fetch failed for %s: %s", ticker, exc)
-            filings_payload = []
-
-        # --- insider trades (Form 4) ---
-        try:
-            insider_bundle = await get_insider_trades(
-                ticker, lookback_days=insider_lookback_days, as_of=as_of
-            )
-            # Store the raw Form4Bundle so the extractor can access typed fields
-            # directly without re-parsing a dict.
-            if not isinstance(insider_bundle, Form4Bundle):
-                # Guard: if the provider returned something unexpected, wrap it.
-                logger.warning(
-                    "insider_trades for %s returned %s, expected Form4Bundle — using empty bundle",
-                    ticker,
-                    type(insider_bundle).__name__,
-                )
-                insider_bundle = Form4Bundle(trades=[], derivatives=[])
-        except Exception as exc:
-            logger.warning("insider_trades fetch failed for %s: %s", ticker, exc)
-            insider_bundle = Form4Bundle(trades=[], derivatives=[])
-
-        fundamental_data[ticker] = {
-            "ratios": ratios_payload,
-            "filings": filings_payload,
-            "insider": insider_bundle,
-        }
-
-        # Build the LLM-readable context block for this ticker and accumulate.
-        context_blocks.append(
-            _build_ticker_context(
-                ticker, filings_payload, insider_bundle,
-                insider_lookback_days=insider_lookback_days,
-            )
-        )
-
-    # Prefixed ``temp:`` — consumed within the same invocation by the
-    # Fundamental analyst's LLM call and evidence callback; must not survive
-    # to the next tick.
-    state["temp:fundamental_data"] = fundamental_data
-
-    # Join all per-ticker blocks into one string for the {fundamental_context}
-    # ADK instruction placeholder.
-    state["fundamental_context"] = "\n\n".join(context_blocks) if context_blocks else "(no data)"
-
-    # Surface trace — no-op unless state["_trace"] is set by trace_tick.py.
-    _trace_maybe(state, "01_fetch_fundamental", fundamental_data)
-
-    return None

@@ -1,9 +1,9 @@
 """Tests that each analyst fetch callback reads ``state['as_of']`` and forwards it.
 
-DEVIATION from plan: The plan only parametrised technical, news, and social.
-This test covers all five analyst callbacks for completeness — fundamental and
-smart_money also need as_of threaded through.  Each entry patches the specific
-data wrapper(s) that the callback calls, rather than a single generic target.
+Covers the three remaining legacy callbacks — technical, social, and smart_money.
+The news and fundamental callbacks were retired in Phase 9 (replaced by
+``NewsFetchAgent`` and ``FundamentalFetchAgent``); their as_of tests have been
+removed from this file.
 """
 from __future__ import annotations
 
@@ -46,25 +46,6 @@ async def test_technical_fetch_forwards_as_of() -> None:
 
 
 @pytest.mark.asyncio
-async def test_news_fetch_forwards_as_of() -> None:
-    """``news_fetch_callback`` passes ``as_of`` from state into ``get_stock_news``."""
-    from agents.analysts.news.fetch import news_fetch_callback
-
-    state: dict = {"tickers": ["AAPL"], "as_of": FIXED}
-    ctx = SimpleNamespace(state=state)
-
-    with patch(
-        "agents.analysts.news.fetch.get_stock_news",
-        new=AsyncMock(return_value=[]),
-    ) as m:
-        await news_fetch_callback(ctx)
-
-    assert m.await_args.kwargs.get("as_of") == FIXED, (
-        "get_stock_news did not receive as_of"
-    )
-
-
-@pytest.mark.asyncio
 async def test_social_fetch_forwards_as_of() -> None:
     """``social_fetch_callback`` passes ``as_of`` from state into ``get_social_sentiment``."""
     from agents.analysts.social.fetch import social_fetch_callback
@@ -84,42 +65,6 @@ async def test_social_fetch_forwards_as_of() -> None:
 
     assert m.await_args.kwargs.get("as_of") == FIXED, (
         "get_social_sentiment did not receive as_of"
-    )
-
-
-@pytest.mark.asyncio
-async def test_fundamental_fetch_forwards_as_of() -> None:
-    """``fundamental_fetch_callback`` passes ``as_of`` from state to all three wrappers."""
-    from data.models import Form4Bundle
-    from agents.analysts.fundamental.fetch import fundamental_fetch_callback
-
-    state: dict = {"tickers": ["AAPL"], "as_of": FIXED}
-    ctx = SimpleNamespace(state=state)
-
-    with (
-        patch(
-            "agents.analysts.fundamental.fetch.get_company_ratios",
-            new=AsyncMock(return_value=None),
-        ) as cr,
-        patch(
-            "agents.analysts.fundamental.fetch.get_company_filings",
-            new=AsyncMock(return_value=[]),
-        ) as filings,
-        patch(
-            "agents.analysts.fundamental.fetch.get_insider_trades",
-            new=AsyncMock(return_value=Form4Bundle(trades=[], derivatives=[])),
-        ) as insider,
-    ):
-        await fundamental_fetch_callback(ctx)
-
-    assert cr.await_args.kwargs.get("as_of") == FIXED, (
-        "get_company_ratios did not receive as_of"
-    )
-    assert filings.await_args.kwargs.get("as_of") == FIXED, (
-        "get_company_filings did not receive as_of"
-    )
-    assert insider.await_args.kwargs.get("as_of") == FIXED, (
-        "get_insider_trades did not receive as_of"
     )
 
 

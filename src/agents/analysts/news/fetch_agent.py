@@ -1,12 +1,14 @@
 """NewsFetchAgent — BaseAgent that fetches news for every watchlist ticker.
 
-Replaces the legacy ``news_fetch_callback`` (an ``before_agent_callback``
-on the batched ``NewsAnalyst`` LlmAgent).  The per-ticker fan-out design
-(Phase 9) splits the prompt so each ``NewsAnalyst_<TICKER>`` reads only
-its own ticker's context — this agent writes one
+Phase 9 introduced the per-ticker fan-out design: each ``NewsAnalyst_<TICKER>``
+reads only its own ticker's context.  This agent writes one
 ``temp:news_context_<TICKER>`` key per ticker so ADK's
 ``inject_session_state`` fills each branch's ``{news_context}``
 placeholder with single-ticker text.
+
+The legacy ``news_fetch_callback`` (a ``before_agent_callback`` on the batched
+``NewsAnalyst`` LlmAgent) was retired when this agent landed — see
+``agents.analysts.news.fetch`` for the retained formatting helpers.
 
 Yielded keys (one state_delta event):
   - ``temp:news_data``  — dict[ticker, {"news": [serialised NewsArticle, ...]}]
@@ -24,7 +26,7 @@ from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event, EventActions
 
-# Reuse the existing per-ticker formatter from the legacy callback module.
+# Reuse the per-ticker formatter from the shared helpers module.
 # This avoids duplicating the article-truncation and formatting logic.
 from agents.analysts.news.fetch import _build_ticker_news_context
 from data import get_stock_news
