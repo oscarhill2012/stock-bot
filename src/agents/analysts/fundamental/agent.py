@@ -5,11 +5,18 @@ The LLM is instructed to emit ``AnalystVerdict``-shaped dicts keyed as
 after-callback then converts those verdicts into ``AnalystEvidence`` records
 and writes them to ``state["fundamental_evidence"]``.
 
-The agent factory ``_build_fundamental_analyst(vocab)`` now accepts a
+The agent factory :func:`build_fundamental_analyst` accepts a
 ``FundamentalVocabulary`` at construction time and renders the closed-vocab
-prompt via ``build_fundamental_instruction`` before wiring the
-``LlmAgent``.  The module-level singleton uses the default heuristics config
-so unit tests that import the module directly still work.
+prompt via ``build_fundamental_instruction`` before wiring the ``LlmAgent``.
+This factory is the **single construction path** — production wiring goes
+through it from ``orchestrator.pipeline``, and the structural tests in
+``tests/analysts/test_fundamental.py`` call it directly via the
+``fundamental_analyst_fixture`` conftest helper.  Pre-2026-05-21 this
+module exposed a module-level ``fundamental_analyst`` singleton built at
+import time; both the singleton and the hardcoded ``"gemini-…"`` literal
+are gone — the model ID is now read from
+``config/models.json::fundamental_analyst`` via
+``src.config.models.get_models_config``.
 
 Phase 5 Task 6 adds a disk-backed memoisation cache.  The cache layer is now
 wired via the shared ``make_report_cache_callbacks`` factory in
@@ -37,11 +44,12 @@ from agents.analysts._common import (
     make_evidence_callback,
 )
 from agents.analysts.cache_callbacks import make_report_cache_callbacks
-from agents.analysts.heuristics import FundamentalVocabulary, load_heuristics
+from agents.analysts.heuristics import FundamentalVocabulary
 from agents.analysts.report_cache import (
     FUNDAMENTAL_PROMPT_VERSION,
     fundamental_hash_inputs,
 )
+from config.models import get_models_config
 from contract.evidence import VerdictBatch
 from contract.extractors.fundamental import extract_fundamental_features
 from data.models import CompanyRatios, Filing, Form4Bundle
@@ -92,7 +100,7 @@ def _fundamental_hash_inputs_from_dict(ticker: str, triad: dict) -> str:
 # Agent factory
 # ---------------------------------------------------------------------------
 
-def _build_fundamental_analyst(vocab: FundamentalVocabulary) -> YieldingAnalystWrapper:
+def build_fundamental_analyst(vocab: FundamentalVocabulary) -> YieldingAnalystWrapper:
     """Construct a fresh ``FundamentalAnalyst`` LlmAgent with closed-vocab prompt + cache.
 
     Renders the instruction by substituting the four closed-vocabulary lists
@@ -128,7 +136,11 @@ def _build_fundamental_analyst(vocab: FundamentalVocabulary) -> YieldingAnalystW
         accessible via ``.inner`` for tests that need to inspect it directly.
     """
     instruction = build_fundamental_instruction(vocab)
-    model = "gemini-2.5-flash-lite"
+
+    # Read the Fundamental analyst's model ID from the central config — the
+    # only source of truth.  See ``config/models.json`` and the
+    # ``src/config/models.py`` loader for the rationale.
+    model = get_models_config().fundamental_analyst
 
     # Attach LLM trace callbacks only in trace mode — zero-cost gate.
     trace_before = None
@@ -185,13 +197,9 @@ def _build_fundamental_analyst(vocab: FundamentalVocabulary) -> YieldingAnalystW
     )
 
 
-# ---------------------------------------------------------------------------
-# Module-level singleton
-# ---------------------------------------------------------------------------
-# Built from the default heuristics config so tests that ``import
-# fundamental_analyst`` directly still get a valid agent without needing to
-# construct one explicitly.  Production code uses ``_build_fundamental_analyst``
-# called from the pipeline factory.
-# ---------------------------------------------------------------------------
-
-fundamental_analyst = _build_fundamental_analyst(load_heuristics().fundamental_vocabulary)
+# Module-level singleton removed 2026-05-21.  Previously a
+# ``fundamental_analyst = _build_fundamental_analyst(load_heuristics().fundamental_vocabulary)``
+# was constructed at import time; it ran ``load_heuristics()`` (a disk read)
+# unconditionally on module import.  All callers — production pipeline and
+# structural tests alike — now invoke :func:`build_fundamental_analyst`
+# explicitly.

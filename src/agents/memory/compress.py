@@ -33,8 +33,24 @@ async def compress(
 
 
 async def _default_llm_compress(prev_digest: str, new_summary: str) -> str:
-    """Compress via Gemini Flash. Returns <=2000 chars."""
+    """Compress the day digest via the LLM compressor model.
+
+    Reads the model ID from ``config/models.json::memory_compressor`` via the
+    central :func:`src.config.models.get_models_config` loader — no hardcoded
+    literal lives here.  Returns at most ``DIGEST_BUDGET`` (2000) characters.
+
+    Only invoked when the concatenated fast path overflows ``DIGEST_BUDGET``,
+    so the call frequency is bounded by how often the memory buffer evicts
+    an entry that doesn't fit cleanly alongside the running digest.
+    """
+
     from google import genai  # type: ignore[import]
+
+    from config.models import get_models_config
+
+    # Pull the model ID from the central config.  See the module docstring
+    # of ``src/config/models.py`` for the "module owns its own slot" rationale.
+    model_name = get_models_config().memory_compressor
 
     prompt = (
         f"You are a financial decision log compressor. "
@@ -43,10 +59,13 @@ async def _default_llm_compress(prev_digest: str, new_summary: str) -> str:
         f"Rewrite the log incorporating the new entry, keeping it under 2000 characters. "
         f"Preserve key decisions and patterns. Return only the updated log."
     )
+
     client = genai.Client()
     response = client.models.generate_content(
-        model="gemini-2.5-flash-lite",
-        contents=prompt,
+        model    = model_name,
+        contents = prompt,
     )
+
+    # Defensive truncation — the prompt asks for <=2000 chars but LLMs over-shoot.
     result = response.text[:DIGEST_BUDGET]
     return result

@@ -261,15 +261,85 @@ def _strategist_validation_callback(
     return None
 
 
-# ── Agent definition ──────────────────────────────────────────────────────────
+# ── Agent factory ─────────────────────────────────────────────────────────────
 
-_STRATEGIST_MODEL = "gemini-3.5-flash"
 
-strategist_agent = LlmAgent(
-    name="Strategist",
-    model=_STRATEGIST_MODEL,  # gemini-3.5-flash — trialling next-gen Flash for the strategist
-    instruction=STRATEGIST_INSTRUCTION,
-    output_schema=StrategistDecision,
-    output_key="strategist_decision",
-    after_agent_callback=_strategist_validation_callback,
-)
+def build_strategist():
+    """Construct the production Strategist branch — ``SequentialAgent[ContextShim, LlmAgent]``.
+
+    This factory is the **single construction path** for the strategist.  Both
+    the live pipeline (``orchestrator.pipeline._build_strategist``) and any
+    test that needs a real strategist agent should call this function — there
+    is no module-level singleton.  Pre-2026-05-21 the strategist had two
+    construction sites: an inline one in ``pipeline.py`` (which production
+    used) and a module-level singleton here (which a few tests used) — each
+    carried its own ``"gemini-…"`` literal, and a model swap on one silently
+    no-op'd on the other.  Centralising via ``config/models.json`` plus this
+    factory closes that footgun.
+
+    The branch shape mirrors what ``pipeline.py`` used to build inline:
+
+    - ``StrategistContextShim`` runs first and hydrates ``temp:held_positions_view``,
+      ``temp:ticker_evidence``, and ``temp:ticker_evidence_objects`` via a
+      yielded ``Event(state_delta=…)`` (contract Rule 1).
+    - The downstream ``LlmAgent`` resolves those keys via ADK's
+      instruction-variable substitution and emits its ``StrategistDecision``.
+
+    The model identifier is read from ``config/models.json::strategist`` via
+    :func:`src.config.models.get_models_config`.  Trace callbacks are wired
+    only when the ``STOCKBOT_TRACE=1`` environment variable is set — a
+    zero-cost gate that keeps prod hot-path free of trace overhead.
+
+    Returns
+    -------
+    google.adk.agents.SequentialAgent
+        The ``"StrategistBranch"`` SequentialAgent ready to be added to the
+        pipeline's top-level SequentialAgent.  The inner ``LlmAgent`` is
+        accessible via ``branch.sub_agents[1]`` for tests that need to inspect
+        LlmAgent attributes (model, callbacks, output_key, etc.).
+    """
+
+    import os
+
+    from google.adk.agents import SequentialAgent
+
+    from agents.strategist.context_shim import StrategistContextShim
+    from config.models import get_models_config
+    from observability.trace import make_llm_trace_callbacks
+
+    # Read the model ID from the central config.  One JSON edit moves both
+    # live and backtest runs — no shadow constant to forget.
+    model_name = get_models_config().strategist
+
+    # Trace callbacks are opt-in via STOCKBOT_TRACE=1.  Zero-cost when off:
+    # both callbacks remain ``None`` and ADK skips the dispatch entirely.
+    before_model = None
+    after_model  = None
+
+    if os.environ.get("STOCKBOT_TRACE") == "1":
+        before_model, after_model = make_llm_trace_callbacks(
+            "05_strategist_llm",
+            model=model_name,
+        )
+
+    # The inner LlmAgent — its ``after_agent_callback`` runs the legacy-field
+    # derivation + contract validation defined above in this module.  Note:
+    # no ``after_model_callback`` beyond the optional trace hook (the legacy
+    # ``_strategist_after_model_composite`` clamp was deleted in A2.3 because
+    # the prompt itself forbids negative weights — see
+    # ``tests/unit/agents/strategist/test_after_model_unwired.py``).
+    llm = LlmAgent(
+        name                  = "Strategist",
+        model                 = model_name,
+        instruction           = STRATEGIST_INSTRUCTION,
+        output_schema         = StrategistDecision,
+        output_key            = "strategist_decision",
+        after_agent_callback  = _strategist_validation_callback,
+        before_model_callback = before_model,
+        after_model_callback  = after_model,
+    )
+
+    return SequentialAgent(
+        name       = "StrategistBranch",
+        sub_agents = [StrategistContextShim(), llm],
+    )

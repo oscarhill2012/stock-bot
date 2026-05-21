@@ -45,14 +45,29 @@ def test_pipeline_strategist_branch_has_no_after_model_callback_by_default() -> 
         )
 
 
-def test_module_singleton_no_longer_wires_after_model_composite() -> None:
-    """The strategist module singleton must not wire
-    ``_strategist_after_model_composite`` (it no longer exists), and the
-    clamp symbols it chained must also be gone.
+def test_strategist_module_does_not_expose_clamp_or_singleton() -> None:
+    """The strategist module must not expose the deleted clamp symbols and
+    must not expose a module-level ``strategist_agent`` singleton.
+
+    Two cleanups overlap on this guard:
+
+    * **A2.3** deleted the ``_strategist_after_model_composite`` clamp chain
+      because the prompt forbids negative weights and callbacks are Rule 3-
+      forbidden from yielding state.  Future LLM drift fixes belong in a
+      fresh ``output_schema`` validator, not a re-attached clamp.
+    * **2026-05-21 model-config refactor** deleted the module-level
+      ``strategist_agent`` singleton in favour of the
+      :func:`build_strategist` factory so the model ID lives in
+      ``config/models.json`` and no shadow LlmAgent is built at import
+      time.  See the module docstring of ``agents.strategist.agent`` for
+      the full rationale.
+
+    If a future engineer re-introduces *any* of these symbols, this test
+    fails fast.
     """
     from agents.strategist import agent as sa
 
-    # All four symbols delete as part of A2.3.
+    # Clamp symbols deleted in A2.3.
     assert not hasattr(sa, "_strategist_after_model_composite"), (
         "_strategist_after_model_composite should be removed in A2.3."
     )
@@ -64,8 +79,11 @@ def test_module_singleton_no_longer_wires_after_model_composite() -> None:
         "_CLAMPED_STANCE_FIELDS should be removed in A2.3 — it was only "
         "consumed by the deleted clamp."
     )
-    # The module-level singleton must not pass after_model_callback.
-    assert sa.strategist_agent.after_model_callback is None, (
-        "strategist_agent singleton still has after_model_callback wired; "
-        "A2.3 unwires it."
+
+    # Module-level singleton deleted 2026-05-21 — production wiring now
+    # goes through ``build_strategist`` so the model ID is read from
+    # ``config/models.json`` rather than baked in at import time.
+    assert not hasattr(sa, "strategist_agent"), (
+        "agents.strategist.agent.strategist_agent should be gone — "
+        "production wires via build_strategist() (2026-05-21 refactor)."
     )

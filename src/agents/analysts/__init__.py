@@ -1,29 +1,21 @@
-"""Analyst pool — ParallelAgent wrapping all five analysts (Phase 5).
+"""Analyst pool — exposes the per-analyst factories used by the pipeline.
 
-Technical, Fundamental, News, and SmartMoney are ``LlmAgent`` instances
-(Technical and SmartMoney are pending conversion to ``BaseAgent`` in Tasks 8
-and 9 respectively).  Social (added in Task 7) is already a ``BaseAgent``
-subclass: its ``before_agent_callback`` fetches raw data, ``_run_async_impl``
-derives verdicts deterministically via heuristics, and the
-``after_agent_callback`` converts verdicts to ``AnalystEvidence`` records.
+The production analyst pool is constructed by
+``orchestrator.pipeline._build_analyst_pool`` from these factories.  This
+package re-exports them for tests and ad-hoc tooling that want to construct
+an individual analyst in isolation.
+
+Pre-2026-05-21 this module eagerly imported per-analyst module-level
+singletons (``fundamental_analyst``, ``news_analyst``, etc.) and built an
+unused ``analyst_pool`` ParallelAgent at import time.  That entire side
+effect is gone — the only construction path is now through the factories
+below, called explicitly by the pipeline or by tests.
 """
-from google.adk.agents import ParallelAgent
 
-from .fundamental.agent import fundamental_analyst
-from .news.agent import news_analyst
-from .smart_money.agent import smart_money_analyst
-from .social.agent import social_analyst
-from .technical.agent import technical_analyst
+from .fundamental.agent import build_fundamental_analyst
+from .news.agent import build_news_analyst
 
-analyst_pool = ParallelAgent(
-    name="AnalystPool",
-    sub_agents=[
-        technical_analyst,
-        fundamental_analyst,
-        news_analyst,
-        social_analyst,
-        smart_money_analyst,
-    ],
-)
-
-__all__ = ["analyst_pool"]
+__all__ = [
+    "build_fundamental_analyst",
+    "build_news_analyst",
+]

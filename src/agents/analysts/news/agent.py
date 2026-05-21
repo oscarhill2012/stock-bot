@@ -8,11 +8,19 @@ writes them to ``state["news_evidence"]``.
 Renamed from SentimentAnalyst in Task 6.  Provider input narrowed to
 ``news/`` only; social_sentiment migrates to the new Social analyst (Task 7).
 
-The agent factory ``_build_news_analyst(vocab)`` now accepts a
-``NewsVocabulary`` at construction time and renders the closed-vocab prompt
-via ``build_news_instruction`` before wiring the ``LlmAgent``.  The
-module-level singleton uses the default heuristics config so unit tests that
-import the module directly still work.
+The agent factory :func:`build_news_analyst` accepts a ``NewsVocabulary`` at
+construction time and renders the closed-vocab prompt via
+``build_news_instruction`` before wiring the ``LlmAgent``.  This factory is
+the **single construction path** — production wiring goes through it from
+``orchestrator.pipeline``, and the structural tests in
+``tests/analysts/test_news.py`` call it directly via the
+``news_analyst_fixture`` conftest helper.  Pre-2026-05-21 this module
+exposed a module-level ``news_analyst`` singleton built at import time; it
+ran ``load_heuristics()`` on import (a disk read), and
+``src/agents/analysts/report_cache.py:104`` documented its circular-import
+footgun.  Both the singleton and the hardcoded model literal are gone — the
+model ID is read from ``config/models.json::news_analyst`` via
+``src.config.models.get_models_config``.
 
 Phase 5 Task 6 adds a disk-backed memoisation cache.  The cache layer is now
 wired via the shared ``make_report_cache_callbacks`` factory in
@@ -40,11 +48,12 @@ from agents.analysts._common import (
     make_evidence_callback,
 )
 from agents.analysts.cache_callbacks import make_report_cache_callbacks
-from agents.analysts.heuristics import NewsVocabulary, load_heuristics
+from agents.analysts.heuristics import NewsVocabulary
 from agents.analysts.report_cache import (
     NEWS_PROMPT_VERSION,
     news_hash_inputs,
 )
+from config.models import get_models_config
 from contract.evidence import VerdictBatch
 from contract.extractors.news import extract_news_features
 from observability.trace import make_llm_trace_callbacks
@@ -56,7 +65,7 @@ from .prompts import build_news_instruction
 # Agent factory
 # ---------------------------------------------------------------------------
 
-def _build_news_analyst(vocab: NewsVocabulary) -> YieldingAnalystWrapper:
+def build_news_analyst(vocab: NewsVocabulary) -> YieldingAnalystWrapper:
     """Construct a fresh ``NewsAnalyst`` LlmAgent with closed-vocab prompt + cache.
 
     Renders the instruction by substituting the three closed-vocabulary lists
@@ -88,7 +97,11 @@ def _build_news_analyst(vocab: NewsVocabulary) -> YieldingAnalystWrapper:
         accessible via ``.inner`` for tests that need to inspect it directly.
     """
     instruction = build_news_instruction(vocab)
-    model = "gemini-2.5-flash-lite"
+
+    # Read the News analyst's model ID from the central config — the only
+    # source of truth.  See ``config/models.json`` and the
+    # ``src/config/models.py`` loader for the rationale.
+    model = get_models_config().news_analyst
 
     # Attach LLM trace callbacks only in trace mode — zero-cost gate.
     trace_before = None
@@ -140,13 +153,10 @@ def _build_news_analyst(vocab: NewsVocabulary) -> YieldingAnalystWrapper:
     )
 
 
-# ---------------------------------------------------------------------------
-# Module-level singleton
-# ---------------------------------------------------------------------------
-# Built from the default heuristics config so tests that ``import
-# news_analyst`` directly still get a valid agent without needing to construct
-# one explicitly.  Production code uses ``_build_news_analyst`` called from
-# the pipeline factory.
-# ---------------------------------------------------------------------------
-
-news_analyst = _build_news_analyst(load_heuristics().news_vocabulary)
+# Module-level singleton removed 2026-05-21.  Previously a
+# ``news_analyst = _build_news_analyst(load_heuristics().news_vocabulary)``
+# was constructed at import time; it carried a disk-read side effect
+# (``load_heuristics``) and a circular-import footgun documented in
+# ``agents/analysts/report_cache.py:104``.  All callers — production
+# pipeline and structural tests alike — now invoke :func:`build_news_analyst`
+# explicitly.

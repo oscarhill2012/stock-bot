@@ -133,9 +133,16 @@ async def test_strategist_v2_emits_per_ticker_stances_with_held_position():
     from google.adk.sessions import InMemorySessionService
     from google.genai import types as genai_types
 
-    from agents.strategist.agent import strategist_agent
+    from agents.strategist.agent import build_strategist
     from agents.strategist.schema import PositionThesis, StrategistDecision
     from broker.portfolio import Portfolio, Position
+
+    # The module-level ``strategist_agent`` singleton was deleted (2026-05-21)
+    # in favour of the :func:`build_strategist` factory.  Construct a fresh
+    # strategist instance here so this test matches production wiring exactly,
+    # including the ``StrategistContextShim`` that hydrates the
+    # ``temp:held_positions_view`` / ``temp:ticker_evidence`` rails.
+    strategist_agent = build_strategist()
 
     APP_NAME = "strategist_v2_smoke"
     USER_ID = "t"

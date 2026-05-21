@@ -11,6 +11,7 @@ and reference these files by relative path (resolved from the project root).
 | `analysts.json` | Per-analyst input caps + LLM output caps + report cache toggle | `src/config/analysts.py` (`get_analysts_config()`) |
 | `schedule.json` | Tick cadence — how many ticks per day and their ET times | `src/config/schedule.py` (`get_schedule_config()`) |
 | `strategist.json` | Character caps on strategist LLM free-text fields | `src/config/strategist.py` (`get_strategist_config()`) |
+| `models.json` | LLM + embedding model IDs for every model-using component | `src/config/models.py` (`get_models_config()`) |
 | `backtest_windows.json` | Era-keyed historical date windows for the backtest harness | `src/backtest/windows.py` (`load_windows()`) |
 | `backtest_settings.json` | Backtests root (cache + runs nest per-window underneath), tick schedule, and lookback defaults for backtesting | `src/backtest/settings.py` (`get_backtest_settings()`) |
 
@@ -333,6 +334,43 @@ load, so the prompt-facing caps the LLM is told are always the values from
 this file. The schema's `Field(max_length=...)` is then derived from those
 values via `StrategistConfig.schema_cap()` (see `slack_percent` above) —
 the two-tier gap is intentional and load-bearing; do not "fix" it.
+
+---
+
+## `models.json` — LLM + embedding model IDs
+
+Single source of truth for every model identifier the pipeline consumes.
+Before this file landed, each agent module hardcoded its own `gemini-…`
+literal; a 2026-05-20 incident showed how easily two parallel literals drift
+out of sync (the strategist's `_STRATEGIST_MODEL` constant was edited but
+the *live* literal lived in a different file, so the swap silently no-op'd
+for several backtest runs).
+
+Loaded once at boot via `src/config/models.py::get_models_config()`
+(`lru_cache(maxsize=1)`); a process restart is required after edits — the
+loader does not hot-reload.
+
+**Convention.** Each agent module reads *its* model ID from this config at
+construction time. The value lives here; the selection of which slot to
+read lives in the agent's own module. Wiring layers (`pipeline.py`) never
+pick a model directly.
+
+| Setting | Type | Meaning |
+|---|---|---|
+| `strategist` | string | Model ID for the Strategist `LlmAgent` (read by `src/agents/strategist/agent.py::build_strategist`). Currently `gemini-3.5-flash` — trialling next-gen Flash. |
+| `news_analyst` | string | Model ID for the News analyst `LlmAgent` (read by `src/agents/analysts/news/agent.py::build_news_analyst`). Currently `gemini-2.5-flash-lite`. |
+| `fundamental_analyst` | string | Model ID for the Fundamental analyst `LlmAgent` (read by `src/agents/analysts/fundamental/agent.py::build_fundamental_analyst`). Currently `gemini-2.5-flash-lite`. |
+| `memory_compressor` | string | Model ID for the day-digest LLM compressor fallback (read by `src/agents/memory/compress.py::_default_llm_compress`). Only invoked when the concatenated digest exceeds `DIGEST_BUDGET` (2000 chars). Currently `gemini-2.5-flash-lite`. |
+| `memory_embedding` | string | Embedding model ID for the memory-buffer dedup embedder (read by `src/agents/memory/embeddings.py::_default_embed`). Distinct family from Gemini chat models, but the same "where does this live" problem belongs in the same config. Currently `text-embedding-005`. |
+
+A contract test (`tests/contract/test_no_hardcoded_models.py`) AST-walks
+`src/` and fails CI if any string literal starting with `gemini-` or
+`text-embedding-` survives outside docstrings or comments. The escape hatch
+for legitimate documentation references is to put the literal in a
+docstring or behind a `# noqa: model-literal` comment.
+
+A leading `_comment` field is permitted at the top of `models.json` for an
+operator-facing note; the loader strips it before validation.
 
 ---
 
