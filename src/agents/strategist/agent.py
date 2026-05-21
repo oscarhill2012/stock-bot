@@ -331,25 +331,48 @@ def build_strategist():
 
     from google.adk.agents import SequentialAgent
 
+    from agents.analysts._common import _chain_after, _chain_before
     from agents.llm_retry import RetryingAgentWrapper
     from agents.strategist.context_shim import StrategistContextShim
     from config.models import get_models_config
+    from observability.terminal_log import make_observability_callbacks
     from observability.trace import make_llm_trace_callbacks
 
     # Read the model ID from the central config.  One JSON edit moves both
     # live and backtest runs — no shadow constant to forget.
     model_name = get_models_config().strategist
 
+    # Observability callbacks — emit one terminal log row for the strategist
+    # LLM call.  Only wired when STOCKBOT_TERMINAL_LOG=1 so backtest replays
+    # and unit tests add zero overhead.  The strategist has no per-ticker
+    # progress counter (it makes one call per tick), so ticker_index=1 /
+    # ticker_count=1 is used to suppress the N/M column meaningfully.
+    obs_before = None
+    obs_after  = None
+
+    if os.environ.get("STOCKBOT_TERMINAL_LOG") == "1":
+        obs_before, obs_after = make_observability_callbacks(
+            analyst      = "strategist",
+            ticker       = "decision",
+            ticker_index = 1,
+            ticker_count = 1,
+            model_name   = model_name,
+        )
+
     # Trace callbacks are opt-in via STOCKBOT_TRACE=1.  Zero-cost when off:
     # both callbacks remain ``None`` and ADK skips the dispatch entirely.
-    before_model = None
-    after_model  = None
+    trace_before = None
+    trace_after  = None
 
     if os.environ.get("STOCKBOT_TRACE") == "1":
-        before_model, after_model = make_llm_trace_callbacks(
+        trace_before, trace_after = make_llm_trace_callbacks(
             "05_strategist_llm",
             model=model_name,
         )
+
+    # Chain observability + trace callbacks.
+    before_model = _chain_before(obs_before, trace_before)
+    after_model  = _chain_after(obs_after, trace_after)
 
     # The inner LlmAgent — its ``after_agent_callback`` runs the legacy-field
     # derivation + contract validation defined above in this module.  Note:

@@ -29,12 +29,16 @@ from agents.isolated_failure import IsolatedFailureWrapper
 from agents.llm_retry import RetryingAgentWrapper
 from config.models import get_models_config
 from contract.evidence import TickerVerdict
+from observability.terminal_log import make_observability_callbacks
 from observability.trace import make_llm_trace_callbacks
 
 
 def build_fundamental_branch_for_ticker(
     ticker: str,
     vocab: FundamentalVocabulary,
+    *,
+    ticker_index: int = 0,
+    ticker_count: int = 0,
 ) -> IsolatedFailureWrapper:
     """Build a single-ticker Fundamental branch.
 
@@ -51,8 +55,14 @@ def build_fundamental_branch_for_ticker(
     branch.
 
     Args:
-        ticker: The ticker symbol this branch is bound to (e.g. "AAPL").
-        vocab:  Validated FundamentalVocabulary holding closed-vocab tag lists.
+        ticker:        The ticker symbol this branch is bound to (e.g. "AAPL").
+        vocab:         Validated FundamentalVocabulary holding the closed-vocab
+                       tag lists (guidance, tone, risks, insider_signals).
+        ticker_index:  1-based position in the watchlist; forwarded to the
+                       terminal-log observability callback so rows show
+                       ``N/M`` progress.  Defaults to 0 (no progress display).
+        ticker_count:  Total watchlist size; forwarded to the observability
+                       callback.  Defaults to 0.
 
     Returns:
         IsolatedFailureWrapper[RetryingAgentWrapper[LlmAgent]] bound to
@@ -103,6 +113,23 @@ def build_fundamental_branch_for_ticker(
     )
 
     # -----------------------------------------------------------------------
+    # Observability callbacks — emit one terminal log row per LLM call.
+    # Only wired when STOCKBOT_TERMINAL_LOG=1 so backtest replays and unit
+    # tests add zero overhead.
+    # -----------------------------------------------------------------------
+    obs_before = None
+    obs_after  = None
+
+    if os.environ.get("STOCKBOT_TERMINAL_LOG") == "1":
+        obs_before, obs_after = make_observability_callbacks(
+            analyst      = "fundamental",
+            ticker       = ticker,
+            ticker_index = ticker_index,
+            ticker_count = ticker_count,
+            model_name   = model,
+        )
+
+    # -----------------------------------------------------------------------
     # Optional trace callbacks — only wired when STOCKBOT_TRACE=1 so normal
     # test runs and backtest replays add zero overhead.
     # -----------------------------------------------------------------------
@@ -114,11 +141,14 @@ def build_fundamental_branch_for_ticker(
             f"04_fundamental_llm_{ticker}", model=model,
         )
 
-    # Chain cache and trace callbacks.  _chain_before short-circuits on the
-    # first non-None return (cache hit returns synthetic Content to bypass
-    # the LLM call); _chain_after runs all callbacks unconditionally.
-    before_cb = _chain_before(cache_before, trace_before)
-    after_cb  = _chain_after(cache_after, trace_after)
+    # Chain cache, observability, and trace callbacks.  _chain_before
+    # short-circuits on the first non-None return (cache hit returns synthetic
+    # Content to bypass the LLM call); _chain_after runs all callbacks
+    # unconditionally.  Observability is placed AFTER cache so that the
+    # before-stamp only fires when an actual model call is about to happen
+    # (cache hits never reach the model and therefore skip this hook).
+    before_cb = _chain_before(cache_before, obs_before, trace_before)
+    after_cb  = _chain_after(cache_after, obs_after, trace_after)
 
     # -----------------------------------------------------------------------
     # Assemble the LlmAgent.

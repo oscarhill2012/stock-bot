@@ -58,8 +58,15 @@ def build_fundamental_branch(
     # Build one isolated per-ticker LlmAgent branch for every ticker in
     # the watchlist.  An empty watchlist is valid — the SequentialAgent
     # then contains only [FetchAgent, JoinerAgent] which is a no-op pass.
+    # ``ticker_index`` is 1-based so the terminal log shows ``1/N … N/N``.
+    ticker_count = len(tickers)
     per_ticker = [
-        build_fundamental_branch_for_ticker(ticker, vocab) for ticker in tickers
+        build_fundamental_branch_for_ticker(
+            ticker, vocab,
+            ticker_index = i + 1,
+            ticker_count = ticker_count,
+        )
+        for i, ticker in enumerate(tickers)
     ]
 
     return SequentialAgent(

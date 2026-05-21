@@ -116,15 +116,29 @@ async def _build_initial_state(broker, tick_id: str, tickers: list[str]) -> dict
     }
 
 
-async def run_once(broker, session=None) -> dict:
+async def run_once(broker, session=None, *, tick_label: str | None = None) -> dict:
     """Run one hourly tick and return the final session state dict.
 
     Creates a fresh ADK session, seeds the initial tick state, runs the
     full pipeline, then reads back the completed session state.
+
+    Parameters
+    ----------
+    broker:
+        Any broker implementing ``get_portfolio() -> Portfolio``.
+    session:
+        Optional pre-built ADK session (used in tests).
+    tick_label:
+        Optional human-readable label for the tick, e.g. ``"1/3"``.  When
+        provided, the terminal-log banner reads ``Tick {label}``.  When
+        ``None``, the banner reads ``Tick``.
     """
+    import time as _time
+
     from google.adk import Runner
     from google.genai import types as genai_types
 
+    from observability.terminal_log import _TICK_LOGGER
     from orchestrator.persistence import make_session_service
     from orchestrator.pipeline import build_pipeline
     from orchestrator.stock_picker import get_watchlist
@@ -134,6 +148,25 @@ async def run_once(broker, session=None) -> dict:
         f"-{uuid.uuid4().hex[:8]}"
     )
     tickers = get_watchlist()
+
+    # ── Terminal-log banner ─────────────────────────────────────────────────
+    # Emitted unconditionally — the tick logger is always present.  The
+    # human-readable terminal handler only attaches when
+    # ``setup_terminal_logging()`` was called (i.e. in smoke_run.py); on
+    # other paths the records fall through to the root handler as normal.
+    # ``logging`` is already imported at module level above.
+    _tick_log = logging.getLogger(_TICK_LOGGER)
+
+    _banner_label = f"Tick {tick_label}" if tick_label else "Tick"
+    _wall_time_str = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M:%S")
+    _sep = "═" * 67
+    _tick_log.info(_sep)
+    _tick_log.info(
+        f"  {_banner_label}  ·  {_wall_time_str}  ·  {len(tickers)} tickers"
+    )
+    _tick_log.info(_sep)
+
+    _tick_start = _time.perf_counter()
 
     # Phase 9: pass the current watchlist so the News and Fundamental analyst
     # branches are built with per-ticker fan-out for exactly these tickers.
@@ -185,6 +218,15 @@ async def run_once(broker, session=None) -> dict:
         user_id="stockbot",
         session_id=adk_session.id,
     )
+
+    # ── Tick summary ────────────────────────────────────────────────────────
+    _tick_elapsed = _time.perf_counter() - _tick_start
+    _executions   = updated.state.get("executions", []) if isinstance(updated.state, dict) else []
+    _tick_log.info(
+        f"\n  {_banner_label} done in {_tick_elapsed:.1f}s"
+        f"  ·  executions: {len(_executions)}"
+    )
+
     return updated.state
 
 
