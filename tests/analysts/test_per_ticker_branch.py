@@ -70,3 +70,68 @@ def test_news_branch_instruction_pins_ticker():
     assert "{ticker}" not in llm.instruction
     assert "AAPL" in llm.instruction
     assert "{news_context}" in llm.instruction
+
+
+# ---------------------------------------------------------------------------
+# Fundamental branch tests
+# ---------------------------------------------------------------------------
+
+def _fundamental_vocab():
+    """Return a minimal FundamentalVocabulary suitable for test use.
+
+    Populated from the field names defined in
+    ``agents.analysts.heuristics.FundamentalVocabulary``, mirroring the
+    pattern in ``tests/analysts/fundamental/test_prompts.py``.  Every list
+    must contain at least one entry — the model rejects empty fields.
+
+    Returns
+    -------
+    FundamentalVocabulary
+        A minimal but valid vocabulary instance for branch-factory tests.
+    """
+    from agents.analysts.heuristics import FundamentalVocabulary
+
+    return FundamentalVocabulary(
+        guidance=["raised", "maintained", "lowered", "none"],
+        tone=["confident", "cautious", "defensive", "mixed"],
+        risks=[
+            "regulatory",
+            "litigation",
+            "macro",
+            "going_concern",
+        ],
+        insider_signals=[
+            "cluster_buying",
+            "cluster_selling",
+            "planned_sale_dominant",
+            "discretionary_sale_dominant",
+            "option_exercise_hold",
+            "option_exercise_dump",
+            "mixed",
+        ],
+    )
+
+
+def test_fundamental_branch_composition():
+    """Same wrapper composition as News, with fundamental-specific output key."""
+
+    from agents.analysts.fundamental.per_ticker import build_fundamental_branch_for_ticker
+    from agents.isolated_failure import IsolatedFailureWrapper
+    from agents.llm_retry import RetryingAgentWrapper
+    from contract.evidence import TickerVerdict
+    from google.adk.agents import LlmAgent
+
+    branch = build_fundamental_branch_for_ticker("AAPL", _fundamental_vocab())
+
+    assert isinstance(branch, IsolatedFailureWrapper)
+    assert isinstance(branch.inner, RetryingAgentWrapper)
+
+    llm = branch.inner.inner
+    assert isinstance(llm, LlmAgent)
+    assert llm.output_schema is TickerVerdict
+    assert llm.output_key   == "temp:fundamental_verdict_AAPL"
+    assert llm.before_agent_callback is None
+    assert llm.after_agent_callback  is None
+    assert "{ticker}" not in llm.instruction
+    assert "AAPL" in llm.instruction
+    assert "{fundamental_context}" in llm.instruction

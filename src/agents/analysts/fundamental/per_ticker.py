@@ -1,0 +1,144 @@
+# src/agents/analysts/fundamental/per_ticker.py
+"""Per-ticker Fundamental branch factory (Phase 9).
+
+Constructs one IsolatedFailureWrapper(RetryingAgentWrapper(LlmAgent))
+bound to a single ticker.  The LlmAgent's instruction has ``{ticker}``
+substituted at build time so each branch's prompt mentions only its
+own ticker.  The ``{fundamental_context}`` placeholder remains for ADK's
+``inject_session_state`` to fill from ``state["temp:fundamental_context_<TICKER>"]``
+at run time — see ``FundamentalFetchAgent`` for the writer side.
+
+This module is the Fundamental mirror of ``agents.analysts.news.per_ticker``;
+the two are kept structurally symmetric so they evolve in lock-step.
+"""
+from __future__ import annotations
+
+import os
+
+from google.adk.agents import LlmAgent
+
+from agents.analysts._common import _chain_after, _chain_before
+from agents.analysts.cache_callbacks import make_report_cache_callbacks
+from agents.analysts.fundamental.agent import _fundamental_hash_inputs_from_dict
+from agents.analysts.heuristics import FundamentalVocabulary
+from agents.analysts.fundamental.prompts import build_fundamental_instruction
+from agents.analysts.report_cache import (
+    FUNDAMENTAL_PROMPT_VERSION,
+)
+from agents.isolated_failure import IsolatedFailureWrapper
+from agents.llm_retry import RetryingAgentWrapper
+from config.models import get_models_config
+from contract.evidence import TickerVerdict
+from observability.trace import make_llm_trace_callbacks
+
+
+def build_fundamental_branch_for_ticker(
+    ticker: str,
+    vocab: FundamentalVocabulary,
+) -> IsolatedFailureWrapper:
+    """Build a single-ticker Fundamental branch.
+
+    Produces one IsolatedFailureWrapper wrapping a RetryingAgentWrapper
+    wrapping an LlmAgent.  The wrappers' names embed ``ticker`` so traces
+    and logs identify each branch unambiguously.
+
+    The returned agent emits exactly one TickerVerdict, written to
+    ``state["temp:fundamental_verdict_<TICKER>"]`` via ADK's output_key
+    mechanism.  No after_agent_callback is set — evidence-build is the
+    joiner's responsibility (see ``FundamentalJoinerAgent``).  No
+    before_agent_callback either — fundamental context is pre-populated by
+    ``FundamentalFetchAgent`` which runs once per tick before any per-ticker
+    branch.
+
+    Args:
+        ticker: The ticker symbol this branch is bound to (e.g. "AAPL").
+        vocab:  Validated FundamentalVocabulary holding closed-vocab tag lists.
+
+    Returns:
+        IsolatedFailureWrapper[RetryingAgentWrapper[LlmAgent]] bound to
+        the given ticker.
+    """
+    # -----------------------------------------------------------------------
+    # Build the instruction — substitute {ticker} at factory time so each
+    # branch's prompt is already specialised.  Only the ADK runtime
+    # placeholder {fundamental_context} remains as a single-brace token;
+    # ADK's inject_session_state fills it from
+    # state["temp:fundamental_context_<TICKER>"] at invocation time.
+    # -----------------------------------------------------------------------
+    base_instruction = build_fundamental_instruction(vocab)
+    instruction      = base_instruction.replace("{ticker}", ticker)
+
+    model = get_models_config().fundamental_analyst
+
+    # -----------------------------------------------------------------------
+    # Cache callbacks — per-ticker shape (Phase 9 Task 6 API).
+    #
+    # The hash_inputs lambda receives the per-ticker slice from
+    # state["temp:fundamental_data"] and delegates to
+    # _fundamental_hash_inputs_from_dict (imported directly from agent.py).
+    # That helper re-validates the stored model_dump() dicts back into typed
+    # CompanyRatios / Filing / Form4Bundle objects before computing the digest.
+    # -----------------------------------------------------------------------
+    cache_before, cache_after = make_report_cache_callbacks(
+        analyst_name       = "fundamental",
+        prompt_version     = FUNDAMENTAL_PROMPT_VERSION,
+        data_state_key     = "temp:fundamental_data",
+        verdicts_state_key = f"temp:fundamental_verdict_{ticker}",
+        ticker             = ticker,
+        output_schema      = TickerVerdict,
+        hash_inputs        = lambda d: _fundamental_hash_inputs_from_dict(
+            ticker=ticker,
+            triad=(d or {}),
+        ),
+        trace_label        = f"04_fundamental_llm_{ticker}",
+    )
+
+    # -----------------------------------------------------------------------
+    # Optional trace callbacks — only wired when STOCKBOT_TRACE=1 so normal
+    # test runs and backtest replays add zero overhead.
+    # -----------------------------------------------------------------------
+    trace_before = None
+    trace_after  = None
+
+    if os.environ.get("STOCKBOT_TRACE") == "1":
+        trace_before, trace_after = make_llm_trace_callbacks(
+            f"04_fundamental_llm_{ticker}", model=model,
+        )
+
+    # Chain cache and trace callbacks.  _chain_before short-circuits on the
+    # first non-None return (cache hit returns synthetic Content to bypass
+    # the LLM call); _chain_after runs all callbacks unconditionally.
+    before_cb = _chain_before(cache_before, trace_before)
+    after_cb  = _chain_after(cache_after, trace_after)
+
+    # -----------------------------------------------------------------------
+    # Assemble the LlmAgent.
+    # - before_agent_callback and after_agent_callback are intentionally
+    #   omitted (left as None) — see docstring above.
+    # - before_model_callback / after_model_callback carry cache + trace hooks.
+    # -----------------------------------------------------------------------
+    llm = LlmAgent(
+        name             = f"FundamentalAnalyst_{ticker}",
+        model            = model,
+        instruction      = instruction,
+        output_schema    = TickerVerdict,
+        output_key       = f"temp:fundamental_verdict_{ticker}",
+        before_model_callback = before_cb,
+        after_model_callback  = after_cb,
+    )
+
+    # Wrap in the retry layer so transient Vertex AI 429s are handled before
+    # any failure bubbles up to the isolation boundary.
+    retrying = RetryingAgentWrapper(
+        name  = f"FundamentalAnalyst_{ticker}_retrying",
+        inner = llm,
+    )
+
+    # Outermost isolation wrapper — catches and logs any exception (including
+    # exhausted retries) so a single broken ticker cannot abort the tick.
+    return IsolatedFailureWrapper(
+        name    = f"FundamentalAnalyst_{ticker}_isolated",
+        inner   = retrying,
+        analyst = "fundamental",
+        ticker  = ticker,
+    )
