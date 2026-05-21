@@ -168,9 +168,10 @@ class Driver:
         self._obs_dir.mkdir(parents=True, exist_ok=True)
         self._obs_handles = install_observability(service_name="stockbot-backtest")
 
-        # Build the live pipeline once per run — same pipeline, fresh runner
-        # per tick (ADK InMemorySessionService is per-runner).
-        self._pipeline   = build_pipeline(broker, db_session)
+        # Phase 9: pipeline is now built *per tick* inside ``_run_one_tick``
+        # so the News and Fundamental analyst branches fan out across the
+        # watchlist as it exists at each tick boundary.  Storing the broker
+        # and db_session here gives ``_run_one_tick`` everything it needs.
         self._failed:    list[dict] = []
         self._total:     int = 0
 
@@ -351,9 +352,20 @@ class Driver:
         state:
             The shared mutable state dict for this tick (mutated in place).
         """
+        # Phase 9: rebuild the pipeline each tick so the News and Fundamental
+        # analyst branches fan out across the current ``state["tickers"]``.
+        # The watchlist is tick-scoped per §A; building once at __init__ time
+        # would freeze an outdated tickers list into the SequentialAgent's
+        # sub_agents for the entire run.
+        pipeline = build_pipeline(
+            self._broker,
+            self._db_session,
+            tickers=state.get("tickers", []) or [],
+        )
+
         session_service = InMemorySessionService()
         runner = Runner(
-            agent=self._pipeline,
+            agent=pipeline,
             app_name="backtest",
             session_service=session_service,
         )
