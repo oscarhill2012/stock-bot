@@ -17,16 +17,26 @@ The test exercises the entire stack end-to-end:
 - DecisionLogger snapshot files.
 - End-of-run reporting (equity_curve.png + metrics.md).
 
-LLM mocking
------------
-The strategist (Gemini 2.5 Pro) and the two LLM analyst agents (Fundamental,
-News) are mocked via a ``before_model_callback`` shim that returns a synthetic
-``LlmResponse`` before the real model is ever called.  This shim is installed
-by monkeypatching ``google.adk.agents.llm_agent.LlmAgent._run_async_impl``.
-The cleaner seam is patching ``before_model_callback`` on each agent instance
-— but ``build_pipeline`` builds fresh instances internally, so we patch the
-factory functions in ``orchestrator.pipeline`` so every newly constructed
-``LlmAgent`` inherits the mock callback.
+LLM mocking (Phase 9 update)
+-----------------------------
+The strategist (Gemini 2.5 Pro) and the per-ticker LLM analyst agents
+(``NewsAnalyst_<TICKER>`` / ``FundamentalAnalyst_<TICKER>``) are mocked via a
+``before_model_callback`` shim that returns a synthetic ``LlmResponse`` before
+the real model is ever called.
+
+Phase 9 replaced the batched ``NewsAnalyst`` / ``FundamentalAnalyst`` LlmAgents
+(one call → ``VerdictBatch``) with a per-ticker fan-out:
+  ``SequentialAgent[FetchAgent, *IsolatedFailureWrapper(RetryingAgentWrapper(LlmAgent)), JoinerAgent]``
+
+Each per-ticker ``LlmAgent`` is named ``NewsAnalyst_<TICKER>`` or
+``FundamentalAnalyst_<TICKER>`` and expects a ``TickerVerdict`` (single-ticker
+JSON), not a ``VerdictBatch``.  The mock helper
+``_make_per_ticker_analyst_llm_response`` extracts the ticker from the agent
+name and emits the matching single-verdict payload.
+
+The factory patch installs the mock callback by walking each branch's
+``sub_agents`` and setting ``before_model_callback`` on every ``LlmAgent``
+whose name starts with ``"NewsAnalyst_"`` or ``"FundamentalAnalyst_"``.
 
 yfinance
 --------
@@ -97,43 +107,48 @@ def _make_strategist_llm_response(tickers: list[str]):
     )
 
 
-def _make_analyst_llm_response(tickers: list[str]):
-    """Return a synthetic ``LlmResponse`` containing a valid ``VerdictBatch``.
+def _make_per_ticker_analyst_llm_response(agent_name: str):
+    """Return a synthetic ``LlmResponse`` containing a valid ``TickerVerdict``.
 
-    Used for the Fundamental and News ``LlmAgent`` analysts, whose
-    ``output_schema=VerdictBatch``.
+    Used for the per-ticker Fundamental and News ``LlmAgent`` analysts
+    (Phase 9), whose ``output_schema=TickerVerdict``.  The ticker is
+    extracted from the agent name by stripping the well-known prefix
+    (``"NewsAnalyst_"`` or ``"FundamentalAnalyst_"``).
 
     Parameters
     ----------
-    tickers:
-        The watchlist tickers the batch should cover.
+    agent_name:
+        The ADK agent name — e.g. ``"NewsAnalyst_AAPL"`` or
+        ``"FundamentalAnalyst_MSFT"``.
 
     Returns
     -------
     google.adk.models.LlmResponse
-        A synthetic response with a ``VerdictBatch`` JSON payload.
+        A synthetic response with a ``TickerVerdict`` JSON payload for the
+        single ticker extracted from ``agent_name``.
     """
     from google.adk.models import LlmResponse
     from google.genai import types as genai_types
 
-    verdicts = [
-        {
-            "ticker":     t,
-            "lean":       "neutral",
-            "magnitude":  0.0,
-            "confidence": 0.5,
-            "rationale":  "Smoke test stub.",
-            "drivers":    [
-                {"name": "A", "direction": "bull", "weight": 0.5, "body": "Stub driver A."},
-                {"name": "B", "direction": "bear", "weight": 0.5, "body": "Stub driver B."},
-            ],
-        }
-        for t in tickers
-    ]
-    batch = {"verdicts": verdicts}
+    # Strip known prefixes to recover the ticker symbol.
+    ticker = agent_name
+    for prefix in ("NewsAnalyst_", "FundamentalAnalyst_"):
+        if agent_name.startswith(prefix):
+            ticker = agent_name[len(prefix):]
+            break
+
+    verdict = {
+        "ticker":      ticker,
+        "lean":        "neutral",
+        "magnitude":   0.0,
+        "confidence":  0.5,
+        "rationale":   "Smoke test stub.",
+        "key_factors": [],
+        "is_no_data":  False,
+    }
     return LlmResponse(
         content=genai_types.Content(
-            parts=[genai_types.Part.from_text(text=json.dumps(batch))]
+            parts=[genai_types.Part.from_text(text=json.dumps(verdict))]
         )
     )
 
@@ -345,20 +360,32 @@ def test_end_to_end_run_produces_full_artefact_tree(
             sub_agents=[StrategistContextShim(), llm],
         )
 
-    def _patched_build_analyst_pool():
+    def _patched_build_analyst_pool(tick_tickers: list[str]):
         """Build analyst pool with LLM agents short-circuited.
 
-        Matches the A2.7 production topology:
-        ``SequentialAgent([ParallelAgent([Tech, Social]), Fund, News])``.
-        Fundamental and News are wrapped by ``YieldingAnalystWrapper`` — to
-        reach the inner ``LlmAgent`` whose ``before_model_callback`` must be
-        mocked, we attribute-hop through ``.inner``.
-        """
-        from google.adk.agents import ParallelAgent, SequentialAgent
+        Phase 9 topology:
+        ``SequentialAgent([ParallelAgent([Tech, Social]), Fund branch, News branch])``.
 
-        from agents.analysts.fundamental.agent import build_fundamental_analyst
+        The Fundamental and News branches are each a
+        ``SequentialAgent[FetchAgent, *IsolatedFailureWrapper(...LlmAgent...), JoinerAgent]``.
+        Each per-ticker ``LlmAgent`` is named ``NewsAnalyst_<TICKER>`` or
+        ``FundamentalAnalyst_<TICKER>`` and expects a ``TickerVerdict`` response.
+
+        The patched factory receives ``tick_tickers`` — the watchlist at the
+        current tick — mirroring the signature of ``pipeline._build_analyst_pool``.
+        We use that list to build the per-ticker branches so branch count and
+        names exactly match the real pipeline.
+
+        Parameters
+        ----------
+        tick_tickers:
+            Ticker list for the current tick, forwarded from ``build_pipeline``.
+        """
+        from google.adk.agents import LlmAgent, ParallelAgent, SequentialAgent
+
+        from agents.analysts.fundamental.agent import build_fundamental_branch
         from agents.analysts.heuristics import load_heuristics
-        from agents.analysts.news.agent import build_news_analyst
+        from agents.analysts.news.agent import build_news_branch
         from agents.analysts.social.agent import _build_social_analyst
         from agents.analysts.technical.agent import _build_technical_analyst
 
@@ -368,23 +395,42 @@ def test_end_to_end_run_produces_full_artefact_tree(
         technical = _build_technical_analyst(h.technical)
         social    = _build_social_analyst(h.social)
 
-        # LLM analysts are wrapped in YieldingAnalystWrapper after A2.5 —
-        # reach into ``.inner`` to mock the inner LlmAgent's model call.
-        fundamental_branch = build_fundamental_analyst(h.fundamental_vocabulary)
-        news_branch        = build_news_analyst(h.news_vocabulary)
+        # Build per-ticker fan-out branches with the tickers for this tick.
+        fundamental_branch = build_fundamental_branch(
+            h.fundamental_vocabulary, tickers=tick_tickers
+        )
+        news_branch = build_news_branch(h.news_vocabulary, tickers=tick_tickers)
 
         def _mock_analyst_before(callback_context, llm_request):
-            """Return a synthetic VerdictBatch without calling Gemini."""
-            current_tickers = (
-                callback_context.state.get("tickers") or tickers
-            )
-            return _make_analyst_llm_response(current_tickers)
+            """Return a synthetic TickerVerdict without calling Gemini.
 
-        # ADK reads ``before_model_callback`` from the LlmAgent instance at
-        # call time; setting it on the wrapper itself is meaningless because
-        # the wrapper isn't an LlmAgent.  Hop to the wrapped LlmAgent.
-        fundamental_branch.inner.before_model_callback = _mock_analyst_before
-        news_branch.inner.before_model_callback        = _mock_analyst_before
+            ADK sets ``callback_context.agent_name`` to the currently-running
+            agent's name — we use that to identify which ticker to emit.
+            Each per-ticker LlmAgent is a distinct instance, so ADK calls this
+            closure once per branch, scoped to that branch's agent.
+            """
+            agent_name = getattr(callback_context, "agent_name", "") or ""
+            return _make_per_ticker_analyst_llm_response(agent_name)
+
+        def _install_mock_on_branch(branch):
+            """Walk ``branch.sub_agents`` and mock every per-ticker LlmAgent.
+
+            Each per-ticker element is an IsolatedFailureWrapper whose ``.inner``
+            is a RetryingAgentWrapper whose ``.inner`` is the LlmAgent.  We
+            traverse both wrapper layers to set ``before_model_callback``.
+            """
+            for sub in getattr(branch, "sub_agents", []):
+                # Hop through wrapper layers until we reach an LlmAgent.
+                node = sub
+                while node is not None and not isinstance(node, LlmAgent):
+                    node = getattr(node, "inner", None)
+                if isinstance(node, LlmAgent) and node.name.startswith(
+                    ("NewsAnalyst_", "FundamentalAnalyst_")
+                ):
+                    node.before_model_callback = _mock_analyst_before
+
+        _install_mock_on_branch(fundamental_branch)
+        _install_mock_on_branch(news_branch)
 
         parallel_deterministic = ParallelAgent(
             name="DeterministicAnalysts",

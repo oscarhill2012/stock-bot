@@ -56,13 +56,21 @@ def build_news_branch_for_ticker(
     """
     # -----------------------------------------------------------------------
     # Build the instruction — substitute {ticker} at factory time so each
-    # branch's prompt is already specialised.  Only the ADK runtime placeholder
-    # {news_context} remains as a single-brace token; ADK's
-    # inject_session_state fills it from state["temp:news_context_<TICKER>"]
-    # at invocation time.
+    # branch's prompt is already specialised.
+    #
+    # Also remap the generic {news_context} placeholder to the ticker-
+    # specific ADK state key {temp:news_context_<TICKER>} so ADK's
+    # inject_session_state resolves the right per-ticker block written by
+    # NewsFetchAgent.  ADK supports <prefix>:<identifier> state names
+    # (validated by _is_valid_state_name in instructions_utils.py), so
+    # "temp:news_context_AAPL" is a legal placeholder target.
     # -----------------------------------------------------------------------
     base_instruction = build_news_instruction(vocab)
-    instruction      = base_instruction.replace("{ticker}", ticker)
+    instruction      = (
+        base_instruction
+        .replace("{ticker}", ticker)
+        .replace("{news_context}", f"{{temp:news_context_{ticker}}}")
+    )
 
     model = get_models_config().news_analyst
 
