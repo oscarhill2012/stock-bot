@@ -205,6 +205,45 @@ def _build_ticker_context(
     return "\n".join(lines)
 
 
+def _build_ticker_fundamental_context(ticker: str, data: dict) -> str:
+    """Adapter shim for ``FundamentalFetchAgent`` — wraps ``_build_ticker_context``.
+
+    The per-ticker agent stores each ticker's payload in a flat dict
+    ``{"ratios": ..., "filings": [...], "insider": Form4Bundle}``.  This
+    adapter unpacks that dict and forwards to ``_build_ticker_context`` with
+    the correct positional arguments, so the agent's call site stays tidy.
+
+    Parameters
+    ----------
+    ticker:
+        Ticker symbol label.
+    data:
+        Per-ticker payload dict with keys ``"ratios"``, ``"filings"``, and
+        ``"insider"``.  ``"filings"`` must be a list of serialised Filing dicts;
+        ``"insider"`` must be a ``Form4Bundle`` (or ``None``, in which case an
+        empty bundle is substituted).
+
+    Returns
+    -------
+    str
+        A formatted text block identical to what ``_build_ticker_context``
+        produces — suitable for direct inclusion in an LLM prompt.
+    """
+    filings_payload: list[dict] = data.get("filings") or []
+    insider_bundle: Form4Bundle = data.get("insider") or Form4Bundle(trades=[], derivatives=[])
+
+    # Read the lookback window from config so the window label in the block
+    # always matches the actual fetch window used by the agent.
+    insider_lookback_days: int = get_config().defaults.insider_lookback_days
+
+    return _build_ticker_context(
+        ticker,
+        filings_payload,
+        insider_bundle,
+        insider_lookback_days=insider_lookback_days,
+    )
+
+
 async def fundamental_fetch_callback(
     callback_context: CallbackContext,
 ) -> genai_types.Content | None:
