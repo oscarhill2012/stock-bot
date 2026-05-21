@@ -267,9 +267,9 @@ def test_no_silent_zero_features_on_svb_window(tmp_path: Path) -> None:
         """Build analyst pool with LLM analysts short-circuited."""
         from google.adk.agents import LlmAgent, ParallelAgent
 
-        from agents.analysts.fundamental.agent import _build_fundamental_analyst
+        from agents.analysts.fundamental.agent import build_fundamental_analyst
         from agents.analysts.heuristics import load_heuristics
-        from agents.analysts.news.agent import _build_news_analyst
+        from agents.analysts.news.agent import build_news_analyst
         from agents.analysts.smart_money.agent import _build_smart_money_analyst
         from agents.analysts.social.agent import _build_social_analyst
         from agents.analysts.technical.agent import _build_technical_analyst
@@ -282,8 +282,8 @@ def test_no_silent_zero_features_on_svb_window(tmp_path: Path) -> None:
         smart_money = _build_smart_money_analyst(h.smart_money)
 
         # LLM analysts need their before_model_callback mocked.
-        fundamental = _build_fundamental_analyst(h.fundamental_vocabulary)
-        news        = _build_news_analyst(h.news_vocabulary)
+        fundamental = build_fundamental_analyst(h.fundamental_vocabulary)
+        news        = build_news_analyst(h.news_vocabulary)
 
         def _mock_analyst_before(callback_context, llm_request):
             """Return a synthetic VerdictBatch without calling Gemini."""

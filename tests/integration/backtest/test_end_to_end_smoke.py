@@ -356,9 +356,9 @@ def test_end_to_end_run_produces_full_artefact_tree(
         """
         from google.adk.agents import ParallelAgent, SequentialAgent
 
-        from agents.analysts.fundamental.agent import _build_fundamental_analyst
+        from agents.analysts.fundamental.agent import build_fundamental_analyst
         from agents.analysts.heuristics import load_heuristics
-        from agents.analysts.news.agent import _build_news_analyst
+        from agents.analysts.news.agent import build_news_analyst
         from agents.analysts.social.agent import _build_social_analyst
         from agents.analysts.technical.agent import _build_technical_analyst
 
@@ -370,8 +370,8 @@ def test_end_to_end_run_produces_full_artefact_tree(
 
         # LLM analysts are wrapped in YieldingAnalystWrapper after A2.5 —
         # reach into ``.inner`` to mock the inner LlmAgent's model call.
-        fundamental_branch = _build_fundamental_analyst(h.fundamental_vocabulary)
-        news_branch        = _build_news_analyst(h.news_vocabulary)
+        fundamental_branch = build_fundamental_analyst(h.fundamental_vocabulary)
+        news_branch        = build_news_analyst(h.news_vocabulary)
 
         def _mock_analyst_before(callback_context, llm_request):
             """Return a synthetic VerdictBatch without calling Gemini."""
