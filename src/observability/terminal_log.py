@@ -132,11 +132,39 @@ def setup_terminal_logging(level: int = logging.INFO) -> None:
     handler = logging.StreamHandler(sys.stderr)
     handler.setLevel(level)
     handler.setFormatter(_TickFormatter())
+
+    # Allowlist filter — the terminal stays minimal: tick banners and analyst
+    # summary rows (both on ``stockbot.tick``) plus any record at WARNING+ from
+    # any logger so real errors stay visible.  Everything else (cache callbacks
+    # INFO, ADK chatter, ``agents.isolated_failure`` per-branch WARNINGs that
+    # are already counted in the "N failed" summary column) is dropped on the
+    # terminal but still reaches the buffered ``runs/<id>/obs/logs/<tick>.json``
+    # capture because the underlying loggers and root level stay free.
+    def _terminal_filter(record: logging.LogRecord) -> bool:
+        """Return True if the record should be shown on the terminal.
+
+        Two-rule allowlist: anything on the ``stockbot.tick`` logger (our own
+        framed output), or any record at WARNING or above from any logger.
+        The ``agents.isolated_failure`` WARNING is special-cased to DEBUG so
+        it doesn't repeat what the per-analyst "N failed" summary already says.
+        """
+        if record.name == _TICK_LOGGER:
+            return True
+        if record.name == "agents.isolated_failure":
+            # Per-branch failure noise is already aggregated into the analyst
+            # summary row's ``N failed`` column.  Drop from terminal.
+            return False
+        return record.levelno >= logging.WARNING
+
+    handler.addFilter(_terminal_filter)
     root.addHandler(handler)
 
     # Silence the ADK framework loggers — they produce a pair of INFO lines
     # per LLM call ("Sending out request" / "Response received") which drown
-    # out our structured output with no useful information.
+    # out our structured output with no useful information.  We clamp the
+    # logger (not just the handler filter) because the obs/ buffered capture
+    # also doesn't want this volume — ADK request/response details are
+    # surfaced via the structured callback path instead.
     for name in _ADK_NOISY_LOGGERS:
         logging.getLogger(name).setLevel(logging.WARNING)
 
