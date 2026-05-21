@@ -1,8 +1,8 @@
 {
   "_comment": "Single source of truth for every LLM / embedding model ID used by the pipeline. Edit this file to swap a model; no source changes required. Consumers go through src/config/models.py::get_models_config().",
   "strategist": "gemini-3.5-flash",
-  "news_analyst": "gemini-2.5-flash-lite",
-  "fundamental_analyst": "gemini-2.5-flash-lite",
+  "news_analyst": "gemini-3.1-flash-lite",
+  "fundamental_analyst": "gemini-3.1-flash-lite",
   "memory_compressor": "gemini-2.5-flash-lite",
   "memory_embedding": "text-embedding-005"
 }
