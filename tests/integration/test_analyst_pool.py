@@ -1,28 +1,32 @@
 """Structural tests for the AnalystPool — no LLM calls.
 
-A2.7 restructured the pool from a single 4-wide ParallelAgent into a
-SequentialAgent so that Fundamental and News each own the state_delta rail
-unambiguously.  Technical and Social remain parallel (distinct output keys,
-Rule 4 satisfied).
+Phase 9 post-parallelism: the AnalystPool is a ``ParallelAgent`` so the
+deterministic block, Fundamental, and News all run concurrently.  The
+A2.7 sequential-rail guard is retired because per-ticker fan-out writes
+only to disjoint durable keys (``news_verdicts``/``news_evidence`` vs
+``fundamental_verdicts``/``fundamental_evidence``).
 
-Phase 9: Fundamental and News are now per-ticker fan-out branches
-(``SequentialAgent[FetchAgent, *per-ticker branches, JoinerAgent]``).
-``_build_analyst_pool`` requires ``tickers=``; the pre-Phase-9
-``RetryingAgentWrapper`` wrappers are gone — retries live inside each
-per-ticker child at the ``IsolatedFailureWrapper(Retrying(LlmAgent))`` layer.
+Fundamental and News are per-ticker fan-out branches
+(``SequentialAgent[FetchAgent, ParallelAgent[per-ticker branches], JoinerAgent]``).
 Branch names are ``"FundamentalAnalystBranch"`` and ``"NewsAnalystBranch"``.
 """
 from __future__ import annotations
 
-from google.adk.agents import ParallelAgent, SequentialAgent
+from google.adk.agents import ParallelAgent
 
 from orchestrator.pipeline import _build_analyst_pool
 
 
 def test_analyst_pool_is_sequential_agent():
-    """Root of the pool must be a SequentialAgent after A2.7."""
+    """Root of the pool must be a ParallelAgent post-Phase-9 parallelism.
+
+    Name kept for backwards compatibility with the test discovery surface,
+    but the assertion now requires ``ParallelAgent`` — the across-analyst
+    sequential chain was retired once per-ticker fan-out made the durable
+    state keys disjoint.
+    """
     pool = _build_analyst_pool(tickers=["AAPL"])
-    assert isinstance(pool, SequentialAgent)
+    assert isinstance(pool, ParallelAgent)
 
 
 def test_analyst_pool_has_three_children():

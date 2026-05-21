@@ -333,12 +333,20 @@ def test_no_silent_zero_features_on_svb_window(tmp_path: Path) -> None:
         def _install_mock_on_branch(branch):
             """Set ``before_model_callback`` on every per-ticker LlmAgent in branch.
 
-            Traverses each element of ``branch.sub_agents`` through wrapper
-            layers (``IsolatedFailureWrapper → RetryingAgentWrapper →
-            LlmAgent``) and installs the mock on agents whose names match the
-            per-ticker naming convention.
+            Post-Phase-9 parallelism, the branch topology is
+            ``Sequential[Fetch, ParallelAgent[IsolatedFailureWrapper×N], Joiner]``,
+            so we recurse through ParallelAgent / SequentialAgent containers as
+            well as the ``.inner`` wrapper chain
+            (``IsolatedFailureWrapper → RetryingAgentWrapper → LlmAgent``).
             """
             for sub in getattr(branch, "sub_agents", []):
+
+                # Recurse into nested container agents so the per-ticker fan-out
+                # wrapper does not hide the LlmAgents from the mock walker.
+                if getattr(sub, "sub_agents", None):
+                    _install_mock_on_branch(sub)
+                    continue
+
                 # Traverse wrapper chain to reach the inner LlmAgent.
                 node = sub
                 while node is not None and not isinstance(node, LlmAgent):

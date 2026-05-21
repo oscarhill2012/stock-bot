@@ -5,19 +5,28 @@ from google.adk.agents import SequentialAgent
 
 
 def _build_analyst_pool(tickers: list[str]):
-    """Build the AnalystPool — Sequential[Parallel[Tech,Social], Fund, News].
+    """Build the AnalystPool — Parallel[Parallel[Tech,Social], Fund, News].
 
     Phase 9 changes
     ---------------
     Fundamental and News are now per-ticker fan-out branches constructed
     from the watchlist.  Each is a
-    ``SequentialAgent[FetchAgent, *PerTickerBranches, JoinerAgent]`` built
-    via ``build_fundamental_branch`` / ``build_news_branch``.
+    ``SequentialAgent[FetchAgent, ParallelAgent[PerTickerBranches], JoinerAgent]``
+    built via ``build_fundamental_branch`` / ``build_news_branch``.
 
     The outer ``RetryingAgentWrapper`` that previously wrapped each branch
     at this composition layer is dropped — retries now live *inside* each
     per-ticker ``IsolatedFailureWrapper`` child so that one ticker's 429
     backoff does not block the other tickers running in the same branch.
+
+    Across-analyst parallelism (post-Phase-9): the AnalystPool itself is a
+    ``ParallelAgent`` so Fund and News run concurrently with the
+    deterministic Parallel block.  The A2.7 sequential-rail guard
+    ("Fundamental and News each own the state_delta rail unambiguously")
+    is retired because per-ticker fan-out writes only to disjoint durable
+    keys (``news_verdicts``/``news_evidence`` vs ``fundamental_verdicts``/
+    ``fundamental_evidence``) and ``IsolatedFailureWrapper`` prevents
+    sibling cancellation cascades inside ADK's ``asyncio.TaskGroup``.
 
     Technical and Social remain a ``ParallelAgent`` of two ``BaseAgent``
     subclasses with distinct output keys (Rule 4 satisfied).
@@ -31,10 +40,11 @@ def _build_analyst_pool(tickers: list[str]):
                  sub-agents built inside the Fundamental and News branches.
 
     Returns:
-        ``SequentialAgent`` named ``"AnalystPool"`` containing
-        ``[DeterministicAnalysts, FundamentalAnalystBranch, NewsAnalystBranch]``.
+        ``ParallelAgent`` named ``"AnalystPool"`` containing
+        ``[DeterministicAnalysts, FundamentalAnalystBranch, NewsAnalystBranch]``,
+        all three running concurrently.
     """
-    from google.adk.agents import ParallelAgent, SequentialAgent
+    from google.adk.agents import ParallelAgent
 
     from agents.analysts.fundamental.agent import build_fundamental_branch
     from agents.analysts.heuristics import load_heuristics
@@ -69,7 +79,7 @@ def _build_analyst_pool(tickers: list[str]):
         h.news_vocabulary, tickers=tickers,
     )
 
-    return SequentialAgent(
+    return ParallelAgent(
         name="AnalystPool",
         sub_agents=[
             parallel_deterministic,

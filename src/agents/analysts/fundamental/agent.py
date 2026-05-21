@@ -22,7 +22,7 @@ dependency between agent.py and per_ticker.py.
 """
 from __future__ import annotations
 
-from google.adk.agents import SequentialAgent
+from google.adk.agents import ParallelAgent, SequentialAgent
 
 from agents.analysts.fundamental.fetch_agent import FundamentalFetchAgent
 from agents.analysts.fundamental.joiner import FundamentalJoinerAgent
@@ -69,11 +69,21 @@ def build_fundamental_branch(
         for i, ticker in enumerate(tickers)
     ]
 
+    # Phase 9 parallelism: per-ticker branches fan out concurrently inside a
+    # ParallelAgent.  Branches write only to disjoint
+    # ``temp:fundamental_verdict_<TICKER>`` / ``temp:fundamental_context_<TICKER>``
+    # keys, so the shallow-copied session.state has no contention.  The
+    # surrounding Sequential keeps Fetch -> Fan-out -> Joiner ordering.
+    fanout = ParallelAgent(
+        name="FundamentalPerTickerFanout",
+        sub_agents=per_ticker,
+    )
+
     return SequentialAgent(
         name="FundamentalAnalystBranch",
         sub_agents=[
             FundamentalFetchAgent(name="FundamentalFetch"),
-            *per_ticker,
+            fanout,
             FundamentalJoinerAgent(name="FundamentalJoiner"),
         ],
     )

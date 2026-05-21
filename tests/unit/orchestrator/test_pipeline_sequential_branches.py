@@ -1,37 +1,39 @@
-"""Topology guard — AnalystPool must be SequentialAgent[Parallel[Tech,Social], Fund, News].
+"""Topology guard — AnalystPool must be ParallelAgent[Parallel[Tech,Social], Fund, News].
 
-A2.7 changes the analyst pool from a single 4-wide ParallelAgent into a
-sequential chain so Fundamental and News each own the state_delta rail
-unambiguously.  Technical and Social remain parallel (no shared writes
-after A1's BaseAgent state_delta conversion).
+A2.7 originally chained Fundamental and News sequentially so each owned
+the ``state_delta`` rail unambiguously.  Phase 9 retires that guard:
+per-ticker fan-out writes only to disjoint durable keys
+(``news_verdicts``/``news_evidence`` vs ``fundamental_verdicts``/
+``fundamental_evidence``), and ``IsolatedFailureWrapper`` prevents sibling
+cancellation inside ADK's ``asyncio.TaskGroup``, so the two LLM branches
+can safely run concurrently with each other and with the deterministic
+Parallel block.
 
-Phase 9 update: Fundamental and News are now per-ticker fan-out branches
-(``SequentialAgent[FetchAgent, *per-ticker branches, JoinerAgent]``).  The
-``RetryingAgentWrapper`` wrap previously applied at the pool level is gone —
-retries now live inside each per-ticker child (``IsolatedFailureWrapper(Retrying(LlmAgent))``).
-Branch names are now ``"FundamentalAnalystBranch"`` / ``"NewsAnalystBranch"``.
+Fundamental and News are per-ticker fan-out branches
+(``SequentialAgent[FetchAgent, ParallelAgent[per-ticker branches], JoinerAgent]``).
+Branch names are ``"FundamentalAnalystBranch"`` / ``"NewsAnalystBranch"``.
 """
 from __future__ import annotations
 
 
 def test_analyst_pool_topology() -> None:
-    """Pool is SequentialAgent whose first child is a 2-wide ParallelAgent.
+    """Pool is ParallelAgent whose first child is a 2-wide ParallelAgent.
 
-    Phase 9: ``_build_analyst_pool`` requires the ``tickers`` argument.
-    Branches are now named ``FundamentalAnalystBranch`` / ``NewsAnalystBranch``
-    (SequentialAgent fan-outs) rather than the pre-Phase-9 ``RetryingAgentWrapper``
-    wrappers.
+    Phase 9 post-parallelism: ``_build_analyst_pool`` returns a
+    ``ParallelAgent`` so the deterministic block, Fundamental, and News all
+    run concurrently.  Branches are named ``FundamentalAnalystBranch`` /
+    ``NewsAnalystBranch`` (SequentialAgent fan-outs).
     """
-    from google.adk.agents import ParallelAgent, SequentialAgent
+    from google.adk.agents import ParallelAgent
 
     from orchestrator.pipeline import _build_analyst_pool
 
-    # Phase 9: tickers= is required; a single-ticker list is sufficient for
+    # tickers= is required; a single-ticker list is sufficient for
     # topology assertions that do not inspect per-ticker fan-out count.
     pool = _build_analyst_pool(tickers=["AAPL"])
 
-    assert isinstance(pool, SequentialAgent), (
-        f"AnalystPool root must be SequentialAgent, got {type(pool).__name__}"
+    assert isinstance(pool, ParallelAgent), (
+        f"AnalystPool root must be ParallelAgent, got {type(pool).__name__}"
     )
     assert len(pool.sub_agents) == 3, (
         f"AnalystPool must have three children "

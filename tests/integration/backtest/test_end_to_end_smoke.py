@@ -415,11 +415,19 @@ def test_end_to_end_run_produces_full_artefact_tree(
         def _install_mock_on_branch(branch):
             """Walk ``branch.sub_agents`` and mock every per-ticker LlmAgent.
 
-            Each per-ticker element is an IsolatedFailureWrapper whose ``.inner``
-            is a RetryingAgentWrapper whose ``.inner`` is the LlmAgent.  We
-            traverse both wrapper layers to set ``before_model_callback``.
+            Post-Phase-9 parallelism, the branch topology is
+            ``Sequential[Fetch, ParallelAgent[IsolatedFailureWrapper×N], Joiner]``,
+            so we recurse through ParallelAgent containers as well as the
+            ``.inner`` wrapper chain (IsolatedFailureWrapper → RetryingAgentWrapper → LlmAgent).
             """
             for sub in getattr(branch, "sub_agents", []):
+
+                # Recurse into nested ParallelAgent / SequentialAgent containers
+                # so the per-ticker fan-out wrapper does not hide the LlmAgents.
+                if getattr(sub, "sub_agents", None):
+                    _install_mock_on_branch(sub)
+                    continue
+
                 # Hop through wrapper layers until we reach an LlmAgent.
                 node = sub
                 while node is not None and not isinstance(node, LlmAgent):

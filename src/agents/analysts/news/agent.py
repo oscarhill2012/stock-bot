@@ -15,7 +15,7 @@ is updated to use ``build_news_branch`` instead.  See
 """
 from __future__ import annotations
 
-from google.adk.agents import SequentialAgent
+from google.adk.agents import ParallelAgent, SequentialAgent
 
 from agents.analysts.heuristics import NewsVocabulary
 from agents.analysts.news.fetch_agent import NewsFetchAgent
@@ -60,11 +60,24 @@ def build_news_branch(
         for i, ticker in enumerate(tickers)
     ]
 
+    # Phase 9 parallelism: per-ticker branches fan out concurrently inside a
+    # ParallelAgent.  ADK's ParallelAgent shallow-copies InvocationContext so
+    # branches share session.state; collisions are avoided because every
+    # branch writes only to its own ``temp:news_verdict_<TICKER>`` /
+    # ``temp:news_context_<TICKER>`` keys.  The surrounding Sequential
+    # preserves the Fetch -> Fan-out -> Joiner ordering: the Parallel block
+    # only yields its terminator once every child completes, so the joiner
+    # observes a fully populated state.
+    fanout = ParallelAgent(
+        name="NewsPerTickerFanout",
+        sub_agents=per_ticker,
+    )
+
     return SequentialAgent(
         name="NewsAnalystBranch",
         sub_agents=[
             NewsFetchAgent(name="NewsFetch"),
-            *per_ticker,
+            fanout,
             NewsJoinerAgent(name="NewsJoiner"),
         ],
     )
