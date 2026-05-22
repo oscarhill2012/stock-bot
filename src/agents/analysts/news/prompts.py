@@ -58,7 +58,9 @@ Output ONE JSON object with fields:
   rationale    string ≤{rationale_max} chars naming the dominant catalyst
   key_factors  list of closed-vocabulary tags (≤8)
   is_no_data   true if no headlines in the window
-  report       object — see schema below; omit only when is_no_data=true.
+  report       object — see schema below.  REQUIRED whenever is_no_data=false;
+               emit at minimum a summary plus 2 drivers.  Omit ONLY when
+               is_no_data=true.
 
 Report schema:
   summary  string ≤{summary_max} chars of connective tissue covering the
@@ -79,6 +81,12 @@ Decision rule:
 - Magnitude ← novelty × material weight: high novelty + material → higher magnitude.
 - Confidence scales with headline count; fewer than 3 articles caps confidence low.
 - Conflicting direction signals across articles → mixed → neutral with low confidence.
+- Bearish is appropriate for missed guidance, downgrade, supplier loss,
+  executive departure, regulatory action, or adverse legal outcome —
+  do NOT default to neutral when evidence is materially negative.
+
+Stop emitting if you are about to repeat a token or symbol three or more times in a row.
+Return the verdict as-is and never emit filler tokens.
 
 --- HEADLINES & SUMMARIES FOR {ticker} ---
 {news_context}
@@ -122,7 +130,7 @@ def build_news_instruction(vocab: NewsVocabulary) -> str:
         # Char-cap placeholders — kept in sync with the schema's
         # ``Field(max_length=...)`` via the two-tier ``schema_cap()`` convention
         # so the value the LLM is told never exceeds what the schema accepts.
-        rationale_max    = out_caps.verdict_rationale_max_chars,
+        rationale_max    = out_caps.verdict_rationale_prompt_budget,
         summary_max      = out_caps.report_summary_max_chars,
         driver_name_max  = out_caps.report_driver_name_max_chars,
         driver_body_max  = out_caps.report_driver_body_max_chars,
