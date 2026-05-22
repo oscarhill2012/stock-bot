@@ -14,6 +14,10 @@ from contract.evidence import AnalystEvidence, AnalystVerdict
 
 def test_analyst_evidence_accepts_raw_text() -> None:
     """``raw_text`` must round-trip through model_validate / model_dump."""
+    # is_no_data=True used here because this test exercises raw_text plumbing,
+    # not LLM verdict content.  The D1.1 validator requires a report block
+    # whenever is_no_data=False; using is_no_data=True keeps the fixture
+    # focused on the schema field under test.
     ev = AnalystEvidence(
         analyst     = "news",
         ticker      = "AAPL",
@@ -22,6 +26,7 @@ def test_analyst_evidence_accepts_raw_text() -> None:
         features    = {},
         verdict     = AnalystVerdict(
             lean="neutral", magnitude=0.0, confidence=0.5, rationale="x",
+            is_no_data=True,
         ),
         raw_text    = "Apple closes flat amid SVB contagion fears…",
     )
@@ -32,6 +37,7 @@ def test_analyst_evidence_accepts_raw_text() -> None:
         analyst="news", ticker="MSFT", tick_id="t1",
         recorded_at=datetime(2026, 5, 20, tzinfo=UTC),
         features={},
-        verdict=AnalystVerdict(lean="neutral", magnitude=0.0, confidence=0.5, rationale="x"),
+        verdict=AnalystVerdict(lean="neutral", magnitude=0.0, confidence=0.5, rationale="x",
+                               is_no_data=True),
     )
     assert ev2.raw_text is None

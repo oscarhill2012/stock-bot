@@ -6,12 +6,22 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from contract.evidence import AnalystEvidence, AnalystVerdict
+from contract.evidence import AnalystEvidence, AnalystReport, AnalystVerdict, ReportDriver
 from contract.ticker_evidence import AggregateVerdict, TickerEvidence
 
 
 def _now() -> datetime:
     return datetime(2026, 5, 8, 14, 0, tzinfo=UTC)
+
+
+# Stub report satisfying the D1.1 validator for is_no_data=False verdicts.
+_STUB_REPORT = AnalystReport(
+    summary="Stub report for ticker-evidence schema tests.",
+    drivers=[
+        ReportDriver(name="driver-a", direction="bull", weight=0.6, body="Stub body A."),
+        ReportDriver(name="driver-b", direction="bear", weight=0.4, body="Stub body B."),
+    ],
+)
 
 
 def _ev(analyst: str, lean: str, magnitude: float, confidence: float) -> AnalystEvidence:
@@ -25,6 +35,7 @@ def _ev(analyst: str, lean: str, magnitude: float, confidence: float) -> Analyst
         verdict=AnalystVerdict(
             lean=lean, magnitude=magnitude, confidence=confidence,
             rationale="x", key_factors=[], is_no_data=False,
+            report=_STUB_REPORT,
         ),
     )
 

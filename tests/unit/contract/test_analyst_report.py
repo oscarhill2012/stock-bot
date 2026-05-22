@@ -73,12 +73,14 @@ def test_driver_direction_closed_vocabulary() -> None:
 
 
 def test_verdict_report_field_defaults_to_none() -> None:
-    """Deterministic analysts emit AnalystVerdict without a report -> None."""
+    """No-data verdicts (is_no_data=True) carry no report block — that is the
+    correct path for deterministic analysts and genuine empty-data cases."""
     v = AnalystVerdict(
         lean="neutral",
         magnitude=0.0,
         confidence=0.0,
         rationale="x",
         key_factors=[],
+        is_no_data=True,    # required by D1.1 validator when report=None
     )
     assert v.report is None

@@ -44,6 +44,19 @@ from contract.ticker_evidence import AggregateVerdict, TickerEvidence
 # Fixtures — shared TickerEvidence builders
 # ---------------------------------------------------------------------------
 
+# Stub report used by _make_verdict() when is_no_data=False and no real report
+# is supplied by the caller.  The D1.1 validator requires a report block in
+# that case; this stub satisfies the contract without polluting individual
+# test assertions (which check for specific content they themselves supply).
+_STUB_REPORT = AnalystReport(
+    summary="Stub report for strategist-prompt layout tests.",
+    drivers=[
+        ReportDriver(name="driver-a", direction="bull", weight=0.6, body="Stub body A."),
+        ReportDriver(name="driver-b", direction="bear", weight=0.4, body="Stub body B."),
+    ],
+)
+
+
 def _make_verdict(
     lean: str = "bullish",
     magnitude: float = 0.5,
@@ -75,6 +88,12 @@ def _make_verdict(
     AnalystVerdict
         Fully-formed verdict object.
     """
+    # The D1.1 validator rejects is_no_data=False with report=None.  Supply
+    # the stub so fixture helpers that don't care about report content still
+    # produce valid verdicts.  Callers that explicitly pass a real report
+    # (e.g. the "report present" render tests) override this with their own.
+    effective_report = report if (is_no_data or report is not None) else _STUB_REPORT
+
     return AnalystVerdict(
         lean=lean,            # type: ignore[arg-type]
         magnitude=magnitude,
@@ -82,7 +101,7 @@ def _make_verdict(
         rationale=rationale,
         key_factors=key_factors or [],
         is_no_data=is_no_data,
-        report=report,
+        report=effective_report,
     )
 
 
@@ -170,6 +189,7 @@ def _make_report(summary: str = "Test summary prose.") -> AnalystReport:
 def _make_ticker_evidence(
     ticker: str = "AAPL",
     news_report: AnalystReport | None = None,
+    news_no_data: bool = False,
 ) -> TickerEvidence:
     """Build a fully-populated TickerEvidence for AAPL.
 
@@ -183,6 +203,11 @@ def _make_ticker_evidence(
         Stock ticker symbol.
     news_report:
         Optional ``AnalystReport`` to attach to the news analyst verdict.
+        When ``None`` and ``news_no_data=False``, a stub report is used to
+        satisfy the D1.1 validator.
+    news_no_data:
+        When ``True`` the news analyst is marked as no-data (report=None is
+        then valid).  Used by tests that assert no Drivers block is rendered.
 
     Returns
     -------
@@ -237,6 +262,7 @@ def _make_ticker_evidence(
                 lean="neutral",
                 features=news_features,
                 key_factors=["catalyst:legal", "direction:mixed"],
+                is_no_data=news_no_data,
                 report=news_report,
             ),
             "smart_money": _make_evidence(
@@ -428,12 +454,28 @@ def test_report_driver_direction_rendered():
 
 
 def test_no_report_omits_drivers_block():
-    """When no AnalystReport is present, the Drivers block must not appear."""
-    # Build a te with no news_report.
-    te = _make_ticker_evidence(news_report=None)
+    """When the News analyst has no AnalystReport, no Drivers block appears in
+    the News section of the rendered output.
+
+    Since D1.1 makes (is_no_data=False, report=None) invalid, the "no report"
+    case is represented by news_no_data=True.  Other analysts (Technical,
+    Fundamental) carry stub reports that may render their own Drivers lines;
+    this test therefore checks only the News section, not the whole string.
+    """
+    # Build a te where the news analyst is no-data (and therefore report-less).
+    te = _make_ticker_evidence(news_report=None, news_no_data=True)
     out = render_ticker_block(te)
-    # The "-> Drivers:" line must be absent when there is no report.
-    assert "-> Drivers:" not in out
+
+    # Isolate the [News] section by finding its start and the next section marker.
+    news_start = out.find("[News]")
+    assert news_start != -1, "[News] section header must be present"
+
+    # The next section after News is [SmartMoney].
+    next_section = out.find("[SmartMoney]", news_start)
+    news_section = out[news_start:next_section] if next_section != -1 else out[news_start:]
+
+    # No Drivers block must appear within the News section itself.
+    assert "-> Drivers:" not in news_section
 
 
 # ---------------------------------------------------------------------------
