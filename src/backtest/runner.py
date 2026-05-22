@@ -31,7 +31,7 @@ import os
 import signal
 import subprocess
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from backtest.cache.store import CachedDataStore
@@ -64,8 +64,9 @@ logger = logging.getLogger(__name__)
 def _seed_reference_prices(
     *,
     store,
-    window_start,
-    window_end,
+    window_start: date,
+    window_end: date,
+    as_of: datetime | None = None,
 ) -> dict:
     """Build ``state["reference_prices"]`` from cached SPY + sector ETF bars.
 
@@ -74,22 +75,41 @@ def _seed_reference_prices(
     extractor can compute ``relative_strength_vs_spy_*`` and
     ``relative_strength_vs_sector_*`` features during backtest replay.
 
-    Bars are read over the full window (including warm-up bars that were
-    written by ``scripts.backtest_fetch._fill_reference_ohlcv``).  Symbols
-    absent from the cache are silently omitted — the extractor already
-    handles a missing ``"SPY"`` key by skipping those features.
+    Phase 2 PIT contract: when ``as_of`` is supplied, any bar whose
+    ``timestamp`` exceeds ``as_of`` is stripped before the ``PriceHistory``
+    is constructed.  This ensures the tick-scoped reference data is
+    lookahead-free — a bar for 2026-05-08 must not appear at the
+    2026-05-07 13:30 tick boundary.
+
+    ``as_of=None`` preserves legacy Phase 1 behaviour (full window returned
+    unfiltered).  The Phase 1 seed call in ``Runner._run_async`` uses
+    ``as_of=None`` and is kept as a no-op safety net — the per-tick refresh
+    in ``Driver.run`` (Phase 2) overwrites ``state["reference_prices"]``
+    before any analyst callback fires.
+
+    Bars are read over the full window (including warm-up bars written by
+    ``scripts.backtest_fetch._fill_reference_ohlcv``).  Symbols absent from
+    the cache are silently omitted — the extractor already handles a missing
+    ``"SPY"`` key by skipping those features.
 
     Parameters
     ----------
     store:
         Open ``CachedDataStore`` instance.
-    window_start, window_end:
-        Inclusive date bounds for the backtest window.
+    window_start:
+        Inclusive lower-bound date for the OHLCV read.
+    window_end:
+        Inclusive upper-bound date for the OHLCV read.
+    as_of:
+        Optional point-in-time boundary.  When supplied, any bar with
+        ``timestamp > as_of`` is excluded from the result.  ``None``
+        disables the filter (legacy Phase 1 callers).
 
     Returns
     -------
     dict[str, PriceHistory]
-        One ``PriceHistory`` per reference symbol found in the cache.
+        One ``PriceHistory`` per reference symbol found in the cache,
+        with bars clamped to ``as_of`` when provided.
     """
     from data.models import PriceHistory
 
@@ -101,6 +121,25 @@ def _seed_reference_prices(
 
     for symbol in _REFERENCE_SYMBOLS:
         bars = store.read_ohlcv(symbol, window_start, window_end)
+
+        # Phase 2 PIT clamp — strip bars that postdate the current tick
+        # boundary.  Without this, a per-tick call at 2026-05-07 13:30
+        # would serve the full window including bars for 2026-05-08+,
+        # introducing future-data lookahead into every relative-strength
+        # computation for the remainder of the window.
+        #
+        # SQLite returns naive datetimes (no tzinfo) for DateTime columns.
+        # All OHLCV bars are stored as midnight UTC, so we treat any
+        # timezone-naive bar timestamp as UTC when comparing against the
+        # (always timezone-aware) ``as_of``.  This avoids a
+        # TypeError: can't compare offset-naive and offset-aware datetimes.
+        if as_of is not None:
+            def _as_utc(ts: datetime) -> datetime:
+                """Attach UTC tzinfo to a naive datetime; pass through aware ones."""
+                return ts.replace(tzinfo=UTC) if ts.tzinfo is None else ts
+
+            bars = [b for b in bars if _as_utc(b.timestamp) <= as_of]
+
         if bars:
             ref[symbol] = PriceHistory(ticker=symbol, bars=bars)
 

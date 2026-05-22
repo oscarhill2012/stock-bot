@@ -389,7 +389,7 @@ def derive_smart_money_verdict(
     # Deferred runtime imports — avoids the circular import that arises when
     # loading this module triggers agents.analysts.__init__ (which re-imports
     # this module before it has finished initialising).
-    from contract.evidence import AnalystVerdict  # noqa: PLC0415
+    from contract.evidence import AnalystReport, AnalystVerdict, ReportDriver  # noqa: PLC0415
 
     # --- No-data short-circuit -----------------------------------------------
     # The extractor sets is_no_data=1.0 when no filings were found.
@@ -458,6 +458,50 @@ def derive_smart_money_verdict(
     # Build rationale from the collected factor tags, truncated for safety.
     rationale = (", ".join(factors) or "neutral")[:160]
 
+    # --- Synthetic AnalystReport -----------------------------------------------
+    # Structured analysts have no LLM prose, but the schema requires ``report``
+    # whenever ``is_no_data=False``.  Build a minimal report from the
+    # deterministic signals so the uniform contract holds.
+    direction_map = {"bullish": "bull", "bearish": "bear", "neutral": "neutral"}
+    driver_direction = direction_map[lean]
+
+    # Evenly distribute weight across factors; guard against empty list.
+    driver_factors = factors if factors else [lean]
+    n_factors      = len(driver_factors)
+    even_weight    = round(1.0 / n_factors, 4)
+
+    # Build one ReportDriver per key_factor.
+    drivers = [
+        ReportDriver(
+            name=factor[:69],
+            direction=driver_direction,
+            weight=even_weight,
+            body=f"Smart-money signal: {factor} (net_flow={net:.0f})"[:575],
+        )
+        for factor in driver_factors
+    ]
+
+    # AnalystReport requires at least 2 drivers; pad with a lean summary driver
+    # when only one factor fired (e.g. net_buying alone, intermediate confidence).
+    if len(drivers) < 2:
+        drivers.append(
+            ReportDriver(
+                name="overall_lean",
+                direction=driver_direction,
+                weight=even_weight,
+                body=(
+                    f"Net flow of {net:.0f} with {int(nf)} filer(s) "
+                    f"and {int(trades)} trade(s)"
+                )[:575],
+            )
+        )
+
+    summary = (
+        f"Smart-money leans {lean}: {rationale}."
+    )[:1150]
+
+    report = AnalystReport(summary=summary, drivers=drivers[:4])
+
     return AnalystVerdict(
         lean=lean,
         magnitude=magnitude,
@@ -465,4 +509,5 @@ def derive_smart_money_verdict(
         rationale=rationale,
         key_factors=factors,
         is_no_data=False,
+        report=report,
     )

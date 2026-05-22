@@ -255,6 +255,48 @@ class Driver:
                 await self._broker.get_portfolio()
             ).model_dump(mode="json")
 
+            # ── Phase 2 PIT contract: refresh reference_prices per tick ──────
+            # The Phase 1 seed in Runner._run_async pre-loads the full window
+            # unfiltered (as_of=None) as a safety net, but that means a tick
+            # at day N can see ETF bars for day N+1 through window_end, which
+            # is lookahead bias for every relative-strength feature.
+            #
+            # Here we re-seed from the store scoped to bars up to (and
+            # including) tick.as_of so the technical extractor only ever sees
+            # data that would have been observable at that exact moment.
+            # The window bounds are set to the whole window so warm-up bars
+            # before tick.as_of are still available for rolling calculations.
+            try:
+                from backtest.providers._store_handle import get_store as _get_ref_store
+                from backtest.runner import _seed_reference_prices
+
+                _ref_store = _get_ref_store()
+
+                # ``window_start`` is not carried in driver state; use a
+                # conservative 365-day lookback window so warm-up bars are
+                # included.  Bars after ``tick.as_of`` are stripped by the
+                # PIT clamp inside ``_seed_reference_prices``.
+                from datetime import timedelta
+                _wstart = tick.as_of.date() - timedelta(days=365)
+
+                _ref = _seed_reference_prices(
+                    store=_ref_store,
+                    window_start=_wstart,
+                    window_end=tick.as_of.date(),
+                    as_of=tick.as_of,
+                )
+                # Dump to JSON-safe dicts — mirrors how Runner._run_async
+                # seeds the initial state (SqlSessionService cannot serialise
+                # Pydantic objects; the technical extractor coerces back on read).
+                state["reference_prices"] = {
+                    sym: ph.model_dump(mode="json") for sym, ph in _ref.items()
+                }
+            except RuntimeError:
+                # Store handle not initialised (e.g. isolated unit tests that
+                # construct Driver without a real cache) — leave reference_prices
+                # unchanged so those paths do not break.
+                pass
+
             try:
                 await self._run_one_tick(state)
             except Exception as exc:
@@ -302,12 +344,17 @@ class Driver:
             # clock during this tick — surfaces directly on the tripwire.
             wallclock_fallback_count = drain_wallclock_fallback_count()
 
+            # Drain cache hits from the log buffer *before* drain_tick resets it.
+            # Previously sourced from ``state["_report_cache_hits_for_audit"]``
+            # which was silently dropped by ADK's session merge (S3 fix).
+            report_cache_hits = self._drain_logs_cache_hits()
+
             telemetry = build_telemetry_record(
                 tick=tick,
                 run_id=self._run_id,
                 strict_mode=os.environ.get("STOCKBOT_STRICT_AS_OF") == "1",
                 per_domain=per_domain,
-                report_cache_hits=state.get("_report_cache_hits_for_audit", []),
+                report_cache_hits=report_cache_hits,
                 db_writes_recorded_at={},
                 wall_clock_fallback_fired=wallclock_fallback_count > 0,
             )
@@ -325,14 +372,47 @@ class Driver:
                 tick_id   = state["tick_id"],
             )
 
-            # Reset the per-tick report-cache-hits capture for the next tick.
-            state.pop("_report_cache_hits_for_audit", None)
-
         self._write_manifest_status(
             "completed_with_failures" if self._failed else "completed",
         )
 
     # ── private helpers ────────────────────────────────────────────────────────
+
+    def _drain_logs_cache_hits(self) -> list[dict]:
+        """Return the report-cache-hit list for the current tick.
+
+        Inspects the in-memory log buffer that ``drain_tick`` is about to
+        flush; counts ``report_cache_hit`` messages and returns one placeholder
+        dict per hit so the audit ``len(report_cache_hits)`` contract is
+        preserved.
+
+        Must be called *before* ``drain_tick`` because ``drain_tick`` resets
+        the buffer as part of ``drain_to_file``.
+
+        The log handler buffer (``TickBufferedLogHandler._buffer``) holds one
+        ``dict`` per emitted record, each with a ``"message"`` key that is
+        already fully-formatted by ``record.getMessage()`` at emit time.
+
+        Returns an empty list when the log handler is not available (e.g.,
+        isolated unit tests that do not call ``install_observability``).
+        """
+
+        # ``self._obs_handles`` is set unconditionally in ``__init__`` via
+        # ``install_observability``.  The ``hasattr`` guard is a defensive belt-
+        # and-braces for subclass or mock scenarios.
+        if not hasattr(self, "_obs_handles"):
+            return []
+
+        log_handler = self._obs_handles.log_handler
+        # ``TickBufferedLogHandler._buffer`` is a list[dict]; each dict carries
+        # at minimum ``ts``, ``level``, ``logger``, ``message`` fields.
+        raw_buffer = getattr(log_handler, "_buffer", None) or []
+
+        return [
+            {"event": "report_cache_hit"}
+            for ev in raw_buffer
+            if isinstance(ev, dict) and ev.get("message") == "report_cache_hit"
+        ]
 
     async def _run_one_tick(self, state: dict) -> None:
         """Drive the pipeline once via ADK's Runner + InMemorySessionService.

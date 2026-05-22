@@ -584,16 +584,17 @@ def test_end_to_end_run_produces_full_artefact_tree(
     assert len(audit_files) >= 1, "No audit telemetry records written"
 
     # Tripwires that indicate a definitive point-in-time data leak.
-    # ``open_tick_sameday_bar`` is intentionally excluded here: the store's
-    # inclusive-range query (end=as_of.date()) surfaces the same-day bar at
-    # the raw read level, but the price_history_cache provider correctly strips
-    # it before any analyst receives it.  That tripwire is a known, expected
-    # artefact of the inclusive store API; it does not represent an actual
-    # leak and is left for human review in deep-dump (Layer 2) workflows.
+    # Advisory tripwires (``*_advisory`` suffix) are intentionally excluded:
+    # - ``open_tick_sameday_bar_advisory``: the store's inclusive-range query
+    #   (end=as_of.date()) surfaces the same-day bar at the raw read level,
+    #   but price_history_cache.fetch strips it before any analyst receives it.
+    # - ``midnight_utc_timestamps_seen_advisory``: date-only sources promote
+    #   all timestamps to midnight UTC — steady-state behaviour, not a leak.
+    # Both advisory keys are benign by design; use ACTIONABLE_TRIPWIRES from
+    # backtest.audit.tripwires for programmatic filtering.
     DEFINITIVE_LEAK_TRIPWIRES = {
         "wall_clock_fallback_fired",
         "any_filter_key_after_as_of",
-        "midnight_utc_timestamps_seen",
         "missing_timestamp_rows_seen",
     }
 

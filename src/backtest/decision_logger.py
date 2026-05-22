@@ -23,14 +23,70 @@ _log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _coerce(value: Any) -> Any:
-    """Best-effort JSON-friendly coercion for Pydantic-or-dict mixed payloads.
+    """Recursively coerce Pydantic models nested inside dicts/lists.
 
-    Pydantic v2 models expose ``model_dump``; plain dicts and primitives are
-    returned as-is.
+    Top-level Pydantic instances are dumped via ``.model_dump(mode='json')``.
+    Dicts and lists are walked so models nested anywhere in the structure
+    are coerced too.  JSON primitives (None, bool, int, float, str) pass
+    through unchanged.
+
+    Anything else falls through to ``json.dumps``'s default handler,
+    which now (via ``_strict_default``) raises ``TypeError`` rather than
+    silently emitting ``repr()``.
     """
+
     if hasattr(value, "model_dump"):
-        return value.model_dump()
+        return value.model_dump(mode="json")
+
+    if isinstance(value, dict):
+        return {k: _coerce(v) for k, v in value.items()}
+
+    if isinstance(value, list):
+        return [_coerce(v) for v in value]
+
     return value
+
+
+def _strict_default(value: Any) -> Any:
+    """``json.dumps`` ``default=`` handler — raise loudly on unsupported types.
+
+    The previous ``default=str`` quietly emitted ``repr(value)`` for any
+    type ``json.dumps`` did not recognise — that is exactly how the
+    ``Form4Bundle`` regression slipped in (the model instance got
+    ``repr``'d into a 2 292-char string).  Forcing a ``TypeError`` here
+    means any new un-dumpable field shows up immediately as a failing
+    backtest rather than as a silently-corrupted decision row.
+    """
+
+    raise TypeError(
+        f"decision_logger: refusing to serialise {type(value).__name__} "
+        f"— add an explicit ``.model_dump()`` at the producing call site "
+        f"or extend _coerce to handle this shape"
+    )
+
+
+def _serialise_snapshot(snapshot: dict) -> str:
+    """Public entry point for the strict snapshot serialiser.
+
+    Coerces nested Pydantic models via ``_coerce`` then runs
+    ``json.dumps`` with the strict default handler.  Tests can call this
+    directly to pin the contract.
+
+    Parameters
+    ----------
+    snapshot:
+        The raw decision snapshot dict, potentially containing Pydantic
+        model instances at any nesting depth.
+
+    Returns
+    -------
+    str
+        A JSON string with two-space indentation.  Raises ``TypeError``
+        if any value cannot be serialised after coercion.
+    """
+
+    coerced = _coerce(snapshot)
+    return json.dumps(coerced, indent=2, default=_strict_default)
 
 
 def _slug(as_of: Any) -> str:
@@ -133,7 +189,7 @@ class DecisionLogger:
 
             try:
                 outpath.write_text(
-                    json.dumps(snapshot, indent=2, default=str),
+                    _serialise_snapshot(snapshot),
                     encoding="utf-8",
                 )
             except Exception:

@@ -6,7 +6,19 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from contract.evidence import AnalystEvidence, AnalystVerdict
+from contract.evidence import AnalystEvidence, AnalystReport, AnalystVerdict, ReportDriver
+
+
+# Minimal stub report satisfying the D1.1 validator (report required when
+# is_no_data=False).  These unit tests exercise verdict schema rules, not
+# report content, so a single fixed stub is sufficient.
+_STUB_REPORT = AnalystReport(
+    summary="Stub report for evidence schema tests.",
+    drivers=[
+        ReportDriver(name="driver-a", direction="bull", weight=0.6, body="Stub body A."),
+        ReportDriver(name="driver-b", direction="bear", weight=0.4, body="Stub body B."),
+    ],
+)
 
 
 def _verdict(**overrides) -> AnalystVerdict:
@@ -17,6 +29,7 @@ def _verdict(**overrides) -> AnalystVerdict:
         rationale="RSI cooled + uptrend intact",
         key_factors=["rsi_14: 42"],
         is_no_data=False,
+        report=_STUB_REPORT,
     )
     base.update(overrides)
     return AnalystVerdict(**base)
@@ -42,7 +55,8 @@ def test_verdict_neutral_no_data_flag():
 
 
 def test_verdict_key_factors_default_empty():
-    v = AnalystVerdict(lean="neutral", magnitude=0.0, confidence=0.0, rationale="x")
+    # Use is_no_data=True so the D1.1 validator doesn't require a report block.
+    v = AnalystVerdict(lean="neutral", magnitude=0.0, confidence=0.0, rationale="x", is_no_data=True)
     assert v.key_factors == []
 
 

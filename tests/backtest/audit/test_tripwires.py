@@ -57,7 +57,7 @@ def test_open_tick_sameday_bar_fires() -> None:
         wall_clock_fallback_fired=False,
     )
 
-    assert flags["open_tick_sameday_bar"] is True
+    assert flags["open_tick_sameday_bar_advisory"] is True
 
 
 def test_close_phase_sameday_bar_does_not_fire() -> None:
@@ -83,4 +83,4 @@ def test_close_phase_sameday_bar_does_not_fire() -> None:
         wall_clock_fallback_fired=False,
     )
 
-    assert flags["open_tick_sameday_bar"] is False
+    assert flags["open_tick_sameday_bar_advisory"] is False

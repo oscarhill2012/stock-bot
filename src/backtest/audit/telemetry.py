@@ -74,6 +74,38 @@ def build_telemetry_record(
     }
 
 
+def build_telemetry_record_from_logs(*, log_payload: dict) -> dict:
+    """Build an audit telemetry record from a parsed ``obs/logs/`` payload.
+
+    The legacy ``state['_report_cache_hits_for_audit']`` surface was
+    unreliable across per-ticker BaseAgents (see S3).  The new pathway
+    consumes the same structured ``report_cache_hit`` log events the
+    metrics report already counts so audit and log agree by
+    construction.
+
+    Parameters
+    ----------
+    log_payload:
+        Parsed JSON payload from ``obs/logs/<tick-slug>.json`` — a dict
+        with an ``events`` key whose entries each carry ``message`` and
+        ``logger`` strings.
+
+    Returns
+    -------
+    dict
+        Telemetry record shape compatible with the existing
+        ``write_telemetry_record`` consumer.  Only the cache-hit field
+        is populated by this function; the caller merges the rest.
+    """
+
+    hits = [
+        {"event": "report_cache_hit"}
+        for event in log_payload.get("events", [])
+        if event.get("message") == "report_cache_hit"
+    ]
+    return {"report_cache_hits": hits}
+
+
 def write_telemetry_record(audit_dir: Path, record: dict[str, Any]) -> Path:
     """Write ``record`` to ``<audit_dir>/<tick-slug>.tick.json``.
 

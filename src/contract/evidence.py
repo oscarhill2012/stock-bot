@@ -18,7 +18,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from config.analysts import get_analysts_config
 
@@ -111,6 +111,27 @@ class AnalystVerdict(BaseModel):
     # analysts leave it None. The Strategist prompt surface keys off presence
     # to decide whether to render a "Drivers:" block.
     report: AnalystReport | None = None
+
+    @model_validator(mode="after")
+    def _report_required_when_data_present(self) -> "AnalystVerdict":
+        """Reject verdicts that claim data but omit the report block.
+
+        LLM analysts must emit ``report`` whenever ``is_no_data=False`` — the
+        strategist reads the prose to weigh evidence.  Schema-level
+        enforcement is the source of truth; the prompt instruction is the
+        LLM-facing statement of the same rule.  ``llm_retry`` already
+        classifies ``pydantic.ValidationError`` as retryable, so an
+        offending LLM response is automatically retried up to the
+        configured cap.
+        """
+
+        if not self.is_no_data and self.report is None:
+            raise ValueError(
+                "report is required when is_no_data=False — "
+                "the analyst must emit a summary + drivers block "
+                "alongside the verdict"
+            )
+        return self
 
 
 class TickerVerdict(AnalystVerdict):

@@ -14,6 +14,7 @@ the runtime template.
 """
 from __future__ import annotations
 
+from config.risk_gate import get_risk_gate_config
 from config.strategist import get_strategist_config
 
 # Resolve caps once at import time.  The values injected into the prompt are
@@ -25,6 +26,30 @@ from config.strategist import get_strategist_config
 _cfg      = get_strategist_config()
 _DECISION = _cfg.decision_caps
 _STANCE   = _cfg.stance_caps
+
+# R5 — risk-gate percentages, resolved at import time from
+# ``config/risk_gate.json`` so a future config edit auto-updates the
+# prompt without code change.  The integer-rounded percentages match
+# how the LLM thinks about caps (and what the gate enforces — the gate
+# operates on the float fractions, so 0.05 vs "5 %" stay aligned).
+_RISK              = get_risk_gate_config()
+_MAX_POSITION_PCT  = int(round(_RISK.max_position_weight  * 100))
+_MAX_DELTA_PCT     = int(round(_RISK.max_delta_per_ticker * 100))
+_MAX_TURNOVER_PCT  = int(round(_RISK.max_total_turnover   * 100))
+_CASH_FLOOR_PCT    = int(round(_RISK.cash_floor_weight    * 100))
+
+# Conditional cash-floor stanza — operator can re-introduce a floor by
+# editing the JSON; the prompt re-renders accordingly without code change.
+if _RISK.cash_floor_weight <= 0.0:
+    _CASH_FLOOR_STANZA = (
+        "- No cash floor — full deployment is permitted when conviction "
+        "supports it."
+    )
+else:
+    _CASH_FLOOR_STANZA = (
+        f"- Watchlist weight sum capped at "
+        f"{100 - _CASH_FLOOR_PCT}% (Cash reserve ≥{_CASH_FLOOR_PCT}%)."
+    )
 
 # Raw template — uses ``{{NAME}}`` markers for the build-time cap substitution
 # below so that runtime ``{portfolio}``/``{tickers}`` placeholders survive
@@ -83,9 +108,16 @@ are illustrations, not a separate ruleset.
 
 Schema-level rules (failing these means ADK rejects your response):
 - preferred_weight: float in [0.0, 1.0].  Long-only — 0.0 is the floor.
-  Downstream caps single-ticker weight at 20% and keeps ≥10% cash, so
-  realistic non-zero stances sit well below 1.0 and the watchlist sum cannot
-  exceed 90%.
+
+  Hard rules the risk gate enforces after you respond (so a stance that
+  violates them will be clamped — propose values that already respect them):
+  - Single-ticker weight capped at {{MAX_POSITION_PCT}}%.
+  - Per-ticker weight change capped at {{MAX_DELTA_PCT}}% per tick — if you
+    want to size up faster, the gate will trim your delta back to
+    {{MAX_DELTA_PCT}}% and you ramp over multiple ticks.
+  - Total per-tick turnover (sum of |deltas| across watchlist) capped at
+    {{MAX_TURNOVER_PCT}}%.
+  {{CASH_FLOOR_STANZA}}
 - conviction: float in [0.0, 1.0].
 - confidence (decision-level): float in [0.0, 1.0].
 - horizon: one of "intraday", "swing", "long_term" — or null.
@@ -101,14 +133,14 @@ Schema-level rules (failing these means ADK rejects your response):
 ## Two worked examples (the rest follow the table above)
 
 OPEN (currently flat, opening at 0.05):
-{{"ticker": "AAPL", "preferred_weight": 0.05, "conviction": 0.7,
+{{"ticker": "XYZ", "preferred_weight": 0.05, "conviction": 0.7,
 "rationale": "Strong fundamentals, bullish technical setup",
 "horizon": "swing", "target_price": 215.0, "stop_price": 180.0,
 "catalyst": "earnings beat expected next week",
 "close_reason": null, "trim_reason": null}}
 
 CLOSE (held at 0.05, exiting to 0.0):
-{{"ticker": "AAPL", "preferred_weight": 0.0, "conviction": 0.7,
+{{"ticker": "XYZ", "preferred_weight": 0.0, "conviction": 0.7,
 "rationale": "Thesis invalidated by guidance cut",
 "horizon": null, "target_price": null, "stop_price": null,
 "catalyst": null,
@@ -126,4 +158,9 @@ STRATEGIST_INSTRUCTION = (
     .replace("{{STANCE_CATALYST_MAX}}",     str(_STANCE.catalyst_max_chars))
     .replace("{{STANCE_CLOSE_REASON_MAX}}", str(_STANCE.close_reason_max_chars))
     .replace("{{STANCE_TRIM_REASON_MAX}}",  str(_STANCE.trim_reason_max_chars))
+    # R5 — risk-gate percentages injected from config/risk_gate.json.
+    .replace("{{MAX_POSITION_PCT}}",        str(_MAX_POSITION_PCT))
+    .replace("{{MAX_DELTA_PCT}}",           str(_MAX_DELTA_PCT))
+    .replace("{{MAX_TURNOVER_PCT}}",        str(_MAX_TURNOVER_PCT))
+    .replace("{{CASH_FLOOR_STANZA}}",       _CASH_FLOOR_STANZA)
 )

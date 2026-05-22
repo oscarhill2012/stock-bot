@@ -61,12 +61,17 @@ def test_instruction_honours_output_caps_from_config():
     from config.analysts import get_analysts_config
 
     instruction = build_news_instruction(_vocab())
-    cap = get_analysts_config().output_caps.verdict_rationale_max_chars
 
-    # The literal cap value should appear in the prompt (the template
+    # H4 (Spec A): the prompt now carries the *derived* prompt budget
+    # (verdict_rationale_prompt_budget = max_chars − headroom), not the raw
+    # schema cap (verdict_rationale_max_chars).  The config path is still
+    # exercised — we just assert the right derived value.
+    cap = get_analysts_config().output_caps.verdict_rationale_prompt_budget
+
+    # The derived budget value should appear in the prompt (the template
     # writes "≤{rationale_max} chars" — `str.format` substitutes the int).
     assert f"≤{cap} chars" in instruction or f"{cap} chars" in instruction, (
-        f"rendered prompt does not contain configured rationale cap {cap}; "
+        f"rendered prompt does not contain configured rationale prompt budget {cap}; "
         "the per-ticker rewrite must preserve the config/analysts.json "
         "output_caps substitution path (see Phase 9 spec — config control "
         "of analyst output budgets is an invariant)."

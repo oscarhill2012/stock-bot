@@ -8,11 +8,24 @@ import pytest
 
 from contract.digest import build_ticker_evidence
 from contract.digest_defaults import DEFAULT_ANALYST_WEIGHTS
-from contract.evidence import AnalystEvidence, AnalystVerdict
+from contract.evidence import AnalystEvidence, AnalystReport, AnalystVerdict, ReportDriver
 
 
 def _now():
     return datetime(2026, 5, 8, 14, 0, tzinfo=UTC)
+
+
+# Minimal stub report used by the _ev() helper so that the D1.1
+# model_validator (report required when is_no_data=False) is satisfied.
+# Digest tests don't care about report content — they exercise aggregation
+# maths — so a single shared stub is sufficient here.
+_STUB_REPORT = AnalystReport(
+    summary="Stub report for digest aggregation tests.",
+    drivers=[
+        ReportDriver(name="driver-a", direction="bull", weight=0.6, body="Stub body A."),
+        ReportDriver(name="driver-b", direction="bear", weight=0.4, body="Stub body B."),
+    ],
+)
 
 
 def _ev(
@@ -20,7 +33,11 @@ def _ev(
 ) -> AnalystEvidence:
     """Build an AnalystEvidence. By default magnitude == confidence (the LLM is
     instructed to keep them aligned unless it has a reason not to). Tests that
-    care about the magnitude/confidence split pass `magnitude=` explicitly."""
+    care about the magnitude/confidence split pass `magnitude=` explicitly.
+
+    ``report`` is populated with a stub so the D1.1 validator is satisfied;
+    digest tests exercise aggregation maths, not report content.
+    """
     return AnalystEvidence(
         ticker=ticker,
         analyst=analyst,
@@ -35,6 +52,7 @@ def _ev(
             rationale="x",
             key_factors=[],
             is_no_data=False,
+            report=_STUB_REPORT,
         ),
     )
 

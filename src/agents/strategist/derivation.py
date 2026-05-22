@@ -16,6 +16,51 @@ from datetime import datetime
 from agents.strategist.lifecycle import derive_lifecycle_action
 from agents.strategist.schema import PositionThesis
 from agents.strategist.stance_schema import TickerStance
+from orchestrator.state import ORDER_EPSILON
+
+
+def derive_decision_tag(*, prior: float, new: float) -> str:
+    """Categorise a (prior, new) weight pair as one of six decision tags.
+
+    | Tag        | Condition                                          |
+    |------------|----------------------------------------------------|
+    | entry      | prior ≈ 0 AND new > 0                              |
+    | ramp       | 0 < prior < new                                    |
+    | trim       | prior > new > 0                                    |
+    | exit       | prior > 0 AND new ≈ 0                              |
+    | hold_flat  | prior ≈ 0 AND new ≈ 0                              |
+    | hold       | prior == new AND prior > 0                         |
+
+    ``ORDER_EPSILON`` (1e-6) is the zero threshold so dust positions do
+    not flip exit/entry into trim/ramp.  Downstream Spec B / Spec C
+    memory writers use this tag as the intent key, giving each ticker a
+    discriminating signal rather than the constant ``catalyst_driven_entry``
+    the LLM was emitting for every tick.
+
+    Args:
+        prior: The ticker's current portfolio weight before this tick.
+        new:   The ticker's preferred weight after this tick.
+
+    Returns:
+        One of: ``"entry"``, ``"ramp"``, ``"trim"``, ``"exit"``,
+        ``"hold_flat"``, or ``"hold"``.
+    """
+
+    prior_zero = prior < ORDER_EPSILON
+    new_zero   = new   < ORDER_EPSILON
+
+    if prior_zero and new_zero:
+        return "hold_flat"
+    if prior_zero and not new_zero:
+        return "entry"
+    if not prior_zero and new_zero:
+        return "exit"
+
+    if new > prior:
+        return "ramp"
+    if new < prior:
+        return "trim"
+    return "hold"
 
 
 @dataclass(frozen=True)
@@ -74,6 +119,13 @@ class DerivedFields:
     new_positions: dict[str, PositionThesis]
     close_reasons: dict[str, str]
     trim_reasons: dict[str, str]
+    decision_tags: dict[str, str]
+    """Per-ticker intent tag derived from (prior, new) weight — one of:
+    ``entry``, ``ramp``, ``trim``, ``exit``, ``hold_flat``, ``hold``.
+    Spec B / Spec C memory writers use this as a discriminating intent key
+    (S6 — replaces the constant ``catalyst_driven_entry`` the LLM emitted).
+    Carry-forward tickers are included with their implicit action tag.
+    """
 
 
 def derive_legacy_fields(
@@ -139,6 +191,7 @@ def derive_legacy_fields(
     new_positions: dict[str, PositionThesis] = {}
     close_reasons: dict[str, str] = {}
     trim_reasons: dict[str, str] = {}
+    decision_tags: dict[str, str] = {}
 
     # ── Pass 1: emitted stances ───────────────────────────────────────────────
     # Whatever the strategist explicitly said about a ticker takes precedence
@@ -154,6 +207,15 @@ def derive_legacy_fields(
         # Determine what needs to happen based on current vs preferred weight.
         current = ctx.current_weights.get(stance.ticker, 0.0)
         action = derive_lifecycle_action(current, stance.preferred_weight)
+
+        # S6: derive a per-ticker intent tag from the (prior, new) weight pair.
+        # This replaces the constant ``catalyst_driven_entry`` the LLM was emitting
+        # for every tick — giving Spec B / Spec C memory writers a discriminating
+        # key they can actually use to distinguish entries from exits, holds, etc.
+        decision_tags[stance.ticker] = derive_decision_tag(
+            prior=current,
+            new=stance.preferred_weight,
+        )
 
         if action == "open":
             # Construct a PositionThesis for the newly opened position.
@@ -197,11 +259,21 @@ def derive_legacy_fields(
     # the difference between "explicit hold" and "implicit hold".
     for ticker in ctx.watchlist:
         if ticker not in emitted:
-            target_weights[ticker] = ctx.current_weights.get(ticker, 0.0)
+            carry_weight = ctx.current_weights.get(ticker, 0.0)
+            target_weights[ticker] = carry_weight
+
+            # S6: carry-forward tickers also get a decision tag so downstream
+            # agents have a complete per-ticker intent map for every watchlist
+            # entry, not just the ones the strategist explicitly emitted a stance for.
+            decision_tags[ticker] = derive_decision_tag(
+                prior=carry_weight,
+                new=carry_weight,
+            )
 
     return DerivedFields(
         target_weights=target_weights,
         new_positions=new_positions,
         close_reasons=close_reasons,
         trim_reasons=trim_reasons,
+        decision_tags=decision_tags,
     )

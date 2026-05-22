@@ -82,9 +82,37 @@ class OutputCaps(BaseModel):
     """
 
     verdict_rationale_max_chars:    int = Field(ge=50,  le=1000)
+
+    # Prompt-facing headroom — derived budget shown to the LLM is
+    # ``verdict_rationale_max_chars - verdict_rationale_prompt_headroom_chars``
+    # (with safety clamps).  Keeps the prompt tighter than the schema cap so
+    # the LLM's natural 1–5 % overshoot does not trip ``string_too_long``.
+    verdict_rationale_prompt_headroom_chars: int = Field(ge=-100, le=1000, default=50)
+
     report_summary_max_chars:       int = Field(ge=200, le=8000)
     report_driver_name_max_chars:   int = Field(ge=20,  le=200)
     report_driver_body_max_chars:   int = Field(ge=100, le=4000)
+
+    @property
+    def verdict_rationale_prompt_budget(self) -> int:
+        """Prompt-facing rationale budget — the value the LLM is told.
+
+        Derived from the schema-facing cap minus the configured headroom so
+        raising or lowering ``verdict_rationale_max_chars`` automatically
+        re-tunes what the LLM is asked to produce.  The result is clamped on
+        both sides:
+          * lower bound 40 — a meaningless or negative budget can never
+            reach the prompt (catches headroom > cap misconfigurations);
+          * upper bound ``verdict_rationale_max_chars`` — the prompt budget
+            can never exceed the schema cap, defeating the purpose (catches
+            negative-headroom misconfigurations).
+        """
+
+        budget = (
+            self.verdict_rationale_max_chars
+            - self.verdict_rationale_prompt_headroom_chars
+        )
+        return max(40, min(self.verdict_rationale_max_chars, budget))
 
 
 class AnalystsConfig(BaseModel):
