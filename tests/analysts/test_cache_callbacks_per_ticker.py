@@ -17,6 +17,7 @@ def test_before_single_ticker_hit_returns_single_verdict_llm_response(tmp_path, 
     # Arrange: pre-populate the cache for ticker AAPL.
     from agents.analysts.report_cache import write_cache
 
+    # D1.1: report is required for non-no-data verdicts; include it in the cached entry.
     write_cache(
         tmp_path, "news", "AAPL",
         input_hash="hash-1",
@@ -29,6 +30,13 @@ def test_before_single_ticker_hit_returns_single_verdict_llm_response(tmp_path, 
             "rationale":   "Strong quarter",
             "key_factors": ["catalyst:earnings", "direction:positive"],
             "is_no_data":  False,
+            "report": {
+                "summary": "Strong quarterly earnings with positive direction.",
+                "drivers": [
+                    {"name": "catalyst:earnings",  "direction": "bull", "weight": 0.6, "body": "Earnings beat expectations."},
+                    {"name": "direction:positive", "direction": "bull", "weight": 0.4, "body": "Positive price direction confirmed."},
+                ],
+            },
         },
         report=None,
         # originating_as_of omitted — defaults to None; write_cache expects

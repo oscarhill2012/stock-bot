@@ -18,7 +18,11 @@ from contract.evidence import AnalystVerdict
 
 
 def test_canned_good_verdict_validates() -> None:
-    """An LLM-shaped dict with closed-vocab tags parses cleanly to AnalystVerdict."""
+    """An LLM-shaped dict with closed-vocab tags parses cleanly to AnalystVerdict.
+
+    The ``report`` block is now required whenever ``is_no_data=False`` (D1.1),
+    so the canned dict must include it to represent a well-formed LLM output.
+    """
     raw = {
         "lean": "bullish",
         "magnitude": 0.6,
@@ -30,6 +34,13 @@ def test_canned_good_verdict_validates() -> None:
             "insider:cluster_buying",
         ],
         "is_no_data": False,
+        "report": {
+            "summary": "Raised guidance and CEO/CFO cluster buying together signal a bullish outlook.",
+            "drivers": [
+                {"name": "guidance:raised",          "direction": "bull", "weight": 0.5, "body": "Management raised forward guidance, signalling internal confidence."},
+                {"name": "insider:cluster_buying",   "direction": "bull", "weight": 0.5, "body": "CEO and CFO bought shares in the same window — cluster signal."},
+            ],
+        },
     }
     verdict = AnalystVerdict.model_validate(raw)
     assert verdict.lean == "bullish"
@@ -39,7 +50,10 @@ def test_canned_good_verdict_validates() -> None:
 
 
 def test_canned_bearish_verdict_with_insider_tags_validates() -> None:
-    """A bearish verdict with multiple insider + risk tags validates correctly."""
+    """A bearish verdict with multiple insider + risk tags validates correctly.
+
+    The ``report`` block is now required whenever ``is_no_data=False`` (D1.1).
+    """
     raw = {
         "lean": "bearish",
         "magnitude": 0.75,
@@ -53,6 +67,13 @@ def test_canned_bearish_verdict_with_insider_tags_validates() -> None:
             "risk:debt_refinance",
         ],
         "is_no_data": False,
+        "report": {
+            "summary": "Lowered guidance, defensive tone, and insider sales collectively point bearish.",
+            "drivers": [
+                {"name": "guidance:lowered",                   "direction": "bear", "weight": 0.4, "body": "Management cut forward guidance, citing macro headwinds."},
+                {"name": "insider:discretionary_sale_dominant","direction": "bear", "weight": 0.6, "body": "Discretionary insider sales dominate; no compensating buys observed."},
+            ],
+        },
     }
     verdict = AnalystVerdict.model_validate(raw)
     assert verdict.lean == "bearish"

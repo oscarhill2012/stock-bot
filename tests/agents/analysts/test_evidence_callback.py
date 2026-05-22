@@ -54,6 +54,14 @@ def test_writes_only_evidence_state_key():
                 "rationale": "trend intact",
                 "key_factors": ["rsi"],
                 "is_no_data": False,
+                # D1.1: report is required for non-no-data verdicts.
+                "report": {
+                    "summary": "Trend intact.",
+                    "drivers": [
+                        {"name": "rsi", "direction": "bull", "weight": 0.6, "body": "RSI supports uptrend."},
+                        {"name": "momentum", "direction": "bull", "weight": 0.4, "body": "Momentum confirming."},
+                    ],
+                },
             }
         ],
     }
@@ -95,6 +103,14 @@ def test_missing_verdict_synthesises_no_data_evidence():
                 "rationale": "trend",
                 "key_factors": [],
                 "is_no_data": False,
+                # D1.1: report is required for non-no-data verdicts.
+                "report": {
+                    "summary": "Trend intact.",
+                    "drivers": [
+                        {"name": "momentum", "direction": "bull", "weight": 0.6, "body": "Upward momentum."},
+                        {"name": "volume",   "direction": "bull", "weight": 0.4, "body": "Volume confirms."},
+                    ],
+                },
             },
             # MSFT verdict deliberately absent.
         ],
@@ -132,10 +148,19 @@ def test_extractor_called_with_per_ticker_slice():
         "tickers": ["AAPL", "MSFT"],
         "temp:technical_data": {"AAPL": {"price": 100}, "MSFT": {"price": 200}},
         "technical_verdicts": [
+            # D1.1: report is required for non-no-data verdicts.
             {"ticker": "AAPL", "lean": "neutral", "magnitude": 0.0,
-             "confidence": 0.0, "rationale": "x", "key_factors": [], "is_no_data": False},
+             "confidence": 0.0, "rationale": "x", "key_factors": [], "is_no_data": False,
+             "report": {"summary": "Neutral.", "drivers": [
+                 {"name": "s1", "direction": "neutral", "weight": 0.5, "body": "s1 body."},
+                 {"name": "s2", "direction": "neutral", "weight": 0.5, "body": "s2 body."},
+             ]}},
             {"ticker": "MSFT", "lean": "neutral", "magnitude": 0.0,
-             "confidence": 0.0, "rationale": "x", "key_factors": [], "is_no_data": False},
+             "confidence": 0.0, "rationale": "x", "key_factors": [], "is_no_data": False,
+             "report": {"summary": "Neutral.", "drivers": [
+                 {"name": "s1", "direction": "neutral", "weight": 0.5, "body": "s1 body."},
+                 {"name": "s2", "direction": "neutral", "weight": 0.5, "body": "s2 body."},
+             ]}},
         ],
     }
     cb = make_evidence_callback(
@@ -169,6 +194,14 @@ def test_verdict_fields_round_trip():
                 "rationale": "Death cross formed",
                 "key_factors": ["death cross", "volume surge"],
                 "is_no_data": False,
+                # D1.1: report is required for non-no-data verdicts.
+                "report": {
+                    "summary": "Death cross formed with volume surge; bearish.",
+                    "drivers": [
+                        {"name": "death_cross",  "direction": "bear", "weight": 0.6, "body": "50/200 MA death cross confirmed."},
+                        {"name": "volume_surge", "direction": "bear", "weight": 0.4, "body": "Volume surge on down-move."},
+                    ],
+                },
             }
         ],
     }

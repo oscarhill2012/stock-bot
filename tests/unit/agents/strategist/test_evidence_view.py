@@ -4,8 +4,24 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from agents.strategist.evidence_view import render_ticker_evidence
-from contract.evidence import AnalystEvidence, AnalystVerdict
+from contract.evidence import AnalystEvidence, AnalystReport, AnalystVerdict, ReportDriver
 from contract.ticker_evidence import AggregateVerdict, TickerEvidence
+
+
+def _stub_report(lean: str, analyst: str) -> AnalystReport:
+    """Build a minimal two-driver AnalystReport for test fixture use.
+
+    The D1.1 schema rule requires ``report`` whenever ``is_no_data=False``;
+    test helpers that construct non-no-data verdicts must supply one.
+    """
+    direction = {"bullish": "bull", "bearish": "bear", "neutral": "neutral"}[lean]
+    return AnalystReport(
+        summary=f"{analyst} leans {lean}.",
+        drivers=[
+            ReportDriver(name="primary_signal",  direction=direction, weight=0.6, body=f"{analyst} primary signal."),
+            ReportDriver(name="secondary_signal", direction=direction, weight=0.4, body=f"{analyst} secondary signal."),
+        ],
+    )
 
 
 def _ev(analyst: str, lean: str, conf: float, features: dict[str, float] | None = None,
@@ -19,6 +35,7 @@ def _ev(analyst: str, lean: str, conf: float, features: dict[str, float] | None 
         verdict=AnalystVerdict(
             lean=lean, magnitude=conf, confidence=conf,
             rationale=f"{analyst} {lean}", key_factors=[],
+            report=_stub_report(lean, analyst),
         ),
     )
 
@@ -141,6 +158,7 @@ def test_long_rationale_is_truncated_with_ellipsis():
             confidence=0.7,
             rationale=long_text,
             key_factors=[],
+            report=_stub_report("bullish", "technical"),
         )}),
     }})
     out = render_ticker_evidence([te_long])

@@ -476,7 +476,7 @@ def derive_technical_verdict(
     # Deferred runtime imports — avoids the circular import that arises when
     # loading this module triggers agents.analysts.__init__ (which re-imports
     # this module before it has finished initialising).
-    from contract.evidence import AnalystVerdict  # noqa: PLC0415
+    from contract.evidence import AnalystReport, AnalystVerdict, ReportDriver  # noqa: PLC0415
 
     # --- No-data fingerprint --------------------------------------------------
     # The extractor emits all-zero features when price history is missing.
@@ -587,6 +587,53 @@ def derive_technical_verdict(
     # --- Rationale -----------------------------------------------------------
     rationale = (", ".join(factors) or "neutral")[:160]
 
+    # --- Synthetic AnalystReport -----------------------------------------------
+    # Structured analysts have no LLM prose, but the schema requires ``report``
+    # whenever ``is_no_data=False``.  Build a minimal report from the
+    # deterministic signals so the uniform contract holds.
+    direction_map    = {"bullish": "bull", "bearish": "bear", "neutral": "neutral"}
+    driver_direction = direction_map[lean]
+
+    # Evenly distribute weight across factors; guard against empty list.
+    driver_factors = factors if factors else [lean]
+    n_factors      = len(driver_factors)
+    even_weight    = round(1.0 / n_factors, 4)
+
+    # Build one ReportDriver per key_factor, referencing the observed RSI/pct values.
+    drivers = [
+        ReportDriver(
+            name=factor[:69],
+            direction=driver_direction,
+            weight=even_weight,
+            body=(
+                f"Technical signal: {factor} "
+                f"(rsi={rsi:.1f}, pct20={pct20:.3f})"
+            )[:575],
+        )
+        for factor in driver_factors
+    ]
+
+    # AnalystReport requires at least 2 drivers; pad when only one factor fired
+    # (e.g. lean is neutral with no momentum or RSI extremes).
+    if len(drivers) < 2:
+        drivers.append(
+            ReportDriver(
+                name="overall_lean",
+                direction=driver_direction,
+                weight=even_weight,
+                body=(
+                    f"20d change {pct20:.3f}, RSI {rsi:.1f}, "
+                    f"vol_ratio {vol_ratio:.2f}"
+                )[:575],
+            )
+        )
+
+    summary = (
+        f"Technical analysis leans {lean}: {rationale}."
+    )[:1150]
+
+    report = AnalystReport(summary=summary, drivers=drivers[:4])
+
     return AnalystVerdict(
         lean=lean,
         magnitude=magnitude,
@@ -594,4 +641,5 @@ def derive_technical_verdict(
         rationale=rationale,
         key_factors=factors,
         is_no_data=False,
+        report=report,
     )
