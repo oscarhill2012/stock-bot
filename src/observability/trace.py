@@ -7,11 +7,13 @@ routes through ``_trace_maybe(state, ...)``.  Production tick state has no
 """
 from __future__ import annotations
 
-import contextlib
 import json
+import logging
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class TraceWriter:
@@ -158,10 +160,18 @@ def _trace_maybe(
     if tw is None:
         return
 
-    # Route to the writer; any serialisation errors are silently swallowed so
-    # the no-op *production* path is never affected by trace-side failures.
-    with contextlib.suppress(Exception):
+    # Route to the writer; serialisation errors are logged but otherwise
+    # swallowed so the no-op *production* path is never affected by
+    # trace-side failures.  The previous silent suppress hid a tick-1
+    # ``03_strategist`` drop in baseline-2025-09; the explicit log puts
+    # any future drop on the operator's radar.
+    try:
         tw.snapshot(label, payload, state_keys=state_keys)
+    except Exception:
+        _LOGGER.exception(
+            "trace writer snapshot failed for label=%s — run continues",
+            label,
+        )
 
 
 # ── Shared LLM trace callback factory ────────────────────────────────────────
