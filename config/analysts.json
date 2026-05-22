@@ -11,7 +11,8 @@
     "max_insider_footnote_chars": 400
   },
   "output_caps": {
-    "verdict_rationale_max_chars":   200,
+    "verdict_rationale_max_chars":             200,
+    "verdict_rationale_prompt_headroom_chars":  50,
     "report_summary_max_chars":     1000,
     "report_driver_name_max_chars":   60,
     "report_driver_body_max_chars": 500

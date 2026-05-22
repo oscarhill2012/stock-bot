@@ -231,6 +231,7 @@ their `Field(max_length=...)` via `AnalystsConfig.schema_cap()`.
 | Setting | Type | Meaning |
 |---|---|---|
 | `output_caps.verdict_rationale_max_chars` | int [50–1000] | Cap on `AnalystVerdict.rationale` — one-line summary of the dominant catalyst/finding. Default 160. |
+| `output_caps.verdict_rationale_prompt_headroom_chars` | int | Headroom subtracted from the schema cap to derive the prompt-facing rationale budget. Keeps the LLM's natural overshoot inside the +slack_percent schema cap. Default 50 — raise if a future LLM tightens its character-counting; lower toward 0 if you want the LLM to use the full cap. |
 | `output_caps.report_summary_max_chars` | int [200–8000] | Cap on `AnalystReport.summary` — the 3–5 sentence gestalt that argues the lean. Default 2000. |
 | `output_caps.report_driver_name_max_chars` | int [20–200] | Cap on `ReportDriver.name` — short label (4–6 words). Default 60. |
 | `output_caps.report_driver_body_max_chars` | int [100–4000] | Cap on `ReportDriver.body` — 2–3 sentence explanation per driver. Default 1000. |
