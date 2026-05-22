@@ -34,11 +34,13 @@ def test_record_has_expected_top_level_keys() -> None:
     assert expected == set(record.keys())
 
     expected_tripwires = {
+        # Actionable keys.
         "wall_clock_fallback_fired",
         "any_filter_key_after_as_of",
-        "open_tick_sameday_bar",
-        "midnight_utc_timestamps_seen",
         "missing_timestamp_rows_seen",
+        # Advisory keys — benign by design; excluded from actionable counts.
+        "open_tick_sameday_bar_advisory",
+        "midnight_utc_timestamps_seen_advisory",
     }
     assert expected_tripwires == set(record["tripwires"].keys())
 
