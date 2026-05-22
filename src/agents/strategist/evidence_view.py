@@ -62,9 +62,28 @@ def _format_per_analyst(te: TickerEvidence) -> list[str]:
             lines.append(f"  - {analyst:<12} (missing)")
             continue
 
+        # M3 — drop dead Social rows.  Social has no live provider; the
+        # strategist was reading ``[Social] is_no_data: true`` × 20
+        # tickers as dead attention.  Skip emitting the row entirely
+        # when the verdict is no-data; populated Social verdicts still
+        # render via the normal path below.
+        if analyst == "social" and ev.verdict.is_no_data:
+            continue
+
         if ev.verdict.is_no_data:
             # No-data verdict — no features were available; signal to LLM explicitly.
             lines.append(f"  - {analyst:<12} no_data")
+            continue
+
+        # D1.3 — defence-in-depth: surface the absence of a report
+        # block when the verdict claims data but the report field is
+        # somehow None.  D1.1 closes this loophole at the schema; this
+        # branch fires only on a future regression and makes the gap
+        # immediately visible in the rendered evidence block.
+        if not ev.verdict.is_no_data and ev.verdict.report is None:
+            lines.append(
+                f"  - {analyst:<12} (no report this tick — analyst compliance failure)"
+            )
             continue
 
         # Truncate rationale to keep the per-analyst line compact, but emit a
