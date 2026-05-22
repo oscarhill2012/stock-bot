@@ -76,11 +76,14 @@ def test_news_per_ticker_prompt_contains_config_rationale_cap():
     branch = build_news_branch_for_ticker("AAPL", h.news_vocabulary)
     llm = _walk_to_llm_agent(branch)
 
-    cap = get_analysts_config().output_caps.verdict_rationale_max_chars
+    # H4 (Spec A): the prompt now carries the *derived* prompt budget
+    # (verdict_rationale_prompt_budget = max_chars − headroom), not the raw
+    # schema cap.  Assert the budget value, not verdict_rationale_max_chars.
+    cap = get_analysts_config().output_caps.verdict_rationale_prompt_budget
 
     assert str(cap) in llm.instruction, (
         f"News per-ticker instruction does not carry the configured rationale "
-        f"cap ({cap} chars).  The output_caps config path is broken — check "
+        f"prompt budget ({cap} chars).  The output_caps config path is broken — check "
         f"build_news_instruction() in src/agents/analysts/news/prompts.py."
     )
 
@@ -92,11 +95,14 @@ def test_fundamental_per_ticker_prompt_contains_config_rationale_cap():
     branch = build_fundamental_branch_for_ticker("AAPL", h.fundamental_vocabulary)
     llm = _walk_to_llm_agent(branch)
 
-    cap = get_analysts_config().output_caps.verdict_rationale_max_chars
+    # H4 (Spec A): the prompt now carries the *derived* prompt budget
+    # (verdict_rationale_prompt_budget = max_chars − headroom), not the raw
+    # schema cap.  Assert the budget value, not verdict_rationale_max_chars.
+    cap = get_analysts_config().output_caps.verdict_rationale_prompt_budget
 
     assert str(cap) in llm.instruction, (
         f"Fundamental per-ticker instruction does not carry the configured "
-        f"rationale cap ({cap} chars).  Check "
+        f"rationale prompt budget ({cap} chars).  Check "
         f"build_fundamental_instruction() in "
         f"src/agents/analysts/fundamental/prompts.py."
     )
