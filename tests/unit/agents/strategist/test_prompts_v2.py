@@ -69,8 +69,10 @@ def test_template_documents_lifecycle_hint_rules():
     # explicit because they each carry a distinct reason field.
     assert "CLOSE" in text and "TRIM" in text
 
-    # Non-zero stances require the exit-discipline triple.
-    assert "non-zero" in text
+    # Any held position requires the exit-discipline triple — the HOLD row
+    # in the lifecycle table documents this (R5 removed the old "non-zero"
+    # prose; the table is now the single source of truth).
+    assert "HOLD" in text
     assert "horizon" in text
     assert "target_price" in text
     assert "stop_price" in text
