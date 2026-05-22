@@ -552,20 +552,22 @@ def log_cache_hit_to_state(
     input_hash: str,
     originating_as_of: str | None,
 ) -> None:
-    """Append a cache-hit record to ``state['_report_cache_hits_for_audit']``.
+    """No-op — audit drains report-cache hits from ``obs/logs/`` since S3.
 
-    Called by analyst code immediately after a ``read_cache`` hit.  The
-    driver drains the list at end-of-tick into the telemetry record.
+    The previous direct ``state.setdefault(...)`` mutation from inside
+    per-ticker sub-agents was not reliably propagated through ADK's
+    session merge; the audit count drifted from the structured-log
+    count.  The audit now reads ``obs/logs/`` (Rule 8 — observability is
+    additive) so the in-state list is no longer the source of truth.
 
-    This is informational only — same inputs always imply the same verdict
-    by construction of ``input_hash``, so a differing ``originating_as_of``
-    is not an error.  The audit surface uses it to flag that the cached
-    computation was originally run under a different historical clock.
+    The structured ``report_cache_hit`` log emit (in
+    ``agents.analysts.cache_callbacks``) remains the single source of
+    truth and is unchanged.
 
     Parameters
     ----------
     state:
-        ADK session state for this tick.
+        ADK session state for this tick (no longer written to).
     analyst:
         Name of the analyst that produced the cached verdict.
     ticker:
@@ -576,10 +578,5 @@ def log_cache_hit_to_state(
         ISO-8601 string of the ``as_of`` at the time the verdict was first
         computed, or ``None`` if not recorded (older cache entries).
     """
-    bucket: list[dict] = state.setdefault("_report_cache_hits_for_audit", [])
-    bucket.append({
-        "analyst":           analyst,
-        "ticker":            ticker,
-        "input_hash":        input_hash,
-        "originating_as_of": originating_as_of,
-    })
+
+    return None

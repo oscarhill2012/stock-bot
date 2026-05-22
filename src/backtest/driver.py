@@ -344,12 +344,17 @@ class Driver:
             # clock during this tick — surfaces directly on the tripwire.
             wallclock_fallback_count = drain_wallclock_fallback_count()
 
+            # Drain cache hits from the log buffer *before* drain_tick resets it.
+            # Previously sourced from ``state["_report_cache_hits_for_audit"]``
+            # which was silently dropped by ADK's session merge (S3 fix).
+            report_cache_hits = self._drain_logs_cache_hits()
+
             telemetry = build_telemetry_record(
                 tick=tick,
                 run_id=self._run_id,
                 strict_mode=os.environ.get("STOCKBOT_STRICT_AS_OF") == "1",
                 per_domain=per_domain,
-                report_cache_hits=state.get("_report_cache_hits_for_audit", []),
+                report_cache_hits=report_cache_hits,
                 db_writes_recorded_at={},
                 wall_clock_fallback_fired=wallclock_fallback_count > 0,
             )
@@ -367,14 +372,47 @@ class Driver:
                 tick_id   = state["tick_id"],
             )
 
-            # Reset the per-tick report-cache-hits capture for the next tick.
-            state.pop("_report_cache_hits_for_audit", None)
-
         self._write_manifest_status(
             "completed_with_failures" if self._failed else "completed",
         )
 
     # ── private helpers ────────────────────────────────────────────────────────
+
+    def _drain_logs_cache_hits(self) -> list[dict]:
+        """Return the report-cache-hit list for the current tick.
+
+        Inspects the in-memory log buffer that ``drain_tick`` is about to
+        flush; counts ``report_cache_hit`` messages and returns one placeholder
+        dict per hit so the audit ``len(report_cache_hits)`` contract is
+        preserved.
+
+        Must be called *before* ``drain_tick`` because ``drain_tick`` resets
+        the buffer as part of ``drain_to_file``.
+
+        The log handler buffer (``TickBufferedLogHandler._buffer``) holds one
+        ``dict`` per emitted record, each with a ``"message"`` key that is
+        already fully-formatted by ``record.getMessage()`` at emit time.
+
+        Returns an empty list when the log handler is not available (e.g.,
+        isolated unit tests that do not call ``install_observability``).
+        """
+
+        # ``self._obs_handles`` is set unconditionally in ``__init__`` via
+        # ``install_observability``.  The ``hasattr`` guard is a defensive belt-
+        # and-braces for subclass or mock scenarios.
+        if not hasattr(self, "_obs_handles"):
+            return []
+
+        log_handler = self._obs_handles.log_handler
+        # ``TickBufferedLogHandler._buffer`` is a list[dict]; each dict carries
+        # at minimum ``ts``, ``level``, ``logger``, ``message`` fields.
+        raw_buffer = getattr(log_handler, "_buffer", None) or []
+
+        return [
+            {"event": "report_cache_hit"}
+            for ev in raw_buffer
+            if isinstance(ev, dict) and ev.get("message") == "report_cache_hit"
+        ]
 
     async def _run_one_tick(self, state: dict) -> None:
         """Drive the pipeline once via ADK's Runner + InMemorySessionService.
