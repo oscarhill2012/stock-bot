@@ -11,6 +11,7 @@ and reference these files by relative path (resolved from the project root).
 | `analysts.json` | Per-analyst input caps + LLM output caps + report cache toggle | `src/config/analysts.py` (`get_analysts_config()`) |
 | `schedule.json` | Tick cadence — how many ticks per day and their ET times | `src/config/schedule.py` (`get_schedule_config()`) |
 | `strategist.json` | Character caps on strategist LLM free-text fields | `src/config/strategist.py` (`get_strategist_config()`) |
+| `risk_gate.json` | Five position-sizing constraints for the risk gate | `src/config/risk_gate.py` (`get_risk_gate_config()`) |
 | `models.json` | LLM + embedding model IDs for every model-using component | `src/config/models.py` (`get_models_config()`) |
 | `llm_retry.json` | Backoff + retry policy applied to every LLM agent call (Vertex 429 handling) | `src/config/llm_retry.py` (`get_retry_config()`) |
 | `backtest_windows.json` | Era-keyed historical date windows for the backtest harness | `src/backtest/windows.py` (`load_windows()`) |
@@ -336,6 +337,38 @@ load, so the prompt-facing caps the LLM is told are always the values from
 this file. The schema's `Field(max_length=...)` is then derived from those
 values via `StrategistConfig.schema_cap()` (see `slack_percent` above) —
 the two-tier gap is intentional and load-bearing; do not "fix" it.
+
+---
+
+## `risk_gate.json` — risk-gate position-sizing constraints
+
+The five hard limits applied by `src/agents/risk_gate/constraints.py` to
+every proposed portfolio before orders are generated.  Centralised here so
+they are operator-tunable without a code change.
+
+Loaded at import time by `src/config/risk_gate.py::get_risk_gate_config()`
+(`lru_cache(maxsize=1)`) and re-exported as module-level constants from
+`src/orchestrator/state.py` (e.g. `MAX_DELTA_PER_TICKER`) so every
+existing `from orchestrator.state import …` call site keeps working
+unchanged.  A process restart is required after edits.
+
+| Setting | Type | Default | Meaning |
+|---|---|---|---|
+| `min_held_weight` | float [0.0–0.10] | 0.001 | Minimum weight above which a position is counted as "open". Below this threshold a position is treated as closed for telemetry purposes. |
+| `max_position_weight` | float (0.0–1.0] | 0.20 | Single-ticker concentration cap — no ticker may hold more than this fraction of the portfolio after the gate runs. |
+| `cash_floor_weight` | float [0.0–0.50] | **0.00** (R1) | Minimum cash reserve fraction. When total invested weight would exceed `1 − cash_floor_weight`, all weights are scaled down proportionally. Set to `0.00` (R1 — raised from `0.10`) to let the strategist be fully invested during the post-baseline backtest. |
+| `max_delta_per_ticker` | float (0.0–1.0] | **0.05** (R2) | Maximum weight change per tick per ticker. Widened from `0.01` to `0.05` (R2) so the gate does not force unrealistically slow entry/exit ramps during backtest evaluation. |
+| `max_total_turnover` | float (0.0–2.0] | **0.50** (R3) | Maximum total portfolio turnover per tick (sum of absolute weight changes across all tickers). Raised from `0.30` to `0.50` (R3) to match the wider per-ticker delta ceiling. |
+
+**R1/R2/R3 rationale.**  The original values (`cash_floor=0.10`,
+`max_delta=0.01`, `max_turnover=0.30`) were conservative placeholders
+chosen before any backtest data existed.  After the baseline run the gate
+was so tight that the strategist was unable to meaningfully adjust
+positions within a single tick — the observed turnover ceiling was the
+binding constraint on every tick.  The relaxed envelope (R1+R2+R3) gives
+the strategist room to express its views across a one- or two-tick horizon
+without artificially suppressing its ability to enter or exit.  The
+constraint logic itself is unchanged — only these threshold values move.
 
 ---
 

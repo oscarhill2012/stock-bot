@@ -6,12 +6,19 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 # ── Risk-gate constants ───────────────────────────────────────────────────────
-MIN_HELD_WEIGHT: float    = 0.001   # position is considered "open" above this threshold
-MAX_POSITION_WEIGHT: float = 0.20   # single-ticker concentration cap
-CASH_FLOOR_WEIGHT: float   = 0.10   # minimum cash reserve fraction
-MAX_DELTA_PER_TICKER: float = 0.01  # maximum weight change per tick per ticker
-MAX_TOTAL_TURNOVER: float  = 0.30   # maximum total portfolio turnover per tick
-ORDER_EPSILON: float       = 1e-6   # weight change below this is ignored (no order generated)
+# Resolved from ``config/risk_gate.json`` at import time so every existing
+# ``from orchestrator.state import MAX_DELTA_PER_TICKER`` etc. site keeps
+# working unchanged after the R4 migration.  See ``src/config/risk_gate.py``.
+from config.risk_gate import get_risk_gate_config as _get_risk_cfg
+
+_risk = _get_risk_cfg()
+
+MIN_HELD_WEIGHT:      float = _risk.min_held_weight        # open-position threshold
+MAX_POSITION_WEIGHT:  float = _risk.max_position_weight    # single-ticker concentration cap
+CASH_FLOOR_WEIGHT:    float = _risk.cash_floor_weight      # minimum cash reserve fraction
+MAX_DELTA_PER_TICKER: float = _risk.max_delta_per_ticker   # maximum weight change per tick per ticker
+MAX_TOTAL_TURNOVER:   float = _risk.max_total_turnover     # maximum total portfolio turnover per tick
+ORDER_EPSILON:        float = 1e-6                          # weight change below this is ignored (no order generated)
 
 
 # ── Orders + clamp telemetry ──────────────────────────────────────────────────
