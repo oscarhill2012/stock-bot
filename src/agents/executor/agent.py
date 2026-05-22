@@ -94,66 +94,88 @@ class ExecutorAgent(BaseAgent):
                         thesis_dict["opened_price"] = fill.price
                         positions[order.ticker] = thesis_dict
 
-                # SELL: write the closing trade-log entry and remove from the position book.
+                # SELL: conditionally write the trade-log entry and remove from the
+                # position book — but only when the position is truly closed.
+                #
+                # We use the broker as the post-fill source of truth rather than
+                # computing (prior_qty - fill.quantity) ourselves.  This is
+                # intentional: in a concurrent environment another fill could land
+                # in the same tick and our local arithmetic would be wrong.  The
+                # broker already performed the subtraction atomically, so
+                # get_portfolio() is the only honest answer.
                 elif order.action == "SELL" and order.ticker in positions:
-                    thesis = positions.get(order.ticker)
-                    if thesis and self.db_session:
-                        from orchestrator.persistence import save_trade_log_entry
 
-                        opened_price = (
-                            thesis.get("opened_price") if isinstance(thesis, dict)
-                            else thesis.opened_price
-                        )
-                        opened_at_raw = (
-                            thesis.get("opened_at") if isinstance(thesis, dict)
-                            else thesis.opened_at
-                        )
-                        # Normalise opened_at to a datetime object for SQLAlchemy.
-                        opened_at_dt = (
-                            datetime.fromisoformat(opened_at_raw)
-                            if isinstance(opened_at_raw, str)
-                            else opened_at_raw
-                        )
-                        # Use state["as_of"] if present (backtest replay) so
-                        # holding_hours is deterministic against historical ticks.
-                        # Fall back to wall-clock on live runs.
-                        raw_as_of = state.get("as_of")
-                        closed_at = resolve_as_of(
-                            raw_as_of if isinstance(raw_as_of, datetime) else None,
-                            allow_wallclock=True,
-                            site="executor/agent",
-                        )
-                        holding_hours = int(
-                            (closed_at - opened_at_dt).total_seconds() / 3600
-                        )
-                        pnl_pct = (fill.price - opened_price) / opened_price * 100
+                    # Query the broker for the quantity remaining after the fill.
+                    portfolio_after = await self.broker.get_portfolio()
+                    remaining_qty = (
+                        portfolio_after.positions.get(order.ticker).quantity
+                        if order.ticker in portfolio_after.positions
+                        else 0.0
+                    )
 
-                        save_trade_log_entry(self.db_session, {
-                            "ticker":              order.ticker,
-                            "opened_at":           opened_at_dt,
-                            "closed_at":           closed_at,
-                            "opened_price":        opened_price,
-                            "closed_price":        fill.price,
-                            "pnl_dollar":          (fill.price - opened_price) * fill.quantity,
-                            "pnl_pct":             pnl_pct,
-                            "holding_period_hours": holding_hours,
-                            "horizon_intent":      thesis.get("horizon") if isinstance(thesis, dict) else thesis.horizon,
-                            "opened_tag":          thesis.get("opened_tag") if isinstance(thesis, dict) else thesis.opened_tag,
-                            "closed_tag":          state.get("strategist_decision", {}).get("decision_tag", "unknown"),
-                            "opened_rationale":    thesis.get("rationale") if isinstance(thesis, dict) else thesis.rationale,
-                            "close_reason":        state.get("strategist_decision", {}).get("close_reasons", {}).get(order.ticker, ""),
-                            "catalyst_realised":   False,
-                            # FK columns linking this trade back to the deliberation ticks
-                            # that opened and closed the position (added in Plan C, task C11).
-                            "opening_tick_id": (
-                                thesis.get("opened_tick_id") if isinstance(thesis, dict)
-                                else getattr(thesis, "opened_tick_id", None)
-                            ) or None,
-                            "closing_tick_id": state.get("tick_id"),
-                        })
+                    if remaining_qty <= 0.0:
+                        # True close — persist the trade log and clear the slot.
+                        thesis = positions.get(order.ticker)
+                        if thesis and self.db_session:
+                            from orchestrator.persistence import save_trade_log_entry
 
-                    # Remove from the live position book.
-                    del positions[order.ticker]
+                            opened_price = (
+                                thesis.get("opened_price") if isinstance(thesis, dict)
+                                else thesis.opened_price
+                            )
+                            opened_at_raw = (
+                                thesis.get("opened_at") if isinstance(thesis, dict)
+                                else thesis.opened_at
+                            )
+                            # Normalise opened_at to a datetime object for SQLAlchemy.
+                            opened_at_dt = (
+                                datetime.fromisoformat(opened_at_raw)
+                                if isinstance(opened_at_raw, str)
+                                else opened_at_raw
+                            )
+                            # Use state["as_of"] if present (backtest replay) so
+                            # holding_hours is deterministic against historical ticks.
+                            # Fall back to wall-clock on live runs.
+                            raw_as_of = state.get("as_of")
+                            closed_at = resolve_as_of(
+                                raw_as_of if isinstance(raw_as_of, datetime) else None,
+                                allow_wallclock=True,
+                                site="executor/agent",
+                            )
+                            holding_hours = int(
+                                (closed_at - opened_at_dt).total_seconds() / 3600
+                            )
+                            pnl_pct = (fill.price - opened_price) / opened_price * 100
+
+                            save_trade_log_entry(self.db_session, {
+                                "ticker":              order.ticker,
+                                "opened_at":           opened_at_dt,
+                                "closed_at":           closed_at,
+                                "opened_price":        opened_price,
+                                "closed_price":        fill.price,
+                                "pnl_dollar":          (fill.price - opened_price) * fill.quantity,
+                                "pnl_pct":             pnl_pct,
+                                "holding_period_hours": holding_hours,
+                                "horizon_intent":      thesis.get("horizon") if isinstance(thesis, dict) else thesis.horizon,
+                                "opened_tag":          thesis.get("opened_tag") if isinstance(thesis, dict) else thesis.opened_tag,
+                                "closed_tag":          state.get("strategist_decision", {}).get("decision_tag", "unknown"),
+                                "opened_rationale":    thesis.get("rationale") if isinstance(thesis, dict) else thesis.rationale,
+                                "close_reason":        state.get("strategist_decision", {}).get("close_reasons", {}).get(order.ticker, ""),
+                                "catalyst_realised":   False,
+                                # FK columns linking this trade back to the deliberation ticks
+                                # that opened and closed the position (added in Plan C, task C11).
+                                "opening_tick_id": (
+                                    thesis.get("opened_tick_id") if isinstance(thesis, dict)
+                                    else getattr(thesis, "opened_tick_id", None)
+                                ) or None,
+                                "closing_tick_id": state.get("tick_id"),
+                            })
+
+                        # Remove from the live position book.
+                        del positions[order.ticker]
+
+                    # else: partial trim — broker still holds shares, so the
+                    # position thesis is preserved and no trade-log row is emitted.
 
             except BrokerRejection as e:
                 exec_record = Execution(
