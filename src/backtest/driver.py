@@ -255,6 +255,48 @@ class Driver:
                 await self._broker.get_portfolio()
             ).model_dump(mode="json")
 
+            # ── Phase 2 PIT contract: refresh reference_prices per tick ──────
+            # The Phase 1 seed in Runner._run_async pre-loads the full window
+            # unfiltered (as_of=None) as a safety net, but that means a tick
+            # at day N can see ETF bars for day N+1 through window_end, which
+            # is lookahead bias for every relative-strength feature.
+            #
+            # Here we re-seed from the store scoped to bars up to (and
+            # including) tick.as_of so the technical extractor only ever sees
+            # data that would have been observable at that exact moment.
+            # The window bounds are set to the whole window so warm-up bars
+            # before tick.as_of are still available for rolling calculations.
+            try:
+                from backtest.providers._store_handle import get_store as _get_ref_store
+                from backtest.runner import _seed_reference_prices
+
+                _ref_store = _get_ref_store()
+
+                # ``window_start`` is not carried in driver state; use a
+                # conservative 365-day lookback window so warm-up bars are
+                # included.  Bars after ``tick.as_of`` are stripped by the
+                # PIT clamp inside ``_seed_reference_prices``.
+                from datetime import timedelta
+                _wstart = tick.as_of.date() - timedelta(days=365)
+
+                _ref = _seed_reference_prices(
+                    store=_ref_store,
+                    window_start=_wstart,
+                    window_end=tick.as_of.date(),
+                    as_of=tick.as_of,
+                )
+                # Dump to JSON-safe dicts — mirrors how Runner._run_async
+                # seeds the initial state (SqlSessionService cannot serialise
+                # Pydantic objects; the technical extractor coerces back on read).
+                state["reference_prices"] = {
+                    sym: ph.model_dump(mode="json") for sym, ph in _ref.items()
+                }
+            except RuntimeError:
+                # Store handle not initialised (e.g. isolated unit tests that
+                # construct Driver without a real cache) — leave reference_prices
+                # unchanged so those paths do not break.
+                pass
+
             try:
                 await self._run_one_tick(state)
             except Exception as exc:
