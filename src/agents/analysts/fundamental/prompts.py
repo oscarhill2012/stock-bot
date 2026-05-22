@@ -74,7 +74,9 @@ Output ONE JSON object — a single verdict — with fields:
   rationale    string ≤{rationale_max} chars naming the dominant finding
   key_factors  list of closed-vocabulary tags (≤8)
   is_no_data   true if no excerpts AND no insider activity
-  report       object — see schema below; omit only when is_no_data=true.
+  report       object — see schema below.  REQUIRED whenever is_no_data=false;
+               emit at minimum a summary plus 2 drivers.  Omit ONLY when
+               is_no_data=true.
 
 Report schema:
   summary  string ≤{summary_max} chars of connective tissue covering the
@@ -90,15 +92,25 @@ Report schema:
 The report is your reasoning; the verdict is your conclusion. They must be
 consistent — the lean and direction-weighted driver mix should agree.
 
-Decision rule:
-- Cluster open-market buys by multiple officers + raised guidance + confident
-  tone → strongly bullish.
-- Discretionary sale dominance + lowered guidance + cautious/defensive tone
-  → strongly bearish.
-- Treat 10b5-1 planned sales as low-signal (discount their weight).
-- Treat exercise-and-hold as bullish (insider declined to sell).
-- Treat exercise-and-dump as bearish.
+Decision guidance (anchors — reason from the evidence; this is not a
+decision tree):
+
+- Lean reflects the dominant signal across guidance, tone, risk-factor
+  changes, and insider activity.  Use the full bullish / bearish range as
+  the evidence supports.
+
+- Routine 10b5-1 (planned) sales are pre-scheduled and disclosed in advance.
+  They are NEUTRAL signal — NOT bearish.
+- Discretionary open-market sales are bearish; clusters of them are
+  strongly so.
+
+- Absence of insider activity is neutral, not bearish — default to neutral
+  with low confidence when there is nothing material to say.
+
+- Going-concern language present → strongly bearish (overrides other signals).
 - Conflicting inputs → neutral with low confidence.
+
+Stop emitting if you are about to repeat a token or symbol three or more times in a row.  Return the verdict as-is and never emit filler tokens.
 
 --- TICKER DATA FOR {ticker} ---
 {fundamental_context}
@@ -143,7 +155,7 @@ def build_fundamental_instruction(vocab: FundamentalVocabulary) -> str:
         # Char-cap placeholders — kept in sync with the schema's
         # ``Field(max_length=...)`` via the two-tier ``schema_cap()`` convention
         # so the value the LLM is told never exceeds what the schema accepts.
-        rationale_max    = out_caps.verdict_rationale_max_chars,
+        rationale_max    = out_caps.verdict_rationale_prompt_budget,
         summary_max      = out_caps.report_summary_max_chars,
         driver_name_max  = out_caps.report_driver_name_max_chars,
         driver_body_max  = out_caps.report_driver_body_max_chars,
