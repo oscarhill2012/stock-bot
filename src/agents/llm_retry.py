@@ -57,7 +57,7 @@ The retry policy is read from ``config/llm_retry.json`` via
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from typing import Any
 
 from google.adk.agents import BaseAgent
@@ -65,7 +65,7 @@ from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event
 from tenacity import (
     AsyncRetrying,
-    before_sleep_log,
+    RetryCallState,
     retry_if_exception,
     stop_after_attempt,
     wait_exponential_jitter,
@@ -74,6 +74,44 @@ from tenacity import (
 from config.llm_retry import RetryConfig, get_retry_config
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _make_before_sleep(name: str) -> Callable[[RetryCallState], None]:
+    """Build a tenacity ``before_sleep`` hook that names the wrapped agent.
+
+    The stock ``before_sleep_log`` helper emits records with no hook
+    for the wrapped agent's identity; later log analysis cannot tell
+    which agent retried without an adjacent-row heuristic.  Capturing
+    the agent name at wrapper-construction time means every retry
+    record carries it.
+
+    Parameters
+    ----------
+    name:
+        The inner agent's ``.name`` — captured by closure so the hook
+        knows which agent is retrying without consulting the
+        ``RetryCallState``.
+
+    Returns
+    -------
+    Callable
+        A function suitable for ``AsyncRetrying(..., before_sleep=...)``.
+    """
+
+    def _hook(retry_state: RetryCallState) -> None:
+        exc = (
+            retry_state.outcome.exception()
+            if retry_state.outcome is not None
+            else None
+        )
+        _LOGGER.warning(
+            "Retrying %s after %s (attempt %s)",
+            name,
+            type(exc).__name__ if exc else "<unknown>",
+            retry_state.attempt_number,
+        )
+
+    return _hook
 
 
 def _is_resource_exhausted(exc: BaseException) -> bool:
@@ -174,7 +212,7 @@ class RetryingAgentWrapper(BaseAgent):
     def __init__(
         self,
         *,
-        name:         str,
+        name:         str | None = None,
         inner:        Any,
         retry_config: RetryConfig | None = None,
     ) -> None:
@@ -185,7 +223,9 @@ class RetryingAgentWrapper(BaseAgent):
         name:
             ADK agent name — surfaced in traces and event metadata.
             Conventional pattern is ``"<InnerName>Retrying"`` so the
-            wrapping is obvious in a trace dump.
+            wrapping is obvious in a trace dump.  If omitted, defaults
+            to ``"<inner.name>Retrying"`` so callers can omit it and
+            still get a meaningful name in traces.
         inner:
             The inner agent instance.
         retry_config:
@@ -195,6 +235,10 @@ class RetryingAgentWrapper(BaseAgent):
             delays so the test suite stays fast.
         """
 
+        # Derive a meaningful wrapper name from the inner agent if the
+        # caller omitted it — avoids anonymous ``None`` in trace dumps.
+        resolved_name = name if name is not None else f"{inner.name}Retrying"
+
         # Resolve the config eagerly rather than on every retry — saves
         # one disk read per attempt and matches the
         # ``get_models_config()`` pattern used elsewhere.
@@ -203,7 +247,7 @@ class RetryingAgentWrapper(BaseAgent):
         # Pass every field through super().__init__() so Pydantic sets
         # them via its normal validated path.
         super().__init__(
-            name         = name,
+            name         = resolved_name,
             inner        = inner,
             retry_config = cfg,
         )
@@ -261,7 +305,7 @@ class RetryingAgentWrapper(BaseAgent):
                 max     = self.retry_config.max_delay_seconds,
             ),
             retry       = retry_if_exception(_is_resource_exhausted),
-            before_sleep = before_sleep_log(_LOGGER, logging.WARNING),
+            before_sleep = _make_before_sleep(self.inner.name),
             reraise     = True,
         ):
             with attempt:
