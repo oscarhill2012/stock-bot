@@ -366,7 +366,7 @@ def _write_metrics(
         f"- Max drawdown: **{max_dd:+.2%}**\n"
         f"- vs-SPY delta: {vs_spy_str}\n"
         f"- Win rate: {win_rate_str}\n"
-        f"- Total fills: **{fill_count}**\n"
+        f"- Closed round-trips: **{fill_count}**\n"
         f"- Ticks recorded: **{len(series)}**\n",
         encoding="utf-8",
     )
@@ -577,17 +577,21 @@ def _aggregate_obs_artefacts(obs_dir: Path) -> dict | None:
                 attrs = span.get("attributes", {}) or {}
                 name  = span.get("name", "")
 
-                # Token usage lives on ``generate_content`` spans only.
-                if name == "generate_content":
+                # Token usage lives on ``generate_content`` spans only.  ADK
+                # emits them as ``generate_content <model_id>`` (e.g.
+                # ``generate_content gemini-2.5-flash-lite``); use a prefix
+                # match so the model-id suffix doesn't reject the span.
+                if name.startswith("generate_content"):
                     generate_spans += 1
                     input_tokens   += int(attrs.get("gen_ai.usage.input_tokens",  0) or 0)
                     output_tokens  += int(attrs.get("gen_ai.usage.output_tokens", 0) or 0)
 
-                # ``invoke_agent`` carries the agent name in
-                # ``gen_ai.agent.name`` and the wall-clock duration on the
-                # span itself.  Accumulate count/sum/min/max so the markdown
-                # can render mean + envelope without re-walking files.
-                if name == "invoke_agent":
+                # ``invoke_agent`` spans carry the agent name in
+                # ``gen_ai.agent.name`` and the wall-clock duration on
+                # the span itself.  ADK suffixes the span name with the
+                # agent name (e.g. ``invoke_agent FundamentalAnalyst_AAPL``);
+                # prefix-match so the suffix doesn't reject it.
+                if name.startswith("invoke_agent"):
                     agent       = attrs.get("gen_ai.agent.name", "<unknown>")
                     duration_ms = float(span.get("duration_ms", 0.0) or 0.0)
 
