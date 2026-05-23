@@ -26,9 +26,12 @@ from data.models import OHLCBar
 def cache(tmp_path: Path) -> CachedDataStore:
     """Cache pre-populated with one ticker, one bar."""
     store = CachedDataStore(tmp_path / "cache.sqlite")
+    # Synthetic bar dated inside the ``baseline-2025-09`` window so the
+    # driver's reference-price lookups and the test's Tick line up with the
+    # canonical baseline date range (2025-09-02 → 2025-10-13).
     store.write_ohlcv("AAPL", [
         OHLCBar(
-            timestamp=datetime(2023, 3, 13, tzinfo=UTC),
+            timestamp=datetime(2025, 9, 2, tzinfo=UTC),
             open=150.0,
             high=152.0,
             low=149.0,
@@ -52,7 +55,7 @@ async def test_driver_produces_one_trace_file(tmp_path: Path, cache) -> None:
     driver = Driver(
         broker=broker,
         run_dir=tmp_path,
-        window_key="test",
+        window_key="baseline-2025-09",
         # The real LLM agents in the pipeline gracefully degrade with no
         # API key, but the Snapshotter at the end of the pipeline never
         # gets called in that scenario.  Disable the strict completion
@@ -61,9 +64,11 @@ async def test_driver_produces_one_trace_file(tmp_path: Path, cache) -> None:
         enforce_pipeline_completion=False,
     )
 
+    # Single open-tick on the first session of the baseline window — keeps
+    # LLM usage at exactly one tick's worth, as required by the test policy.
     schedule = [
         Tick(
-            as_of=datetime(2023, 3, 13, 9, 30, tzinfo=UTC),
+            as_of=datetime(2025, 9, 2, 13, 30, tzinfo=UTC),
             phase="open",
         ),
     ]

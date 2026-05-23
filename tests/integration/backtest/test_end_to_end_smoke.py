@@ -1,4 +1,4 @@
-"""Smoke test: full Runner over a 3-day micro-window against a fixture cache.
+"""Smoke test: full Runner over a single tick against a fixture cache.
 
 Marked ``@pytest.mark.slow`` so it is excluded from the default ``pytest``
 run (which uses ``--strict-markers`` + no ``-m slow`` flag).  To run it
@@ -137,6 +137,9 @@ def _make_per_ticker_analyst_llm_response(agent_name: str):
             ticker = agent_name[len(prefix):]
             break
 
+    # ``report`` is schema-required whenever ``is_no_data=False`` (the
+    # contract on ``AnalystVerdict._report_required_when_data_present``).
+    # Two drivers is the minimum the AnalystReport schema accepts.
     verdict = {
         "ticker":      ticker,
         "lean":        "neutral",
@@ -145,6 +148,23 @@ def _make_per_ticker_analyst_llm_response(agent_name: str):
         "rationale":   "Smoke test stub.",
         "key_factors": [],
         "is_no_data":  False,
+        "report": {
+            "summary": "Smoke-test stub report — verdict is neutral.",
+            "drivers": [
+                {
+                    "name":      "stub_a",
+                    "direction": "neutral",
+                    "weight":    0.5,
+                    "body":      "Smoke-test stub driver A.",
+                },
+                {
+                    "name":      "stub_b",
+                    "direction": "neutral",
+                    "weight":    0.5,
+                    "body":      "Smoke-test stub driver B.",
+                },
+            ],
+        },
     }
     return LlmResponse(
         content=genai_types.Content(
@@ -159,13 +179,16 @@ def _make_per_ticker_analyst_llm_response(agent_name: str):
 
 @pytest.fixture
 def fixture_cache(tmp_path: Path) -> Path:
-    """Materialise a 3-business-day OHLCV + CompanyRatios cache for AAPL.
+    """Materialise a 1-tick OHLCV + CompanyRatios cache for AAPL.
 
-    The cache is written to ``tmp_path/cache/store.sqlite`` and the path
-    to that file is returned for injection into the Runner settings.
+    The cache is written to ``tmp_path/backtests/baseline-2025-09/store.sqlite``
+    and the path to that file is returned for injection into the Runner
+    settings.
 
-    The three days chosen (2023-03-13, 2023-03-14, 2023-03-15) are NYSE
-    business days during the SVB stress period — a realistic micro-window.
+    The single window day chosen (2025-09-02) is the first NYSE session of
+    the ``baseline-2025-09`` window declared in ``config/backtest_windows.json``
+    — keeps the smoke test aligned with the canonical baseline window while
+    only exercising one tick to minimise LLM usage when the test runs.
 
     Parameters
     ----------
@@ -178,27 +201,25 @@ def fixture_cache(tmp_path: Path) -> Path:
         Absolute path to the SQLite cache file.
     """
     # Per-window: place the fixture cache where the runner will look for the
-    # ``smoke`` window (``<backtests_root>/<window>/store.sqlite``).
-    cache_path = tmp_path / "backtests" / "smoke" / "store.sqlite"
+    # ``baseline-2025-09`` window (``<backtests_root>/<window>/store.sqlite``).
+    cache_path = tmp_path / "backtests" / "baseline-2025-09" / "store.sqlite"
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     store = CachedDataStore(cache_path)
 
-    # Write 25 warm-up bars (2023-02-06 to 2023-03-10) plus the 3 window
-    # days (2023-03-13, 2023-03-14, 2023-03-15) for AAPL.
+    # Write 25 warm-up bars (2025-08-08 to 2025-09-01) plus the single
+    # window day (2025-09-02) for AAPL.
     #
     # RSI(14) and ATR(14) each need at least 15 bars; pct_change_20d needs
-    # 21.  With only the 3 window bars the technical extractor's no-data
+    # 21.  With only the 1 window bar the technical extractor's no-data
     # guard fires and is_no_data=True.  The warm-up bars give the extractor
     # enough history to compute at least rsi_14 and atr_pct_14, ensuring the
     # Phase 7 is_no_data assertion passes on this fixture cache.
     #
     # Close prices step up by 0.10 per bar so pct_change_5d is non-zero.
     _aapl_bars = []
-    _warm_start = datetime.fromisoformat("2023-02-06T00:00:00+00:00")
+    _warm_start = datetime.fromisoformat("2025-08-08T00:00:00+00:00")
     _window_days = [
-        datetime.fromisoformat("2023-03-13T00:00:00+00:00"),
-        datetime.fromisoformat("2023-03-14T00:00:00+00:00"),
-        datetime.fromisoformat("2023-03-15T00:00:00+00:00"),
+        datetime.fromisoformat("2025-09-02T00:00:00+00:00"),
     ]
     _all_days = [_warm_start + timedelta(days=i) for i in range(25)] + _window_days
     for i, ts in enumerate(_all_days):
@@ -220,22 +241,24 @@ def fixture_cache(tmp_path: Path) -> Path:
     # Without these rows, a silent TypeError inside the wrapper — like the
     # Phase 7.5 regression where lookback_days was not forwarded — would go
     # undetected because empty bundles are equivalent to "no rows in store".
+    # Both rows are dated before the 2025-09-02 tick so they are visible at
+    # point-in-time when the analyst fetches kick off.
     store.write_news("AAPL", [
         NewsArticle(
             ticker       = "AAPL",
-            headline     = "Apple closes flat amid SVB contagion fears",
+            headline     = "Apple holds steady ahead of September session",
             summary      = "Smoke-test fixture row.",
-            url          = "https://example.invalid/aapl-svb",
+            url          = "https://example.invalid/aapl-fixture",
             source       = "fixture",
-            published_at = datetime.fromisoformat("2023-03-14T15:00:00+00:00"),
+            published_at = datetime.fromisoformat("2025-08-29T15:00:00+00:00"),
         ),
     ])
     store.write_filings("AAPL", [
         Filing(
             ticker       = "AAPL",
             form_type    = "8-K",
-            filed_at     = datetime.fromisoformat("2023-03-13T20:00:00+00:00"),
-            accession_no = "0000320193-23-fixture",
+            filed_at     = datetime.fromisoformat("2025-08-28T20:00:00+00:00"),
+            accession_no = "0000320193-25-fixture",
             title        = "Fixture 8-K",
             url          = "https://example.invalid/aapl-8k",
             body_excerpt = "Smoke-test fixture filing.",
@@ -256,7 +279,7 @@ def fixture_cache(tmp_path: Path) -> Path:
             fifty_day_average=148.0,
             two_hundred_day_average=145.0,
         ),
-        as_of_date=datetime(2023, 3, 10).date(),
+        as_of_date=datetime(2025, 8, 30).date(),
     )
 
     return cache_path
@@ -271,13 +294,18 @@ def test_end_to_end_run_produces_full_artefact_tree(
     tmp_path: Path,
     fixture_cache: Path,
 ) -> None:
-    """One Runner.run() over a 3-day window produces the expected artefact tree.
+    """One Runner.run() over a single tick produces the expected artefact tree.
 
     Asserts:
     - ``manifest.json`` exists and reports a terminal status.
     - ``traces/`` directory exists (one ``.json`` trace file per tick).
     - ``report/metrics.md`` exists with non-NaN metric values.
     - ``report/equity_curve.png`` exists.
+
+    The window is the first session of ``baseline-2025-09`` with
+    ``ticks_per_day=["open"]`` so exactly one tick fires — matches the
+    project-wide rule that backtest tests run one tick on the baseline
+    window to keep LLM usage minimal.
 
     LLM agents (Strategist, Fundamental, News) are short-circuited via a
     synthetic ``before_model_callback`` so no Gemini calls are made.
@@ -292,12 +320,13 @@ def test_end_to_end_run_produces_full_artefact_tree(
     # pandas_market_calendars) and switched Runner to a `settings=` kwarg.
     from backtest.settings import BacktestSettings
     # ``fixture_cache`` was already placed at
-    # ``<tmp_path>/backtests/smoke/store.sqlite`` by the per-window fixture
-    # — passing the parent of <window>/ as backtests_root keeps everything in
-    # one tree under ``tmp_path/backtests/``.
+    # ``<tmp_path>/backtests/baseline-2025-09/store.sqlite`` by the
+    # per-window fixture — passing the parent of <window>/ as
+    # backtests_root keeps everything in one tree under
+    # ``tmp_path/backtests/``.
     settings_obj = BacktestSettings(
         backtests_root               = str(tmp_path / "backtests"),
-        ticks_per_day                = ["open", "close"],
+        ticks_per_day                = ["open"],   # one phase → one tick per session
         failed_tick_abort_ratio      = 1.0,        # never abort in smoke test
         fake_broker_starting_cash    = 100_000.0,
         forward_return_horizons_days = [1],
@@ -305,11 +334,14 @@ def test_end_to_end_run_produces_full_artefact_tree(
     )
     _ = fixture_cache  # fixture writes are observed via the path layout above
 
+    # Single-session window inside the canonical ``baseline-2025-09`` range
+    # (2025-09-02 → 2025-10-13).  Trimming to a one-day span yields exactly
+    # one scheduled tick (one session × one phase = one tick).
     windows = {
-        "smoke": {
-            "start": "2023-03-13",
-            "end":   "2023-03-15",
-            "notes": "Three-day micro-window for smoke test.",
+        "baseline-2025-09": {
+            "start": "2025-09-02",
+            "end":   "2025-09-02",
+            "notes": "Single-tick slice of the baseline window for smoke test.",
         }
     }
     windows_path = tmp_path / "backtest_windows.json"
@@ -479,7 +511,11 @@ def test_end_to_end_run_produces_full_artefact_tree(
             windows_path=windows_path,
             watchlist_path=watchlist_path,
         )
-        result = runner.run("smoke")
+        # ``generate_ticks`` reads the global settings singleton for
+        # ``ticks_per_day`` (not the per-runner ``settings_obj``), so the
+        # only reliable way to cap the run at one tick is the runner-level
+        # ``tick_limit`` slice — keeps LLM usage at exactly one tick.
+        result = runner.run("baseline-2025-09", tick_limit=1)
 
     # ── Assertions ────────────────────────────────────────────────────────────
 
@@ -512,7 +548,7 @@ def test_end_to_end_run_produces_full_artefact_tree(
     _restores = [_set_p("news", "cache"), _set_p("filings", "cache")]
 
     try:
-        _probe_as_of = datetime.fromisoformat("2023-03-15T20:00:00+00:00")
+        _probe_as_of = datetime.fromisoformat("2025-09-02T20:00:00+00:00")
         _news_probe  = _asyncio.run(get_stock_news("AAPL", as_of=_probe_as_of))
         _files_probe = _asyncio.run(get_company_filings("AAPL", as_of=_probe_as_of))
     finally:
@@ -548,7 +584,7 @@ def test_end_to_end_run_produces_full_artefact_tree(
     # Metrics markdown produced — and the key headline metric (total return)
     # must be a valid percentage, not NaN.  Sharpe can be NaN in a short
     # zero-trade window where portfolio variance is zero; that is acceptable
-    # and expected for a 3-day smoke run.
+    # and expected for a single-tick smoke run.
     metrics_path = result.run_dir / "report" / "metrics.md"
     assert metrics_path.exists(), "report/metrics.md not produced"
     metrics_text = metrics_path.read_text(encoding="utf-8")
@@ -616,11 +652,11 @@ def test_end_to_end_run_produces_full_artefact_tree(
     # cache has no filing data (politician_trades / notable_holders), so
     # is_no_data=True is correct behaviour for that analyst on this fixture.
     # The full four-analyst assertion (including SmartMoney) lives in
-    # test_no_silent_zero_features, which runs against the real SVB cache.
+    # test_no_silent_zero_features (since removed) used to cover SmartMoney.
     #
     # Verdicts are not stored in the manifest; they live in trace files under
-    # the "04_digest" section (ticker_evidence_objects).  We sample the middle
-    # trace tick — the same strategy as test_no_silent_zero_features.
+    # the "04_digest" section (ticker_evidence_objects).  With a single-tick
+    # window there is exactly one trace file, so we sample it directly.
     non_social_analysts = {"technical", "fundamental", "news"}
 
     trace_files_sorted = sorted(trace_files)
@@ -629,7 +665,7 @@ def test_end_to_end_run_produces_full_artefact_tree(
     digest_section     = sample_trace.get("04_digest") or {}
     digest_data: list  = digest_section.get("data") or []
 
-    # Only assert if the digest was produced — the 3-day micro-window with a
+    # Only assert if the digest was produced — the single-tick window with a
     # single AAPL ticker should always produce one.
     if digest_data:
         for ticker_evidence in digest_data:

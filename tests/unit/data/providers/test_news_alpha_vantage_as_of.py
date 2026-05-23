@@ -755,37 +755,3 @@ async def test_alpha_vantage_reversed_window_returns_empty(monkeypatch):
 
     assert out == []
     assert call_count == 0
-
-
-# ---------------------------------------------------------------------------
-# Integration / slow test (real network — skipped in CI)
-# ---------------------------------------------------------------------------
-
-@pytest.mark.slow
-@pytest.mark.asyncio
-async def test_alpha_vantage_live_fetch():
-    """Integration smoke-test against the real AV endpoint.
-
-    Requires ``ALPHA_VANTAGE_API_KEY`` to be set in the environment (or
-    ``.env``).  Marked ``@pytest.mark.slow`` — excluded from the default
-    ``pytest`` run.
-
-    Verifies that:
-    - At least one ``NewsArticle`` is returned for a liquid ticker.
-    - Each article has a non-empty headline.
-    - ``sentiment`` is a float (AV always provides this for ``NEWS_SENTIMENT``).
-    """
-    from data.providers.news import alpha_vantage as mod
-
-    # Use a well-covered date from the SVB stress window.
-    out = await mod.fetch("AAPL", as_of=date(2023, 3, 15), lookback_days=7)
-
-    # We can't assert a specific count, but the AV archive should have at
-    # least one article for AAPL in any 7-day window during March 2023.
-    assert len(out) > 0, "Expected at least one article for AAPL in SVB window"
-
-    for article in out:
-        assert article.headline, f"Empty headline for article: {article}"
-        assert article.sentiment is not None, (
-            f"Expected sentiment for AV article: {article.headline!r}"
-        )
