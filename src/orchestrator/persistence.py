@@ -423,25 +423,41 @@ def create_all(engine) -> None:
 # ── ADK SessionService factory ────────────────────────────────────────
 
 
-def make_session_service():
-    """Return a DatabaseSessionService configured by STOCKBOT_ENV.
+def make_session_service(
+    db_url: str | None = None,
+):
+    """Construct a session service for the current process.
 
-    Dev: sqlite at ./data/stockbot.db (created on demand).
-    Prod: DATABASE_URL env var (Postgres in deploy).
+    Parameters
+    ----------
+    db_url
+        Optional SQLAlchemy-style DB URL.  When ``None``, falls back
+        to the ``DATABASE_URL`` environment variable (live path).
+        When supplied, used directly (backtest passes a
+        ``sqlite+aiosqlite:///runs/<run-id>/session.sqlite`` URL).
+
+    Returns
+    -------
+    DatabaseSessionService
+        A configured ``DatabaseSessionService``.  In-memory mode is
+        no longer supported by this factory — tests that want an
+        in-memory database pass ``sqlite+aiosqlite:///:memory:``.
+
+    Raises
+    ------
+    RuntimeError
+        When neither ``db_url`` nor the ``DATABASE_URL`` environment
+        variable is set — both are absent and there is no safe default
+        to fall back on.
     """
     from google.adk.sessions import DatabaseSessionService
 
-    env = os.environ.get("STOCKBOT_ENV", "dev").lower()
-    if env == "prod":
-        url = os.environ.get("DATABASE_URL")
-        if not url:
-            raise RuntimeError(
-                "STOCKBOT_ENV=prod requires DATABASE_URL to be set."
-            )
-        return DatabaseSessionService(db_url=url)
+    resolved = db_url or os.environ.get("DATABASE_URL")
 
-    # dev — aiosqlite driver required by DatabaseSessionService (uses async engine)
-    from pathlib import Path
-    data_dir = Path("data")
-    data_dir.mkdir(exist_ok=True)
-    return DatabaseSessionService(db_url=f"sqlite+aiosqlite:///{data_dir.absolute()}/stockbot.db")
+    if not resolved:
+        raise RuntimeError(
+            "make_session_service: no db_url and no DATABASE_URL env var set. "
+            "Pass db_url= explicitly or set DATABASE_URL in the environment."
+        )
+
+    return DatabaseSessionService(db_url=resolved)

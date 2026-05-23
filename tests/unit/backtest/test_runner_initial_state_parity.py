@@ -65,15 +65,19 @@ def _extract_seeded_keys(source: str) -> set[str]:
 # ``watchlist`` is intentionally excluded — the live builder seeds only
 # ``tickers``; the runner seeds both.  Tracking ``watchlist`` here would
 # produce a permanent false-failure for the live side.
+#
+# ``positions`` and ``thesis`` are intentionally excluded (Spec B / Band 2).
+# They have migrated to ADK user-scoped state (``user:positions``,
+# ``user:thesis``) and are no longer seeded in the initial state dict by
+# either builder — ADK's user_state merge hydrates them from the DB row
+# when the session is created.
 # ---------------------------------------------------------------------------
 
 REQUIRED_KEYS: set[str] = {
     "tickers",
     "portfolio",
-    "positions",
     "memory_buffer",
     "day_digest",
-    "thesis",
 }
 
 

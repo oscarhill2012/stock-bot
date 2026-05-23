@@ -292,6 +292,7 @@ class Runner:
         *,
         tick_limit:      int | None = None,
         run_id_override: str | None = None,
+        fresh:           bool = False,
     ) -> RunResult:
         """Materialise the run, drive every tick, return a ``RunResult``.
 
@@ -313,6 +314,11 @@ class Runner:
             the artefact directory) instead of the default
             ``<window>-<git-sha7>``.  Lets sanity runs land in a predictable
             location like ``runs/trial-run/`` rather than under a SHA.
+        fresh:
+            When ``True``, delete ``runs/<run-id>/session.sqlite`` before the
+            run begins so the new run starts from an empty ``user_state`` row.
+            Prevents prior-run thesis from leaking into a re-run of the same
+            window.  Has no effect when there is no existing session file.
 
         Returns
         -------
@@ -326,6 +332,7 @@ class Runner:
                 watchlist,
                 tick_limit      = tick_limit,
                 run_id_override = run_id_override,
+                fresh           = fresh,
             )
         )
 
@@ -338,6 +345,7 @@ class Runner:
         *,
         tick_limit:      int | None = None,
         run_id_override: str | None = None,
+        fresh:           bool = False,
     ) -> RunResult:
         """Async implementation of the full run lifecycle."""
         # Belt-and-braces: scripts.backtest_run also sets this, but defending
@@ -367,6 +375,20 @@ class Runner:
             runs_root  = runs_root_for_window(self._settings, window_key)
             run_dir    = runs_root / run_id
             run_dir.mkdir(parents=True, exist_ok=True)
+
+            # ── --fresh cleanup ─────────────────────────────────────────────────
+            # When ``fresh=True``, delete the per-run ADK session database before
+            # the run starts so the new run cannot inherit prior-run thesis.  A
+            # ``--fresh`` re-run of a window MUST begin with an empty
+            # ``user_state`` row — otherwise ``user:positions`` / ``user:thesis``
+            # from the previous run leak into tick 1.
+            session_sqlite = run_dir / "session.sqlite"
+            if fresh and session_sqlite.exists():
+                session_sqlite.unlink()
+                logger.info(
+                    "--fresh: deleted %s so run %s starts with empty user_state",
+                    session_sqlite, run_id,
+                )
 
             # ── SIGINT / SIGTERM handler ────────────────────────────────────────
             # Registered here so we have ``run_dir`` in scope.  The handler writes
@@ -467,11 +489,18 @@ class Runner:
             (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
             # ── build and run the driver ────────────────────────────────────────
+            # Per-run SQLite for ADK session state.  Placed alongside the other
+            # artefacts under ``runs/<run-id>/``.  aiosqlite driver is required
+            # because DatabaseSessionService uses an async SQLAlchemy engine.
+            session_sqlite_url = (
+                f"sqlite+aiosqlite:///{run_dir / 'session.sqlite'}"
+            )
             driver = Driver(
                 broker=broker,
                 run_id=run_id,
                 run_dir=run_dir,
                 window_key=window_key,
+                session_db_url=session_sqlite_url,
                 db_session=db_session,
                 decision_logger=dl,
                 failure_abort_ratio=self._settings.failed_tick_abort_ratio,
@@ -519,10 +548,14 @@ class Runner:
                 # backtest agree on the same field.
                 "tickers":          wl_filtered,
                 "portfolio":        portfolio.model_dump(mode="json"),
-                "positions":        {},
+                # NOTE: ``positions`` and ``thesis`` are intentionally absent.
+                # They have migrated to ADK user-scoped state (``user:positions``,
+                # ``user:thesis``) per Spec B.  ADK's user_state merge populates
+                # them from the DatabaseSessionService row when the session is
+                # created — seeding them here would shadow the persisted values.
+                # See: docs/Phase10-post-first-backtest/specs/foundational-thesis-memory.md
                 "memory_buffer":    [],
                 "day_digest":       "",
-                "thesis":           "",
                 # Dump each PriceHistory to a JSON-safe dict so the ADK
                 # SqlSessionService (plain json.dumps under the hood) doesn't
                 # choke on Pydantic objects.  Mirrors orchestrator.tick.  The
