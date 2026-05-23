@@ -165,15 +165,16 @@ class FundamentalFetchAgent(BaseAgent):
             fundamental_data[ticker] = {
                 "ratios":  ratios_payload,
                 "filings": filings_payload,
-                # ``.model_dump(mode="json")`` so the downstream decision
-                # logger serialises the bundle as a JSON dict rather than
-                # falling back to ``repr(Form4Bundle)`` and emitting a
-                # 2 KB string.  Sibling fields are already dicts/lists;
-                # this is the symmetry fix.  ``mode="json"`` ensures
-                # nested datetimes serialise as ISO strings rather than
-                # Python datetime objects (which the strict serialiser
-                # would now reject).
-                "insider": insider_bundle.model_dump(mode="json"),
+                # Keep ``insider`` as a typed ``Form4Bundle`` instance —
+                # downstream consumers (``fundamental_hash_inputs_from_dict``
+                # in the per-ticker cache callback; the legacy branch of
+                # ``extract_fundamental_features``) gate on
+                # ``isinstance(_, Form4Bundle)`` / call ``.trades`` directly,
+                # so a ``.model_dump()`` here silently breaks both.  The
+                # strict decision-logger's recursive ``_coerce`` dumps any
+                # nested Pydantic model at log-write time, so we do not
+                # need to dump here for serialisation safety.
+                "insider": insider_bundle,
             }
 
             # Build the formatted LLM-readable block for this ticker.

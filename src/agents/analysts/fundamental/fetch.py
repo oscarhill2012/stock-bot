@@ -195,12 +195,9 @@ def _build_ticker_fundamental_context(ticker: str, data: dict) -> str:
     """Adapter shim for ``FundamentalFetchAgent`` — wraps ``_build_ticker_context``.
 
     The per-ticker agent stores each ticker's payload in a flat dict
-    ``{"ratios": ..., "filings": [...], "insider": dict}``.  Since Spec A's
-    S5 change (fetch_agent.py), the ``"insider"`` value is a plain JSON dict
-    produced by ``Form4Bundle.model_dump(mode="json")`` rather than a live
-    ``Form4Bundle`` instance.  This adapter reconstructs a ``Form4Bundle``
-    from that dict so ``_build_ticker_context`` continues to receive a typed
-    object.
+    ``{"ratios": ..., "filings": [...], "insider": Form4Bundle}``.  This
+    adapter unpacks that dict and forwards to ``_build_ticker_context`` with
+    the correct positional arguments, so the agent's call site stays tidy.
 
     Parameters
     ----------
@@ -208,10 +205,9 @@ def _build_ticker_fundamental_context(ticker: str, data: dict) -> str:
         Ticker symbol label.
     data:
         Per-ticker payload dict with keys ``"ratios"``, ``"filings"``, and
-        ``"insider"``.  ``"filings"`` must be a list of serialised Filing dicts;
-        ``"insider"`` must be either a ``Form4Bundle`` instance, a
-        ``model_dump()`` dict, or ``None`` (in which case an empty bundle is
-        substituted).
+        ``"insider"``.  ``"filings"`` must be a list of serialised Filing
+        dicts; ``"insider"`` must be a ``Form4Bundle`` instance (or ``None``,
+        in which case an empty bundle is substituted).
 
     Returns
     -------
@@ -220,18 +216,7 @@ def _build_ticker_fundamental_context(ticker: str, data: dict) -> str:
         produces — suitable for direct inclusion in an LLM prompt.
     """
     filings_payload: list[dict] = data.get("filings") or []
-
-    # ``insider`` may arrive as a plain dict (S5: model_dump(mode="json"))
-    # or as a live Form4Bundle instance (legacy path / tests).  Reconstruct
-    # a Form4Bundle in either case so _build_ticker_context always receives
-    # a typed object.
-    raw_insider = data.get("insider")
-    if isinstance(raw_insider, Form4Bundle):
-        insider_bundle: Form4Bundle = raw_insider
-    elif isinstance(raw_insider, dict):
-        insider_bundle = Form4Bundle.model_validate(raw_insider)
-    else:
-        insider_bundle = Form4Bundle(trades=[], derivatives=[])
+    insider_bundle: Form4Bundle = data.get("insider") or Form4Bundle(trades=[], derivatives=[])
 
     # Read the lookback window from config so the window label in the block
     # always matches the actual fetch window used by the agent.
