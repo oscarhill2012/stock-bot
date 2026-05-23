@@ -75,6 +75,7 @@ from pathlib import Path
 
 from google.adk.models import LlmResponse
 from google.genai import types as genai_types
+from pydantic import ValidationError
 
 from agents.analysts.report_cache import log_cache_hit_to_state, read_cache, write_cache
 from config.analysts import get_analysts_config
@@ -262,6 +263,31 @@ def make_report_cache_callbacks(
                     model="cache",
                 )
 
+        # Record this branch in the terminal-summary accumulator.  ADK skips
+        # ``after_model_callback`` whenever ``before_model_callback`` returns an
+        # LlmResponse (documented in ``_after`` below), so the observability
+        # after-callback never runs on cache hits — if we don't append here,
+        # the joiner sees an empty accumulator and emits the misleading
+        # ``"0/N ✓ N failed · no timing data · 0 tok total"`` row.  Tag the
+        # record with ``cache_hit=True`` so ``emit_analyst_summary`` can render
+        # it as a cached row rather than a (zero-token, zero-latency) success.
+        #
+        # Key shape mirrors ``observability.terminal_log.make_observability_callbacks``
+        # (``temp:_obs_<analyst>_calls``) so the same joiner read path picks it up.
+        _accum_key = f"temp:_obs_{analyst_name}_calls"
+        existing = state.get(_accum_key)
+        if not isinstance(existing, list):
+            existing = []
+        existing.append({
+            "ticker":           ticker,
+            "elapsed":          None,   # no LLM latency — served from disk
+            "prompt_tokens":    0,
+            "candidate_tokens": 0,
+            "ok":               True,
+            "cache_hit":        True,
+        })
+        state[_accum_key] = existing
+
         # Short-circuit the model call.  Two constraints on the return value:
         #
         # 1. ADK's downstream post-processors (``_nl_planning`` et al.) access
@@ -333,6 +359,23 @@ def make_report_cache_callbacks(
 
         # Payload is a single TickerVerdict dict (NOT {verdicts: [...]}).
         v_dict = payload if isinstance(payload, dict) else {}
+
+        # Schema-gate the cache write.  Partial / malformed LLM responses
+        # (missing ``report`` when ``is_no_data=false``, wrong field shapes,
+        # truncated payloads, etc.) are valid JSON but invalid against
+        # ``output_schema`` — writing them poisons the cache so the next tick
+        # with the same input hash replays the broken verdict instead of
+        # re-running the LLM.  ``is_no_data=true`` is a legitimate no-signal
+        # response (still schema-valid) and is intentionally still cached.
+        try:
+            output_schema.model_validate({**v_dict, "ticker": ticker})
+        except ValidationError as exc:
+            _log.warning(
+                "%s cache: LLM response failed %s validation for %s — cache "
+                "write skipped so next tick re-runs the LLM. Error: %s",
+                analyst_name, output_schema.__name__, ticker, exc,
+            )
+            return None
 
         per_ticker = data.get(ticker, {}) or {}
         input_hash = hash_inputs(per_ticker)

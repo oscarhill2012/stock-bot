@@ -509,12 +509,24 @@ def emit_analyst_summary(
     failed     = max(0, ticker_count - succeeded)
     ok_marker  = "✓" if not failed else "✓"  # always ✓ for completed ones
 
+    # ── Cache-hit count ───────────────────────────────────────────────────────
+    # Cache-hit records are appended by ``cache_callbacks._before`` when the
+    # report cache short-circuits the LLM call.  They are real successes (the
+    # verdict is valid; the LLM was just skipped), so they count toward
+    # ``succeeded`` — but they carry no latency or token data, so reporting
+    # them inside the latency/token statistics would be misleading.
+    cached_count = sum(1 for r in calls if r.get("cache_hit"))
+    fresh_count  = succeeded - cached_count
+    all_cached   = succeeded > 0 and cached_count == succeeded
+
     # ── Token totals ─────────────────────────────────────────────────────────
     total_prompt    = sum(r.get("prompt_tokens")    or 0 for r in calls)
     total_candidate = sum(r.get("candidate_tokens") or 0 for r in calls)
     total_tokens    = total_prompt + total_candidate
 
     # ── Latency statistics ────────────────────────────────────────────────────
+    # Cached records have ``elapsed=None`` so they naturally fall out of the
+    # latency aggregation — only fresh LLM calls contribute timing data.
     latencies = [r["elapsed"] for r in calls if r.get("elapsed") is not None]
 
     # ── Build the row ─────────────────────────────────────────────────────────
@@ -527,33 +539,66 @@ def emit_analyst_summary(
     # Failure annotation (omitted when there are none).
     fail_str = f"  {failed} failed" if failed else ""
 
+    # Cache annotation — surfaced before latency so the operator sees at a
+    # glance that timing/tokens are absent because the work was served from
+    # the report cache, not because branches silently failed.
+    if all_cached:
+        cache_str = " (cached)"
+    elif cached_count:
+        cache_str = f" · {cached_count} cached"
+    else:
+        cache_str = ""
+
     if ticker_count == 1:
         # Singleton path — strategist or any analyst with only one ticker.
         # Shape: "strategist:     1/1  ✓  · 2.1s · 8.4k tok"
-        lat_str = format_latency(latencies[0] if latencies else None).strip()
-        tok_str = f"{total_tokens / 1000:.1f}k" if total_tokens else "0"
+        # All-cached singleton: "fundamental:     1/1  ✓ (cached) · 0 tok"
+        if all_cached:
+            row = (
+                f"  {label_col} {count_col:>8}{fail_str}{cache_str}"
+                f" · 0 tok"
+            )
+        else:
+            lat_str = format_latency(latencies[0] if latencies else None).strip()
+            tok_str = f"{total_tokens / 1000:.1f}k" if total_tokens else "0"
 
-        row = (
-            f"  {label_col} {count_col:>8}{fail_str}"
-            f" · {lat_str} · {tok_str} tok"
-        )
+            row = (
+                f"  {label_col} {count_col:>8}{fail_str}{cache_str}"
+                f" · {lat_str} · {tok_str} tok"
+            )
 
     else:
         # Multi-ticker path — news, fundamental.
-        # Shape: "news:         18/20 ✓  2 failed · median 1.4s · max 2.8s · 47.2k tok total"
-        if latencies:
-            med_lat = statistics.median(latencies)
-            max_lat = max(latencies)
-            lat_str = f"median {format_latency(med_lat).strip()} · max {format_latency(max_lat).strip()}"
+        # Shape (mixed): "news:    20/20 ✓ · 15 cached · median 1.4s · max 2.8s · 47.2k tok total"
+        # Shape (all cached): "fundamental:    20/20 ✓ (cached) · 0 tok total"
+        # Shape (all failed): "news:    0/20 ✓ 20 failed · no timing data · 0 tok total"
+        if all_cached:
+            # All work served from cache — no latency block, no token total
+            # noise.  The "(cached)" marker already conveys the full picture.
+            row = (
+                f"  {label_col} {count_col:>8}{fail_str}{cache_str}"
+                f" · 0 tok total"
+            )
         else:
-            lat_str = "no timing data"
+            if latencies:
+                med_lat = statistics.median(latencies)
+                max_lat = max(latencies)
+                lat_str = (
+                    f"median {format_latency(med_lat).strip()}"
+                    f" · max {format_latency(max_lat).strip()}"
+                )
+                # Mixed run — clarify which slice the latency reflects.
+                if cached_count and fresh_count:
+                    lat_str = f"{lat_str} (of {fresh_count} fresh)"
+            else:
+                lat_str = "no timing data"
 
-        tok_str = f"{total_tokens / 1000:.1f}k" if total_tokens else "0"
+            tok_str = f"{total_tokens / 1000:.1f}k" if total_tokens else "0"
 
-        row = (
-            f"  {label_col} {count_col:>8}{fail_str}"
-            f" · {lat_str} · {tok_str} tok total"
-        )
+            row = (
+                f"  {label_col} {count_col:>8}{fail_str}{cache_str}"
+                f" · {lat_str} · {tok_str} tok total"
+            )
 
     tick_log.info(row)
 

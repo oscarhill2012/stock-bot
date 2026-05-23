@@ -123,10 +123,23 @@ def test_after_writes_single_verdict_to_cache(tmp_path, monkeypatch):
     )
 
     # Synthetic LLM response — a single TickerVerdict JSON, not a batch.
+    # ``report`` is REQUIRED whenever ``is_no_data=False`` (see prompts and
+    # TickerVerdict's validator).  Omitting it here used to silently land in
+    # the cache and replay on the next tick; the schema-gate in
+    # ``_after`` now rejects such payloads, so the fixture must be valid.
     fake_text = json.dumps({
         "ticker": "AAPL", "lean": "bearish", "magnitude": 0.4,
         "confidence": 0.6, "rationale": "Macro headwinds",
-        "key_factors": ["catalyst:macro"], "is_no_data": False,
+        "key_factors": ["catalyst:macro", "regime:risk_off"], "is_no_data": False,
+        "report": {
+            "summary": "Macro headwinds weighing on outlook.",
+            "drivers": [
+                {"name": "catalyst:macro",   "direction": "bear",
+                 "weight": 0.6, "body": "Rising rates compress multiples."},
+                {"name": "regime:risk_off",  "direction": "bear",
+                 "weight": 0.4, "body": "Defensive rotation accelerating."},
+            ],
+        },
     })
     llm_response = MagicMock()
     llm_response.content.parts = [MagicMock(text=fake_text)]
@@ -148,3 +161,63 @@ def test_after_writes_single_verdict_to_cache(tmp_path, monkeypatch):
                      input_hash="hash-fresh", prompt_version="2026-05-21-a")
     assert hit is not None
     assert hit["verdict"]["lean"] == "bearish"
+
+
+def test_after_skips_cache_write_when_response_fails_schema_validation(
+    tmp_path, monkeypatch, caplog,
+):
+    """A schema-invalid LLM response (e.g. ``is_no_data=False`` with no
+    ``report``) must NOT be written to the cache — otherwise the broken
+    verdict would replay on every subsequent tick with the same input hash,
+    permanently masking the underlying LLM-side failure.
+    """
+
+    monkeypatch.setattr(
+        "agents.analysts.cache_callbacks.get_analysts_config",
+        lambda: MagicMock(cache=MagicMock(enabled=True, directory=str(tmp_path))),
+    )
+
+    _before, after_cb = make_report_cache_callbacks(
+        analyst_name       = "news",
+        prompt_version     = "2026-05-21-a",
+        data_state_key     = "temp:news_data",
+        verdicts_state_key = "temp:news_verdict_AAPL",
+        ticker             = "AAPL",
+        output_schema      = TickerVerdict,
+        hash_inputs        = lambda d: "hash-broken",
+        trace_label        = None,
+    )
+
+    # Invalid payload: is_no_data=False MUST be accompanied by a report block.
+    # The LLM returned valid JSON, but the shape violates the contract.
+    broken_text = json.dumps({
+        "ticker": "AAPL", "lean": "bullish", "magnitude": 0.5,
+        "confidence": 0.5, "rationale": "Half-formed response",
+        "key_factors": ["x"], "is_no_data": False,
+        # Note: no "report" field — this is the failure mode the gate catches.
+    })
+    llm_response = MagicMock()
+    llm_response.content.parts = [MagicMock(text=broken_text)]
+
+    state = {"temp:news_data": {"AAPL": {"news": []}}}
+    callback_context = MagicMock(state=state)
+
+    import logging
+    with caplog.at_level(logging.WARNING, logger="agents.analysts.cache_callbacks"):
+        result = after_cb(callback_context, llm_response)
+
+    # Hook never short-circuits — returns None regardless of the gate outcome.
+    assert result is None
+
+    # Cache must remain empty so the next tick re-runs the LLM.
+    from agents.analysts.report_cache import read_cache
+    hit = read_cache(tmp_path, "news", "AAPL",
+                     input_hash="hash-broken", prompt_version="2026-05-21-a")
+    assert hit is None
+
+    # A warning log must surface so operators can spot persistent LLM-side
+    # malformations rather than them being silently swallowed.
+    assert any(
+        "cache write skipped" in rec.getMessage()
+        for rec in caplog.records
+    )

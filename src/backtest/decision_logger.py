@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -27,8 +28,13 @@ def _coerce(value: Any) -> Any:
 
     Top-level Pydantic instances are dumped via ``.model_dump(mode='json')``.
     Dicts and lists are walked so models nested anywhere in the structure
-    are coerced too.  JSON primitives (None, bool, int, float, str) pass
-    through unchanged.
+    are coerced too.  ``datetime`` and ``date`` are normalised to ISO-8601
+    strings so producers that emit ``.model_dump()`` (default ``mode='python'``)
+    instead of ``.model_dump(mode='json')`` still serialise cleanly — without
+    this, raw ``datetime`` leaves (e.g. ``OHLCBar.timestamp``,
+    ``NewsArticle.published_at``, ``Filing.filed_at``) would hit
+    ``_strict_default`` and tank the snapshot write.  JSON primitives
+    (None, bool, int, float, str) pass through unchanged.
 
     Anything else falls through to ``json.dumps``'s default handler,
     which now (via ``_strict_default``) raises ``TypeError`` rather than
@@ -37,6 +43,15 @@ def _coerce(value: Any) -> Any:
 
     if hasattr(value, "model_dump"):
         return value.model_dump(mode="json")
+
+    # ``datetime`` is a subclass of ``date``; check it first so the more
+    # informative ISO representation (with time component) is preserved
+    # rather than truncated to a calendar date.
+    if isinstance(value, datetime):
+        return value.isoformat()
+
+    if isinstance(value, date):
+        return value.isoformat()
 
     if isinstance(value, dict):
         return {k: _coerce(v) for k, v in value.items()}
