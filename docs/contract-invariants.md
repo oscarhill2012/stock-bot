@@ -340,7 +340,7 @@ injects the handles by direct mutation of `adk_session.state` **after**
 preserves them across the in-process invocation, and they never reach
 the DB.
 
-Rule 2's "Concrete invocation-scoped keys" list now includes
+Rule 2's "Concrete invocation-scoped keys" list gains
 `temp:_trace` and `temp:_decision_logger` alongside the existing
 `temp:held_positions_view` etc.  Rule 8 (observability is additive and
 contract-neutral) is unaffected — the observability writers continue to
