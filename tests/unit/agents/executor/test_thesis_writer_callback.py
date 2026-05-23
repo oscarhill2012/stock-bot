@@ -113,7 +113,7 @@ def _execution_for(ticker: str, price: float) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def test_callback_assembles_new_positions_from_open_stance():
+def test_callback_open_stance_seeds_position_thesis():
     """An open stance with a fill seeds a new PositionThesis row."""
 
     state = _minimal_state(

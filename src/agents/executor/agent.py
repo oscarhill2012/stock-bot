@@ -167,7 +167,11 @@ class ExecutorAgent(BaseAgent):
                             # behaviour where the strategist's ``opened_tag``
                             # came from ``decision_tag``.
                             if "opened_tag" not in thesis_dict or thesis_dict["opened_tag"] is None:
-                                decision_raw = state.get("strategist_decision") or {}
+                                # Fallback to tick_id guarantees a non-null string —
+                                # trade_log_row.opened_tag is Mapped[str] (non-nullable,
+                                # see orchestrator/persistence.py:97), so the DB write
+                                # would fail without a concrete value here.
+                                # decision_raw is still in scope from line ~125; no re-read needed.
                                 thesis_dict["opened_tag"] = (
                                     decision_raw.get("decision_tag") or tick_id
                                 )
@@ -405,13 +409,24 @@ def _executor_thesis_writer_callback(callback_context) -> None:
             if ticker in prior_positions else None
         )
 
+        # Resolve the tick timestamp consistently with the BUY path in
+        # _run_async_impl.  Passing state.get("as_of") raw would propagate
+        # None into PositionThesis.opened_at on live ticks where as_of is
+        # absent — a silent failure the BUY path already avoids.
+        raw_as_of = state.get("as_of")
+        resolved_as_of = resolve_as_of(
+            raw_as_of,
+            allow_wallclock=True,
+            site="executor/agent.callback",
+        )
+
         try:
             new_row = apply_stance_to_thesis(
                 stance,
                 prior_row  = prior_row,
                 fill_price = fill_price,
                 tick_id    = state.get("tick_id", "unknown"),
-                as_of      = state.get("as_of"),
+                as_of      = resolved_as_of,
             )
         except (AssertionError, ValueError):
             # Log and skip — do not abort the tick on a thesis-write failure.
