@@ -73,10 +73,10 @@ on `state_delta` (Rule 1).
 | `tickers` | Tick bootstrap | tick-scoped | `config/watchlist.json` | Phase 2 | n/a | The active watchlist for this tick. |
 | `portfolio` | Broker | tick-scoped (as state); cross-tick (as broker reality) | Broker API | Phase 2 | Broker holds it — `state["portfolio"]` is a working copy refreshed from the broker at the start of every tick. | Pipeline reads but does not mutate. |
 | `reference_prices` | Tick bootstrap | tick-scoped | Bulk yfinance pull | Phase 2 | n/a | Cached for the duration of the tick. |
-| `state["user:positions"]` | Executor's `after_agent_callback`† | cross-tick (user-scoped) | ADK `DatabaseSessionService` `user_state` table, keyed by `(app_name, user_id)` | Phase 2: implicit ADK merge into the fresh session.  Phase 4: callback writes via `ctx.state["user:positions"] = ...`; ADK's `_handle_after_agent_callback` auto-yields a state-delta event; `DatabaseSessionService.append_event` persists it. | ADK `user_state` (Spec B). | The *thesis book*. Per-position entry rationale + exit basis. Distinct from `portfolio` (broker truth) — `positions` is strategist intent. |
+| `state["user:positions"]` | Executor's `after_agent_callback`† | cross-tick (user-scoped) | ADK `DatabaseSessionService` `user_state` table, keyed by `(app_name, user_id)` | Phase 2: implicit ADK merge into the fresh session. Phase 4: callback writes via `ctx.state["user:positions"] = ...`; ADK's `_handle_after_agent_callback` auto-yields a state-delta event; `DatabaseSessionService.append_event` persists it. | ADK `user_state` (Spec B). | The *thesis book*. Per-position entry rationale + exit basis. Distinct from `portfolio` (broker truth) — `user:positions` is strategist intent. |
 | `memory_buffer` | MemoryWriter (via `state_delta`) | **cross-tick** | Persistence layer (see §E) | Phase 2 (read), Phase 4 (write) | Persistence subsystem — see §E. | Experiential memory. Cross-position learning log. |
 | `day_digest` | MemoryWriter (via `state_delta`) | **cross-tick** | Persistence layer (see §E) | Phase 2 (read), Phase 4 (write) | Persistence subsystem — see §E. | Summarised day-level context. Exact lifetime and rebuild rule deferred to §E. |
-| `state["user:thesis"]` | Executor's `after_agent_callback`† | cross-tick (user-scoped) | ADK `DatabaseSessionService` `user_state` table, keyed by `(app_name, user_id)` | Phase 2: implicit ADK merge into the fresh session.  Phase 4: callback writes via `ctx.state["user:thesis"] = ...` (passthrough of Strategist's optional `thesis_revision`, else carry-forward of the prior value).  Same auto-yielded event as above. | ADK `user_state` (Spec B). | Strategist's standing market thesis. |
+| `state["user:thesis"]` | Executor's `after_agent_callback`† | cross-tick (user-scoped) | ADK `DatabaseSessionService` `user_state` table, keyed by `(app_name, user_id)` | Phase 2: implicit ADK merge into the fresh session. Phase 4: callback writes via `ctx.state["user:thesis"] = ...` (passthrough of Strategist's optional `thesis_revision`, else carry-forward of the prior value).  Same auto-yielded event as above. | ADK `user_state` (Spec B). | Strategist's standing market thesis. |
 | `strategist_decision` | Strategist (`output_key`) | tick-scoped | Strategist LLM call | Phase 3 (during-tick) | n/a | Consumed by RiskGate and Executor downstream in the same tick. |
 | `technical_verdicts` | TechnicalAnalyst (`state_delta`) | tick-scoped | TechnicalAnalyst deterministic extractor | Phase 3 | n/a | Unique key — see §C-Rule 4. Yielded as a list of per-ticker verdict dicts; written via `state_delta` (Rule 1) — TechnicalAnalyst is a BaseAgent, not an LlmAgent, so no `output_key`. |
 | `fundamental_verdicts` | FundamentalJoinerAgent (`state_delta`) | tick-scoped | FundamentalJoinerAgent consolidation of per-ticker working keys | Phase 3 | n/a | Unique key — see §C-Rule 4. |
@@ -225,8 +225,11 @@ path persists through `SessionService.append_event`.
 in-memory only. `BaseSessionService.append_event` is the documented
 persistence channel for state updates.
 
-**Implication:** Strategist's `after_agent_callback` writing the thesis
-book must emit a `state_delta`, not poke the dict.
+**Implication:** Executor's `after_agent_callback` is the
+writer-of-record for cross-tick keys `user:positions` and `user:thesis`.
+It writes via `ctx.state[key] = …`; ADK's
+`_handle_after_agent_callback` auto-yields the accumulated delta as a
+state-delta event (see sub-section below).
 
 **In-tick callback carve-out (added 2026-05-20).**  ADK
 ``after_agent_callback``s cannot yield Events (Rule 3) but are the only
