@@ -47,19 +47,29 @@ for the same `user_id`.  No new SQL tables are required for V1.  The
 backtest driver switches from `InMemorySessionService` to
 `DatabaseSessionService` so the same mechanism applies symmetrically.
 
-**Writer-of-record split (post-critique).**  Strategist's LlmAgent
-*decides* the new thesis state by reasoning, but `LlmAgent`s cannot route
-a subset of their output to a specific state key, and
-`docs/contract-invariants.md` §C-Rule 3 forbids callbacks from yielding
-events.  The actual `EventActions(state_delta=...)` writes are emitted by
-**MemoryWriter** for both `user:positions` (assembled from the prior dict +
-Strategist's stances + Executor's fills) and `user:thesis` (passthrough of
-the optional `thesis_revision` field, else carry-forward).  Executor runs
-broker calls, captures fills, and yields its own `state_delta` for
-`executions` / `last_executed_tick_id` only.  This matches the 2026-05-19
-2.5.1 patch's intent (MemoryWriter as the cross-tick persistence writer)
-and lets §A keep "Strategist owns" semantics while naming MemoryWriter as
-the writer-of-record in a footnote.
+**Writer pattern (revised 2026-05-23).**  Strategist's `LlmAgent` *decides*
+the new thesis content by reasoning — its `output_schema` carries `stances`
+plus optional `thesis_revision` and lands at `state["strategist_decision"]`
+via the agent's `output_key`.  The downstream persistence writes for
+`user:positions` and `user:thesis` are performed by an
+**`after_agent_callback` attached to Executor**.  The callback reads
+Strategist's decision plus Executor's just-emitted fills, applies the verb
+dispatch, and writes via `ctx.state["user:positions"] = ...` /
+`ctx.state["user:thesis"] = ...`.  ADK's `_handle_after_agent_callback`
+(`google/adk/agents/base_agent.py:538-545`) auto-yields a state-delta
+`Event` containing the callback's accumulated `state._delta`;
+`DatabaseSessionService.append_event` then persists the `user:`-prefixed
+keys to the `user_state` table.  Executor's `_run_async_impl` itself
+continues to yield `state_delta` for `executions` / `last_executed_tick_id`
+only — the broker-effect keys and the thesis-book write are separated by
+phase (broker effects first, then the after-callback) but unified inside
+one agent.  This conforms with §C-Rule 1 (state mutation rides on an
+event) once the rule's in-tick callback carve-out is extended to cover
+the auto-emit path for cross-tick keys (see "Contract amendments" below).
+The pre-existing MemoryWriter agent is **untouched** by Spec B — it
+continues to own `memory_buffer` / `day_digest` for Spec C, and its bare-
+key `thesis` write is dropped in favour of the new Executor-callback
+writer for `user:thesis`.
 
 **Namespace partitioning.**  Paper, live, and backtest run under disjoint
 ADK `app_name` values (`StockBot-paper`, `StockBot-live`,
@@ -136,24 +146,109 @@ implementation and resolve the deviations explicitly, not by drift.
 
 ### §A schema — `positions` and `thesis` rows
 
-The two cross-tick rows are repainted under the `user:` prefix and gain a
-writer-of-record line.  The amended rows read:
+The two cross-tick rows are repainted under the `user:` prefix.  Both
+rows have **Executor** as the single owner — per §A's "for agents,
+callbacks attached to that agent count as the agent's writes" rule, the
+new `after_agent_callback` is Executor's write surface.  The amended
+rows read:
 
 | State key | Owner | Lifetime | Source | Refresh |
 |-----------|-------|----------|--------|---------|
-| `state["user:positions"]` | Strategist (decides) / **MemoryWriter (writer-of-record)** | cross-tick (user-scoped) | ADK `DatabaseSessionService` `user_state` table, keyed by `(app_name, user_id)` | Phase 2: implicit ADK merge into the fresh session.  Phase 4: MemoryWriter emits `EventActions(state_delta={"user:positions": ...})`. |
-| `state["user:thesis"]` | Strategist (decides) / **MemoryWriter (writer-of-record)** | cross-tick (user-scoped) | ADK `DatabaseSessionService` `user_state` table, keyed by `(app_name, user_id)` | Phase 2: implicit ADK merge into the fresh session.  Phase 4: MemoryWriter emits `EventActions(state_delta={"user:thesis": ...})` when the strategist's optional `thesis_revision` field is non-null; otherwise carry-forward. |
+| `state["user:positions"]` | Executor's `after_agent_callback`† | cross-tick (user-scoped) | ADK `DatabaseSessionService` `user_state` table, keyed by `(app_name, user_id)` | Phase 2: implicit ADK merge into the fresh session.  Phase 4: callback writes via `ctx.state["user:positions"] = ...`; ADK's `_handle_after_agent_callback` auto-yields a state-delta event; `DatabaseSessionService.append_event` persists it. |
+| `state["user:thesis"]` | Executor's `after_agent_callback`† | cross-tick (user-scoped) | ADK `DatabaseSessionService` `user_state` table, keyed by `(app_name, user_id)` | Phase 2: implicit ADK merge into the fresh session.  Phase 4: callback writes via `ctx.state["user:thesis"] = ...` (passthrough of Strategist's optional `thesis_revision`, else carry-forward of the prior value).  Same auto-yielded event as above. |
 
 Footnote attached to both rows:
 
 > *Strategist's `LlmAgent` reasons about and produces the thesis content
-> through its output schema, but cannot itself yield the persistence
-> event (§C-Rule 3 forbids callbacks from yielding events; `LlmAgent`s
-> route their entire output blob through a single `output_key`).
-> MemoryWriter is the BaseAgent that emits the `state_delta`; it
-> assembles `user:positions` by applying Strategist's stance verbs to the
-> prior dict plus Executor's fill data, and passes `user:thesis` through
-> from Strategist's `thesis_revision` field.*
+> through its `output_schema` (`stances` + optional `thesis_revision`,
+> landing at `state["strategist_decision"]` via the agent's
+> `output_key`).  The persistence-bearing `EventActions(state_delta=…)`
+> for the `user:`-prefixed keys is auto-yielded by ADK from Executor's
+> `after_agent_callback`, which assembles the new `user:positions` dict
+> by applying Strategist's stance verbs to the prior dict plus
+> Executor's own fill data and passes `user:thesis` through from
+> `thesis_revision`.  See §C-Rule 1's auto-yielded-callback-write
+> clarification for why this is conformant.*
+
+### §C-Rule 1 — auto-yielded delta-tracked callback writes (added 2026-05-23)
+
+ADK's `Context.state` (the property used as `callback_context.state`)
+is a delta-tracking `State` object (`google/adk/sessions/state.py`).
+When a callback writes via `ctx.state[key] = value` the write lands in
+both `state._value` (the live in-memory view) and `state._delta` (the
+pending event payload) at `state.py:42-47`.  ADK's
+`_handle_after_agent_callback` (`google/adk/agents/base_agent.py:489-546`)
+then checks `callback_context.state.has_delta()` after the callback
+returns; if true, it constructs an `Event` whose `actions` carry the
+accumulated `state_delta` and the runner yields it through
+`SessionService.append_event` like any agent-produced event.
+`DatabaseSessionService` persists `app:` / `user:`-prefixed keys to
+their respective tables on that ingestion path.
+
+**Clarification for Rule 1's in-tick callback carve-out.** The carve-out
+exists because *direct dict mutation* of a Pydantic object held in state
+(e.g. the Strategist `_strategist_validation_callback` mutating
+`decision.target_weights = ...` on the object referenced by
+`state["strategist_decision"]`) does not produce a `state_delta` event
+and is therefore not durable on serialising backends.  That kind of
+mutation is conformant only for in-tick consumers reading the same
+reference.  The Spec B Executor `after_agent_callback`'s
+`ctx.state["user:positions"] = …` write is a *different* mechanism:
+it goes through ADK's delta-tracking and is auto-yielded as a real
+`state_delta` event.  Cross-tick `user:`-prefixed writes via this
+auto-yield path are conformant with Rule 1 by construction — the write
+rides on an explicit event, just one ADK emits on the callback's
+behalf.
+
+The Strategist validation carve-out (in-tick reference mutation) and
+the Executor persistence write (cross-tick delta-tracked auto-yield)
+are two distinct patterns; the carve-out applies to the former, the
+new clarification covers the latter.
+
+### §C-Rule 2 — runtime observability handles ride on `temp:`
+
+The backtest driver (and, in a follow-on, the live tick) currently
+injects two non-serialisable handles into the per-tick state dict:
+
+- `state["_trace"]: TraceWriter`
+- `state["_decision_logger"]: DecisionLogger`
+
+These keys exist to give analyst / strategist / executor agents access
+to observability writers without threading them through every call
+signature.  They are observability-only (Rule 8): contract-neutral,
+invocation-scoped, never persisted, never read by another tick.
+
+Today they ride bare-keyed because `InMemorySessionService` happily
+keeps non-serialisable Python objects in `session.state`.  Spec B's
+switch to `DatabaseSessionService` (see "Backtest changes" below)
+breaks this — SQLAlchemy's JSON serialiser cannot round-trip a
+`TraceWriter`.  The amendment is to rename both keys under ADK's
+`temp:` prefix:
+
+- `state["temp:_trace"]`
+- `state["temp:_decision_logger"]`
+
+ADK's `_session_util.extract_state_delta()` (`google/adk/sessions/_session_util.py:48`)
+skips `temp:` keys, and `BaseSessionService._trim_temp_delta_state()`
+strips them from the event delta before the subclass persistence call.
+The handles live in `session.state` for the duration of one tick (so
+agents can read them via the same `ctx.state[key]` lookup as before)
+but never touch the database.
+
+**Driver injection point:** because ADK's `create_session(state=…)`
+seed dict passes through `extract_state_delta` first, `temp:`-prefixed
+keys passed there are silently discarded (see `_session_util.py:48`
+plus `database_session_service.py:412-485`).  The driver therefore
+injects the handles by direct mutation of `adk_session.state` **after**
+`create_session(...)` returns — the live session dict accepts them, ADK
+preserves them across the in-process invocation, and they never reach
+the DB.
+
+Rule 2's "Concrete invocation-scoped keys" list gains
+`temp:_trace` and `temp:_decision_logger` alongside the existing
+`temp:held_positions_view` etc.  Rule 8 (observability is additive and
+contract-neutral) is unaffected — the observability writers continue to
+write to artefacts external to the contract surface.
 
 ### §C-Rule 7 — clarification
 
@@ -312,8 +407,9 @@ ADK's session state has built-in scoping prefixes:
 `DatabaseSessionService` stores `user:`-prefixed keys in a separate
 `user_state` table keyed by `(app_name, user_id)`.  On every
 `get_session()` or `create_session()` for that user, ADK merges the user
-state into the returned state dict.  When MemoryWriter emits a
-`state_delta` that writes to `state["user:positions"]`,
+state into the returned state dict.  When Executor's
+`after_agent_callback` writes to `state["user:positions"]` (and ADK
+auto-yields a state-delta event from the accumulated delta),
 `DatabaseSessionService` persists the change at the user level — so the
 next tick's fresh session sees it.
 
@@ -325,32 +421,49 @@ The pipeline reads and writes two new cross-tick keys:
 
 That is the entirety of the new persistence surface for Spec B.
 
-#### Writer-of-record split
+#### Writer responsibilities
 
-`docs/contract-invariants.md` §C-Rule 3 forbids callbacks from yielding
-events, and `LlmAgent`s route their entire output blob through a single
-`output_key`.  So Strategist *cannot itself* write a subset of its output
-to a specific `user:`-prefixed key.  The persistence write is done by
-**MemoryWriter**, a BaseAgent sequenced after Executor in the pipeline:
+Strategist's `LlmAgent` decides the new thesis content but cannot
+route a subset of its output to a specific `user:`-prefixed state key
+(an `LlmAgent` writes its entire output blob through a single
+`output_key`).  The cross-tick persistence write is performed inside
+**Executor's `after_agent_callback`**, which runs after Executor's
+`_run_async_impl` has dispatched broker calls and yielded its
+broker-effect `state_delta`.  The callback assembles the new
+`user:positions` dict from (a) the just-emitted fills, (b) Strategist's
+stances, and (c) the prior `user:positions` already merged into session
+state at Phase 2, then writes via `ctx.state["user:positions"] = ...`
+/ `ctx.state["user:thesis"] = ...`.  ADK's
+`_handle_after_agent_callback` (`base_agent.py:489-546`) auto-yields a
+state-delta `Event` carrying the callback's accumulated delta; the
+runner ingests it through `SessionService.append_event` exactly as for
+agent-yielded events.
 
 | Agent | Reads from state | Yields `state_delta` for |
 |-------|------------------|--------------------------|
-| Strategist (LlmAgent) | held-view, evidence, prior `user:thesis` | (single `output_key`, e.g. `strategist_decision`) |
+| Strategist (`LlmAgent`) | held-view, evidence, prior `user:thesis` | single `output_key` `strategist_decision` (plus the existing in-tick validation callback's derived-field reference mutations on the same Pydantic object — covered by Rule 1's in-tick carve-out) |
 | Risk gate (BaseAgent) | strategist output, risk caps | `strategist_decision` (filtered/capped) |
-| Executor (BaseAgent) | strategist output (stances) | `executions`, `last_executed_tick_id` |
-| **MemoryWriter (BaseAgent)** | strategist output (stances + `thesis_revision`), `executions` (fills), prior `user:positions`, prior `user:thesis` | **`user:positions`, `user:thesis`** |
+| **Executor (BaseAgent)** | strategist output (stances), prior `user:positions` | `_run_async_impl`: `executions`, `last_executed_tick_id`.  `after_agent_callback`: **`user:positions`, `user:thesis`** (auto-yielded by ADK as a second event) |
+| MemoryWriter (BaseAgent) | (Spec B leaves untouched) | `memory_buffer`, `day_digest` (Spec C territory).  Today's bare-key `thesis` write is **dropped** — Executor's after-callback now owns that key under the `user:thesis` name. |
 
-MemoryWriter centralises the verb→`PositionThesis` mutation logic.
-Executor centralises broker-call dispatch.  Both agents share a single
-verb-dispatch helper module (`src/agents/_verb_dispatch.py`, new) so the
-verb semantics are defined in exactly one place.
+The verb-dispatch logic — the pure mapping from stance verb plus prior
+thesis row plus fill data to (broker call, new thesis row) — lives
+inside Executor's package as `src/agents/executor/_verb_dispatch.py`.
+Both Executor's `_run_async_impl` (which needs the broker call) and
+Executor's `after_agent_callback` (which needs the new thesis row)
+import from there.  There is no cross-package shared module: the verb
+semantics live in exactly one place inside the agent that owns both
+the broker dispatch and the persistence write.
 
-This matches the spirit of the 2026-05-19 patch in `docs/todo-fixes.md`
+This *partly* matches the 2026-05-19 patch in `docs/todo-fixes.md`
 item 2.5.1 (MemoryWriter as the cross-tick writer for `memory_buffer`,
-`day_digest`, `thesis`) and extends MemoryWriter to also own
-`user:positions`.  Today's pre-spec `positions` writes from Executor
-(bare key) are removed — Executor's `state_delta` now carries only
-broker-effect keys.
+`day_digest`, `thesis`): `memory_buffer` and `day_digest` remain
+MemoryWriter's job for Spec C, but `user:positions` and `user:thesis`
+are owned by Executor's after-callback because the assembler needs
+the fill data Executor itself produces.  Today's pre-spec `positions`
+bare-key writes from Executor's `_run_async_impl` are removed, and
+the bare-key `thesis` write from MemoryWriter is dropped — both keys
+ride the new `user:`-prefixed callback path.
 
 #### Namespace partitioning by `app_name`
 
@@ -641,7 +754,7 @@ amendments" above) reads:
 
 | Field | Owner | Lifetime | Source | Refresh |
 |-------|-------|----------|--------|---------|
-| `state["user:positions"]` | Strategist (decides) / MemoryWriter (writer-of-record) | cross-tick (user-scoped) | ADK `DatabaseSessionService` `user_state` table | Phase 2 read via implicit ADK merge; Phase 4 write via MemoryWriter `state_delta` |
+| `state["user:positions"]` | Executor's `after_agent_callback` | cross-tick (user-scoped) | ADK `DatabaseSessionService` `user_state` table | Phase 2 read via implicit ADK merge; Phase 4 write via the callback's auto-yielded state-delta event |
 
 Phase 2 (tick-start) behaviour:
 
@@ -659,18 +772,30 @@ Phase 2 (tick-start) behaviour:
 
 Phase 4 (tick-end) behaviour:
 
-- Executor runs broker calls and emits `state_delta` for `executions`
-  and `last_executed_tick_id` only.
-- MemoryWriter (sequenced after Executor) reads Strategist's stances,
-  Executor's fills, and the prior `user:positions`, then emits a single
-  `state_delta` containing the new `user:positions` (and `user:thesis`).
-  `DatabaseSessionService` persists both keys to the `user_state` table
-  on event ingestion.
+- Executor's `_run_async_impl` runs broker calls and yields one
+  `state_delta` event carrying `executions` and `last_executed_tick_id`.
+- Executor's `after_agent_callback` then runs (still inside the same
+  invocation of the Executor agent).  It reads Strategist's stances
+  from `state["strategist_decision"]`, the just-emitted fills from
+  `state["executions"]`, and the prior `user:positions` already in
+  `state`, applies `apply_stance_to_thesis(...)` per stance, and writes
+  `ctx.state["user:positions"] = …` plus
+  `ctx.state["user:thesis"] = …`.
+- ADK's `_handle_after_agent_callback` detects the accumulated delta
+  and auto-yields a second `Event` from the Executor invocation whose
+  `actions.state_delta` carries both keys.  The runner ingests this
+  event through `SessionService.append_event`;
+  `DatabaseSessionService` persists `user:`-prefixed keys to the
+  `user_state` table.
 - No separate Phase 4 lifecycle agent is needed.  Crash recovery falls
-  out for free: any `state_delta` event that completed before the crash
-  is durable; any event after the crash is lost (the next tick simply
-  re-reads the last-good state).  Because MemoryWriter emits a single
-  event, the cross-tick state is all-or-nothing per tick.
+  out for free: any `state_delta` event already ingested before the
+  crash is durable; any event after the crash is lost (the next tick
+  re-reads the last-good state).  Because the after-callback assembles
+  the full new dicts and writes both keys in one auto-yielded event,
+  the cross-tick state is all-or-nothing per *callback* — see Invariant
+  2 for the (intentional) asymmetry where Executor's broker-effect
+  event ingests before the callback delta would, leaving a real broker
+  action without a persisted thesis update on mid-tick failure.
 
 ### `state["user:thesis"]` lifecycle
 
@@ -678,17 +803,18 @@ Same persistence mechanism as `state["user:positions"]`.  Active-model:
 the strategist emits a thesis revision only when it wants to change the
 text; omission leaves the prior thesis in place.  The thesis is a
 free-form string; the strategist's output schema gains an optional
-`thesis_revision: str | None` field.  MemoryWriter consumes
-`thesis_revision`: when non-null, the new value is written to
-`state["user:thesis"]` via MemoryWriter's `state_delta` (the same event
-that carries `user:positions`).  When null, the prior `user:thesis` is
-carried forward (MemoryWriter writes the prior value to its own event so
-the event payload remains explicit — the carry-forward is a deliberate
+`thesis_revision: str | None` field.  Executor's `after_agent_callback`
+consumes `thesis_revision`: when non-null, the new value is written to
+`state["user:thesis"]` via the callback (same auto-yielded event as
+`user:positions`).  When null, the prior `user:thesis` is carried
+forward (the callback re-writes the prior value to its own event so the
+event payload remains explicit — the carry-forward is a deliberate
 re-write, not an absence).
 
-This matches the 2026-05-19 patch's intent (MemoryWriter as the writer
-of `thesis`) and namespace-shifts the key from bare `thesis` to
-`user:thesis`.
+This namespace-shifts the key from bare `thesis` to `user:thesis` and
+collapses the 2026-05-19 patch's planned MemoryWriter ownership of
+`thesis` into the new Executor-callback writer.  MemoryWriter's bare-
+key `thesis` write is dropped in the same change.
 
 ### Strategist context shim — `temp:strategist_mode` injection
 
@@ -740,12 +866,12 @@ more emphatically.
 
 Strategist emits **stances only** (one per active ticker) plus an
 optional top-level `thesis_revision: str | None`.  No direct
-`PositionThesis` dict ever appears in the LLM output — MemoryWriter
-assembles the dict downstream by applying stance verbs to the prior
-`state["user:positions"]` plus Executor's fill data.  This keeps the LLM
-focused on "decide" and prevents the LLM from seeing and re-emitting its
-own prior-tick `PositionThesis` rows (which would re-introduce the
-anti-anchoring failure mode Principle 1 closes).
+`PositionThesis` dict ever appears in the LLM output — Executor's
+`after_agent_callback` assembles the dict downstream by applying stance
+verbs to the prior `state["user:positions"]` plus Executor's own fill
+data.  This keeps the LLM focused on "decide" and prevents the LLM from
+seeing and re-emitting its own prior-tick `PositionThesis` rows (which
+would re-introduce the anti-anchoring failure mode Principle 1 closes).
 
 The existing `TickerStance` model gains:
 
@@ -765,19 +891,27 @@ The existing `TickerStance` model gains:
 
 The strategist response schema (Pydantic) also gains an optional
 top-level `thesis_revision: str | None` field for the market-thesis
-update mechanism (consumed by MemoryWriter; non-null overwrites
-`user:thesis`, null carries forward).
+update mechanism (consumed by Executor's after-callback; non-null
+overwrites `user:thesis`, null carries forward).
 
-### Shared verb-dispatch helper
+### Verb-dispatch helpers (Executor-internal)
 
-A new module `src/agents/_verb_dispatch.py` defines the canonical
-mapping from `(verb, prior_thesis_row, stance_fields, fill_price)` →
-`(new_thesis_row, broker_call_or_none, trade_log_row_or_none)`.  Both
-Executor and MemoryWriter import the helper so the verb semantics are
-defined in exactly one place.
+A new module `src/agents/executor/_verb_dispatch.py` defines the
+canonical mapping from `(verb, prior_thesis_row, stance_fields,
+fill_price)` → `(new_thesis_row, broker_call_or_none)`.  Both Executor's
+`_run_async_impl` (which needs `resolve_broker_call`) and Executor's
+`after_agent_callback` (which needs `apply_stance_to_thesis`) import
+from there.  The helpers are pure — no state mutation, no I/O —
+and trivially testable.
+
+The module lives **inside Executor's package** rather than at the
+`src/agents/` package root because Executor is the single agent that
+owns both the broker dispatch *and* the persistence write.  No cross-
+package shared module is introduced; the verb semantics have exactly
+one owner.
 
 ```python
-# src/agents/_verb_dispatch.py (new)
+# src/agents/executor/_verb_dispatch.py (new, private to executor)
 
 def resolve_broker_call(
     stance: TickerStance,
@@ -786,9 +920,8 @@ def resolve_broker_call(
 ) -> BrokerCall | None:
     """Map a stance to the broker call it requires (None for no-trade verbs).
 
-    Pure function — no state mutation, no I/O.  Executor uses this to
-    decide what to send to the broker; MemoryWriter does not call it.
-    Hold and update stances return ``None``.
+    Pure function — no state mutation, no I/O.  Hold and update stances
+    return ``None`` so the executor skips the broker dispatch for them.
     """
     # ... dispatch on stance.intent (open/add/trim → buy delta;
     # close → sell-all; hold/update → None) ...
@@ -804,9 +937,9 @@ def apply_stance_to_thesis(
 ) -> PositionThesis | None:
     """Map a stance + fill data to the new ``PositionThesis`` row for that ticker.
 
-    Returns ``None`` for close (deletes the row).  Pure function —
-    MemoryWriter calls this for each stance and builds the new
-    ``user:positions`` dict.  Executor does not call it.
+    Returns ``None`` for close (deletes the row).  Pure function — the
+    Executor after_agent_callback calls this for each stance and builds
+    the new ``user:positions`` dict from the returns.
 
     ``fill_price`` is the actual fill from Executor's broker call, used
     to set ``opened_price`` on ``open`` and to update the executed
@@ -819,23 +952,38 @@ def apply_stance_to_thesis(
     # mutation + review fields) ...
 ```
 
-### Executor — broker calls only
+### Executor — broker calls plus thesis-book writer
 
-`src/agents/executor/agent.py` is reshaped to call only
-`_verb_dispatch.resolve_broker_call(...)`, dispatch the resulting
-`BrokerCall` (if any), capture the fill, and yield one `state_delta`:
+`src/agents/executor/agent.py` gains an `after_agent_callback` that
+owns the `user:positions` / `user:thesis` write.  Executor's
+`_run_async_impl` is unchanged in shape — it still dispatches broker
+calls and yields one `state_delta` for `executions` /
+`last_executed_tick_id`.  The bare-key `state["positions"]` write in
+the existing implementation is removed.
 
 ```python
 class Executor(BaseAgent):
-    """Translates trading verbs into broker calls.
+    """Translates trading verbs into broker calls and writes the thesis book.
 
-    Reads ``state["strategist_decision"]`` for the (risk-gated) stances,
-    runs the broker calls in stance order, captures fill prices, and
-    yields a single ``state_delta`` carrying ``executions`` and
-    ``last_executed_tick_id``.  It does NOT touch ``user:positions`` or
-    ``user:thesis`` — those are MemoryWriter's responsibility (see
-    "Writer-of-record split" above).
+    ``_run_async_impl`` reads ``state["strategist_decision"]`` for the
+    (risk-gated) stances, runs the broker calls in stance order,
+    captures fill prices, and yields a single ``state_delta`` carrying
+    ``executions`` and ``last_executed_tick_id``.
+
+    ``after_agent_callback`` assembles the new ``user:positions`` /
+    ``user:thesis`` from the stances + the just-emitted fills + the
+    prior ``user:positions``, and writes them via ``ctx.state[…] = …``.
+    ADK auto-yields a second state-delta event from the accumulated
+    delta on ``Context.state``; ``DatabaseSessionService`` persists the
+    ``user:``-prefixed keys to the user_state table.
     """
+
+    def __init__(self, *, broker, name="executor"):
+        super().__init__(
+            name=name,
+            after_agent_callback=_executor_thesis_writer_callback,
+        )
+        self._broker = broker
 
     async def _run_async_impl(self, ctx):
         decision = ctx.state["strategist_decision"]
@@ -846,6 +994,7 @@ class Executor(BaseAgent):
                 stance,
                 prior_row=ctx.state.get("user:positions", {}).get(stance.ticker),
             )
+
             if call is None:
                 # Hold / update verbs — no broker dispatch.
                 executions.append(ExecutionRow(stance=stance, fill_price=None))
@@ -860,85 +1009,84 @@ class Executor(BaseAgent):
                 "last_executed_tick_id": ctx.state["tick_id"],
             }),
         )
-```
 
-The pre-spec yield for `state["positions"]` (bare key) on
-`src/agents/executor/agent.py` is removed.
 
-### MemoryWriter — `user:positions` and `user:thesis` assembly
+def _executor_thesis_writer_callback(callback_context):
+    """Assemble user:positions / user:thesis and write via delta-tracked state.
 
-`src/agents/memory_writer/agent.py` (already present, today writes
-`memory_buffer` / `day_digest` / `thesis` bare-key for the 2.5.1 patch)
-gains the assembly of `user:positions` from stances + fills and the
-namespace-shift of `thesis` → `user:thesis`:
+    ADK's ``_handle_after_agent_callback`` auto-yields an Event with
+    ``actions.state_delta`` containing every key written here.  The
+    persistence event for the thesis book therefore rides on Rule 1
+    without the callback returning a re-prompt (Rule 3) — see the
+    Rule 1 amendment paragraph in "Contract amendments" above.
 
-```python
-class MemoryWriter(BaseAgent):
-    """Writer-of-record for cross-tick state.
-
-    Reads:
-      - ``state["strategist_decision"]`` for stances + thesis_revision.
-      - ``state["executions"]`` for Executor's fills.
-      - Prior ``state["user:positions"]`` (already merged into the
-        session by ADK at Phase 2).
-      - Prior ``state["user:thesis"]``.
-
-    Emits a single ``state_delta`` event containing:
-      - ``user:positions``: new dict, assembled via
-        ``apply_stance_to_thesis(...)`` per stance.
-      - ``user:thesis``: ``thesis_revision`` if non-null, else
-        carry-forward.
-
-    In Spec C this agent will also write ``user:memory_buffer`` and
-    ``user:day_digest`` in the same ``state_delta``.
+    Returns ``None`` (no re-prompt content).
     """
 
-    async def _run_async_impl(self, ctx):
-        decision = ctx.state["strategist_decision"]
-        executions = {
-            e["stance"]["ticker"]: e for e in ctx.state.get("executions", [])
-        }
-        prior_positions: dict[str, dict] = ctx.state.get("user:positions", {})
+    state           = callback_context.state
+    decision        = state["strategist_decision"]
+    executions      = {
+        row["stance"]["ticker"]: row
+        for row in state.get("executions", [])
+    }
+    prior_positions = dict(state.get("user:positions", {}))  # shallow copy
 
-        new_positions: dict[str, dict] = dict(prior_positions)  # shallow copy
+    new_positions: dict[str, dict] = dict(prior_positions)
 
-        for stance in decision.stances:
-            ticker = stance.ticker
-            fill_price = (executions.get(ticker) or {}).get("fill_price")
+    for stance in decision.stances:
+        ticker     = stance.ticker
+        fill_price = (executions.get(ticker) or {}).get("fill_price")
 
-            new_row = apply_stance_to_thesis(
-                stance,
-                prior_row=PositionThesis(**prior_positions[ticker])
-                          if ticker in prior_positions else None,
-                fill_price=fill_price,
-                tick_id=ctx.state["tick_id"],
-                as_of=ctx.state["as_of"],
-            )
-
-            if new_row is None:
-                # Close — drop the ticker.
-                new_positions.pop(ticker, None)
-            else:
-                new_positions[ticker] = new_row.model_dump(mode="json")
-
-        new_thesis = (
-            decision.thesis_revision
-            if decision.thesis_revision is not None
-            else ctx.state.get("user:thesis", "")
+        prior_row  = (
+            PositionThesis.model_validate(prior_positions[ticker])
+            if ticker in prior_positions else None
         )
 
-        yield Event(
-            actions=EventActions(state_delta={
-                "user:positions": new_positions,
-                "user:thesis":    new_thesis,
-            }),
+        new_row = apply_stance_to_thesis(
+            stance,
+            prior_row=prior_row,
+            fill_price=fill_price,
+            tick_id=state["tick_id"],
+            as_of=state["as_of"],
         )
+
+        if new_row is None:
+            # Close — drop the ticker.
+            new_positions.pop(ticker, None)
+        else:
+            new_positions[ticker] = new_row.model_dump(mode="json")
+
+    # Thesis carry-forward: explicit re-write so the event payload is
+    # never an absence (see "user:thesis lifecycle" above).
+    new_thesis = (
+        decision.thesis_revision
+        if decision.thesis_revision is not None
+        else state.get("user:thesis", "")
+    )
+
+    # Delta-tracked writes — ADK auto-yields a state-delta event.
+    state["user:positions"] = new_positions
+    state["user:thesis"]    = new_thesis
+
+    return None
 ```
 
-The shape of the agent — read-from-state, compute-pure, yield one
-`state_delta` — keeps it trivially testable and aligns with the §C-Rule
-1 in-tick callback carve-out (the writes ride on an explicit event, not
-a callback side-effect).
+The shape of the callback — read-from-state, compute-pure, write-via-
+delta-tracked-state — keeps it trivially testable.  The Rule 1
+clarification covers why the auto-yielded state-delta event satisfies
+the cross-tick persistence requirement without an additional writer
+agent (see "Contract amendments" above).
+
+### MemoryWriter — unchanged by Spec B
+
+The existing `src/agents/memory_writer/agent.py` (writes `memory_buffer`,
+`day_digest`, and a pre-spec bare-key `thesis` for the 2026-05-19 2.5.1
+patch) is **left in place untouched** for the `memory_buffer` /
+`day_digest` keys.  The bare-key `thesis` write is dropped — that key
+is now owned by Executor's after-callback under the `user:thesis` name.
+Spec C extends MemoryWriter to take on the experiential memory rows
+(`memory_buffer`, `day_digest` namespace shifts) but Spec B touches the
+agent only to remove the dropped `thesis` write.
 
 ### Risk gate
 
@@ -961,14 +1109,27 @@ behaviour for `add` / `trim`.
 - `src/backtest/driver.py` switches from `InMemorySessionService` to
   `DatabaseSessionService` backed by `runs/<run-id>/session.sqlite`.
   The session-service factory is parameterised so the same code path
-  serves live (`DATABASE_URL` env) and backtest (`runs/<run-id>/session.sqlite`).
+  serves live (`DATABASE_URL` env) and backtest
+  (`runs/<run-id>/session.sqlite`).
+- Today's `_trace` / `_decision_logger` keys (driver lines ~216, 225
+  pre-Spec B) are **renamed under the `temp:` prefix** —
+  `state["temp:_trace"]` and `state["temp:_decision_logger"]` — so ADK
+  strips them from the persisted delta and the SQLAlchemy JSON
+  serialiser never sees a non-serialisable `TraceWriter` /
+  `DecisionLogger`.  Because `create_session(state=…)`'s seed dict
+  passes through `extract_state_delta` (which discards `temp:` keys),
+  the driver injects the handles by direct mutation of
+  `adk_session.state` **after** `create_session(...)` returns.  See the
+  §C-Rule 2 amendment for the full mechanism.
 - The post-tick `state.update(dict(updated.state))` carry on lines
   ~251-253 is removed *for `positions`* — ADK now handles that.
   Other temporary keys in that carry (if any) are reviewed during
   implementation and either kept or migrated to `temp:` scope.
-- `user_id` for backtest is derived from the run-id, e.g.
-  `f"backtest-{run_id}"`.  Each run has an isolated user_state row;
-  re-running the same window does not pollute prior runs.
+- `app_name` for backtest is `f"StockBot-backtest-{window.id}"`;
+  `user_id` stays `"stockbot"`.  Per-run isolation within a window
+  (re-running with `--fresh`) is handled by deleting the
+  `runs/<run-id>/session.sqlite` file, not by varying `user_id` — see
+  "Namespace partitioning by `app_name`" above.
 
 ### Live `tick.py` changes
 
@@ -1024,22 +1185,26 @@ in the right order.  The changes are confined to:
      `state["strategist_decision"]` via the agent's `output_key`.
    - Risk gate filters/caps trading stances and writes the gated
      version back to `state["strategist_decision"]`.
-   - Executor reads `state["strategist_decision"]`, calls
-     `_verb_dispatch.resolve_broker_call(...)` per stance, dispatches
-     the `buy` calls to the broker, captures fill prices, and emits
-     one `state_delta` for `executions` + `last_executed_tick_id`.
-   - MemoryWriter reads `state["strategist_decision"]` (stances +
-     `thesis_revision`), `state["executions"]` (fills), and prior
-     `state["user:positions"]` (empty on cold start).  Calls
+   - Executor's `_run_async_impl` reads `state["strategist_decision"]`,
+     calls `_verb_dispatch.resolve_broker_call(...)` per stance,
+     dispatches the `buy` calls to the broker, captures fill prices,
+     and yields one `state_delta` for `executions` +
+     `last_executed_tick_id`.
+   - Executor's `after_agent_callback` runs.  It reads
+     `state["strategist_decision"]` (stances + `thesis_revision`),
+     `state["executions"]` (the fills just emitted by
+     `_run_async_impl`), and prior `state["user:positions"]` (empty on
+     cold start).  Calls
      `_verb_dispatch.apply_stance_to_thesis(...)` per stance to build
-     the new positions dict.  Emits one `state_delta` carrying
-     `user:positions` (newly-opened rows) and `user:thesis`
-     (`thesis_revision` if non-null, else `""`).
-     `DatabaseSessionService` persists both keys to the `user_state`
-     table on event ingestion.
+     the new positions dict, then writes
+     `ctx.state["user:positions"] = …` /
+     `ctx.state["user:thesis"] = …`.  ADK's
+     `_handle_after_agent_callback` auto-yields a second event from the
+     accumulated delta.  `DatabaseSessionService` persists both keys to
+     the `user_state` table on event ingestion.
 4. **Phase 4 (tick-end):** the run completes.  No explicit "lifecycle
    agent" is needed — ADK has already persisted the user state via
-   MemoryWriter's `state_delta`.
+   Executor-callback's auto-yielded `state_delta`.
 
 ### Tick *N* — incremental
 
@@ -1066,13 +1231,15 @@ in the right order.  The changes are confined to:
      `src/agents/llm_retry.py` layer.
    - Risk gate processes only trading verbs (open/add/trim/close);
      hold/update pass through.
-   - Executor dispatches broker calls for trading verbs only; captures
-     fills; emits `state_delta` for `executions` +
-     `last_executed_tick_id`.
-   - MemoryWriter reads stances, fills, and prior `user:positions`;
-     applies verbs (deletions on close, mutations on add/trim/update,
-     review-only writes on hold); emits one `state_delta` carrying
-     new `user:positions` and `user:thesis`.
+   - Executor's `_run_async_impl` dispatches broker calls for trading
+     verbs only; captures fills; yields `state_delta` for
+     `executions` + `last_executed_tick_id`.
+   - Executor's `after_agent_callback` reads stances, fills, and prior
+     `user:positions`; applies verbs (deletions on close, mutations on
+     add/trim/update, review-only writes on hold); writes
+     `ctx.state["user:positions"] = …` and
+     `ctx.state["user:thesis"] = …`.  ADK auto-yields a second event
+     carrying both keys.
 4. **Phase 4 (tick-end):** ADK persists the new user_state row.
 
 ### Crash recovery
@@ -1084,15 +1251,18 @@ If a tick crashes mid-Phase 3:
 - Any event after the crash is lost.
 - The next tick starts from the last-good user_state row.
 
-Because MemoryWriter emits a single `state_delta` at the end of stance
-processing (not one per stance), the cross-tick state is
-all-or-nothing per tick: either every stance applied, or none did.
-This is the intended behaviour — partial application would leave the
-thesis book inconsistent with the broker portfolio.  Note that
-Executor's earlier `state_delta` for `executions` may already have
-been ingested when MemoryWriter crashes, leaving a real broker action
-without a recorded thesis update — this asymmetry is documented in
-Invariant 2 (reconciliation drift logged, not auto-healed).
+Executor's after-callback assembles the full new `user:positions` /
+`user:thesis` dicts and writes both keys; ADK auto-yields one event
+carrying the whole payload.  The cross-tick state is therefore all-or-
+nothing per *callback*: either both keys land or neither does.
+Partial application would leave the thesis book inconsistent with the
+broker portfolio.  Note that Executor's earlier `state_delta` for
+`executions` will already have been ingested by the time the callback
+runs, so a crash *between* the two events — the broker-effect event
+and the auto-yielded persistence event — leaves a real broker action
+without a recorded thesis update.  This asymmetry is intentional and
+documented in Invariant 2 (reconciliation drift logged, not auto-
+healed).
 
 ---
 
@@ -1219,8 +1389,9 @@ changes at PR time.
   - `test_flat_ticker_without_stance_is_ok` (active-model preserved
     for flat tickers).
 
-- `tests/unit/agents/test_verb_dispatch.py` — covers the shared
-  `_verb_dispatch.py` helper.  No agent wiring; pure functions only.
+- `tests/unit/agents/executor/test_verb_dispatch.py` — covers the
+  Executor-private `_verb_dispatch.py` helpers.  No agent wiring;
+  pure functions only.
   - `test_resolve_broker_call_open_returns_buy_to_weight`.
   - `test_resolve_broker_call_close_returns_sell_all`.
   - `test_resolve_broker_call_hold_returns_none`.
@@ -1237,21 +1408,28 @@ changes at PR time.
   - `test_executor_dispatches_sell_for_close_stance`.
   - `test_executor_no_broker_call_for_hold_stance`.
   - `test_executor_no_broker_call_for_update_stance`.
-  - `test_executor_emits_state_delta_for_executions_only` — assert
-    executor's `state_delta` carries `executions` +
-    `last_executed_tick_id` and does NOT touch `user:positions` or
-    `user:thesis`.
+  - `test_executor_runtime_yields_state_delta_for_executions_only` —
+    assert Executor's `_run_async_impl` yields a `state_delta` carrying
+    only `executions` + `last_executed_tick_id`, NOT `user:positions`
+    or `user:thesis`.
   - `test_executor_open_on_existing_ticker_raises_validation_error`.
   - `test_executor_close_on_flat_ticker_raises_validation_error`.
 
-- `tests/unit/agents/memory_writer/test_memory_writer.py`
-  - `test_memory_writer_assembles_new_positions_from_open_stance`.
-  - `test_memory_writer_uses_executor_fill_price_for_opened_price`.
-  - `test_memory_writer_carries_forward_user_thesis_when_revision_null`.
-  - `test_memory_writer_overwrites_user_thesis_when_revision_non_null`.
-  - `test_memory_writer_close_deletes_ticker_from_user_positions`.
-  - `test_memory_writer_hold_only_touches_review_fields`.
-  - `test_memory_writer_emits_single_state_delta_with_both_keys`.
+- `tests/unit/agents/executor/test_thesis_writer_callback.py` — covers
+  the `after_agent_callback` that writes `user:positions` /
+  `user:thesis`.  Uses an in-memory ADK `CallbackContext` fixture; no
+  broker, no LLM.
+  - `test_callback_assembles_new_positions_from_open_stance`.
+  - `test_callback_uses_executor_fill_price_for_opened_price`.
+  - `test_callback_carries_forward_user_thesis_when_revision_null`.
+  - `test_callback_overwrites_user_thesis_when_revision_non_null`.
+  - `test_callback_close_deletes_ticker_from_user_positions`.
+  - `test_callback_hold_only_touches_review_fields`.
+  - `test_callback_writes_register_in_state_delta` — assert
+    `callback_context.state.has_delta()` is True and `_event_actions
+    .state_delta` carries both `user:positions` and `user:thesis`
+    after the callback returns.
+  - `test_callback_returns_none_no_reprompt` — Rule 3 conformance.
 
 - `tests/unit/orchestrator/test_risk_gate.py`
   - `test_risk_gate_passes_hold_through_unchanged`.
@@ -1277,12 +1455,13 @@ changes at PR time.
   contribute — only the DB row.
 
 - `tests/integration/test_state_delta_user_prefix_end_to_end.py` —
-  finding H.  Build a minimal pipeline (strategist stub →
-  executor → MemoryWriter), run one tick against an in-memory
-  `DatabaseSessionService`, assert that the `user_state` row for
-  `(app_name, user_id)` contains the expected `user:positions` and
-  `user:thesis` after the tick.  Confirms ADK accepts `user:`-prefixed
-  keys in `state_delta` and persists them as user-scoped.
+  finding H.  Build a minimal pipeline (strategist stub → risk-gate
+  noop → executor with its after-callback wired), run one tick against
+  an in-memory `DatabaseSessionService`, assert that the `user_state`
+  row for `(app_name, user_id)` contains the expected `user:positions`
+  and `user:thesis` after the tick.  Confirms ADK accepts
+  `user:`-prefixed keys auto-yielded from `after_agent_callback`
+  state-delta writes and persists them as user-scoped.
 
 - `tests/integration/test_namespace_partitioning.py` — finding K.
   Two sessions, same `user_id`, different `app_name` (e.g. paper vs
@@ -1319,13 +1498,15 @@ changes at PR time.
 - Backtest-driver tests that mock `InMemorySessionService` need to be
   updated to mock `DatabaseSessionService` (or to use a real
   in-memory SQLite via the same service).
-- Re-verify the 2026-05-19 2.5.1 patch: the existing yields for
-  `executions`, `positions`, `last_executed_tick_id` (Executor) and
-  `memory_buffer`, `day_digest`, `thesis` (MemoryWriter) must be
-  inspected after the namespace shift — `positions` and `thesis` now
-  ride `user:`-prefixed keys; `memory_buffer` / `day_digest` stay bare
-  until Spec C.  Any test asserting the exact keys yielded by either
-  agent will need updating.
+- Re-verify the 2026-05-19 2.5.1 patch after the namespace shift.
+  Executor's `_run_async_impl` yields `executions` and
+  `last_executed_tick_id` (the bare `positions` write is removed); its
+  new `after_agent_callback` auto-yields `user:positions` and
+  `user:thesis`.  MemoryWriter retains `memory_buffer` and `day_digest`
+  bare-key writes (Spec C territory); the pre-spec bare `thesis` write
+  is dropped.  Any test asserting the exact set of keys yielded by
+  either agent — or asserting MemoryWriter is the writer of
+  `thesis` — needs updating.
 
 ---
 
@@ -1402,16 +1583,17 @@ plumbing already supports this; the only change is configuration.
 | `src/agents/strategist/derivation.py` | Delete lines 254-271 (carry-forward); add "stance required per held" validation. |
 | `src/agents/strategist/schemas.py` (or equivalent) | Add `hold` and `update` to `TickerStance.intent` enum; add optional `reason`, `target_price`, `stop_price`, `catalyst`, `horizon`, `rationale` per-stance fields; add top-level `thesis_revision: str \| None`. |
 | `src/agents/strategist/position_thesis.py` (new file) | The `PositionThesis` model. |
-| `src/agents/_verb_dispatch.py` (new file) | Shared verb→broker-call and verb→thesis-row helpers (`resolve_broker_call`, `apply_stance_to_thesis`).  Imported by both Executor and MemoryWriter. |
-| `src/agents/executor/agent.py` | Reshape to broker-call dispatch only.  Reads stances, calls `resolve_broker_call`, captures fills, emits `state_delta` for `executions` + `last_executed_tick_id`.  **No longer writes `state["positions"]` or `state["user:positions"]`.** |
-| `src/agents/memory_writer/agent.py` | Extend to read stances + fills + prior `user:positions`; call `apply_stance_to_thesis` per stance; emit single `state_delta` carrying both `user:positions` and `user:thesis`.  Drops the pre-spec bare-key `thesis` write. |
-| `src/orchestrator/pipeline.py` | Verb-aware risk-gate skip rule; confirm MemoryWriter is sequenced after Executor (it already is — no structural change). |
+| `src/agents/executor/_verb_dispatch.py` (new file) | Private (Executor-internal) verb→broker-call and verb→thesis-row helpers (`resolve_broker_call`, `apply_stance_to_thesis`).  Imported by Executor's `_run_async_impl` and Executor's `after_agent_callback`.  No cross-package consumers. |
+| `src/agents/executor/agent.py` | Add `after_agent_callback=_executor_thesis_writer_callback` to the Executor constructor.  Reshape `_run_async_impl` to call `resolve_broker_call`, dispatch broker calls, and yield `state_delta` for `executions` + `last_executed_tick_id` only — drop the bare-key `state["positions"]` write.  Implement `_executor_thesis_writer_callback`: read stances + executions + prior `user:positions`, call `apply_stance_to_thesis` per stance, write `ctx.state["user:positions"] = …` / `ctx.state["user:thesis"] = …`, return `None`. |
+| `src/agents/memory_writer/agent.py` | Drop the pre-spec bare-key `thesis` write (the key is now Executor's after-callback's responsibility under `user:thesis`).  Other behaviour (`memory_buffer`, `day_digest`) unchanged — Spec C territory. |
+| `src/orchestrator/pipeline.py` | Verb-aware risk-gate skip rule.  No structural change to agent ordering — Executor's after-callback runs inside the Executor agent invocation, no new pipeline slot. |
 | `src/orchestrator/state.py` | Update `TickState` to reflect `user:positions` and `user:thesis` (or remove the entries that have migrated to user scope). |
 | `src/orchestrator/tick.py` | Drop `positions` / `thesis` from `_build_initial_state` (rely on ADK user_state merge); mode-dispatch `app_name` to `"StockBot-live"` / `"StockBot-paper"` (paper vs live broker mode).  Update the obsolete 2.5.3 todo-fixes comment at lines 67-69 to point at this spec. |
-| `src/orchestrator/persistence.py` | Parameterise `make_session_service()` so backtest can point it at a per-run SQLite; live keeps `DATABASE_URL`. |
-| `src/backtest/driver.py` | Switch from `InMemorySessionService` to `DatabaseSessionService`; remove `state.update(dict(...))` carry for `positions`; set `app_name=f"StockBot-backtest-{window.id}"`, `user_id="stockbot"`. |
+| `src/orchestrator/persistence.py` | Parameterise `make_session_service(db_url=…)` so backtest can point it at a per-run SQLite; live keeps `DATABASE_URL`. |
+| `src/backtest/driver.py` | Switch from `InMemorySessionService` to `DatabaseSessionService`; rename `state["_trace"]` → `state["temp:_trace"]` and `state["_decision_logger"]` → `state["temp:_decision_logger"]` at every read site; move the handle-injection point to direct mutation of `adk_session.state` **after** `create_session(...)` returns (since `temp:` keys in the `state=` seed are discarded by `extract_state_delta`); remove `state.update(dict(...))` carry for `positions`; set `app_name=f"StockBot-backtest-{window.id}"`, `user_id="stockbot"`. |
 | `src/backtest/runner.py` | Wire the new per-run session-service path; delete `runs/<run-id>/session.sqlite` on `--fresh` rerun. |
-| `docs/contract-invariants.md` | Apply §A row amendments for `positions`/`thesis` → `user:`-prefixed with writer-of-record footnote (see "Contract amendments"); add §C-Rule 7 clarification paragraph. |
+| `src/observability/trace.py`, `src/agents/analysts/**/fetch*.py`, `src/agents/strategist/{agent.py,context_shim.py}`, `src/agents/executor/agent.py` (read sites) | Rename `state.get("_trace")` → `state.get("temp:_trace")` and `state.get("_decision_logger")` → `state.get("temp:_decision_logger")` at every read site (~12 occurrences — see §C-Rule 2 amendment). |
+| `docs/contract-invariants.md` | Apply §A row amendments for `positions`/`thesis` → `user:`-prefixed with single-owner footnote (see "Contract amendments"); add §C-Rule 1 auto-yielded-callback-write clarification; add §C-Rule 2 `temp:_trace` / `temp:_decision_logger` registration; add §C-Rule 7 clarification paragraph. |
 
 ### Configuration changes
 
@@ -1427,32 +1609,42 @@ After implementation, append a dated entry to
 - **New modules:**
   - `src/agents/strategist/position_thesis.py` — exports
     `PositionThesis` (Pydantic v2 model).
-  - `src/agents/_verb_dispatch.py` — exports the shared helpers
-    `resolve_broker_call(stance, *, prior_row) -> BrokerCall | None`
-    and `apply_stance_to_thesis(stance, *, prior_row, fill_price,
-    tick_id, as_of) -> PositionThesis | None`.  Both are pure
-    functions imported by Executor *and* MemoryWriter so neither
-    duplicates verb→side-effect logic.
+  - `src/agents/executor/_verb_dispatch.py` — Executor-private
+    helpers `resolve_broker_call(stance, *, prior_row) -> BrokerCall |
+    None` and `apply_stance_to_thesis(stance, *, prior_row,
+    fill_price, tick_id, as_of) -> PositionThesis | None`.  Pure
+    functions; imported by Executor's `_run_async_impl` and
+    Executor's `after_agent_callback` only.
+- **New function:** `_executor_thesis_writer_callback` in
+  `agents.executor.agent` — `after_agent_callback` registered on
+  Executor; reads stances + executions + prior `user:positions` and
+  writes new `user:positions` / `user:thesis` via delta-tracked
+  `ctx.state[…] = …`.
 - **New `TickerStance.intent` enum members:** `hold`, `update`
   (added to `agents.strategist.schemas`).
 - **New constants in `agents.strategist.prompts`:**
   `COLD_START_MODE_TEMPLATE`, `INCREMENTAL_MODE_TEMPLATE`.
 - **New call edges:**
-  - `agents.executor.agent` → `agents._verb_dispatch.resolve_broker_call`.
-  - `agents.memory_writer.agent` → `agents._verb_dispatch.apply_stance_to_thesis`.
+  - `agents.executor.agent._run_async_impl` →
+    `agents.executor._verb_dispatch.resolve_broker_call`.
+  - `agents.executor.agent._executor_thesis_writer_callback` →
+    `agents.executor._verb_dispatch.apply_stance_to_thesis`.
   - `orchestrator.tick._build_initial_state` → no longer references
     bare keys `positions` / `thesis` (those entries deleted from the
     seed dict).
 - **Removed call edges:**
-  - `agents.executor.agent` no longer mutates `state["positions"]` or
-    `state["user:positions"]` — the corresponding `state_delta` keys
-    are gone from its yielded events.
+  - `agents.executor.agent` no longer yields a `state_delta` key for
+    `positions` from `_run_async_impl`.
+  - `agents.memory_writer.agent` no longer yields a `state_delta` key
+    for the bare-key `thesis`.
   - `agents.strategist.derivation` carry-forward block removed
     (lines 254-271 in the pre-spec source).
 - **State-key migrations (worth a one-liner in the delta so
   downstream tooling can pick them up):**
   - `state["positions"]` → `state["user:positions"]`.
   - `state["thesis"]` → `state["user:thesis"]`.
+  - `state["_trace"]` → `state["temp:_trace"]`.
+  - `state["_decision_logger"]` → `state["temp:_decision_logger"]`.
   - `state["held_view_at_decision"]` continues to be set by the
     strategist context shim; its provenance shifts from the
     in-tick `positions` dict to the persisted `user:positions` row.

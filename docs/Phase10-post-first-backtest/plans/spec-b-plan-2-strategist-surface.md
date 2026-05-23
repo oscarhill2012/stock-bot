@@ -15,8 +15,7 @@
 - `TickerStance.intent` (or the equivalent stance-verb field) already accepts `hold` and `update` (Plan 1 / spec §"Stance vocabulary").
 - Optional per-stance fields `reason`, `target_price`, `stop_price`, `catalyst`, `horizon`, `rationale` exist on `TickerStance` with verb-conditional semantics.
 - `PositionThesis` model lives at `src/agents/strategist/position_thesis.py` (Plan 1).
-- MemoryWriter writes `user:positions` and `user:thesis` via `state_delta`.
-- Executor only writes broker-effect keys (`executions`, `last_executed_tick_id`).
+- Executor's `after_agent_callback` is the writer-of-record for `user:positions` and `user:thesis` — both keys are emitted via `EventActions(state_delta=…)` from the same callback that already yields `executions` and `last_executed_tick_id` (Plan 1 Band 4).
 
 If any of these are not in place, **stop and verify Plan 1 has merged**. None of this plan's tasks are useful against the pre-Plan-1 surface.
 
@@ -1013,7 +1012,7 @@ Schema-level rules (failing these means ADK rejects your response):
 - close_reason: ≤{{STANCE_CLOSE_REASON_MAX}} chars.
 - trim_reason: ≤{{STANCE_TRIM_REASON_MAX}} chars.
 - reasoning (decision-level): ≤{{DECISION_REASONING_MAX}} chars.
-- updated_thesis (decision-level): ≤{{DECISION_THESIS_MAX}} chars.
+- thesis (decision-level, optional — null carries the prior thesis forward): ≤{{DECISION_THESIS_MAX}} chars.
 - decision_tag (decision-level): snake_case label, ≤40 chars.
 - Off-watchlist tickers are rejected.
 
@@ -1113,8 +1112,8 @@ from datetime import UTC, datetime
 
 import pytest
 
-from agents.risk_gate.lifecycle import StrategistContractViolation
 from agents.strategist.derivation import (
+    StrategistContractViolation,
     TickContext,
     derive_legacy_fields,
 )
@@ -1147,7 +1146,7 @@ def test_held_ticker_without_stance_raises_validation_error() -> None:
 
     stances = [
         TickerStance(
-            # ``intent`` is required on TickerStance post Plan 1 Task 9 —
+            # ``intent`` is required on TickerStance post Plan 1 Band 3 —
             # MSFT is flat with a fresh bullish stance, so "open" is the
             # honest verb here.
             intent           = "open",
@@ -1185,9 +1184,9 @@ def test_flat_ticker_without_stance_is_ok() -> None:
 
     stances = [
         TickerStance(
-            # ``intent`` is required on TickerStance post Plan 1 Task 9 —
+            # ``intent`` is required on TickerStance post Plan 1 Band 3 —
             # AVGO is held and the rationale articulates a review without
-            # weight change, so "hold" is the honest verb.  Task 9's
+            # weight change, so "hold" is the honest verb.  Plan 1 Band 3's
             # verb-conditional validator requires ``reason`` on hold.
             intent           = "hold",
             ticker           = "AVGO",
@@ -1228,11 +1227,11 @@ Expected:
 
 Open `src/agents/strategist/derivation.py`. Two surgical edits:
 
-1. **No new import needed.** Plan 1 Task 8b deletes `agents.risk_gate.lifecycle` and relocates `StrategistContractViolation` to `derivation.py` itself, so the exception class is already in this module's namespace by the time you reach this task. (If Plan 1 Task 8b has not yet landed when you start this task, you will need to import from the old path temporarily and switch the import after Task 8b merges — coord note 6 tracks this.)
+1. **No new import needed.** Plan 1 Band 6 deletes `agents.risk_gate.lifecycle` and relocates `StrategistContractViolation` to `derivation.py` itself, so the exception class is already in this module's namespace by the time you reach this task. (If Plan 1 Band 6 has not yet landed when you start this task, you will need to import from the old path temporarily and switch the import after Band 6 merges — coord note 6 tracks this.)
 
 2. Inside `derive_legacy_fields`, **before** Pass 2 (the carry-forward padding loop at lines ~254-271), add a Pass 1.5 that checks every held ticker is covered. **Then** narrow Pass 2 so it ONLY carries forward FLAT tickers — held tickers must have been covered by Pass 1 already.
 
-Note: Plan 1 Task 8b has already removed the `PositionThesis(...)` constructor from the `if action == "open":` branch and dropped `new_positions` from `DerivedFields`, so Pass 1 below has no `open` arm — `target_weights` and `decision_tags` are written unconditionally for every emitted stance, and only `close` / `trim` carry side-effects beyond that.
+Note: Plan 1 Band 6 has already removed the `PositionThesis(...)` constructor from the `if action == "open":` branch and dropped `new_positions` from `DerivedFields`, so Pass 1 below has no `open` arm — `target_weights` and `decision_tags` are written unconditionally for every emitted stance, and only `close` / `trim` carry side-effects beyond that.
 
 Replace the body from `# ── Pass 1: emitted stances ──` through the end of the carry-forward loop with:
 
@@ -1258,11 +1257,11 @@ Replace the body from `# ── Pass 1: emitted stances ──` through the end 
             new   = stance.preferred_weight,
         )
 
-        # NB: no `if action == "open":` arm — Plan 1 Task 8b removed the
-        # PositionThesis construction here.  MemoryWriter assembles
-        # user:positions from stances + executions[].fill_price (Plan 1
-        # Task 12), which is the only place an honest opened_price is
-        # available.
+        # NB: no `if action == "open":` arm — Plan 1 Band 6 removed the
+        # PositionThesis construction here.  Executor's after_agent_callback
+        # assembles user:positions from stances + executions[].fill_price
+        # (Plan 1 Band 4), which is the only place an honest opened_price
+        # is available.
         if action == "close" and stance.close_reason:
             close_reasons[stance.ticker] = stance.close_reason
 
@@ -1660,19 +1659,19 @@ The following seams arose during plan-writing — flag for cross-checking agains
 
    The legacy `PositionThesis` at `src/agents/strategist/schema.py` uses different field names (`opened_tag`, `last_review_note` — no `weight`, no `last_reviewed_decision`, no `last_reviewed_reason`). Plan 1 must ship the new model at `src/agents/strategist/position_thesis.py` with **exactly** the field names listed above. If Plan 1 names anything differently, Task 1 of this plan needs a rename pass before merging.
 
-   **Resolved (2026-05-23):** Plan 1 Task 8b removes the `PositionThesis(...)` constructor from `derive_legacy_fields` and drops the `new_positions` field from both `DerivedFields` and `StrategistDecision`. MemoryWriter (Plan 1 Task 12) assembles `user:positions` directly from stances + `executions[].fill_price`. Plan 2's Task 4 Step 3 has been updated to omit the constructor block from the replacement code.
+   **Resolved (2026-05-23):** Plan 1 Band 6 removes the `PositionThesis(...)` constructor from `derive_legacy_fields` and drops the `new_positions` field from both `DerivedFields` and `StrategistDecision`. Plan 1 Band 4 makes Executor's `after_agent_callback` the writer-of-record for `user:positions` — it assembles the position dict directly from stances + `executions[].fill_price` and writes via `EventActions(state_delta=…)`. (Plan 1 Band 3 also renames the legacy `updated_thesis` field on `StrategistDecision` to `thesis: str | None`, which the same callback persists to `user:thesis`.) Plan 2's Task 4 Step 3 has been updated to omit the constructor block from the replacement code.
 
 2. **`TickerStance.intent` field — Plan 1 introduces it.** Task 4's derivation patch does NOT currently switch from weight-based action inference (`derive_lifecycle_action(current, preferred_weight)`) to intent-verb dispatch. Plan 1 is expected to add `intent: Literal["open", "add", "trim", "close", "hold", "update"]` to `TickerStance` and update the executor / memory_writer to use it. If Plan 1 also changes the derivation path, coordinate the merge order so this plan's `Pass 1.5` check still runs against the correct surface. Concretely, the held-stance post-condition only needs the set of `stance.ticker` values — it is agnostic to whether the action is inferred from weight or from `intent`. No change required in Task 4 either way.
 
 3. **`StrategistContractViolation` is an abort, not a retry.** The spec at lines ~1162-1166 says "Rejections raise a retryable validation error which the existing `src/agents/llm_retry.py` layer feeds back to the LLM". Inspection shows `llm_retry.py` only retries on resource-exhausted exceptions; `StrategistContractViolation` is an immediate abort raised by the after-callback. Plan 2 follows the existing abort pattern — the test in Task 4 asserts `pytest.raises(StrategistContractViolation)`. If the spec author wants true LLM-feedback retry, that is a separate piece of work (extend `llm_retry.py` to classify `StrategistContractViolation` as retryable and feed the violation message back as a re-prompt). Worth confirming whether Plan 1's contract amendments touch this.
 
-4. **`state["user:positions"]` shape.** This plan assumes the dict value at each ticker is a `PositionThesis.model_dump(mode="json")` payload (i.e. a flat JSON-compatible dict with the field names listed in note 1). If Plan 1's MemoryWriter chooses a different serialisation (e.g. nests under a `thesis` key), Task 1's `_coerce_thesis` will fail and the integration test in Task 5 needs the fixture shape updated. Lock in the wire shape with Plan 1 before merging.
+4. **`state["user:positions"]` shape.** This plan assumes the dict value at each ticker is a `PositionThesis.model_dump(mode="json")` payload (i.e. a flat JSON-compatible dict with the field names listed in note 1). If Plan 1's Executor `after_agent_callback` chooses a different serialisation (e.g. nests under a `thesis` key), Task 1's `_coerce_thesis` will fail and the integration test in Task 5 needs the fixture shape updated. Lock in the wire shape with Plan 1 before merging.
 
 5. **`temp:strategist_mode` placeholder name.** Plan 2 uses the prefixed `{temp:strategist_mode}` form for the prompt placeholder, matching the existing `{temp:held_positions_view}` convention in `prompts.py`. The temp state key is `temp:strategist_mode`. No further coordination required — both forms resolve through ADK's `inject_session_state` identically; consistency was the deciding factor.
 
-6. **`StrategistContractViolation` import path moves.** Plan 1 Task 8b deletes `src/agents/risk_gate/lifecycle.py` (the function `validate_lifecycle_contract` was only called from tests; Task 9's verb-conditional `model_validator` on `TickerStance` enforces the same invariant at schema-parse time). `StrategistContractViolation` relocates to `src/agents/strategist/derivation.py`, where Plan 2 Task 4's Pass 1.5 is its only remaining caller. Plan 2 Task 4 Step 1 still imports `from agents.risk_gate.lifecycle import StrategistContractViolation` — that import must change to `from agents.strategist.derivation import StrategistContractViolation`. **Merge-order rule:** Plan 1 Task 8b must merge before Plan 2 Task 4; the test file in Plan 2 Task 4 Step 1 should use the new import path from the start. If Plan 2 Task 4 lands first, the test will break at collection time with `ImportError` on `agents.risk_gate.lifecycle`.
+6. **`StrategistContractViolation` import path moves.** Plan 1 Band 6 deletes `src/agents/risk_gate/lifecycle.py` (the function `validate_lifecycle_contract` was only called from tests; Plan 1 Band 3's verb-conditional `model_validator` on `TickerStance` enforces the same invariant at schema-parse time). `StrategistContractViolation` relocates to `src/agents/strategist/derivation.py`, where Plan 2 Task 4's Pass 1.5 is its only remaining caller. Plan 2 Task 4 Step 1 still imports `from agents.risk_gate.lifecycle import StrategistContractViolation` — that import must change to `from agents.strategist.derivation import StrategistContractViolation`. **Merge-order rule:** Plan 1 Band 6 must merge before Plan 2 Task 4; the test file in Plan 2 Task 4 Step 1 should use the new import path from the start. If Plan 2 Task 4 lands first, the test will break at collection time with `ImportError` on `agents.risk_gate.lifecycle`.
 
-7. **`TickerStance.intent` is required (no default).** Plan 1 Task 9 makes `intent: Literal["open","add","trim","close","hold","update"]` a required field. Plan 2 Task 4 test fixtures supply `intent` explicitly (Step 1 — MSFT uses `intent="open"`, AVGO uses `intent="hold"` with a `reason`). Plan 1's verb-conditional validator requires `reason` on `hold` / `update` stances, so the AVGO fixture passes one. If Plan 1 changes the verb-conditional validation surface, audit the two fixtures in Task 4 Step 1.
+7. **`TickerStance.intent` is required (no default).** Plan 1 Band 3 makes `intent: Literal["open","add","trim","close","hold","update"]` a required field. Plan 2 Task 4 test fixtures supply `intent` explicitly (Step 1 — MSFT uses `intent="open"`, AVGO uses `intent="hold"` with a `reason`). Plan 1's verb-conditional validator requires `reason` on `hold` / `update` stances, so the AVGO fixture passes one. If Plan 1 changes the verb-conditional validation surface, audit the two fixtures in Task 4 Step 1.
 
 ---
 
