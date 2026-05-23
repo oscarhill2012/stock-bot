@@ -77,10 +77,10 @@ def resolve_broker_call(
             return {"action": "SELL", "weight": 0.0}
 
         case _:
-            # Legacy / legacy-intent stances (``preferred_weight``-only) fall
-            # through here.  The caller may pass ``intent=None`` for pre-Band-3
-            # stances; treat as broker-dispatch required (legacy behaviour) so
-            # existing pipelines do not silently lose orders.
+            # Unknown / ``None`` intent — no safe default broker action exists,
+            # so we deliberately do not dispatch.  The caller is responsible for
+            # raising or handling this case; returning ``None`` here surfaces
+            # the gap rather than silently mis-routing the order.
             return None
 
 

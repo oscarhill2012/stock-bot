@@ -255,9 +255,10 @@ class Driver:
             # risk_gate (which DOES read the live broker).  Re-pulling here
             # eliminates that source-of-truth split.
             #
-            # ``state["positions"]`` (the thesis book) is propagated
-            # separately by the executor's state_delta event and does not
-            # need a refresh here.
+            # ``state["positions"]`` (the thesis book) is propagated by
+            # the executor's state_delta event (``"positions"`` key) and
+            # does not need a refresh here.
+            # TODO Band 5: drop once reads migrate to user:positions.
             state["portfolio"] = (
                 await self._broker.get_portfolio()
             ).model_dump(mode="json")

@@ -239,19 +239,25 @@ class ExecutorAgent(BaseAgent):
 
         # Cross-tick propagation — ADK's session service only merges mutations
         # into storage via an Event whose ``actions.state_delta`` carries them.
-        # The broker-effect event yields ``executions`` and
-        # ``last_executed_tick_id`` only.  ``positions`` (bare key, legacy) is
-        # written here for backwards-compat; ``user:positions`` is written by
-        # the after_agent_callback (_executor_thesis_writer_callback) via
+        # The in-tick ``state["positions"] = positions`` mutation above is
+        # visible to same-tick agents via the shared object reference, but it
+        # never reaches ``DatabaseSessionService`` storage unless we also
+        # include it here.  Without it, tick T+1 reads the pre-T value of
+        # ``positions`` from a freshly-deserialised session, causing cross-tick
+        # BUY→SELL to miss the held position and silently drop the SELL
+        # trade-log row.  ``user:positions`` is written by the
+        # after_agent_callback (_executor_thesis_writer_callback) via
         # delta-tracked state writes — ADK auto-yields the user:-prefixed keys
         # as a separate state-delta Event.  See contract-invariants.md §C-Rule 1
         # amendment for the conformance reasoning.
+        # TODO Band 5: drop "positions" once SELL reads migrate to user:positions.
         yield Event(
             author        = self.name,
             invocation_id = ctx.invocation_id,
             actions       = EventActions(state_delta={
                 "executions":            executions,
                 "last_executed_tick_id": tick_id,
+                "positions":             positions,
             }),
         )
 

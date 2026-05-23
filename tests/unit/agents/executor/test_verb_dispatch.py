@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
+
 from agents.executor._verb_dispatch import apply_stance_to_thesis, resolve_broker_call
 from agents.strategist.position_thesis import PositionThesis
 from agents.strategist.stance_schema import TickerStance
@@ -303,3 +305,83 @@ def test_apply_stance_add_preserves_rationale():
         "add stance must not overwrite rationale — Invariant 3"
     )
     assert result.weight == 0.10, "add must update the weight"
+
+
+# ---------------------------------------------------------------------------
+# trim verb tests (m-1 additions)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_broker_call_trim_returns_sell_call():
+    """``trim`` intent must return a SELL descriptor with the reduced weight.
+
+    Mirrors the ``add`` test — the broker leg of a trim is a SELL to the
+    new (lower) weight, not a full close.
+    """
+
+    prior = _make_prior_row(weight=0.15)
+    stance = _make_stance(
+        intent  = "trim",
+        weight  = 0.07,
+        reason  = "Taking some profit after 20 % move",
+    )
+    result = resolve_broker_call(stance, prior_row=prior)
+
+    assert result is not None
+    assert result["action"] == "SELL"
+    assert result["weight"] == pytest.approx(0.07)
+
+
+def test_apply_stance_to_thesis_trim_preserves_rationale():
+    """``trim`` must NOT overwrite ``rationale`` — Invariant 3 symmetry."""
+
+    original_rationale = "Original thesis locked at open"
+    prior = _make_prior_row(
+        weight    = 0.15,
+        rationale = original_rationale,
+    )
+    stance = _make_stance(
+        intent  = "trim",
+        weight  = 0.07,
+        reason  = "Partial profit-take",
+    )
+    result = apply_stance_to_thesis(
+        stance,
+        prior_row  = prior,
+        fill_price = 165.0,
+        tick_id    = _TICK_ID,
+        as_of      = _TS,
+    )
+
+    assert result is not None
+    assert result.rationale == original_rationale, (
+        "trim stance must not overwrite rationale — Invariant 3"
+    )
+    # Weight is updated to the reduced amount.
+    assert result.weight == pytest.approx(0.07)
+
+
+def test_apply_stance_to_thesis_trim_updates_last_reviewed_decision():
+    """``trim`` must stamp ``last_reviewed_decision = "trim"`` on the row."""
+
+    prior = _make_prior_row(
+        weight                = 0.15,
+        last_reviewed_decision = "open",
+    )
+    stance = _make_stance(
+        intent  = "trim",
+        weight  = 0.07,
+        reason  = "Locking in gains",
+    )
+    result = apply_stance_to_thesis(
+        stance,
+        prior_row  = prior,
+        fill_price = 165.0,
+        tick_id    = _TICK_ID,
+        as_of      = _TS,
+    )
+
+    assert result is not None
+    assert result.last_reviewed_decision == "trim"
+    assert result.last_reviewed_at       == _TS
+    assert result.last_reviewed_reason   == "Locking in gains"
