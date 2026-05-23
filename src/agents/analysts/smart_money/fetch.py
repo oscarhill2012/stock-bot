@@ -134,7 +134,7 @@ async def smart_money_fetch_callback(
 
     state["smart_money_data"] = smart_money_data
 
-    # Surface trace — no-op unless state["_trace"] is set by trace_tick.py.
+    # Surface trace — no-op unless state["temp:_trace"] is set by trace_tick.py.
     _trace_maybe(state, "01_fetch_smart_money", smart_money_data)
 
     # Return None unconditionally so ADK does NOT set end_invocation=True.

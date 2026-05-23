@@ -170,7 +170,7 @@ class StrategistContextShim(BaseAgent):
         ticker_evidence_objects = [te.model_dump(mode="json") for te in ticker_evidence]
         ticker_evidence_rendered = render_all_ticker_blocks(ticker_evidence)
 
-        # Surface trace — no-op unless state["_trace"] is set.
+        # Surface trace — no-op unless state["temp:_trace"] is set.
         _trace_maybe(state, "04_digest", ticker_evidence_objects)
 
         # ── Yield exactly one Event carrying all three keys ───────────────

@@ -200,7 +200,7 @@ class FundamentalFetchAgent(BaseAgent):
             f"=== {t} ===\n{per_ticker_blocks[t]}" for t in tickers
         )
 
-        # Surface trace — no-op unless state["_trace"] is set by trace_tick.py.
+        # Surface trace — no-op unless state["temp:_trace"] is set by trace_tick.py.
         _trace_maybe(state, "01_fetch_fundamental", fundamental_data)
 
         yield Event(

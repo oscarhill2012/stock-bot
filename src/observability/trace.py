@@ -1,9 +1,9 @@
 """Append-only JSON snapshot collector for one tick.
 
 Production runs do not instantiate this; the ``trace_tick.py`` entrypoint
-sets ``state["_trace"]`` to a TraceWriter, and every callback opportunistically
+sets ``state["temp:_trace"]`` to a TraceWriter, and every callback opportunistically
 routes through ``_trace_maybe(state, ...)``.  Production tick state has no
-``"_trace"`` key, so the helper is a single dict lookup no-op.
+``"temp:_trace"`` key, so the helper is a single dict lookup no-op.
 """
 from __future__ import annotations
 
@@ -124,14 +124,14 @@ def _trace_maybe(
     *,
     state_keys: list[str] | None = None,
 ) -> None:
-    """No-op trace hook — calls ``TraceWriter.snapshot`` iff ``state["_trace"]`` is set.
+    """No-op trace hook — calls ``TraceWriter.snapshot`` iff ``state["temp:_trace"]`` is set.
 
     Designed to be sprinkled at every pipeline boundary with zero overhead on
-    production paths.  When ``state`` is a plain dict with no ``"_trace"`` key
-    the function performs a single dict lookup and returns immediately — no
+    production paths.  When ``state`` is a plain dict with no ``"temp:_trace"``
+    key the function performs a single dict lookup and returns immediately — no
     allocations, no exceptions.
 
-    When ``state["_trace"]`` is a ``TraceWriter`` instance, the payload is
+    When ``state["temp:_trace"]`` is a ``TraceWriter`` instance, the payload is
     appended as a new section under ``label``.
 
     An ``isinstance(state, dict)`` guard prevents ``AttributeError`` if a non-
@@ -154,7 +154,7 @@ def _trace_maybe(
     # A previous isinstance(state, dict) guard silently no-op'd every hook
     # because ``State`` fails that check.
     try:
-        tw = state.get("_trace")
+        tw = state.get("temp:_trace")
     except (AttributeError, TypeError):
         return
     if tw is None:
@@ -222,7 +222,7 @@ def make_llm_trace_callbacks(section_name: str, *, model: str) -> tuple[Callable
         === user ===
         <user contents>
 
-    Both callbacks are no-ops when ``state["_trace"]`` is not a
+    Both callbacks are no-ops when ``state["temp:_trace"]`` is not a
     ``TraceWriter`` — production runs pay a single dict lookup.
 
     Parameters
@@ -246,7 +246,7 @@ def make_llm_trace_callbacks(section_name: str, *, model: str) -> tuple[Callable
         """Look up the TraceWriter on ``ctx.state``; return None if absent."""
         state = ctx.state
         try:
-            tw = state.get("_trace")
+            tw = state.get("temp:_trace")
         except (AttributeError, TypeError):
             return None
         return tw if isinstance(tw, TraceWriter) else None

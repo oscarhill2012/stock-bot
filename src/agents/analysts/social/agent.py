@@ -121,7 +121,7 @@ class SocialAnalyst(BaseAgent):
             v_dict["ticker"] = ticker
             verdicts.append(v_dict)
 
-        # Surface trace — no-op unless state["_trace"] is set by trace_tick.py.
+        # Surface trace — no-op unless state["temp:_trace"] is set by trace_tick.py.
         # Trace before the yield so the recorded payload matches the
         # state_delta value.
         _trace_maybe(ctx.session.state, "02_social_verdict", verdicts)

@@ -82,7 +82,7 @@ async def test_executor_calls_decision_logger_on_fill() -> None:
                 }
             }
         },
-        "_decision_logger": fake_logger,
+        "temp:_decision_logger": fake_logger,
     }
     ctx = _make_ctx(state)
 
@@ -118,7 +118,7 @@ async def test_executor_logger_exception_does_not_abort_tick() -> None:
         ],
         "positions": {},
         "strategist_decision": {"new_positions": {}},
-        "_decision_logger": broken_logger,
+        "temp:_decision_logger": broken_logger,
     }
     ctx = _make_ctx(state)
 

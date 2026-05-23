@@ -263,7 +263,7 @@ def _strategist_validation_callback(
     # Surface the strategist decision on the per-tick trace so downstream
     # inspection (decisions/, report/) and ad-hoc trace forensics can see
     # the full stance set, decision_tag, reasoning, and derived weights.
-    # No-op unless state["_trace"] is set by the backtest driver.
+    # No-op unless state["temp:_trace"] is set by the backtest driver.
     _trace_maybe(state, "03_strategist", decision_dump)
 
     # ── Terminal summary row ──────────────────────────────────────────────────

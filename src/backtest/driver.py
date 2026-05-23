@@ -213,7 +213,6 @@ class Driver:
             )
 
             tw = TraceWriter()
-            state["_trace"]           = tw
             state["as_of"]            = tick.as_of
             state["tick_phase"]       = tick.phase
             # Deterministic tick_id: stable composite of (run_id, as_of, phase)
@@ -222,8 +221,6 @@ class Driver:
             state["tick_id"]          = (
                 f"{self._run_id}-{tick.as_of.isoformat()}-{tick.phase}"
             )
-            state["_decision_logger"] = self._dl
-
             # Update FakeBroker price to the day's open or close.  The
             # symbol list comes from ``state["tickers"]`` — A1.6 folded
             # the redundant ``state["watchlist"]`` key away.  Live has
@@ -298,7 +295,7 @@ class Driver:
                 pass
 
             try:
-                await self._run_one_tick(state)
+                await self._run_one_tick(state, tw)
             except Exception as exc:
                 logger.exception("tick %s failed", tick.as_of)
                 self._failed.append({
@@ -414,7 +411,7 @@ class Driver:
             if isinstance(ev, dict) and ev.get("message") == "report_cache_hit"
         ]
 
-    async def _run_one_tick(self, state: dict) -> None:
+    async def _run_one_tick(self, state: dict, tw: TraceWriter) -> None:
         """Drive the pipeline once via ADK's Runner + InMemorySessionService.
 
         Creates a fresh in-memory session service per tick so ADK session IDs
@@ -431,6 +428,11 @@ class Driver:
         ----------
         state:
             The shared mutable state dict for this tick (mutated in place).
+        tw:
+            The ``TraceWriter`` instance for this tick.  Passed in from
+            ``run()`` so it can be injected onto the live ADK session after
+            ``create_session`` returns (temp:-prefixed keys in the seed dict
+            are discarded by ADK's ``extract_state_delta``).
         """
         # Phase 9: rebuild the pipeline each tick so the News and Fundamental
         # analyst branches fan out across the current ``state["tickers"]``.
@@ -455,12 +457,30 @@ class Driver:
         # parallel test processes).
         session_id = f"{state['tick_id']}-{uuid.uuid4().hex[:8]}"
 
+        # Build the seed dict for ADK's create_session.  Any temp:-prefixed key
+        # passed here would be silently discarded by ADK's extract_state_delta
+        # (google/adk/sessions/_session_util.py) — observability handles must
+        # be injected onto the live session AFTER create_session returns (see
+        # below).  Do NOT move the temp: handle assignments back into this dict.
+        seed_state = {
+            k: v
+            for k, v in state.items()
+            if not k.startswith("temp:")
+        }
+
         adk_session = await session_service.create_session(
             app_name="backtest",
             user_id="backtest",
-            state=dict(state),  # shallow copy — ADK mutates its own session state
+            state=seed_state,
             session_id=session_id,
         )
+
+        # Inject runtime observability handles directly onto the live session
+        # state.  ADK keeps them addressable for the duration of this
+        # invocation, but extract_state_delta / _trim_temp_delta_state strip
+        # them from any persisted event delta — they never reach the DB.
+        adk_session.state["temp:_trace"]           = tw
+        adk_session.state["temp:_decision_logger"] = self._dl
 
         message = genai_types.Content(
             parts=[genai_types.Part(

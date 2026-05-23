@@ -57,12 +57,14 @@ async def test_pipeline_built_per_tick_with_current_watchlist(tmp_path: Path) ->
 
         mock_build.return_value.run_async = _stub_runner_run
 
+        from observability.trace import TraceWriter
+
         # First tick — two tickers.
-        await driver._run_one_tick({"tickers": ["AAPL", "MSFT"], "tick_id": "t1"})
+        await driver._run_one_tick({"tickers": ["AAPL", "MSFT"], "tick_id": "t1"}, TraceWriter())
 
         # Second tick — watchlist shrinks to one ticker to confirm the
         # rebuild reads state on every call, not a cached value.
-        await driver._run_one_tick({"tickers": ["AAPL"], "tick_id": "t2"})
+        await driver._run_one_tick({"tickers": ["AAPL"], "tick_id": "t2"}, TraceWriter())
 
         # Exactly two pipeline builds — one per tick.
         assert mock_build.call_count == 2

@@ -192,14 +192,14 @@ class ExecutorAgent(BaseAgent):
         state["positions"]              = positions
         state["last_executed_tick_id"]  = tick_id
 
-        # Surface trace — no-op unless state["_trace"] is set by trace_tick.py.
+        # Surface trace — no-op unless state["temp:_trace"] is set by trace_tick.py.
         _trace_maybe(state, "07_broker_calls", executions)
 
         # Decision-snapshot hook — no-op in live runs that do not set
-        # ``state["_decision_logger"]``.  The backtest runner installs one
+        # ``state["temp:_decision_logger"]``.  The backtest runner installs one
         # DecisionLogger per run; once we deploy to paper/live the same hook
         # will continuously grow the RAG-seed corpus.
-        dl = state.get("_decision_logger")
+        dl = state.get("temp:_decision_logger")
         if dl is not None:
             try:
                 dl.on_executions(dict(state))
