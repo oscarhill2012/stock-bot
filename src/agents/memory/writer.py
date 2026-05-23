@@ -157,10 +157,20 @@ class MemoryWriter(BaseAgent):
         # ISO-8601 strings — DatabaseSessionService serialises state_delta
         # via json.dumps and will raise TypeError on bare datetime objects.
         memory_buffer_payload = [e.model_dump(mode="json") for e in updated_buffer]
-        new_thesis: str = (
-            decision.get("thesis", state.get("thesis", ""))
+        # Carry-forward semantics: None means "keep what's already in state";
+        # an explicit string (even "") means the strategist is overwriting it.
+        # Using ``or`` would collapse "" and None into the same branch, silently
+        # treating an explicit clear as a carry-forward — use explicit None
+        # checks instead so both cases are traceable.
+        _raw_thesis = (
+            decision.get("thesis")
             if isinstance(decision, dict)
-            else (decision.thesis or state.get("thesis", ""))
+            else decision.thesis
+        )
+        new_thesis: str = (
+            state.get("thesis", "")
+            if _raw_thesis is None
+            else _raw_thesis
         )
 
         # Direct mutation — visible to any later agent in *this* tick that

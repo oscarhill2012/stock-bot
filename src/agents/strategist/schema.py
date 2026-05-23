@@ -92,9 +92,11 @@ class StrategistDecision(BaseModel):
         None,
         description=(
             "Optional standing market thesis update.  When non-null, "
-            "Executor's after_agent_callback writes the new text to "
-            "state['user:thesis'].  When None, the prior user:thesis "
-            "is carried forward."
+            "MemoryWriter writes the new text to state['thesis'].  "
+            "When None, the prior thesis is carried forward unchanged — "
+            "None is a carry-forward sentinel, not an explicit clear.  "
+            # TODO Band 4: migrate this write to Executor's after_agent_callback
+            # and rename state key from 'thesis' to 'user:thesis'.
         ),
         max_length=_schema_cap(_DECISION.thesis_max_chars),
     )

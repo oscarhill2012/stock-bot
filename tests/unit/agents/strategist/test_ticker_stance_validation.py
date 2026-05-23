@@ -220,7 +220,8 @@ def test_add_missing_weight():
 
 @pytest.mark.parametrize("missing_field", ["weight", "reason"])
 def test_trim_missing_required_field(missing_field: str):
-    """trim without weight or reason raises ValidationError."""
+    """trim without weight or reason raises ValidationError that names trim and
+    the alternative verbs (close / hold) so the LLM has a concrete suggestion."""
     data = _trim()
     data[missing_field] = None
 
@@ -229,6 +230,11 @@ def test_trim_missing_required_field(missing_field: str):
 
     msg = str(exc_info.value)
     assert "trim" in msg
+    # The error message must suggest the alternative verbs so the LLM can
+    # self-correct on re-prompt — mirrors the assertion in
+    # test_update_missing_all_commitment_fields.
+    assert "close" in msg
+    assert "hold" in msg
 
 
 def test_hold_missing_reason():
@@ -270,3 +276,36 @@ def test_update_missing_all_commitment_fields():
     assert "update" in msg
     # Should suggest the alternative verb.
     assert "hold" in msg
+
+
+# ---------------------------------------------------------------------------
+# Legacy stance validation (preferred_weight path, no intent field)
+# ---------------------------------------------------------------------------
+
+
+def test_legacy_nonzero_weight_missing_rationale():
+    """A legacy stance with preferred_weight > 0 and no rationale must fail at
+    TickerStance validation, not later at derive_legacy_fields.
+
+    Regression guard: before the fix, ``_require_lifecycle_hints_on_nonzero``
+    did not include ``rationale`` in its missing-field check, so the stance
+    passed schema validation and only failed when ``derive_legacy_fields`` tried
+    to construct ``PositionThesis(rationale=None, ...)``.  The error now fires
+    early, at the schema layer, with a clear message.
+    """
+    data = dict(
+        ticker="MSFT",
+        preferred_weight=0.10,   # non-zero — commits capital
+        conviction=0.75,
+        horizon="swing",
+        target_price=420.0,
+        stop_price=390.0,
+        # rationale intentionally omitted — this must raise, not pass silently
+    )
+
+    with pytest.raises(ValidationError) as exc_info:
+        TickerStance.model_validate(data)
+
+    msg = str(exc_info.value)
+    # The error should call out the missing field by name.
+    assert "rationale" in msg

@@ -203,6 +203,11 @@ class TickerStance(BaseModel):
                 ("horizon",      self.horizon),
                 ("target_price", self.target_price),
                 ("stop_price",   self.stop_price),
+                # ``rationale`` is also required on non-zero legacy stances so
+                # ``derive_legacy_fields`` can construct a valid PositionThesis
+                # (whose ``rationale`` field is required).  Omitting it here
+                # used to let the schema pass but fail later at derivation.
+                ("rationale",    self.rationale),
             )
             if value is None
         ]
