@@ -199,7 +199,7 @@ def apply_stance_to_thesis(
             })
 
         case "close":
-            # Full exit — the caller drops the ticker from new_positions.
+            # Full exit — the caller drops the ticker from the position book.
             return None
 
         case "hold":

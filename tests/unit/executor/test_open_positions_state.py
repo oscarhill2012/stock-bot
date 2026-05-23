@@ -72,50 +72,69 @@ def session(tmp_path):
 
 @pytest.mark.asyncio
 async def test_buy_writes_thesis_to_state_positions():
-    """After a BUY executes, the thesis dict from new_positions lands in the bare-key bridge.
+    """After a BUY executes, the assembled PositionThesis lands in the bare-key bridge.
 
-    ``_run_async_impl`` is the writer-of-record for the Band 4 ``"positions"``
-    bridge key.  It must copy the thesis wholesale so downstream same-tick SELL
-    logic can recover opened_price, opened_at, opened_tick_id, etc. via that
-    bridge.  ``user:positions`` (canonical key) is written by the after-callback
-    and is NOT present in this state_delta.
+    Band 6: the executor assembles the PositionThesis from the ``intent="open"``
+    stance + real fill price using ``apply_stance_to_thesis``.  The result is
+    stored in ``state["positions"][ticker]`` (bare-key bridge) so the same-tick
+    SELL path can recover opened_price, opened_at, opened_tick_id, etc.
+
+    ``user:positions`` (canonical key) is written by the after-callback and
+    must NOT appear in this state_delta.
     """
-    broker = FakeBroker(starting_cash=10_000.0, prices={"AAPL": 200.0})
+    fill_price = 200.0
+    broker = FakeBroker(starting_cash=10_000.0, prices={"AAPL": fill_price})
     executor = ExecutorAgent(broker=broker)
 
-    thesis = {
-        "opened_tick_id": "tick_X",
-        "target_price": 220.0,
-        "opened_at": datetime(2026, 4, 1, 14, tzinfo=UTC).isoformat(),
-        "opened_price": 200.0,
-        "horizon": "swing",
-        "opened_tag": "open_aapl",
-        "rationale": "strong momentum",
-    }
+    open_ts = "2026-04-01T14:00:00+00:00"
 
     state = {
         "tick_id": "tick_X",
+        "as_of":   open_ts,
         "final_orders": [
-            Order(ticker="AAPL", action="BUY", quantity=5.0, est_price=200.0),
+            Order(ticker="AAPL", action="BUY", quantity=5.0, est_price=fill_price),
         ],
         "positions": {},   # bare-key bridge (Band 4); user:positions is after-callback territory
         "strategist_decision": {
             "decision_tag": "open_aapl",
             "close_reasons": {},
-            # new_positions carries the thesis dict keyed by ticker
-            "new_positions": {"AAPL": thesis},
+            # Band 6: executor assembles PositionThesis from the open-intent
+            # stance + fill price; new_positions is no longer needed here.
+            "stances": [
+                {
+                    "ticker":           "AAPL",
+                    "preferred_weight": 0.10,
+                    "conviction":       0.8,
+                    "intent":           "open",
+                    "weight":           0.10,
+                    "horizon":          "swing",
+                    "rationale":        "strong momentum",
+                    "target_price":     220.0,
+                    "stop_price":       180.0,
+                    "catalyst":         "earnings beat",
+                },
+            ],
         },
     }
 
     events = await _run(executor, state)
 
-    # The thesis must be stored under the bare-key bridge ``"positions"``
+    # The assembled thesis must be stored under the bare-key bridge ``"positions"``
     # in the yielded state_delta.  ``user:positions`` is written by the
     # after_agent_callback and must NOT appear in this state_delta.
     assert len(events) == 1, "BUY must cause executor to yield one state-delta event"
     delta = events[0].actions.state_delta
     assert "AAPL" in delta["positions"], "BUY did not write AAPL into state_delta['positions'] bridge"
-    assert delta["positions"]["AAPL"] == thesis
+
+    stored = delta["positions"]["AAPL"]
+    assert stored["opened_price"] == pytest.approx(fill_price), (
+        "opened_price must be the real fill price from the broker"
+    )
+    assert stored["opened_tick_id"] == "tick_X"
+    assert stored["rationale"] == "strong momentum"
+    assert stored["horizon"] == "swing"
+    assert stored["target_price"] == pytest.approx(220.0)
+
     assert "user:positions" not in delta, (
         "_run_async_impl must not write user:positions — that belongs to the after-callback"
     )

@@ -102,7 +102,7 @@ class RiskGateAgent(BaseAgent):
             was_open  = current_weights.get(t, 0.0) >= MIN_HELD_WEIGHT
             will_be_open = new_w >= MIN_HELD_WEIGHT
             if was_open and not will_be_open and t not in decision.close_reasons:
-                from agents.risk_gate.lifecycle import StrategistContractViolation
+                from agents.strategist.derivation import StrategistContractViolation
                 raise StrategistContractViolation(
                     f"Closing {t} ({current_weights.get(t)} -> {new_w}) without close_reason"
                 )

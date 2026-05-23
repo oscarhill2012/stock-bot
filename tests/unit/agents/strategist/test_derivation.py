@@ -33,10 +33,10 @@ def _ctx(
 
     Notes
     -----
-    ``current_prices`` is no longer carried on ``TickContext`` — the strategist
-    deliberately does not stamp ``opened_price`` on freshly-opened positions;
-    the executor does that post-fill.  See ``PositionThesis`` docstring for
-    the responsibility split.
+    ``new_positions`` was removed from ``DerivedFields`` in Band 6.  The
+    executor now assembles the ``PositionThesis`` from the fill price + stance
+    via ``apply_stance_to_thesis``; the strategist never had an honest fill
+    price to pre-compute it.
     """
     return TickContext(
         tick_id="tick_X",
@@ -47,8 +47,14 @@ def _ctx(
     )
 
 
-def test_open_creates_position_thesis():
-    """An open stance (current weight 0, preferred > 0) should create a PositionThesis."""
+def test_open_creates_target_weight():
+    """An open stance (current weight 0, preferred > 0) must set target_weights.
+
+    Band 6: derivation no longer creates a ``PositionThesis`` for open stances.
+    The executor assembles it from the fill price + stance via
+    ``apply_stance_to_thesis``.  Derivation only concerns itself with
+    ``target_weights``, ``close_reasons``, and ``trim_reasons``.
+    """
     stance = TickerStance(
         ticker="AAPL",
         preferred_weight=0.08,
@@ -62,17 +68,6 @@ def test_open_creates_position_thesis():
     out = derive_legacy_fields([stance], ctx)
 
     assert out.target_weights == {"AAPL": 0.08}
-    assert "AAPL" in out.new_positions
-
-    pt = out.new_positions["AAPL"]
-    assert pt.opened_at == ctx.now
-    # ``opened_price`` is deliberately left unset by the strategist — the
-    # executor stamps the real fill price post-BUY.  See PositionThesis docs.
-    assert pt.opened_price is None
-    assert pt.opened_tag == "x"
-    assert pt.opened_tick_id == "tick_X"
-    assert pt.target_price == 210.0
-
     assert out.close_reasons == {}
     assert out.trim_reasons == {}
 
@@ -91,7 +86,6 @@ def test_close_records_close_reason():
 
     assert out.target_weights == {"AAPL": 0.0}
     assert out.close_reasons == {"AAPL": "thesis broken"}
-    assert out.new_positions == {}
     assert out.trim_reasons == {}
 
 
@@ -117,7 +111,6 @@ def test_trim_records_trim_reason():
 
     assert out.target_weights == {"MSFT": 0.05}
     assert out.trim_reasons == {"MSFT": "lock in profits"}
-    assert out.new_positions == {}
     assert out.close_reasons == {}
 
 
@@ -140,7 +133,6 @@ def test_hold_yields_only_target_weight():
     out = derive_legacy_fields([stance], ctx)
 
     assert out.target_weights == {"MSFT": 0.06}
-    assert out.new_positions == {}
     assert out.close_reasons == {}
     assert out.trim_reasons == {}
 
@@ -179,27 +171,19 @@ def test_multiple_stances_aggregate_correctly():
     out = derive_legacy_fields(stances, ctx)
 
     assert out.target_weights == {"AAPL": 0.08, "MSFT": 0.0, "NVDA": 0.05}
-    assert "AAPL" in out.new_positions
+
+    # Band 6: derivation no longer produces new_positions; the executor
+    # assembles PositionThesis from the fill price + stance itself.
     assert out.close_reasons == {"MSFT": "rotate"}
     assert out.trim_reasons == {"NVDA": "overweight"}
 
 
-def test_open_leaves_opened_price_none_for_executor_to_stamp():
-    """The strategist never sets ``opened_price`` — that is the executor's job.
+def test_open_stance_goes_into_target_weights_not_close_or_trim():
+    """An open stance must only populate target_weights — not close_reasons or trim_reasons.
 
-    Rationale: at strategist-time the order has not yet been submitted to the
-    broker, so any "open price" we might pick (last-trade, midpoint, etc.)
-    would be a guess that diverges from the real fill price the executor
-    later observes.  Worse, when the open is for a *new* ticker not yet in
-    ``current_prices``, the old derivation silently fell back to ``0.0``,
-    which then propagated into persistence and crashed the next tick's
-    held-view renderer with a divide-by-zero.
-
-    The architectural fix splits responsibility cleanly:
-      - strategist emits intent (target_price, stop_price, horizon, rationale)
-      - executor stamps the fact (opened_price) post-fill
-
-    This test pins the strategist side of that contract.
+    Band 6: ``new_positions`` is no longer assembled by derivation; the executor
+    handles that.  We confirm the output shape does not accidentally bleed open
+    stances into the wrong buckets.
     """
     stance = TickerStance(
         ticker="AAPL",
@@ -213,7 +197,10 @@ def test_open_leaves_opened_price_none_for_executor_to_stamp():
     ctx = _ctx(weights={})
     out = derive_legacy_fields([stance], ctx)
 
-    assert out.new_positions["AAPL"].opened_price is None
+    # target_weights is the only populated field — no close_reasons, no trim_reasons.
+    assert out.target_weights == {"AAPL": 0.08}
+    assert out.close_reasons == {}
+    assert out.trim_reasons == {}
 
 
 def test_carry_forward_pads_unemitted_watchlist_tickers():
@@ -226,8 +213,8 @@ def test_carry_forward_pads_unemitted_watchlist_tickers():
 
     Derivation pads ``target_weights`` for every watchlist ticker so downstream
     (risk_gate, executor) keeps seeing an exhaustive dict; no other field
-    (``new_positions`` / ``close_reasons`` / ``trim_reasons``) is touched on a
-    carry-forward, because no lifecycle action is happening.
+    (``close_reasons`` / ``trim_reasons``) is touched on a carry-forward,
+    because no lifecycle action is happening.
     """
     # One explicit close stance; AAPL (held) and TSLA (flat) are NOT in stances.
     stances = [
@@ -248,8 +235,7 @@ def test_carry_forward_pads_unemitted_watchlist_tickers():
     # MSFT closed explicitly, AAPL carried forward, TSLA padded at flat (0.0).
     assert out.target_weights == {"AAPL": 0.08, "MSFT": 0.0, "TSLA": 0.0}
 
-    # The carry-forward pass must NOT invent positions, close-reasons, or trim-reasons.
-    assert out.new_positions == {}
+    # The carry-forward pass must NOT invent close-reasons or trim-reasons.
     assert out.close_reasons == {"MSFT": "rotate"}
     assert out.trim_reasons == {}
 
@@ -281,10 +267,11 @@ def test_carry_forward_does_not_override_emitted_stances():
 
 def test_add_action_only_populates_target_weight():
     """An add stance (preferred_weight > current by >δ but both above ε) should only
-    populate target_weights — no new_positions, no close_reasons, no trim_reasons.
+    populate target_weights — no close_reasons, no trim_reasons.
 
     The 'add' action adds to an existing position; it doesn't open a fresh one,
     so PositionThesis is not created here (that was created on the original open).
+    Band 6: derivation delegates PositionThesis assembly entirely to the executor.
     """
     stance = TickerStance(
         ticker="AAPL",
@@ -301,6 +288,5 @@ def test_add_action_only_populates_target_weight():
     out = derive_legacy_fields([stance], ctx)
 
     assert out.target_weights == {"AAPL": 0.15}
-    assert out.new_positions == {}
     assert out.close_reasons == {}
     assert out.trim_reasons == {}

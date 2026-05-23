@@ -17,7 +17,7 @@ async def test_memory_writer_appends_buffer_entry():
             "thesis": "Bullish on tech",
             "target_weights": {},
             "confidence": 0.8,
-            "new_positions": {},
+
             "close_reasons": {},
         },
         "memory_buffer": [],
@@ -68,7 +68,6 @@ async def test_memory_writer_accepts_iso_string_as_of():
             "thesis": "Bullish",
             "target_weights": {},
             "confidence":     0.7,
-            "new_positions":  {},
             "close_reasons":  {},
         },
         "memory_buffer": [],

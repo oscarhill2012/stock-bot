@@ -89,13 +89,9 @@ def _make_strategist_llm_response(tickers: list[str]):
     #
     # Note: ``preferred_weight > 0`` is required to trigger an "open" lifecycle
     # action in ``derive_lifecycle_action`` (current=0, preferred>0 → "open").
-    # ``new_positions`` is a DERIVED field — omit it from the mock payload and
-    # let ``_strategist_validation_callback`` compute it from the stances via
-    # ``derive_legacy_fields``.  Including it pre-populated would cause a
-    # datetime-serialisation error because Pydantic's ``model_validate`` converts
-    # the ISO strings to ``datetime`` objects, and the derived overwrite path
-    # (``decision.new_positions = derived.new_positions``) would not fire for
-    # ``preferred_weight=0.0`` stances.
+    # Band 6: ``new_positions`` was removed from ``StrategistDecision`` entirely.
+    # The executor now assembles the ``PositionThesis`` from the fill price +
+    # stance using ``apply_stance_to_thesis``.  Do not include it in the payload.
     first_ticker = tickers[0] if tickers else "AAPL"
     stances = []
     for t in tickers:
@@ -127,9 +123,8 @@ def _make_strategist_llm_response(tickers: list[str]):
     decision = {
         "stances":        stances,
         "target_weights": target_weights,
-        # ``new_positions`` intentionally omitted — derived by the strategist
-        # after-callback from the stances; do not pre-populate to avoid
-        # datetime-serialisation issues when Pydantic parses the JSON payload.
+        # ``new_positions`` removed in Band 6 — executor assembles PositionThesis
+        # from the fill price + stance via apply_stance_to_thesis.
         "decision_tag":   "smoke_test_open",
         "reasoning":      "Smoke test run — opening one position to exercise executor.",
         "thesis":         "Smoke-test thesis: testing position persistence.",

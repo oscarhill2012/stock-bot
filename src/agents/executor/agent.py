@@ -12,6 +12,7 @@ from google.adk.events import Event, EventActions
 
 from agents.executor._verb_dispatch import apply_stance_to_thesis
 from agents.strategist.position_thesis import PositionThesis as NewPositionThesis
+from agents.strategist.stance_schema import TickerStance
 from broker.protocol import Broker, BrokerRejection
 from data.timeguard import resolve_as_of
 from observability.trace import _trace_maybe
@@ -87,8 +88,9 @@ class ExecutorAgent(BaseAgent):
         # (after_agent_callback) AFTER this method completes, so it is not yet
         # available in state at this point during same-tick execution.  The
         # bare-key bridge (``"positions"``) carries the cross-tick value and is
-        # the correct source for in-tick reads.  Band 6 will remove this bridge
-        # once all callers migrate to reading from the after-callback's output.
+        # the correct source for in-tick reads.  The bridge remains in place as
+        # the BUY→SELL in-tick channel; ``new_positions`` (the strategist's
+        # pre-computed thesis) was the only thing removed in Band 6.
         positions: dict = dict(state.get("positions", {}))
 
         for order in orders:
@@ -108,26 +110,69 @@ class ExecutorAgent(BaseAgent):
                     ),
                 )
 
-                # BUY: record the thesis in the *legacy* position book so SELL can
-                # later recover it in the same tick.  The after_agent_callback writes
-                # the new-model ``user:positions`` after the run loop completes.
+                # BUY: assemble the thesis from the open-intent stance + fill price
+                # and record it in the *legacy* position book so SELL can recover
+                # it in the same tick.  The after_agent_callback writes the
+                # new-model ``user:positions`` after the run loop completes.
                 #
-                # The thesis arrives as a JSON-serialised dict (the strategist's
-                # after-callback dumps it before re-writing state), so we mutate
-                # the dict directly rather than reconstructing the model.  A
-                # defensive copy avoids mutating the strategist's decision
-                # payload, which downstream code (decision snapshot logger) may
-                # still inspect.
+                # Band 6 change: the strategist no longer pre-computes
+                # ``new_positions``; the executor is the only agent with an
+                # honest fill price, so PositionThesis assembly belongs here.
+                # We find the ``intent="open"`` stance for this ticker and call
+                # ``apply_stance_to_thesis`` — the same helper used by the
+                # after-callback — so there is exactly one assembly path.
                 if order.action == "BUY":
-                    decision = state.get("strategist_decision") or {}
-                    thesis_dict = (decision.get("new_positions") or {}).get(order.ticker)
-                    if thesis_dict is not None:
+                    decision_raw = state.get("strategist_decision") or {}
+                    stances_raw  = decision_raw.get("stances") or []
 
-                        # Shallow copy — PositionThesis fields are all scalars
-                        # (no nested mutables to worry about).
-                        thesis_dict = dict(thesis_dict)
-                        thesis_dict["opened_price"] = fill.price
-                        positions[order.ticker] = thesis_dict
+                    # Find the open-intent stance for this ticker.
+                    open_stance = next(
+                        (
+                            TickerStance.model_validate(s) if isinstance(s, dict) else s
+                            for s in stances_raw
+                            if (s.get("ticker") if isinstance(s, dict) else s.ticker) == order.ticker
+                            and (s.get("intent") if isinstance(s, dict) else s.intent) == "open"
+                        ),
+                        None,
+                    )
+
+                    if open_stance is not None:
+                        # Resolve the tick timestamp: use state["as_of"] when
+                        # present (backtest replay) so opened_at is deterministic.
+                        # Fall back to wall-clock on live runs.
+                        raw_as_of = state.get("as_of")
+                        resolved_as_of = resolve_as_of(
+                            raw_as_of,
+                            allow_wallclock=True,
+                            site="executor/agent.BUY",
+                        )
+
+                        new_thesis = apply_stance_to_thesis(
+                            open_stance,
+                            prior_row  = None,
+                            fill_price = fill.price,
+                            tick_id    = tick_id,
+                            as_of      = resolved_as_of,
+                        )
+
+                        if new_thesis is not None:
+                            thesis_dict = new_thesis.model_dump(mode="json")
+
+                            # Stash the decision_tag as ``opened_tag`` so the
+                            # SELL path (and trade-log persistence) can read it.
+                            # ``position_thesis.py:PositionThesis`` does not
+                            # carry ``opened_tag`` natively; we add it here as
+                            # an extra key rather than mutating the canonical
+                            # schema.  This mirrors the old ``new_positions``
+                            # behaviour where the strategist's ``opened_tag``
+                            # came from ``decision_tag``.
+                            if "opened_tag" not in thesis_dict or thesis_dict["opened_tag"] is None:
+                                decision_raw = state.get("strategist_decision") or {}
+                                thesis_dict["opened_tag"] = (
+                                    decision_raw.get("decision_tag") or tick_id
+                                )
+
+                            positions[order.ticker] = thesis_dict
 
                 # SELL: conditionally write the trade-log entry and remove from the
                 # position book — but only when the position is truly closed.
@@ -224,7 +269,7 @@ class ExecutorAgent(BaseAgent):
         # Direct mutation — visible to any later agent in *this* tick that
         # reads ``ctx.session.state`` (same object reference).
         state["executions"]             = executions
-        state["positions"]              = positions    # legacy bridge (Band 6: remove)
+        state["positions"]              = positions    # Band 4 bare-key BUY→SELL bridge
         state["last_executed_tick_id"]  = tick_id
 
         # Note: ``user:positions`` is intentionally NOT mutated here.  Writing
@@ -265,14 +310,14 @@ class ExecutorAgent(BaseAgent):
         # ``ctx.state`` writes.  Including it here would be a double-write
         # that violates the Band 4 writer-of-record split.
         #
-        # Legacy "positions" key is kept as a bridge (Band 6 will remove it).
+        # ``"positions"`` is the Band 4 bare-key BUY→SELL bridge — kept intentionally.
         yield Event(
             author        = self.name,
             invocation_id = ctx.invocation_id,
             actions       = EventActions(state_delta={
                 "executions":            executions,
                 "last_executed_tick_id": tick_id,
-                "positions":             positions,    # legacy bridge (Band 6: remove)
+                "positions":             positions,    # Band 4 bare-key BUY→SELL bridge
             }),
         )
 
@@ -343,8 +388,8 @@ def _executor_thesis_writer_callback(callback_context) -> None:
     # ---- prior persisted thesis book (Phase 2 merge) -------------------
     # Shallow copy so we can mutate without affecting the merged dict
     # ADK keeps around for the in-tick view.
-    prior_positions: dict[str, dict] = dict(state.get("user:positions", {}))
-    new_positions:   dict[str, dict] = dict(prior_positions)
+    prior_positions:   dict[str, dict] = dict(state.get("user:positions", {}))
+    updated_positions: dict[str, dict] = dict(prior_positions)
 
     for stance in (decision.stances or []):
 
@@ -388,9 +433,9 @@ def _executor_thesis_writer_callback(callback_context) -> None:
 
         if new_row is None:
             # close stance — drop the ticker from the position book.
-            new_positions.pop(ticker, None)
+            updated_positions.pop(ticker, None)
         else:
-            new_positions[ticker] = new_row.model_dump(mode="json")
+            updated_positions[ticker] = new_row.model_dump(mode="json")
 
     # ---- thesis carry-forward (explicit re-write) ----------------------
     # ``decision.thesis is not None`` means the strategist is actively
@@ -407,7 +452,7 @@ def _executor_thesis_writer_callback(callback_context) -> None:
     # runner's ``_handle_after_agent_callback`` auto-yields a state-delta
     # Event, which ``SessionService.append_event`` then persists.
 
-    state["user:positions"] = new_positions
+    state["user:positions"] = updated_positions
     state["user:thesis"]    = new_thesis
 
     return None

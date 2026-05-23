@@ -71,10 +71,13 @@ class PositionThesis(BaseModel):
 class StrategistDecision(BaseModel):
     """Output from one Strategist LLM call.
 
-    The LLM emits `stances` (per-ticker). The after-callback fills in
-    `target_weights` / `new_positions` / `close_reasons` / `trim_reasons`
-    by deriving them from the stances, so downstream consumers see the same
-    shape they always saw.
+    The LLM emits ``stances`` (per-ticker).  The after-callback fills in
+    ``target_weights`` / ``close_reasons`` / ``trim_reasons`` by deriving them
+    from the stances so downstream consumers see an exhaustive dict.
+
+    ``new_positions`` was removed in Band 6.  The executor now assembles the
+    ``PositionThesis`` for each ``open`` stance itself from the fill price +
+    stance, using ``apply_stance_to_thesis`` in ``executor._verb_dispatch``.
     """
 
     # Per-ticker stances emitted directly by the LLM; the primary substrate.
@@ -103,8 +106,6 @@ class StrategistDecision(BaseModel):
 
     confidence: float = Field(ge=0.0, le=1.0)
 
-    # Required when opening a new position (weight 0 → >0).
-    new_positions: dict[str, PositionThesis] = Field(default_factory=dict)
     # Required when closing an existing position (weight >0 → 0).
     close_reasons: dict[str, str] = Field(default_factory=dict)
     # Required when reducing (not zeroing) an existing position.

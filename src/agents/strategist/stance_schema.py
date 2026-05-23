@@ -2,9 +2,9 @@
 
 The strategist emits one ``TickerStance`` per watchlist ticker on every tick.
 Downstream derivation helpers (``derive_legacy_fields``) read a list of stances
-and produce the flat ``target_weights``, ``new_positions``, ``close_reasons``,
-and ``trim_reasons`` fields that the executor already expects — preserving
-backwards compatibility while giving the strategist a richer internal model.
+and produce the flat ``target_weights``, ``close_reasons``, and ``trim_reasons``
+fields that downstream agents expect.  ``new_positions`` was removed in Band 6
+(see module docstring for why).
 
 The stance is *not* a trade instruction. It expresses the strategist's desired
 portfolio position and the reasoning behind it. The executor translates that
@@ -32,6 +32,10 @@ for the richer vocabulary.  Full verb set:
 The legacy ``preferred_weight`` / ``conviction`` / ``close_reason`` /
 ``trim_reason`` fields remain on the model for backward compatibility
 with ``derive_legacy_fields`` and the existing test suite.
+
+``new_positions`` (the pre-computed ``PositionThesis`` for each ``open``
+stance) was removed from the derivation pipeline in Band 6.  The executor
+now assembles it from the fill price + stance via ``apply_stance_to_thesis``.
 """
 from __future__ import annotations
 

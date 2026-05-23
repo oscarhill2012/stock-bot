@@ -42,15 +42,18 @@ def test_decision_trim_reasons_round_trip():
 
 
 def test_legacy_fields_preserved():
-    """Existing legacy fields (target_weights, new_positions, close_reasons) still work."""
+    """Existing legacy fields (target_weights, close_reasons, trim_reasons) still work.
+
+    Band 6: ``new_positions`` was removed from ``StrategistDecision`` — the executor
+    assembles the ``PositionThesis`` from the fill price + stance.
+    """
     d = StrategistDecision(
         stances=[], target_weights={"AAPL": 0.08},
         decision_tag="x", reasoning="x", thesis="y",
         confidence=0.7,
-        new_positions={}, close_reasons={},
+        close_reasons={},
     )
     assert d.target_weights == {"AAPL": 0.08}
-    assert d.new_positions == {}
     assert d.close_reasons == {}
 
 

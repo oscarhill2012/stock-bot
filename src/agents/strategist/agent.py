@@ -8,7 +8,7 @@ from google.adk.agents import LlmAgent
 from google.adk.agents.callback_context import CallbackContext
 from google.genai import types as genai_types
 
-from agents.risk_gate.lifecycle import StrategistContractViolation
+from agents.strategist.derivation import StrategistContractViolation
 from agents.strategist.derivation import TickContext, derive_legacy_fields
 from agents.strategist.lifecycle import derive_lifecycle_action
 from agents.strategist.prompts import STRATEGIST_INSTRUCTION
@@ -231,7 +231,6 @@ def _strategist_validation_callback(
     )
     derived = derive_legacy_fields(decision.stances, ctx)
     decision.target_weights = derived.target_weights
-    decision.new_positions = derived.new_positions
     decision.close_reasons = derived.close_reasons
     decision.trim_reasons = derived.trim_reasons
 

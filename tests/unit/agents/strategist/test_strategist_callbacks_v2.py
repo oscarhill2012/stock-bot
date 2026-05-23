@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from agents.risk_gate.lifecycle import StrategistContractViolation
+from agents.strategist.derivation import StrategistContractViolation
 from agents.strategist.agent import _strategist_validation_callback
 from agents.strategist.schema import PositionThesis, StrategistDecision
 from agents.strategist.stance_schema import TickerStance
@@ -197,6 +197,12 @@ def test_after_raises_on_trim_without_trim_reason():
 
 
 def test_after_derives_legacy_fields_on_valid_input():
+    """The validation callback derives target_weights / close_reasons / trim_reasons from stances.
+
+    Band 6: ``new_positions`` is no longer derived by the strategist callback;
+    that assembly was moved to the executor's BUY-path where the real fill
+    price is known.  We assert only on target_weights and the reason dicts.
+    """
     state = _State(
         tickers=["AAPL"],
         positions={}, portfolio=_portfolio().model_dump(mode="json"), tick_id="tick_X",
@@ -211,7 +217,8 @@ def test_after_derives_legacy_fields_on_valid_input():
     assert out is None
     decided = state["strategist_decision"]
     assert decided["target_weights"] == {"AAPL": 0.05}
-    assert "AAPL" in decided["new_positions"]
-    assert decided["new_positions"]["AAPL"]["opened_tick_id"] == "tick_X"
+    # Band 6: new_positions is no longer a field on StrategistDecision; the
+    # executor assembles the PositionThesis from the fill price + stance.
+    assert "new_positions" not in decided
     assert decided["close_reasons"] == {}
     assert decided["trim_reasons"] == {}

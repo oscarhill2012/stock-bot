@@ -41,7 +41,7 @@ async def test_executor_no_op_without_decision_logger() -> None:
             Order(ticker="AAPL", action="BUY", quantity=1, est_price=150.0).model_dump()
         ],
         "positions": {},
-        "strategist_decision": {"new_positions": {}},
+        "strategist_decision": {"stances": []},
         # No ``temp:_decision_logger`` key — the hook must not fire.
     }
     ctx = _make_ctx(state)
@@ -67,20 +67,28 @@ async def test_executor_calls_decision_logger_on_fill() -> None:
 
     state = {
         "tick_id": "t1",
+        "as_of":   "2023-03-13T09:30:00+00:00",
         "final_orders": [
             Order(ticker="AAPL", action="BUY", quantity=1, est_price=150.0).model_dump()
         ],
         "positions": {},
         "strategist_decision": {
-            "new_positions": {
-                "AAPL": {
-                    "opened_price": 150.0,
-                    "horizon": "swing",
-                    "rationale": "test",
-                    "opened_tag": "test",
-                    "opened_at": "2023-03-13T09:30:00+00:00",
-                }
-            }
+            # Band 6: executor assembles PositionThesis from the open-intent
+            # stance + fill price; ``new_positions`` is no longer needed here.
+            "stances": [
+                {
+                    "ticker":           "AAPL",
+                    "preferred_weight": 0.10,
+                    "conviction":       0.8,
+                    "intent":           "open",
+                    "weight":           0.10,
+                    "horizon":          "swing",
+                    "rationale":        "test",
+                    "target_price":     170.0,
+                    "stop_price":       130.0,
+                    "catalyst":         "test catalyst",
+                },
+            ],
         },
         "temp:_decision_logger": fake_logger,
     }
@@ -117,7 +125,7 @@ async def test_executor_logger_exception_does_not_abort_tick() -> None:
             Order(ticker="AAPL", action="BUY", quantity=1, est_price=150.0).model_dump()
         ],
         "positions": {},
-        "strategist_decision": {"new_positions": {}},
+        "strategist_decision": {"stances": []},
         "temp:_decision_logger": broken_logger,
     }
     ctx = _make_ctx(state)
@@ -163,7 +171,7 @@ async def test_executor_accepts_iso_string_as_of_on_sell() -> None:
                 "opened_tick_id": "t-open",
             }
         },
-        "strategist_decision": {"new_positions": {}},
+        "strategist_decision": {"stances": []},
     }
     ctx = _make_ctx(state)
 

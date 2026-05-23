@@ -49,9 +49,9 @@ async def test_user_positions_and_thesis_written_after_executor_tick():
 
     # ── Seed session: BUY order + strategist decision with an open stance ────
     # The strategist_decision must carry a TickerStance with intent="open"
-    # so the callback's apply_stance_to_thesis creates a new PositionThesis row.
-    # new_positions carries the raw thesis dict (opened_price=None — executor
-    # fills the real fill price from the broker).
+    # so both the executor BUY-path (assembling the bare-key bridge thesis)
+    # and the after-callback's apply_stance_to_thesis (writing user:positions)
+    # fire correctly.  Band 6: new_positions is no longer needed here.
     session = await svc.create_session(
         app_name = "test-e2e",
         user_id  = "stockbot",
@@ -83,24 +83,6 @@ async def test_user_positions_and_thesis_written_after_executor_tick():
                     },
                 ],
                 "target_weights": {"AAPL": 0.10},
-                "new_positions": {
-                    "AAPL": {
-                        "ticker":                  "AAPL",
-                        "opened_at":               open_ts,
-                        "opened_price":            None,       # executor stamps real fill
-                        "opened_tick_id":           "tick-1",
-                        "opened_tag":               "open_aapl",
-                        "weight":                   0.10,
-                        "horizon":                  "swing",
-                        "rationale":                "Strong FCF + insider buying",
-                        "target_price":             220.0,
-                        "stop_price":               185.0,
-                        "catalyst":                 "Q3 earnings beat",
-                        "last_reviewed_at":         open_ts,
-                        "last_reviewed_decision":   "open",
-                        "last_reviewed_reason":     "Initial open stance",
-                    },
-                },
                 "close_reasons": {},
             },
         },
