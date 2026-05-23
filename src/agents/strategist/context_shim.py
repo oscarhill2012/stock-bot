@@ -180,7 +180,18 @@ class StrategistContextShim(BaseAgent):
         # Surface trace — no-op unless state["temp:_trace"] is set.
         _trace_maybe(state, "04_digest", ticker_evidence_objects)
 
-        # ── Yield exactly one Event carrying all three keys ───────────────
+        # ── Resolve thesis for the prompt placeholder ────────────────────
+        # The strategist instruction uses ``{thesis}`` which ADK's
+        # ``inject_session_state`` resolves from ``state["thesis"]``.
+        # Spec B (Band 2) moved the persisted value to ``state["user:thesis"]``
+        # (the ADK user-scoped namespace); this shim bridges the stored value
+        # into the bare-key slot that the prompt template expects, so the
+        # resolver finds it without a bare-key seed in the runner.
+        # Plan 2 will rename the placeholder to ``{user:thesis}`` and remove
+        # this bridge — for now we keep the placeholder name unchanged.
+        thesis: str = state.get("user:thesis") or ""
+
+        # ── Yield exactly one Event carrying all required keys ────────────
         yield Event(
             author        = self.name,
             invocation_id = ctx.invocation_id,
@@ -188,5 +199,9 @@ class StrategistContextShim(BaseAgent):
                 "temp:held_positions_view":     held_view,
                 "temp:ticker_evidence":         ticker_evidence_rendered,
                 "temp:ticker_evidence_objects": ticker_evidence_objects,
+                # Bridge user:thesis → {thesis} placeholder for this tick's
+                # LlmAgent call.  Written here (not as a seed) so the value
+                # is always fresh from the user-scoped namespace.
+                "thesis":                       thesis,
             }),
         )

@@ -554,13 +554,11 @@ class Runner:
                 # row on tick 2+; Band 4 will wire the Executor writer-of-record
                 # to persist it there.
                 #
-                # ``thesis`` must be seeded as an empty string so the strategist
-                # prompt template ({thesis}) resolves without raising KeyError.
-                # The MemoryWriter writes ``state["thesis"]`` via a yielded
-                # state_delta on each tick; the driver's per-tick ``state.update``
-                # carries the persisted value forward, so this seed is only the
-                # first-tick fallback.
-                "thesis":           "",
+                # ``thesis`` is intentionally absent — it has migrated to
+                # ``user:thesis`` (Spec B, Band 2).  The StrategistContextShim
+                # bridges ``user:thesis`` → ``thesis`` on each tick via its
+                # yielded state_delta so the prompt placeholder resolves
+                # without a bare-key seed here.
                 "memory_buffer":    [],
                 "day_digest":       "",
                 # Dump each PriceHistory to a JSON-safe dict so the ADK

@@ -76,6 +76,8 @@ def test_shim_yields_one_event_with_temp_prefixed_keys(populated_state: dict) ->
         "temp:held_positions_view",
         "temp:ticker_evidence",
         "temp:ticker_evidence_objects",
+        # Spec B Band 2: shim bridges user:thesis → thesis for the prompt placeholder.
+        "thesis",
     }
     assert set(delta.keys()) == expected_keys, (
         f"state_delta keys mismatch: {set(delta.keys())} vs {expected_keys}"
@@ -116,3 +118,72 @@ def test_shim_accepts_iso_string_as_of(populated_state: dict) -> None:
     # wall-clock branch which raised under STOCKBOT_STRICT_AS_OF=1.
     events = asyncio.run(_drain())
     assert len(events) == 1, "Shim must still yield one event with an ISO-string as_of"
+
+
+def test_shim_bridges_user_thesis_to_bare_thesis_key(populated_state: dict) -> None:
+    """Spec B Band 2: shim must read ``user:thesis`` and write it as ``thesis``.
+
+    The strategist prompt template uses the ``{thesis}`` placeholder; ADK's
+    ``inject_session_state`` resolves that from ``state["thesis"]``.  After
+    Spec B, the persisted value lives at ``state["user:thesis"]``.  The shim
+    bridges the two so the prompt fills correctly without a bare-key seed in
+    the runner.
+
+    This test covers the warm-start case: ``user:thesis`` is populated.
+    """
+    shim = StrategistContextShim()
+
+    populated_state["user:thesis"] = "AAPL momentum trade — target $225"
+
+    fake_session = MagicMock()
+    fake_session.state = populated_state
+    fake_ctx = MagicMock()
+    fake_ctx.invocation_id = "inv-thesis"
+    fake_ctx.session = fake_ctx.session_service = fake_session
+
+    async def _drain() -> list:
+        events: list = []
+        async for ev in shim._run_async_impl(fake_ctx):
+            events.append(ev)
+        return events
+
+    events = asyncio.run(_drain())
+    delta = events[0].actions.state_delta
+
+    # The bare-key ``thesis`` must be present so ADK can resolve ``{thesis}``
+    # in the strategist instruction template.
+    assert "thesis" in delta, "state_delta must carry 'thesis' for the prompt placeholder"
+    assert delta["thesis"] == "AAPL momentum trade — target $225", (
+        f"thesis in state_delta should mirror user:thesis; got {delta['thesis']!r}"
+    )
+
+
+def test_shim_thesis_cold_start_defaults_to_empty_string(populated_state: dict) -> None:
+    """Spec B Band 2: when ``user:thesis`` is absent (first tick / cold start),
+    the shim must write an empty string to ``thesis`` so the prompt placeholder
+    does not raise ``KeyError``.
+    """
+    shim = StrategistContextShim()
+
+    # Ensure user:thesis is not present in the state.
+    populated_state.pop("user:thesis", None)
+
+    fake_session = MagicMock()
+    fake_session.state = populated_state
+    fake_ctx = MagicMock()
+    fake_ctx.invocation_id = "inv-cold"
+    fake_ctx.session = fake_ctx.session_service = fake_session
+
+    async def _drain() -> list:
+        events: list = []
+        async for ev in shim._run_async_impl(fake_ctx):
+            events.append(ev)
+        return events
+
+    events = asyncio.run(_drain())
+    delta = events[0].actions.state_delta
+
+    assert "thesis" in delta, "state_delta must carry 'thesis' even on cold start"
+    assert delta["thesis"] == "", (
+        f"cold-start thesis must be empty string; got {delta['thesis']!r}"
+    )
