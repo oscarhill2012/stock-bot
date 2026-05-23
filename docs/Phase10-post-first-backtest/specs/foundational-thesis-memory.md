@@ -83,7 +83,7 @@ between paper and live is structurally impossible.
 - Six stance verbs in the strategist's output vocabulary —
   `open`, `add`, `trim`, `close`, `hold`, `update` — with an executor mapping
   that allows the thesis to mutate without trading.
-- Removal of `src/agents/strategist/derivation.py:192-200` carry-forward
+- Removal of `src/agents/strategist/derivation.py:254-271` carry-forward
   semantics; replaced by an explicit "stance required per held position"
   rule.
 - Symmetric live + backtest behaviour: both run on
@@ -614,7 +614,7 @@ Notes on what is *not* rendered:
 
 ### Stance-output mechanics — D3 (carry-forward removal)
 
-`src/agents/strategist/derivation.py:192-200` currently pads
+`src/agents/strategist/derivation.py:254-271` currently pads
 unaccounted-for watchlist tickers with carry-forward stance values.  This
 spec removes that block.  The replacement logic, in
 `derive_legacy_fields`:
@@ -1399,7 +1399,7 @@ plumbing already supports this; the only change is configuration.
 | `src/agents/strategist/prompts.py` | New `STRATEGIST_INSTRUCTION` with `{strategist_mode}` placeholder; new `COLD_START_MODE_TEMPLATE` and `INCREMENTAL_MODE_TEMPLATE` constants. |
 | `src/agents/strategist/context_shim.py` | Compute and emit `temp:strategist_mode`; read `state["user:positions"]` instead of `state["positions"]`. |
 | `src/agents/strategist/held_view.py` | Rewrite to render evolution columns; read from `state["user:positions"]`; accept `as_of` parameter. |
-| `src/agents/strategist/derivation.py` | Delete lines 192-200 (carry-forward); add "stance required per held" validation. |
+| `src/agents/strategist/derivation.py` | Delete lines 254-271 (carry-forward); add "stance required per held" validation. |
 | `src/agents/strategist/schemas.py` (or equivalent) | Add `hold` and `update` to `TickerStance.intent` enum; add optional `reason`, `target_price`, `stop_price`, `catalyst`, `horizon`, `rationale` per-stance fields; add top-level `thesis_revision: str \| None`. |
 | `src/agents/strategist/position_thesis.py` (new file) | The `PositionThesis` model. |
 | `src/agents/_verb_dispatch.py` (new file) | Shared verb→broker-call and verb→thesis-row helpers (`resolve_broker_call`, `apply_stance_to_thesis`).  Imported by both Executor and MemoryWriter. |
@@ -1448,7 +1448,7 @@ After implementation, append a dated entry to
     `state["user:positions"]` — the corresponding `state_delta` keys
     are gone from its yielded events.
   - `agents.strategist.derivation` carry-forward block removed
-    (lines 192-200 in the pre-spec source).
+    (lines 254-271 in the pre-spec source).
 - **State-key migrations (worth a one-liner in the delta so
   downstream tooling can pick them up):**
   - `state["positions"]` → `state["user:positions"]`.

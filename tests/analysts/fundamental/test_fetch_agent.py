@@ -121,6 +121,21 @@ async def test_fetch_writes_per_ticker_context_keys():
     assert fd["AAPL"]["filings"] == aapl_filings
     assert fd["MSFT"]["filings"] == msft_filings
 
+    # Pin the contract: ``insider`` is stored as a typed ``Form4Bundle``, NOT
+    # a ``.model_dump()`` dict.  Several downstream consumers — most notably
+    # ``fundamental_hash_inputs_from_dict`` in the per-ticker cache callback
+    # and the legacy branch of ``extract_fundamental_features`` — gate on
+    # ``isinstance(_, Form4Bundle)`` / call ``.trades`` directly.  Dumping
+    # here silently breaks both (the cache callback raises ``AttributeError``
+    # and aborts the branch before the LLM is invoked).  See the S5 ↔ Spec A
+    # regression for context.  The strict decision-logger's recursive
+    # ``_coerce`` handles serialisation at the log-write boundary, so the
+    # in-state shape stays typed.
+    from data.models import Form4Bundle as _Form4Bundle
+
+    assert isinstance(fd["AAPL"]["insider"], _Form4Bundle)
+    assert isinstance(fd["MSFT"]["insider"], _Form4Bundle)
+
     # One temp:fundamental_context_<TICKER> key per ticker, each containing
     # only that ticker's block.
     assert "temp:fundamental_context_AAPL" in state_delta
