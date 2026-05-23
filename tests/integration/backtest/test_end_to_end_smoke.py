@@ -689,28 +689,42 @@ def test_end_to_end_run_produces_full_artefact_tree(
     from google.adk.sessions import DatabaseSessionService as _DSS
 
     _session_sqlite = result.run_dir / "session.sqlite"
-    if _session_sqlite.exists():
-        _svc = _DSS(db_url=f"sqlite+aiosqlite:///{_session_sqlite}")
-        _app_name = "StockBot-backtest-baseline-2025-09"
 
-        _sessions = _asyncio_b5.run(_svc.list_sessions(app_name=_app_name, user_id="stockbot"))
+    # Both guards are hard assertions: a passing smoke run MUST produce a
+    # session sqlite and MUST have at least one session inside it.  Silently
+    # skipping these checks would give a green result with zero signal on the
+    # spec-required user:positions persistence guarantee.
+    assert _session_sqlite.exists(), (
+        f"Smoke run did not create session sqlite at {_session_sqlite}; "
+        "DatabaseSessionService wiring is broken or run_dir is wrong."
+    )
 
-        # The smoke test runs exactly one tick — there should be exactly one session.
-        if _sessions and _sessions.sessions:
-            _last_sid = _sessions.sessions[-1].id
-            _last_session = _asyncio_b5.run(
-                _svc.get_session(app_name=_app_name, user_id="stockbot", session_id=_last_sid)
-            )
-            assert _last_session is not None, "last tick session must be fetchable"
-            _user_positions = _last_session.state.get("user:positions")
-            assert isinstance(_user_positions, dict), (
-                f"user:positions must be a dict in the last tick session; "
-                f"got {type(_user_positions).__name__!r}"
-            )
-            assert len(_user_positions) >= 1, (
-                "user:positions must be non-empty after the smoke run; "
-                "the executor's thesis-writer callback did not persist any position"
-            )
+    _svc = _DSS(db_url=f"sqlite+aiosqlite:///{_session_sqlite}")
+    _app_name = "StockBot-backtest-baseline-2025-09"
+
+    _sessions = _asyncio_b5.run(_svc.list_sessions(app_name=_app_name, user_id="stockbot"))
+
+    # The smoke test runs exactly one tick — there must be exactly one session.
+    assert _sessions and _sessions.sessions, (
+        "DatabaseSessionService.list_sessions returned no sessions after smoke run; "
+        f"app_name={_app_name!r}, user_id='stockbot'. "
+        "Either the session was never created or list_sessions is broken."
+    )
+
+    _last_sid = _sessions.sessions[-1].id
+    _last_session = _asyncio_b5.run(
+        _svc.get_session(app_name=_app_name, user_id="stockbot", session_id=_last_sid)
+    )
+    assert _last_session is not None, "last tick session must be fetchable"
+    _user_positions = _last_session.state.get("user:positions")
+    assert isinstance(_user_positions, dict), (
+        f"user:positions must be a dict in the last tick session; "
+        f"got {type(_user_positions).__name__!r}"
+    )
+    assert len(_user_positions) >= 1, (
+        "user:positions must be non-empty after the smoke run; "
+        "the executor's thesis-writer callback did not persist any position"
+    )
 
     # Phase 7 — non-Social analysts that can produce signal from the minimal
     # fixture must emit a non-is_no_data verdict.  Social explicitly soft-fails

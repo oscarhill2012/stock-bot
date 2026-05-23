@@ -112,20 +112,16 @@ async def test_user_positions_and_thesis_written_after_executor_tick():
         role="user",
     )
 
-    # The ADK 1.32 runner may raise a teardown bug after a successful run;
-    # the session state is already persisted at that point.
-    try:
-        async for _ in runner.run_async(
-            user_id    = "stockbot",
-            session_id = session.id,
-            new_message = message,
-        ):
-            pass
-    except (AttributeError, BaseException) as exc:
-        # Ignore ADK teardown artefacts (known ADK 1.32 issue); real failures
-        # are caught below when the assertions fail.
-        if "user:positions" in str(type(exc)) or "user:thesis" in str(type(exc)):
-            raise
+    # No try/except here — investigation confirmed no exception is raised by
+    # ADK 1.32 for this test path.  Any exception that surfaces is a real
+    # failure and must propagate; swallowing it would silence the very bugs
+    # this test is designed to catch.
+    async for _ in runner.run_async(
+        user_id    = "stockbot",
+        session_id = session.id,
+        new_message = message,
+    ):
+        pass
 
     # ── Reload and assert ────────────────────────────────────────────────────
     reloaded = await svc.get_session(
