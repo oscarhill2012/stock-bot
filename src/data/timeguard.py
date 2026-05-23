@@ -123,9 +123,31 @@ def resolve_as_of(
         When ``candidate is None`` *and* either strict mode is enabled
         (``STOCKBOT_STRICT_AS_OF=1``) or ``allow_wallclock=False``.
     """
-    # Happy path: the caller supplied an explicit timestamp.
-    if candidate is not None:
+    # Happy path: the caller supplied an explicit datetime.
+    if isinstance(candidate, datetime):
         return candidate
+
+    # DatabaseSessionService serialises state values to JSON, which coerces
+    # ``datetime`` to ISO-8601 strings.  When state["as_of"] is read back and
+    # passed here it will be a ``str`` rather than a ``datetime``.  Parse it
+    # back rather than letting a string escape into code that calls
+    # ``.month``/``.year``/arithmetic — those would raise ``AttributeError``
+    # silently masked by ``allow_wallclock=True`` fallback paths.
+    if isinstance(candidate, str):
+        try:
+            return datetime.fromisoformat(candidate)
+        except ValueError as exc:
+            raise ValueError(
+                f"resolve_as_of received a string candidate that is not a valid "
+                f"ISO-8601 datetime at site={site!r}: {candidate!r}"
+            ) from exc
+
+    # None falls through to the wall-clock / strict-mode logic below.
+    if candidate is not None:
+        raise TypeError(
+            f"resolve_as_of expected datetime, str, or None at site={site!r}; "
+            f"got {type(candidate).__name__!r}"
+        )
 
     # Strict mode is an absolute veto on wall-clock substitution.
     strict = os.environ.get(_STRICT_ENV_VAR) == _STRICT_ENABLED

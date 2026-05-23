@@ -23,6 +23,31 @@ def test_returns_candidate_when_supplied() -> None:
     assert resolve_as_of(fixed, allow_wallclock=True,  site="x") is fixed
 
 
+def test_parses_iso_string_candidate_to_datetime() -> None:
+    """An ISO-8601 string candidate (from DatabaseSessionService JSON coercion)
+    must be parsed back to a timezone-aware datetime rather than returned as a
+    string — which would cause AttributeError on downstream .month/.year usage.
+    """
+    fixed   = datetime(2024, 6, 15, 12, 30, 0, tzinfo=UTC)
+    iso_str = fixed.isoformat()  # e.g. "2024-06-15T12:30:00+00:00"
+
+    result = resolve_as_of(iso_str, allow_wallclock=True, site="db_coercion")
+
+    assert isinstance(result, datetime), (
+        f"Expected datetime, got {type(result).__name__}"
+    )
+    assert result == fixed
+    # Verify arithmetic doesn't raise — this is the attribute class the bug kills.
+    _ = result.month
+    _ = result.year
+
+
+def test_raises_on_malformed_iso_string_candidate() -> None:
+    """A non-ISO string must raise ValueError rather than silently pass through."""
+    with pytest.raises(ValueError, match="ISO-8601"):
+        resolve_as_of("not-a-date", allow_wallclock=True, site="bad_site")
+
+
 def test_falls_back_to_wallclock_when_allowed_and_not_strict(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
