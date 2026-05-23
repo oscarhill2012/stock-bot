@@ -86,15 +86,25 @@ def _make_strategist_llm_response(tickers: list[str]):
     # Open the first ticker with a small position so the smoke test can assert
     # that user:positions is non-empty after the run.  The remaining tickers
     # (if any) receive neutral (hold) stances.
-    from datetime import UTC, datetime as _dt
-    open_ts = _dt(2025, 9, 2, 13, 30, tzinfo=UTC).isoformat()
+    #
+    # Note: ``preferred_weight > 0`` is required to trigger an "open" lifecycle
+    # action in ``derive_lifecycle_action`` (current=0, preferred>0 → "open").
+    # ``new_positions`` is a DERIVED field — omit it from the mock payload and
+    # let ``_strategist_validation_callback`` compute it from the stances via
+    # ``derive_legacy_fields``.  Including it pre-populated would cause a
+    # datetime-serialisation error because Pydantic's ``model_validate`` converts
+    # the ISO strings to ``datetime`` objects, and the derived overwrite path
+    # (``decision.new_positions = derived.new_positions``) would not fire for
+    # ``preferred_weight=0.0`` stances.
     first_ticker = tickers[0] if tickers else "AAPL"
     stances = []
     for t in tickers:
         if t == first_ticker:
+            # ``preferred_weight=0.10`` (non-zero) is the trigger for
+            # ``derive_lifecycle_action`` to return "open" (current=0 → new>0).
             stances.append({
-                "ticker":          t,
-                "preferred_weight": 0.0,
+                "ticker":           t,
+                "preferred_weight": 0.10,
                 "conviction":       0.7,
                 "rationale":        "Smoke test open — exercising the full executor path.",
                 "intent":           "open",
@@ -112,31 +122,14 @@ def _make_strategist_llm_response(tickers: list[str]):
                 "rationale":        "Smoke test neutral stance — no real signal.",
             })
 
-    new_positions = {
-        first_ticker: {
-            "ticker":                  first_ticker,
-            "opened_at":               open_ts,
-            "opened_price":            None,       # executor will stamp fill price
-            "opened_tick_id":          "smoke-tick-1",
-            "opened_tag":              "smoke_open",
-            "weight":                  0.10,
-            "horizon":                 "swing",
-            "rationale":               "Smoke test open — exercising the full executor path.",
-            "target_price":            170.0,
-            "stop_price":              140.0,
-            "catalyst":                "Smoke-test trigger",
-            "last_reviewed_at":        open_ts,
-            "last_reviewed_decision":  "open",
-            "last_reviewed_reason":    "Smoke test initial open",
-        },
-    }
-
     target_weights = {t: (0.10 if t == first_ticker else 0.0) for t in tickers}
 
     decision = {
         "stances":        stances,
         "target_weights": target_weights,
-        "new_positions":  new_positions,
+        # ``new_positions`` intentionally omitted — derived by the strategist
+        # after-callback from the stances; do not pre-populate to avoid
+        # datetime-serialisation issues when Pydantic parses the JSON payload.
         "decision_tag":   "smoke_test_open",
         "reasoning":      "Smoke test run — opening one position to exercise executor.",
         "thesis":         "Smoke-test thesis: testing position persistence.",

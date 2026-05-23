@@ -36,7 +36,7 @@ async def test_executor_buy_fills():
     state = {
         "tick_id": "tick-1",
         "final_orders": [{"ticker": "AAPL", "action": "BUY", "quantity": 5.0, "est_price": 200.0}],
-        "user:positions": {},
+        "positions": {},   # Band 4 bare-key bridge
         "strategist_decision": {"decision_tag": "buy_aapl", "close_reasons": {}},
     }
     ctx = _make_ctx(state)
@@ -55,7 +55,7 @@ async def test_executor_idempotent():
         "tick_id": "tick-1",
         "last_executed_tick_id": "tick-1",  # already executed
         "final_orders": [{"ticker": "AAPL", "action": "BUY", "quantity": 5.0, "est_price": 200.0}],
-        "user:positions": {},
+        "positions": {},   # Band 4 bare-key bridge
         "strategist_decision": {"decision_tag": "buy_aapl", "close_reasons": {}},
     }
     ctx = _make_ctx(state)
@@ -79,7 +79,7 @@ async def test_executor_stamps_opened_price_on_buy():
 
     Setup: a strategist decision that opens a new AAPL position with no
     opened_price, paired with a FakeBroker that will fill at $215.50.
-    Assert: after the executor runs, ``state["user:positions"]["AAPL"]`` carries
+    Assert: after the executor runs, the bare-key bridge ``state["positions"]["AAPL"]`` carries
     the same thesis dict but with ``opened_price`` filled in at 215.50.
     """
     broker = FakeBroker(starting_cash=10_000.0, prices={"AAPL": 215.50})
@@ -107,7 +107,7 @@ async def test_executor_stamps_opened_price_on_buy():
         "final_orders": [
             {"ticker": "AAPL", "action": "BUY", "quantity": 5.0, "est_price": 200.0},
         ],
-        "user:positions": {},
+        "positions": {},   # Band 4 bare-key bridge (starts empty)
         "strategist_decision": {
             "decision_tag":  "morning_sweep",
             "new_positions": {"AAPL": thesis_from_strategist},
@@ -120,14 +120,19 @@ async def test_executor_stamps_opened_price_on_buy():
     async for ev in executor._run_async_impl(ctx):
         events.append(ev)
 
-    # The position book must now carry the thesis with opened_price stamped.
-    # ``_run_async_impl`` includes ``user:positions`` in the yielded event's
-    # state_delta so it is persisted by DatabaseSessionService.
+    # The bare-key bridge ``"positions"`` in the state_delta must carry the
+    # thesis with opened_price stamped.  ``_run_async_impl`` does NOT write
+    # ``user:positions`` — that is the after-callback's responsibility.
     assert len(events) == 1, "executor must yield exactly one state-delta event"
     delta = events[0].actions.state_delta
-    assert "AAPL" in delta["user:positions"]
-    stamped = delta["user:positions"]["AAPL"]
+    assert "AAPL" in delta["positions"], (
+        "BUY must stamp the thesis into the bare-key bridge 'positions'"
+    )
+    stamped = delta["positions"]["AAPL"]
     assert stamped["opened_price"] == pytest.approx(215.50)
+    assert "user:positions" not in delta, (
+        "_run_async_impl must not write user:positions — that belongs to the after-callback"
+    )
 
     # Every other field on the thesis must survive the round-trip unchanged
     # — we only stamp opened_price, never rewrite the intent fields.
@@ -152,7 +157,7 @@ async def test_executor_rejection_continues():
     state = {
         "tick_id": "tick-1",
         "final_orders": [{"ticker": "AAPL", "action": "BUY", "quantity": 5.0, "est_price": 200.0}],
-        "user:positions": {},
+        "positions": {},   # Band 4 bare-key bridge
         "strategist_decision": {"decision_tag": "buy_aapl", "close_reasons": {}},
     }
     ctx = _make_ctx(state)
@@ -172,29 +177,23 @@ async def test_cross_tick_buy_then_sell_produces_trade_log_row():
     """Regression for C-1: SELL in tick T+1 must find the position written
     by BUY in tick T, even after a DatabaseSessionService round-trip.
 
-    The bug was that ``state["user:positions"] = positions`` inside
-    ``_run_async_impl`` mutated the in-memory session object but was never
-    included in the yielded ``EventActions(state_delta=...)``.
-    ``DatabaseSessionService.append_event`` only merges keys present in
-    ``state_delta``, so the positions dict was never persisted.  When tick T+1
-    reloaded the session from DB, ``state.get("user:positions", {})`` returned
-    the empty dict stored at session creation.  The SELL found no prior position
-    and silently dropped the trade-log write.
-
-    Fix: include ``"user:positions": positions`` in the state_delta yield so
-    that the round-trip carries the updated position book into storage.
+    Architecture note (Band 4 / Band 5):
+    ``_run_async_impl`` is the writer-of-record for the bare-key ``"positions"``
+    bridge.  The canonical ``user:positions`` key is written by the
+    after-callback (``_executor_thesis_writer_callback``) — which only fires
+    during a full ADK Runner lifecycle, not when ``_run_async_impl`` is called
+    directly.  This test therefore verifies that the bare-key bridge persists
+    cross-tick via ``DatabaseSessionService``.
 
     Test steps
     ----------
-    1. Create an in-memory SQLite DB and a ``DatabaseSessionService`` session
-       seeded with ``user:positions = {}``.
-    2. Run the executor with a BUY order on tick-1; collect the state_delta
-       event yielded.
-    3. Feed the state_delta event to ``session_service.append_event`` to
-       simulate what the ADK runner does between ticks.
-    4. Reload the session from the service to confirm ``"user:positions"`` persisted.
-    5. Run the executor again with a SELL order on tick-2, using state loaded
-       from the reloaded session.
+    1. Create an in-memory SQLite DB and a ``DatabaseSessionService`` session.
+    2. Run the executor with a BUY order on tick-1; collect the state_delta event.
+    3. Feed the state_delta event to ``session_service.append_event`` to simulate
+       what the ADK runner does between ticks.
+    4. Reload the session from the service to confirm ``"positions"`` bridge persisted.
+    5. Run the executor again with a SELL order on tick-2, seeding ``"positions"``
+       from the reloaded session state.
     6. Assert a ``TradeLogRow`` was written to the DB.
     """
 
@@ -224,7 +223,7 @@ async def test_cross_tick_buy_then_sell_produces_trade_log_row():
         "final_orders":       [
             {"ticker": "AAPL", "action": "BUY", "quantity": 5.0, "est_price": buy_price},
         ],
-        "user:positions":     {},
+        "positions":          {},   # Band 4 bare-key bridge (starts empty)
         "strategist_decision": {
             "decision_tag":  "morning_sweep",
             "new_positions": {
@@ -261,19 +260,23 @@ async def test_cross_tick_buy_then_sell_produces_trade_log_row():
     buy_event = collected_events[0]
     delta = buy_event.actions.state_delta
 
-    # Verify that "user:positions" is in the state_delta — canonical key (Band 5).
-    # The legacy bare-key "positions" is also present as a bridge (Band 6 will remove it).
-    assert "user:positions" in delta, (
-        "C-1 regression: executor state_delta must include 'user:positions' so "
-        "the storage session reflects the in-tick mutation"
+    # Verify that the bare-key bridge ``"positions"`` is in the state_delta.
+    # ``user:positions`` must NOT be here — it is the after-callback's territory.
+    assert "positions" in delta, (
+        "C-1 regression: executor state_delta must include the bare-key 'positions' bridge "
+        "so the storage session reflects the in-tick BUY mutation"
     )
-    assert "AAPL" in delta["user:positions"], (
-        "user:positions state_delta must contain the newly opened AAPL thesis"
+    assert "AAPL" in delta["positions"], (
+        "'positions' bridge state_delta must contain the newly opened AAPL thesis"
+    )
+    assert "user:positions" not in delta, (
+        "_run_async_impl must not write user:positions — that belongs to the after-callback"
     )
 
     # ── Simulate the ADK runner's between-tick round-trip ──────────────────
     # Use DatabaseSessionService with in-memory SQLite to mirror what the
     # real runner does: create a session, append the event, reload from DB.
+    # ``"positions"`` (bare key) is stored in session state by DatabaseSessionService.
     from google.adk.sessions import DatabaseSessionService
 
     adk_svc = DatabaseSessionService(db_url="sqlite+aiosqlite://")
@@ -281,7 +284,7 @@ async def test_cross_tick_buy_then_sell_produces_trade_log_row():
     adk_session = await adk_svc.create_session(
         app_name   = "test",
         user_id    = "u1",
-        state      = {"user:positions": {}},    # pre-tick state: no positions
+        state      = {"positions": {}},    # pre-tick state: no positions bridge
     )
     await adk_svc.append_event(adk_session, buy_event)
 
@@ -292,10 +295,10 @@ async def test_cross_tick_buy_then_sell_produces_trade_log_row():
         session_id = adk_session.id,
     )
     assert reloaded is not None
-    reloaded_positions = reloaded.state.get("user:positions", {})
+    reloaded_positions = reloaded.state.get("positions", {})
     assert "AAPL" in reloaded_positions, (
-        "user:positions must survive the DatabaseSessionService round-trip; "
-        "if this fails, 'user:positions' was not in the state_delta"
+        "Band 4 'positions' bridge must survive the DatabaseSessionService round-trip; "
+        "if this fails, 'positions' was not in the state_delta"
     )
 
     # ── Tick T+1 (SELL) ─────────────────────────────────────────────────────
@@ -310,7 +313,7 @@ async def test_cross_tick_buy_then_sell_produces_trade_log_row():
             {"ticker": "AAPL", "action": "SELL", "quantity": 5.0, "est_price": sell_price},
         ],
         # Load positions from the reloaded session — exactly what the runner does.
-        "user:positions":     dict(reloaded_positions),
+        "positions":          dict(reloaded_positions),   # Band 4 bare-key bridge
         "strategist_decision": {
             "decision_tag":  "take_profit",
             "close_reasons": {"AAPL": "target reached"},
@@ -327,7 +330,7 @@ async def test_cross_tick_buy_then_sell_produces_trade_log_row():
     rows = db_session.query(TradeLogRow).filter_by(ticker="AAPL").all()
     assert len(rows) == 1, (
         "C-1 regression: a SELL after cross-tick BUY must produce one trade-log row; "
-        "got zero — the executor did not find the prior position in state['user:positions']"
+        "got zero — the executor did not find the prior position in state['positions'] bridge"
     )
     row = rows[0]
     assert row.closed_price == pytest.approx(sell_price)
@@ -335,11 +338,14 @@ async def test_cross_tick_buy_then_sell_produces_trade_log_row():
     assert row.opening_tick_id == "tick-1"
     assert row.closing_tick_id == "tick-2"
 
-    # The SELL should have cleared the position from the state_delta.
+    # The SELL should have cleared the position from the ``"positions"`` bridge in the delta.
     assert len(sell_events) == 1, "SELL must yield one state-delta event"
     sell_delta = sell_events[0].actions.state_delta
-    assert "AAPL" not in sell_delta["user:positions"], (
-        "executor must remove the closed position from state_delta['user:positions']"
+    assert "AAPL" not in sell_delta["positions"], (
+        "executor must remove the closed position from state_delta['positions'] bridge"
+    )
+    assert "user:positions" not in sell_delta, (
+        "_run_async_impl must not write user:positions — that belongs to the after-callback"
     )
 
     db_session.close()

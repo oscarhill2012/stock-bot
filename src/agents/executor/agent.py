@@ -82,15 +82,14 @@ class ExecutorAgent(BaseAgent):
 
         executions: list[dict] = []
 
-        # Resolve the working position book.  Band 5: prefer the canonical
-        # ``user:positions`` key (written by ``_executor_thesis_writer_callback``
-        # and persisted to user_state by DatabaseSessionService).  Fall back to
-        # the legacy bare-key ``positions`` so that existing tests and in-flight
-        # sessions that pre-date the migration still work.  The bare-key fallback
-        # will be removed in Band 6 once all callers migrate.
-        positions: dict = dict(
-            state.get("user:positions") or state.get("positions", {})
-        )
+        # Resolve the working position book via the Band 4 bare-key bridge.
+        # ``user:positions`` is written by ``_executor_thesis_writer_callback``
+        # (after_agent_callback) AFTER this method completes, so it is not yet
+        # available in state at this point during same-tick execution.  The
+        # bare-key bridge (``"positions"``) carries the cross-tick value and is
+        # the correct source for in-tick reads.  Band 6 will remove this bridge
+        # once all callers migrate to reading from the after-callback's output.
+        positions: dict = dict(state.get("positions", {}))
 
         for order in orders:
             try:
@@ -253,20 +252,18 @@ class ExecutorAgent(BaseAgent):
 
         # Cross-tick propagation — ADK's session service only merges mutations
         # into storage via an Event whose ``actions.state_delta`` carries them.
-        # The in-tick mutations above (state["positions"], state["user:positions"])
-        # are visible to same-tick agents via the shared object reference, but
-        # they never reach ``DatabaseSessionService`` storage unless we also
-        # include them here.  Without this, tick T+1 reads the pre-T value of
-        # the position book from a freshly-deserialised session, causing
-        # cross-tick BUY→SELL to miss the held position and silently drop the
-        # SELL trade-log row.
+        # The in-tick mutations above (state["positions"]) are visible to
+        # same-tick agents via the shared object reference, but they never reach
+        # ``DatabaseSessionService`` storage unless we also include them here.
+        # Without this, tick T+1 reads the pre-T value of the position book
+        # from a freshly-deserialised session.
         #
-        # ``user:positions`` here is the raw broker-book value; the
-        # after_agent_callback (_executor_thesis_writer_callback) writes the
-        # richer stance-derived version via delta-tracked ``ctx.state`` writes,
-        # which ADK auto-yields as a second state-delta Event persisted to
-        # user_state.  That richer write supersedes this one for steady-state
-        # operation.  See contract-invariants.md §C-Rule 1 amendment.
+        # ``user:positions`` is intentionally ABSENT from this state_delta.
+        # It is the sole responsibility of ``_executor_thesis_writer_callback``
+        # (after_agent_callback), which runs after this method completes and
+        # writes the richer stance-derived version via ADK's delta-tracked
+        # ``ctx.state`` writes.  Including it here would be a double-write
+        # that violates the Band 4 writer-of-record split.
         #
         # Legacy "positions" key is kept as a bridge (Band 6 will remove it).
         yield Event(
@@ -276,7 +273,6 @@ class ExecutorAgent(BaseAgent):
                 "executions":            executions,
                 "last_executed_tick_id": tick_id,
                 "positions":             positions,    # legacy bridge (Band 6: remove)
-                "user:positions":        positions,    # canonical key (Band 5 addition)
             }),
         )
 

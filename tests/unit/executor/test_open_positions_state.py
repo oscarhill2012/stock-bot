@@ -1,9 +1,15 @@
 """Unit tests for executor BUY-thesis write and SELL tick-id FK population.
 
 Covers:
-- BUY: executor writes thesis dict into state["user:positions"][ticker].
-- SELL: executor removes ticker from state["user:positions"].
+- BUY: executor writes thesis dict into state["positions"][ticker] (bare-key bridge).
+- SELL: executor removes ticker from state["positions"] (bare-key bridge).
 - SELL + DB: executor populates opening_tick_id / closing_tick_id on TradeLogRow.
+
+Note: ``_run_async_impl`` is the writer-of-record for the bare-key ``"positions"``
+bridge only.  ``user:positions`` (canonical key) is written exclusively by
+``_executor_thesis_writer_callback`` (after_agent_callback) after the run loop
+completes — these unit tests exercise the run loop in isolation and therefore
+assert against the bridge key, not the canonical key.
 """
 from __future__ import annotations
 
@@ -66,10 +72,13 @@ def session(tmp_path):
 
 @pytest.mark.asyncio
 async def test_buy_writes_thesis_to_state_positions():
-    """After a BUY executes, the thesis dict from new_positions lands in state["user:positions"].
+    """After a BUY executes, the thesis dict from new_positions lands in the bare-key bridge.
 
-    The executor must copy the thesis wholesale so downstream SELL logic
-    can recover opened_price, opened_at, opened_tick_id, etc.
+    ``_run_async_impl`` is the writer-of-record for the Band 4 ``"positions"``
+    bridge key.  It must copy the thesis wholesale so downstream same-tick SELL
+    logic can recover opened_price, opened_at, opened_tick_id, etc. via that
+    bridge.  ``user:positions`` (canonical key) is written by the after-callback
+    and is NOT present in this state_delta.
     """
     broker = FakeBroker(starting_cash=10_000.0, prices={"AAPL": 200.0})
     executor = ExecutorAgent(broker=broker)
@@ -89,7 +98,7 @@ async def test_buy_writes_thesis_to_state_positions():
         "final_orders": [
             Order(ticker="AAPL", action="BUY", quantity=5.0, est_price=200.0),
         ],
-        "user:positions": {},
+        "positions": {},   # bare-key bridge (Band 4); user:positions is after-callback territory
         "strategist_decision": {
             "decision_tag": "open_aapl",
             "close_reasons": {},
@@ -100,21 +109,26 @@ async def test_buy_writes_thesis_to_state_positions():
 
     events = await _run(executor, state)
 
-    # The thesis dict must now be stored under ``user:positions`` in the yielded
-    # event's state_delta.  The ``_run_async_impl`` includes ``user:positions``
-    # in the state_delta so it is persisted cross-tick by DatabaseSessionService.
+    # The thesis must be stored under the bare-key bridge ``"positions"``
+    # in the yielded state_delta.  ``user:positions`` is written by the
+    # after_agent_callback and must NOT appear in this state_delta.
     assert len(events) == 1, "BUY must cause executor to yield one state-delta event"
     delta = events[0].actions.state_delta
-    assert "AAPL" in delta["user:positions"], "BUY did not write AAPL into state_delta['user:positions']"
-    assert delta["user:positions"]["AAPL"] == thesis
+    assert "AAPL" in delta["positions"], "BUY did not write AAPL into state_delta['positions'] bridge"
+    assert delta["positions"]["AAPL"] == thesis
+    assert "user:positions" not in delta, (
+        "_run_async_impl must not write user:positions — that belongs to the after-callback"
+    )
 
 
 @pytest.mark.asyncio
 async def test_sell_removes_ticker_from_state_positions():
-    """After a SELL executes, the ticker is removed from state["user:positions"].
+    """After a SELL executes, the ticker is removed from the bare-key bridge.
 
-    We pre-seed state["user:positions"] directly (simulating an earlier BUY tick),
-    then drive a SELL and confirm the key is gone.
+    We pre-seed state["positions"] directly (simulating the Band 4 bridge value
+    from an earlier BUY tick), then drive a SELL and confirm the key is gone from
+    the ``"positions"`` bridge in the state_delta.  The canonical ``user:positions``
+    is not asserted here — it is written by the after-callback, not this run loop.
     """
     # Seed the broker so the SELL can succeed — need the position in the broker too.
     broker = FakeBroker(starting_cash=1_000.0, prices={"AAPL": 200.0})
@@ -123,7 +137,7 @@ async def test_sell_removes_ticker_from_state_positions():
 
     executor = ExecutorAgent(broker=broker)
 
-    # Pre-seed the position thesis in state (as the BUY would have left it).
+    # Pre-seed the position thesis in the bare-key bridge (as the BUY would have left it).
     existing_thesis = {
         "opened_tick_id": "tick_OPEN",
         "opened_at": datetime(2026, 4, 1, 14, tzinfo=UTC).isoformat(),
@@ -138,7 +152,7 @@ async def test_sell_removes_ticker_from_state_positions():
         "final_orders": [
             Order(ticker="AAPL", action="SELL", quantity=5.0, est_price=200.0),
         ],
-        "user:positions": {"AAPL": existing_thesis},
+        "positions": {"AAPL": existing_thesis},   # Band 4 bridge key
         "strategist_decision": {
             "decision_tag": "close_aapl",
             "close_reasons": {"AAPL": "target reached"},
@@ -147,11 +161,14 @@ async def test_sell_removes_ticker_from_state_positions():
 
     events = await _run(executor, state)
 
-    # After a full SELL, AAPL must be absent from ``user:positions`` in the
-    # yielded event's state_delta.
+    # After a full SELL, AAPL must be absent from the bare-key bridge in the
+    # yielded state_delta.  ``user:positions`` is absent — it is the after-callback's territory.
     assert len(events) == 1, "SELL must cause executor to yield one state-delta event"
     delta = events[0].actions.state_delta
-    assert "AAPL" not in delta["user:positions"], "SELL did not remove AAPL from state_delta['user:positions']"
+    assert "AAPL" not in delta["positions"], "SELL did not remove AAPL from state_delta['positions'] bridge"
+    assert "user:positions" not in delta, (
+        "_run_async_impl must not write user:positions — that belongs to the after-callback"
+    )
 
 
 @pytest.mark.asyncio
@@ -184,7 +201,7 @@ async def test_sell_writes_tick_id_fks_to_trade_log(session):
         "final_orders": [
             Order(ticker="AAPL", action="SELL", quantity=5.0, est_price=200.0),
         ],
-        "user:positions": {"AAPL": existing_thesis},
+        "positions": {"AAPL": existing_thesis},   # Band 4 bare-key bridge
         "strategist_decision": {
             "decision_tag": "close_aapl",
             "close_reasons": {"AAPL": "target reached"},

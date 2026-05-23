@@ -1,11 +1,17 @@
 """Executor bookkeeping tests — trim vs. full-exit behaviour.
 
 Verifies that:
-- A partial SELL (trim) preserves state["user:positions"][ticker] and writes no TradeLogRow.
-- A full SELL (close) removes state["user:positions"][ticker] and writes exactly one TradeLogRow.
+- A partial SELL (trim) preserves the position thesis in the bare-key bridge and writes no TradeLogRow.
+- A full SELL (close) removes the position thesis from the bare-key bridge and writes exactly one TradeLogRow.
 
 These are the two halves of the S2 gate: the executor must query the broker
 post-fill for remaining quantity, not infer it from the order.
+
+Note: these tests call ``_run_async_impl`` directly (not via the ADK Runner),
+so they assert against the Band 4 bare-key ``"positions"`` bridge in the
+state_delta.  ``user:positions`` (canonical key) is written by the
+after-callback (``_executor_thesis_writer_callback``) which only fires when
+the full ADK Runner lifecycle executes.
 """
 from __future__ import annotations
 
@@ -29,7 +35,7 @@ _TICKER = "TSLA"
 _OPEN_PRICE = 100.0
 _OPEN_AT = datetime(2026, 4, 1, 10, tzinfo=UTC)
 
-# Minimal PositionThesis-shaped dict that the executor expects in state["user:positions"].
+# Minimal PositionThesis-shaped dict that the executor expects in the bare-key bridge state["positions"].
 # Matches the fields accessed by the trade-log-write block in executor/agent.py.
 _THESIS: dict = {
     "ticker":           _TICKER,
@@ -94,7 +100,10 @@ async def test_trim_preserves_position_thesis(session):
 
     Scenario: broker holds 100 shares of TSLA; the executor is asked to sell
     only 1 share. After the fill, 99 shares remain, so the position thesis in
-    state["user:positions"] must survive and no trade-log row must be written.
+    the bare-key bridge must survive and no trade-log row must be written.
+
+    Asserts against state_delta["positions"] (Band 4 bridge) — not
+    state_delta["user:positions"], which belongs to the after-callback.
     """
     broker = await _broker_with_position(100.0)
     executor = ExecutorAgent(broker=broker, db_session=session)
@@ -104,7 +113,7 @@ async def test_trim_preserves_position_thesis(session):
         "final_orders": [
             Order(ticker=_TICKER, action="SELL", quantity=1.0, est_price=_OPEN_PRICE),
         ],
-        "user:positions":      {_TICKER: dict(_THESIS)},
+        "positions":           {_TICKER: dict(_THESIS)},   # Band 4 bare-key bridge
         "strategist_decision": {
             "decision_tag":  "trim_tsla",
             "close_reasons": {_TICKER: "trim only"},
@@ -114,12 +123,15 @@ async def test_trim_preserves_position_thesis(session):
     events = await _run(executor, state)
 
     # The position slot must still be present — the thesis was not wiped.
-    # ``_run_async_impl`` includes ``user:positions`` in the yielded event's
-    # state_delta; after a trim the ticker must survive in that delta.
+    # Assert against the bare-key bridge ``"positions"`` in the state_delta;
+    # ``user:positions`` must be absent (it is the after-callback's territory).
     assert len(events) == 1, "executor must yield exactly one event"
     delta = events[0].actions.state_delta
-    assert _TICKER in delta["user:positions"], (
-        "Trim SELL must not delete the position slot from state_delta['user:positions']"
+    assert _TICKER in delta["positions"], (
+        "Trim SELL must not delete the position slot from state_delta['positions'] bridge"
+    )
+    assert "user:positions" not in delta, (
+        "_run_async_impl must not write user:positions — that belongs to the after-callback"
     )
 
     # No TradeLogRow should have been written for a mere trim.
@@ -133,8 +145,11 @@ async def test_full_exit_writes_one_trade_log_row_and_deletes(session):
     """A full SELL (100 % of held shares) must delete the position slot and write exactly one TradeLogRow.
 
     Scenario: broker holds 100 shares of TSLA; the executor sells all 100.
-    After the fill, remaining_qty == 0.0, so state["user:positions"] must lose the
+    After the fill, remaining_qty == 0.0, so the bare-key bridge must lose the
     TSLA key and exactly one TradeLogRow must be committed.
+
+    Asserts against state_delta["positions"] (Band 4 bridge) — not
+    state_delta["user:positions"], which belongs to the after-callback.
     """
     broker = await _broker_with_position(100.0)
     executor = ExecutorAgent(broker=broker, db_session=session)
@@ -144,7 +159,7 @@ async def test_full_exit_writes_one_trade_log_row_and_deletes(session):
         "final_orders": [
             Order(ticker=_TICKER, action="SELL", quantity=100.0, est_price=_OPEN_PRICE),
         ],
-        "user:positions":      {_TICKER: dict(_THESIS)},
+        "positions":           {_TICKER: dict(_THESIS)},   # Band 4 bare-key bridge
         "strategist_decision": {
             "decision_tag":  "close_tsla",
             "close_reasons": {_TICKER: "target reached"},
@@ -154,12 +169,15 @@ async def test_full_exit_writes_one_trade_log_row_and_deletes(session):
     events = await _run(executor, state)
 
     # The position slot must be gone — the trade is closed.
-    # ``_run_async_impl`` includes ``user:positions`` in the yielded event's
-    # state_delta; after a full exit the ticker must be absent from that delta.
+    # Assert against the bare-key bridge ``"positions"`` in the state_delta;
+    # ``user:positions`` must be absent (it is the after-callback's territory).
     assert len(events) == 1, "executor must yield exactly one event"
     delta = events[0].actions.state_delta
-    assert _TICKER not in delta["user:positions"], (
-        "Full SELL must remove the ticker from state_delta['user:positions']"
+    assert _TICKER not in delta["positions"], (
+        "Full SELL must remove the ticker from state_delta['positions'] bridge"
+    )
+    assert "user:positions" not in delta, (
+        "_run_async_impl must not write user:positions — that belongs to the after-callback"
     )
 
     # Exactly one TradeLogRow must have been written.
