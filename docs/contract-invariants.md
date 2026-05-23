@@ -73,10 +73,10 @@ on `state_delta` (Rule 1).
 | `tickers` | Tick bootstrap | tick-scoped | `config/watchlist.json` | Phase 2 | n/a | The active watchlist for this tick. |
 | `portfolio` | Broker | tick-scoped (as state); cross-tick (as broker reality) | Broker API | Phase 2 | Broker holds it — `state["portfolio"]` is a working copy refreshed from the broker at the start of every tick. | Pipeline reads but does not mutate. |
 | `reference_prices` | Tick bootstrap | tick-scoped | Bulk yfinance pull | Phase 2 | n/a | Cached for the duration of the tick. |
-| `positions` | Strategist (via `state_delta`) | **cross-tick** | Persistence layer (see §E) | Phase 2 (read), Phase 4 (write) | Persistence subsystem — see §E. | The *thesis book*. Per-position entry rationale + exit basis. Distinct from `portfolio` (broker truth) — `positions` is strategist intent. |
+| `state["user:positions"]` | Executor's `after_agent_callback`† | cross-tick (user-scoped) | ADK `DatabaseSessionService` `user_state` table, keyed by `(app_name, user_id)` | Phase 2: implicit ADK merge into the fresh session.  Phase 4: callback writes via `ctx.state["user:positions"] = ...`; ADK's `_handle_after_agent_callback` auto-yields a state-delta event; `DatabaseSessionService.append_event` persists it. | ADK `user_state` (Spec B). | The *thesis book*. Per-position entry rationale + exit basis. Distinct from `portfolio` (broker truth) — `positions` is strategist intent. |
 | `memory_buffer` | MemoryWriter (via `state_delta`) | **cross-tick** | Persistence layer (see §E) | Phase 2 (read), Phase 4 (write) | Persistence subsystem — see §E. | Experiential memory. Cross-position learning log. |
 | `day_digest` | MemoryWriter (via `state_delta`) | **cross-tick** | Persistence layer (see §E) | Phase 2 (read), Phase 4 (write) | Persistence subsystem — see §E. | Summarised day-level context. Exact lifetime and rebuild rule deferred to §E. |
-| `thesis` | Strategist (via `state_delta`) | **cross-tick** | Persistence layer (see §E) | Phase 2 (read), Phase 4 (write) | Persistence subsystem — see §E. | Strategist's standing market thesis. |
+| `state["user:thesis"]` | Executor's `after_agent_callback`† | cross-tick (user-scoped) | ADK `DatabaseSessionService` `user_state` table, keyed by `(app_name, user_id)` | Phase 2: implicit ADK merge into the fresh session.  Phase 4: callback writes via `ctx.state["user:thesis"] = ...` (passthrough of Strategist's optional `thesis_revision`, else carry-forward of the prior value).  Same auto-yielded event as above. | ADK `user_state` (Spec B). | Strategist's standing market thesis. |
 | `strategist_decision` | Strategist (`output_key`) | tick-scoped | Strategist LLM call | Phase 3 (during-tick) | n/a | Consumed by RiskGate and Executor downstream in the same tick. |
 | `technical_verdicts` | TechnicalAnalyst (`state_delta`) | tick-scoped | TechnicalAnalyst deterministic extractor | Phase 3 | n/a | Unique key — see §C-Rule 4. Yielded as a list of per-ticker verdict dicts; written via `state_delta` (Rule 1) — TechnicalAnalyst is a BaseAgent, not an LlmAgent, so no `output_key`. |
 | `fundamental_verdicts` | FundamentalJoinerAgent (`state_delta`) | tick-scoped | FundamentalJoinerAgent consolidation of per-ticker working keys | Phase 3 | n/a | Unique key — see §C-Rule 4. |
@@ -86,11 +86,21 @@ on `state_delta` (Rule 1).
 | `last_executed_tick_id` | Executor (`state_delta`) | tick-scoped | Executor's idempotency handshake | Phase 3 | n/a | Set to the current `tick_id` after the Executor finishes its run. Read by the Executor itself at the top of the next invocation as an idempotency guard. Written via `state_delta` (Rule 1); a paired direct write is currently retained as defensive belt-and-braces (out of A1 scope — see todo-fixes 2.5.x). |
 | `last_snapshot` | Snapshotter (`state_delta`) | tick-scoped | Snapshotter's pipeline-completion handshake | Phase 3 | n/a | Set at the end of the tick. Read by the backtest driver's per-tick assertion (`src/backtest/driver.py:393-401`) to confirm the pipeline reached the Snapshotter. Written via `state_delta`; the paired direct write is defensive (out of A1 scope). |
 
-The four cross-tick rows (`positions`, `memory_buffer`, `day_digest`,
-`thesis`) all depend on the persistence subsystem described in §E.
-Until that subsystem exists, those rows describe target-state and any
-lifecycle that ships without true persistence for them violates the
-contract.
+† *Strategist's `LlmAgent` reasons about and produces the thesis content
+through its `output_schema` (`stances` + optional `thesis_revision`,
+landing at `state["strategist_decision"]` via the agent's
+`output_key`).  The persistence-bearing `EventActions(state_delta=…)`
+for the `user:`-prefixed keys is auto-yielded by ADK from Executor's
+`after_agent_callback`, which assembles the new `user:positions` dict
+by applying Strategist's stance verbs to the prior dict plus
+Executor's own fill data and passes `user:thesis` through from
+`thesis_revision`.  See §C-Rule 1's auto-yielded-callback-write
+clarification for why this is conformant.*
+
+The four cross-tick rows (`state["user:positions"]`, `memory_buffer`, `day_digest`,
+`state["user:thesis"]`) all depend on the persistence subsystem described in §E.
+`user:positions` and `user:thesis` are resolved by ADK `user_state` (Spec B);
+`memory_buffer` and `day_digest` remain deferred until Spec C lands.
 
 Two of the tick-scoped rows (`last_executed_tick_id`, `last_snapshot`)
 exist as **in-tick handshake keys** — written and read inside a single
@@ -181,8 +191,8 @@ where §C is enforced.
   **persisted** to the persistence layer (§E) before the process can exit
   or proceed. State-dict-only writes are not durable.
 - Broker has been called for any executed trades. `portfolio` and
-  `positions` as the broker sees them are consistent with the Executor's
-  emitted intents.
+  broker-held positions as the broker sees them are consistent with the
+  Executor's emitted intents.
 - Observability writes (trace, decision log, snapshot) have flushed.
 - Tick-scoped fields may be discarded. Live discards them by exiting the
   process; backtest discards them by overwriting in Phase 2 of the next
@@ -236,6 +246,43 @@ The canonical instance today is the Strategist's
 ``trim_reasons``).  Its only consumer is the downstream RiskGate agent
 in the same tick.
 
+#### Auto-yielded delta-tracked callback writes (added 2026-05-23, Spec B)
+
+ADK's `Context.state` (the property used as `callback_context.state`)
+is a delta-tracking `State` object (`google/adk/sessions/state.py`).
+When a callback writes via `ctx.state[key] = value` the write lands in
+both `state._value` (the live in-memory view) and `state._delta` (the
+pending event payload) at `state.py:42-47`.  ADK's
+`_handle_after_agent_callback` (`google/adk/agents/base_agent.py:489-546`)
+then checks `callback_context.state.has_delta()` after the callback
+returns; if true, it constructs an `Event` whose `actions` carry the
+accumulated `state_delta` and the runner yields it through
+`SessionService.append_event` like any agent-produced event.
+`DatabaseSessionService` persists `app:` / `user:`-prefixed keys to
+their respective tables on that ingestion path.
+
+**Clarification for Rule 1's in-tick callback carve-out.** The carve-out
+exists because *direct dict mutation* of a Pydantic object held in state
+(e.g. the Strategist `_strategist_validation_callback` mutating
+`decision.target_weights = ...` on the object referenced by
+`state["strategist_decision"]`) does not produce a `state_delta` event
+and is therefore not durable on serialising backends.  That kind of
+mutation is conformant only for in-tick consumers reading the same
+reference.  The Spec B Executor `after_agent_callback`'s
+`ctx.state["user:positions"] = …` write is a *different* mechanism:
+it goes through ADK's delta-tracking and is auto-yielded as a real
+`state_delta` event.  Cross-tick `user:`-prefixed writes via this
+auto-yield path are conformant with Rule 1 by construction — the write
+rides on an explicit event, just one ADK emits on the callback's behalf.
+
+The Strategist validation carve-out (in-tick reference mutation) and
+the Executor persistence write (cross-tick delta-tracked auto-yield)
+are two distinct patterns; the carve-out applies to the former, the
+new clarification covers the latter.  Executor's `after_agent_callback`
+is the **writer-of-record** for `user:positions` and `user:thesis` — the
+persistence event for the thesis book rides on ADK's auto-yielded
+state-delta, not on a separate writer agent.
+
 ### Rule 2 — `temp:` is invocation-scoped only
 
 State keys prefixed with `temp:` are scoped to a single invocation (one
@@ -254,6 +301,50 @@ the strategist's ``temp:held_positions_view``, ``temp:ticker_evidence``,
 ``StrategistContextShim`` (Task A2.1); all consumed inside a single
 tick by the analyst's own ``_run_async_impl`` or by the Strategist's
 instruction template.
+
+#### Runtime observability handles ride on `temp:` (added 2026-05-23, Spec B)
+
+The backtest driver (and, in a follow-on, the live tick) currently
+injects two non-serialisable handles into the per-tick state dict:
+
+- `state["_trace"]: TraceWriter`
+- `state["_decision_logger"]: DecisionLogger`
+
+These keys exist to give analyst / strategist / executor agents access
+to observability writers without threading them through every call
+signature.  They are observability-only (Rule 8): contract-neutral,
+invocation-scoped, never persisted, never read by another tick.
+
+Today they ride bare-keyed because `InMemorySessionService` happily
+keeps non-serialisable Python objects in `session.state`.  Spec B's
+switch to `DatabaseSessionService` breaks this — SQLAlchemy's JSON
+serialiser cannot round-trip a `TraceWriter`.  The amendment is to
+rename both keys under ADK's `temp:` prefix:
+
+- `state["temp:_trace"]`
+- `state["temp:_decision_logger"]`
+
+ADK's `_session_util.extract_state_delta()` (`google/adk/sessions/_session_util.py:48`)
+skips `temp:` keys, and `BaseSessionService._trim_temp_delta_state()`
+strips them from the event delta before the subclass persistence call.
+The handles live in `session.state` for the duration of one tick (so
+agents can read them via the same `ctx.state[key]` lookup as before)
+but never touch the database.
+
+**Driver injection point:** because ADK's `create_session(state=…)`
+seed dict passes through `extract_state_delta` first, `temp:`-prefixed
+keys passed there are silently discarded (see `_session_util.py:48`
+plus `database_session_service.py:412-485`).  The driver therefore
+injects the handles by direct mutation of `adk_session.state` **after**
+`create_session(...)` returns — the live session dict accepts them, ADK
+preserves them across the in-process invocation, and they never reach
+the DB.
+
+Rule 2's "Concrete invocation-scoped keys" list now includes
+`temp:_trace` and `temp:_decision_logger` alongside the existing
+`temp:held_positions_view` etc.  Rule 8 (observability is additive and
+contract-neutral) is unaffected — the observability writers continue to
+write to artefacts external to the contract surface.
 
 ### Rule 3 — Callbacks never re-prompt
 
@@ -321,7 +412,7 @@ behind.
 instantiated per call.
 
 **Implication:** any agent wrapped as a tool cannot rely on
-`state["portfolio"]`, `state["positions"]`, etc. being readable. We
+`state["portfolio"]`, `state["user:positions"]`, etc. being readable. We
 currently do not wrap any agent as a tool; the rule exists to prevent a
 future regression.
 
@@ -343,6 +434,16 @@ backtest.
 
 **Implication:** if an agent needs DB access mid-tick, that is a contract
 violation — the data it needs belongs in Phase 2 hydration.
+
+**Clarification (added 2026-05-23, Spec B).** *ADK `user:`-prefixed keys
+are the persistence layer for the StockBot pipeline.  Reading them via
+state IS the lifecycle pattern Rule 7 anticipates — the
+`DatabaseSessionService` provides the persistence boundary that pipeline
+agents do not need to cross directly.  Pipeline agents read
+`user:`-prefixed keys from state at Phase 2 and write them via
+`state_delta` at Phase 4; ADK persists the writes to the `user_state`
+table on event ingestion.  No separate "Phase 2 hydrator" or "Phase 4
+persister" agent is required.*
 
 ### Rule 8 — Observability is additive and contract-neutral
 
@@ -406,55 +507,59 @@ non-additive by definition.
 
 ---
 
-## §E — Cross-session persistence (followup work)
+## §E — Cross-session persistence
 
 The contract commits to a cross-session persistence layer. Four §A
-rows — `positions`, `memory_buffer`, `day_digest`, `thesis` — have
-`Source of truth = persistence layer` and depend on this subsystem for
-their cross-tick guarantees. The mechanism is a separate design
-(followup spec).
+rows — `state["user:positions"]`, `memory_buffer`, `day_digest`,
+`state["user:thesis"]` — have cross-tick lifetime and depend on this
+subsystem for their cross-tick guarantees.
+
+### Persistence status per field
+
+| Field | Persistence layer | Status |
+|-------|------------------|--------|
+| `state["user:positions"]` | ADK `user_state` (`DatabaseSessionService`, `user_state` table keyed by `(app_name, user_id)`) | **Resolved — Spec B** |
+| `state["user:thesis"]` | ADK `user_state` (`DatabaseSessionService`, `user_state` table keyed by `(app_name, user_id)`) | **Resolved — Spec B** |
+| `memory_buffer` | Persistence subsystem — followup design (Spec C) | Deferred |
+| `day_digest` | Persistence subsystem — followup design (Spec C) | Deferred |
 
 ### Requirements established by this contract
 
 1. **Symmetric** — live and backtest read from and write to the same
    persistence layer at the same lifecycle phases (Phase 2 / Phase 4).
-2. **Two memory types** — distinct shapes, probably distinct storage:
+2. **Two memory types** — distinct shapes, distinct storage:
    - **Thesis memory** (per-position). For each open position: why the
      bot entered, what it expected to happen, what would invalidate the
      thesis, and what would confirm an exit. Read by the strategist
      when considering exits. Keyed by ticker / position id. Lives from
-     entry to exit.
+     entry to exit. **Resolved by Spec B** — `state["user:positions"]`
+     persists as a `dict[ticker, PositionThesis]` in ADK `user_state`.
    - **Experiential memory** (cross-position). Patterns from past
      trades, daily observations, regime context. Read by the strategist
      when considering new entries and when contextualising the world.
-     Time-ordered, bounded retention, probably summarised.
+     Time-ordered, bounded retention, probably summarised. **Deferred
+     to Spec C** (`memory_buffer`, `day_digest`).
 3. **Lifecycle-owned** — the pipeline never reads or writes persistence
-   directly. Only the lifecycle wrapper does, per §C-Rule 7.
+   directly. Only the lifecycle wrapper does, per §C-Rule 7 and its
+   Spec B clarification.
 
-### Open design questions (move to followup spec)
+### Open design questions for Spec C fields
 
-- Schema for **thesis memory** — one row per position; entry rationale,
-  expected catalysts, invalidation conditions, exit criteria. Trigger
-  for write (entry); trigger for delete or archive (exit).
 - Schema for **experiential memory** — time-ordered log shape,
   summarisation strategy, bounded retention policy. Relationship between
-  `memory_buffer`, `day_digest`, and `thesis` — are these three separate
-  stores or one store with different views?
-- **Live persistence target** — DB choice for the Cloud Run lifecycle.
-- **Backtest persistence target** — most likely the existing per-run
-  `runs/<run-id>/db.sqlite` SQLAlchemy store. To confirm in the
-  followup.
+  `memory_buffer`, `day_digest` — are these two separate stores or one
+  store with different views?
 - **Migration / rebuild story** — what happens when the persistence
   schema changes mid-experiment. Probably out of scope for the first
   pass.
 
 ### What this contract commits to (regardless of current code)
 
-All four cross-tick rows in §A — `positions`, `memory_buffer`,
-`day_digest`, `thesis` — are normatively cross-tick. If today's code
-happens to reconstruct any of them from elsewhere (broker truth, fresh
-LLM summary, an empty seed), that reconstruction approach is
-insufficient by definition: the contract has decided these fields
-require true persistence so the bot can carry intent and learning
-across ticks. The followup persistence spec implements the mechanism;
-this spec fixes the requirement.
+All four cross-tick rows in §A — `state["user:positions"]`,
+`memory_buffer`, `day_digest`, `state["user:thesis"]` — are normatively
+cross-tick. `user:positions` and `user:thesis` are resolved by Spec B
+(ADK `user_state`). `memory_buffer` and `day_digest` remain followup
+design until Spec C lands: if today's code reconstructs them from an
+empty seed, that reconstruction approach is insufficient by definition —
+the contract has decided these fields require true persistence so the bot
+can carry intent and learning across ticks.
