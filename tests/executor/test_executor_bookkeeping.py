@@ -1,8 +1,8 @@
 """Executor bookkeeping tests — trim vs. full-exit behaviour.
 
 Verifies that:
-- A partial SELL (trim) preserves state["positions"][ticker] and writes no TradeLogRow.
-- A full SELL (close) removes state["positions"][ticker] and writes exactly one TradeLogRow.
+- A partial SELL (trim) preserves state["user:positions"][ticker] and writes no TradeLogRow.
+- A full SELL (close) removes state["user:positions"][ticker] and writes exactly one TradeLogRow.
 
 These are the two halves of the S2 gate: the executor must query the broker
 post-fill for remaining quantity, not infer it from the order.
@@ -29,7 +29,7 @@ _TICKER = "TSLA"
 _OPEN_PRICE = 100.0
 _OPEN_AT = datetime(2026, 4, 1, 10, tzinfo=UTC)
 
-# Minimal PositionThesis-shaped dict that the executor expects in state["positions"].
+# Minimal PositionThesis-shaped dict that the executor expects in state["user:positions"].
 # Matches the fields accessed by the trade-log-write block in executor/agent.py.
 _THESIS: dict = {
     "ticker":           _TICKER,
@@ -57,11 +57,16 @@ class _StubCtx:
         self.invocation_id = "test-invocation"
 
 
-async def _run(agent: ExecutorAgent, state: dict) -> None:
-    """Drive the executor's async generator to completion."""
+async def _run(agent: ExecutorAgent, state: dict) -> list:
+    """Drive the executor's async generator to completion.
+
+    Returns the list of events yielded so callers can inspect the state_delta.
+    """
     ctx = _StubCtx(state)
-    async for _ in agent._run_async_impl(ctx):
-        pass
+    events = []
+    async for ev in agent._run_async_impl(ctx):
+        events.append(ev)
+    return events
 
 
 @pytest.fixture
@@ -89,7 +94,7 @@ async def test_trim_preserves_position_thesis(session):
 
     Scenario: broker holds 100 shares of TSLA; the executor is asked to sell
     only 1 share. After the fill, 99 shares remain, so the position thesis in
-    state["positions"] must survive and no trade-log row must be written.
+    state["user:positions"] must survive and no trade-log row must be written.
     """
     broker = await _broker_with_position(100.0)
     executor = ExecutorAgent(broker=broker, db_session=session)
@@ -99,18 +104,22 @@ async def test_trim_preserves_position_thesis(session):
         "final_orders": [
             Order(ticker=_TICKER, action="SELL", quantity=1.0, est_price=_OPEN_PRICE),
         ],
-        "positions":           {_TICKER: dict(_THESIS)},
+        "user:positions":      {_TICKER: dict(_THESIS)},
         "strategist_decision": {
             "decision_tag":  "trim_tsla",
             "close_reasons": {_TICKER: "trim only"},
         },
     }
 
-    await _run(executor, state)
+    events = await _run(executor, state)
 
     # The position slot must still be present — the thesis was not wiped.
-    assert _TICKER in state["positions"], (
-        "Trim SELL must not delete the position slot from state['positions']"
+    # ``_run_async_impl`` includes ``user:positions`` in the yielded event's
+    # state_delta; after a trim the ticker must survive in that delta.
+    assert len(events) == 1, "executor must yield exactly one event"
+    delta = events[0].actions.state_delta
+    assert _TICKER in delta["user:positions"], (
+        "Trim SELL must not delete the position slot from state_delta['user:positions']"
     )
 
     # No TradeLogRow should have been written for a mere trim.
@@ -124,7 +133,7 @@ async def test_full_exit_writes_one_trade_log_row_and_deletes(session):
     """A full SELL (100 % of held shares) must delete the position slot and write exactly one TradeLogRow.
 
     Scenario: broker holds 100 shares of TSLA; the executor sells all 100.
-    After the fill, remaining_qty == 0.0, so state["positions"] must lose the
+    After the fill, remaining_qty == 0.0, so state["user:positions"] must lose the
     TSLA key and exactly one TradeLogRow must be committed.
     """
     broker = await _broker_with_position(100.0)
@@ -135,18 +144,22 @@ async def test_full_exit_writes_one_trade_log_row_and_deletes(session):
         "final_orders": [
             Order(ticker=_TICKER, action="SELL", quantity=100.0, est_price=_OPEN_PRICE),
         ],
-        "positions":           {_TICKER: dict(_THESIS)},
+        "user:positions":      {_TICKER: dict(_THESIS)},
         "strategist_decision": {
             "decision_tag":  "close_tsla",
             "close_reasons": {_TICKER: "target reached"},
         },
     }
 
-    await _run(executor, state)
+    events = await _run(executor, state)
 
     # The position slot must be gone — the trade is closed.
-    assert _TICKER not in state["positions"], (
-        "Full SELL must remove the ticker from state['positions']"
+    # ``_run_async_impl`` includes ``user:positions`` in the yielded event's
+    # state_delta; after a full exit the ticker must be absent from that delta.
+    assert len(events) == 1, "executor must yield exactly one event"
+    delta = events[0].actions.state_delta
+    assert _TICKER not in delta["user:positions"], (
+        "Full SELL must remove the ticker from state_delta['user:positions']"
     )
 
     # Exactly one TradeLogRow must have been written.

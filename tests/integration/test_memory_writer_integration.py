@@ -44,7 +44,7 @@ async def test_memory_writer_appends_buffer_entry():
     buffer = state["memory_buffer"]
     assert len(buffer) == 1
     assert buffer[0]["decision_tag"] == "buy_aapl"
-    # NOTE (Band 4): MemoryWriter no longer writes state["thesis"].
+    # NOTE (Band 4): MemoryWriter no longer writes state["user:thesis"].
     # The bare-key thesis write was removed; user:thesis is now owned by
     # _executor_thesis_writer_callback in executor/agent.py.
 

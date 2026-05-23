@@ -82,11 +82,15 @@ class ExecutorAgent(BaseAgent):
 
         executions: list[dict] = []
 
-        # The legacy bare-key positions dict — still used by the SELL branch for
-        # trade-log reads (opened_price, opened_at, etc.) and by legacy tests.
-        # Band 5 will migrate this to user:positions entirely.  For now we keep
-        # it alive so the SELL / trade-log path does not regress.
-        positions: dict = dict(state.get("positions", {}))
+        # Resolve the working position book.  Band 5: prefer the canonical
+        # ``user:positions`` key (written by ``_executor_thesis_writer_callback``
+        # and persisted to user_state by DatabaseSessionService).  Fall back to
+        # the legacy bare-key ``positions`` so that existing tests and in-flight
+        # sessions that pre-date the migration still work.  The bare-key fallback
+        # will be removed in Band 6 once all callers migrate.
+        positions: dict = dict(
+            state.get("user:positions") or state.get("positions", {})
+        )
 
         for order in orders:
             try:
@@ -221,8 +225,18 @@ class ExecutorAgent(BaseAgent):
         # Direct mutation — visible to any later agent in *this* tick that
         # reads ``ctx.session.state`` (same object reference).
         state["executions"]             = executions
-        state["positions"]              = positions
+        state["positions"]              = positions    # legacy bridge (Band 6: remove)
         state["last_executed_tick_id"]  = tick_id
+
+        # Note: ``user:positions`` is intentionally NOT mutated here.  Writing
+        # it via a direct dict assignment would make the in-memory value visible
+        # to the after_agent_callback (_executor_thesis_writer_callback), which
+        # reads ``user:positions`` to obtain the *prior* held book.  If the
+        # in-tick BUY result is already in the delta, the callback would see
+        # an open stance against a ticker it thinks is already held — assertion
+        # failure.  Instead, ``user:positions`` is written only by the callback
+        # (via ADK's delta-tracked state writes) and propagated cross-tick via
+        # the state_delta key in the yielded Event below.
 
         # Surface trace — no-op unless state["temp:_trace"] is set by trace_tick.py.
         _trace_maybe(state, "07_broker_calls", executions)
@@ -239,25 +253,30 @@ class ExecutorAgent(BaseAgent):
 
         # Cross-tick propagation — ADK's session service only merges mutations
         # into storage via an Event whose ``actions.state_delta`` carries them.
-        # The in-tick ``state["positions"] = positions`` mutation above is
-        # visible to same-tick agents via the shared object reference, but it
-        # never reaches ``DatabaseSessionService`` storage unless we also
-        # include it here.  Without it, tick T+1 reads the pre-T value of
-        # ``positions`` from a freshly-deserialised session, causing cross-tick
-        # BUY→SELL to miss the held position and silently drop the SELL
-        # trade-log row.  ``user:positions`` is written by the
-        # after_agent_callback (_executor_thesis_writer_callback) via
-        # delta-tracked state writes — ADK auto-yields the user:-prefixed keys
-        # as a separate state-delta Event.  See contract-invariants.md §C-Rule 1
-        # amendment for the conformance reasoning.
-        # TODO Band 5: drop "positions" once SELL reads migrate to user:positions.
+        # The in-tick mutations above (state["positions"], state["user:positions"])
+        # are visible to same-tick agents via the shared object reference, but
+        # they never reach ``DatabaseSessionService`` storage unless we also
+        # include them here.  Without this, tick T+1 reads the pre-T value of
+        # the position book from a freshly-deserialised session, causing
+        # cross-tick BUY→SELL to miss the held position and silently drop the
+        # SELL trade-log row.
+        #
+        # ``user:positions`` here is the raw broker-book value; the
+        # after_agent_callback (_executor_thesis_writer_callback) writes the
+        # richer stance-derived version via delta-tracked ``ctx.state`` writes,
+        # which ADK auto-yields as a second state-delta Event persisted to
+        # user_state.  That richer write supersedes this one for steady-state
+        # operation.  See contract-invariants.md §C-Rule 1 amendment.
+        #
+        # Legacy "positions" key is kept as a bridge (Band 6 will remove it).
         yield Event(
             author        = self.name,
             invocation_id = ctx.invocation_id,
             actions       = EventActions(state_delta={
                 "executions":            executions,
                 "last_executed_tick_id": tick_id,
-                "positions":             positions,
+                "positions":             positions,    # legacy bridge (Band 6: remove)
+                "user:positions":        positions,    # canonical key (Band 5 addition)
             }),
         )
 

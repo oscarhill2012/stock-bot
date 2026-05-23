@@ -83,22 +83,64 @@ def _make_strategist_llm_response(tickers: list[str]):
     from google.adk.models import LlmResponse
     from google.genai import types as genai_types
 
-    stances = [
-        {
-            "ticker": t,
-            "preferred_weight": 0.0,
-            "conviction": 0.5,
-            "rationale": "Smoke test neutral stance — no real signal.",
-        }
-        for t in tickers
-    ]
+    # Open the first ticker with a small position so the smoke test can assert
+    # that user:positions is non-empty after the run.  The remaining tickers
+    # (if any) receive neutral (hold) stances.
+    from datetime import UTC, datetime as _dt
+    open_ts = _dt(2025, 9, 2, 13, 30, tzinfo=UTC).isoformat()
+    first_ticker = tickers[0] if tickers else "AAPL"
+    stances = []
+    for t in tickers:
+        if t == first_ticker:
+            stances.append({
+                "ticker":          t,
+                "preferred_weight": 0.0,
+                "conviction":       0.7,
+                "rationale":        "Smoke test open — exercising the full executor path.",
+                "intent":           "open",
+                "weight":           0.10,
+                "horizon":          "swing",
+                "target_price":     170.0,
+                "stop_price":       140.0,
+                "catalyst":         "Smoke-test trigger",
+            })
+        else:
+            stances.append({
+                "ticker":          t,
+                "preferred_weight": 0.0,
+                "conviction":       0.5,
+                "rationale":        "Smoke test neutral stance — no real signal.",
+            })
+
+    new_positions = {
+        first_ticker: {
+            "ticker":                  first_ticker,
+            "opened_at":               open_ts,
+            "opened_price":            None,       # executor will stamp fill price
+            "opened_tick_id":          "smoke-tick-1",
+            "opened_tag":              "smoke_open",
+            "weight":                  0.10,
+            "horizon":                 "swing",
+            "rationale":               "Smoke test open — exercising the full executor path.",
+            "target_price":            170.0,
+            "stop_price":              140.0,
+            "catalyst":                "Smoke-test trigger",
+            "last_reviewed_at":        open_ts,
+            "last_reviewed_decision":  "open",
+            "last_reviewed_reason":    "Smoke test initial open",
+        },
+    }
+
+    target_weights = {t: (0.10 if t == first_ticker else 0.0) for t in tickers}
+
     decision = {
-        "stances":       stances,
-        "target_weights": {t: 0.0 for t in tickers},
-        "decision_tag":   "smoke_test_hold",
-        "reasoning":      "Smoke test run — no live data.",
-        "thesis": "Awaiting real signal.",
-        "confidence":     0.5,
+        "stances":        stances,
+        "target_weights": target_weights,
+        "new_positions":  new_positions,
+        "decision_tag":   "smoke_test_open",
+        "reasoning":      "Smoke test run — opening one position to exercise executor.",
+        "thesis":         "Smoke-test thesis: testing position persistence.",
+        "confidence":     0.7,
     }
     return LlmResponse(
         content=genai_types.Content(
@@ -645,6 +687,37 @@ def test_end_to_end_run_produces_full_artefact_tree(
         assert not fired, (
             f"Definitive-leak tripwire(s) fired in {audit_file.name}: {fired}"
         )
+
+    # ── user:positions persistence assertion (Spec B Band 5) ────────────────
+    # The session sqlite lives at <run_dir>/session.sqlite.  Open a fresh
+    # DatabaseSessionService, list sessions for the backtest app_name, and
+    # assert the last tick's session carries a non-empty user:positions.
+    import asyncio as _asyncio_b5
+    from google.adk.sessions import DatabaseSessionService as _DSS
+
+    _session_sqlite = result.run_dir / "session.sqlite"
+    if _session_sqlite.exists():
+        _svc = _DSS(db_url=f"sqlite+aiosqlite:///{_session_sqlite}")
+        _app_name = "StockBot-backtest-baseline-2025-09"
+
+        _sessions = _asyncio_b5.run(_svc.list_sessions(app_name=_app_name, user_id="stockbot"))
+
+        # The smoke test runs exactly one tick — there should be exactly one session.
+        if _sessions and _sessions.sessions:
+            _last_sid = _sessions.sessions[-1].id
+            _last_session = _asyncio_b5.run(
+                _svc.get_session(app_name=_app_name, user_id="stockbot", session_id=_last_sid)
+            )
+            assert _last_session is not None, "last tick session must be fetchable"
+            _user_positions = _last_session.state.get("user:positions")
+            assert isinstance(_user_positions, dict), (
+                f"user:positions must be a dict in the last tick session; "
+                f"got {type(_user_positions).__name__!r}"
+            )
+            assert len(_user_positions) >= 1, (
+                "user:positions must be non-empty after the smoke run; "
+                "the executor's thesis-writer callback did not persist any position"
+            )
 
     # Phase 7 — non-Social analysts that can produce signal from the minimal
     # fixture must emit a non-is_no_data verdict.  Social explicitly soft-fails

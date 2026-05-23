@@ -124,7 +124,7 @@ def test_shim_bridges_user_thesis_to_bare_thesis_key(populated_state: dict) -> N
     """Spec B Band 2: shim must read ``user:thesis`` and write it as ``thesis``.
 
     The strategist prompt template uses the ``{thesis}`` placeholder; ADK's
-    ``inject_session_state`` resolves that from ``state["thesis"]``.  After
+    ``inject_session_state`` resolves that from ``state["user:thesis"]``.  After
     Spec B, the persisted value lives at ``state["user:thesis"]``.  The shim
     bridges the two so the prompt fills correctly without a bare-key seed in
     the runner.
