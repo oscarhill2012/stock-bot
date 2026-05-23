@@ -27,7 +27,7 @@ def _make_ctx(state: dict) -> MagicMock:
 
 @pytest.mark.asyncio
 async def test_executor_no_op_without_decision_logger() -> None:
-    """Executor runs normally when ``_decision_logger`` is absent from state.
+    """Executor runs normally when ``temp:_decision_logger`` is absent from state.
 
     This guards the live-mode path: the hook must be a strict no-op when the
     key is not set, so the executor's existing behaviour is unchanged.
@@ -42,7 +42,7 @@ async def test_executor_no_op_without_decision_logger() -> None:
         ],
         "positions": {},
         "strategist_decision": {"new_positions": {}},
-        # No ``_decision_logger`` key — the hook must not fire.
+        # No ``temp:_decision_logger`` key — the hook must not fire.
     }
     ctx = _make_ctx(state)
 
