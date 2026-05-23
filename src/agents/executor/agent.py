@@ -1,6 +1,7 @@
 """Executor BaseAgent — submits orders via Broker, manages position book."""
 from __future__ import annotations
 
+import contextlib
 from collections.abc import AsyncGenerator
 from datetime import datetime
 from typing import Any
@@ -9,6 +10,8 @@ from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event, EventActions
 
+from agents.executor._verb_dispatch import apply_stance_to_thesis
+from agents.strategist.position_thesis import PositionThesis as NewPositionThesis
 from broker.protocol import Broker, BrokerRejection
 from data.timeguard import resolve_as_of
 from observability.trace import _trace_maybe
@@ -21,9 +24,11 @@ class ExecutorAgent(BaseAgent):
     Responsibilities:
     - Submit each Order from state["final_orders"] via the broker.
     - Record fill details and slippage in state["executions"].
-    - Update the position book (state["positions"]).
     - Write a trade-log entry to the DB when a position fully closes.
     - Idempotency guard: skips execution if tick_id was already processed.
+    - After the run loop completes, the after_agent_callback
+      (_executor_thesis_writer_callback) assembles and writes
+      user:positions / user:thesis to persistent state.
     """
 
     name: str = "Executor"
@@ -31,6 +36,32 @@ class ExecutorAgent(BaseAgent):
     db_session: Any = None
 
     model_config = {"arbitrary_types_allowed": True}
+
+    def __init__(self, *, broker, db_session=None, name: str = "Executor", **kwargs):
+        """Initialise the executor and wire the thesis-writer after-callback.
+
+        Parameters
+        ----------
+        broker
+            Broker instance (``FakeBroker`` for backtests,
+            ``Trading212Broker`` for live runs).
+        db_session
+            Optional SQLAlchemy session for trade-log persistence.
+        name
+            Agent name passed to ADK (defaults to ``"Executor"``).
+        """
+
+        # Pass all fields — including broker and db_session — through to the
+        # Pydantic ``BaseModel.__init__`` that ADK's BaseAgent uses.  The
+        # ``after_agent_callback`` is wired here so the thesis-writer callback
+        # is always registered whenever an ``ExecutorAgent`` is constructed.
+        super().__init__(
+            name                 = name,
+            broker               = broker,
+            db_session           = db_session,
+            after_agent_callback = _executor_thesis_writer_callback,
+            **kwargs,
+        )
 
     async def _run_async_impl(
         self, ctx: InvocationContext
@@ -50,6 +81,11 @@ class ExecutorAgent(BaseAgent):
         ]
 
         executions: list[dict] = []
+
+        # The legacy bare-key positions dict — still used by the SELL branch for
+        # trade-log reads (opened_price, opened_at, etc.) and by legacy tests.
+        # Band 5 will migrate this to user:positions entirely.  For now we keep
+        # it alive so the SELL / trade-log path does not regress.
         positions: dict = dict(state.get("positions", {}))
 
         for order in orders:
@@ -69,13 +105,9 @@ class ExecutorAgent(BaseAgent):
                     ),
                 )
 
-                # BUY: record the thesis in the position book so SELL can later
-                # recover it.  Stamp ``opened_price`` with the actual fill price
-                # here — the strategist could not know the fill price at decision
-                # time, so ``PositionThesis.opened_price`` arrives as ``None``
-                # from ``derive_legacy_fields`` and is filled in below.  Without
-                # this stamp, the next tick's held-view renderer would divide
-                # ``(target_price - None) / None`` and crash.
+                # BUY: record the thesis in the *legacy* position book so SELL can
+                # later recover it in the same tick.  The after_agent_callback writes
+                # the new-model ``user:positions`` after the run loop completes.
                 #
                 # The thesis arrives as a JSON-serialised dict (the strategist's
                 # after-callback dumps it before re-writing state), so we mutate
@@ -201,37 +233,171 @@ class ExecutorAgent(BaseAgent):
         # will continuously grow the RAG-seed corpus.
         dl = state.get("temp:_decision_logger")
         if dl is not None:
-            try:
+            # Defensive: a logger failure must never abort the tick.
+            with contextlib.suppress(Exception):
                 dl.on_executions(dict(state))
-            except Exception:
-                # Defensive: a logger failure must never abort the tick.
-                pass
 
-        # Cross-tick propagation — ADK's ``InMemorySessionService`` only
-        # merges mutations into the storage session via an Event whose
-        # ``actions.state_delta`` carries them.  Without this yielded event,
-        # the next tick's ``session_service.get_session`` re-fetch would
-        # return a copy of storage that still has the *previous* tick's
-        # ``positions`` map, so any cross-tick SELL (BUY in tick T, SELL in
-        # tick T+1) would lose the opening thesis and write a partial
-        # ``TradeLogRow`` (null ``opening_price`` / ``opened_tag``).  The
-        # idempotency guard at the top of this method would also fire on
-        # stale ``last_executed_tick_id``.
-        #
-        # This is the same pattern as the Snapshotter fix (2026-05-19);
-        # see ``docs/todo-fixes.md`` Group 2.5 for the wider audit and the
-        # planned move to a DB-hydration / RAG model.
+        # Cross-tick propagation — ADK's session service only merges mutations
+        # into storage via an Event whose ``actions.state_delta`` carries them.
+        # The broker-effect event yields ``executions`` and
+        # ``last_executed_tick_id`` only.  ``positions`` (bare key, legacy) is
+        # written here for backwards-compat; ``user:positions`` is written by
+        # the after_agent_callback (_executor_thesis_writer_callback) via
+        # delta-tracked state writes — ADK auto-yields the user:-prefixed keys
+        # as a separate state-delta Event.  See contract-invariants.md §C-Rule 1
+        # amendment for the conformance reasoning.
         yield Event(
             author        = self.name,
             invocation_id = ctx.invocation_id,
             actions       = EventActions(state_delta={
                 "executions":            executions,
-                "positions":             positions,
                 "last_executed_tick_id": tick_id,
             }),
         )
 
 
+def _executor_thesis_writer_callback(callback_context) -> None:
+    """Assemble user:positions / user:thesis from this tick's stances + fills.
+
+    Runs after Executor's ``_run_async_impl`` has yielded its
+    broker-effect ``state_delta`` (``executions``,
+    ``last_executed_tick_id``).  Reads the just-emitted executions,
+    the strategist decision, and the prior ``user:positions`` already
+    merged into session state at Phase 2.  Writes the new
+    ``user:positions`` and ``user:thesis`` via delta-tracked
+    ``ctx.state[key] = value``; ADK's ``_handle_after_agent_callback``
+    (base_agent.py:489–544) then auto-yields a state-delta Event from
+    the accumulated delta, which the runner ingests through
+    ``SessionService.append_event``.  ``DatabaseSessionService``
+    persists ``user:``-prefixed keys to the ``user_state`` table.
+
+    See contract-invariants.md §C-Rule 1 amendment (2026-05-23) for
+    why this auto-yield path is conformant with Rule 1.
+
+    Returns ``None`` — no re-prompt content (Rule 3).
+
+    Parameters
+    ----------
+    callback_context
+        ADK ``CallbackContext`` (or ``Context``) injected by the runner.
+        Carries ``callback_context.state``, a delta-tracked ``State``
+        object whose ``__setitem__`` records writes for the auto-yield.
+    """
+
+    state = callback_context.state
+
+    # ---- decision + executions (this tick's outputs) -------------------
+
+    decision_raw = state.get("strategist_decision")
+
+    # Bail out gracefully if no decision is present (e.g. skipped ticks).
+    if decision_raw is None:
+        return None
+
+    # Accept both dict (JSON round-tripped from session) and Pydantic object.
+    from agents.strategist.schema import StrategistDecision
+
+    decision = (
+        StrategistDecision.model_validate(decision_raw)
+        if isinstance(decision_raw, dict)
+        else decision_raw
+    )
+
+    # Build a fill-price lookup by reading the actual_price field from each
+    # execution record.  Execution records use the ``actual_price`` field
+    # (from ``Execution.actual_price`` after model_dump).
+    fill_prices: dict[str, float | None] = {}
+    for row in state.get("executions", []):
+        if not row:
+            continue
+        # Execution records carry actual_price (from Execution.actual_price).
+        ticker = (
+            (row.get("order") or {}).get("ticker") or
+            (row.get("stance") or {}).get("ticker") or
+            ""
+        )
+        if ticker:
+            fill_prices[ticker] = row.get("fill_price") or row.get("actual_price")
+
+    # ---- prior persisted thesis book (Phase 2 merge) -------------------
+    # Shallow copy so we can mutate without affecting the merged dict
+    # ADK keeps around for the in-tick view.
+    prior_positions: dict[str, dict] = dict(state.get("user:positions", {}))
+    new_positions:   dict[str, dict] = dict(prior_positions)
+
+    for stance in (decision.stances or []):
+
+        # Skip legacy stances with no intent — they belong to the old code path.
+        if stance.intent is None:
+            continue
+
+        ticker     = stance.ticker
+        fill_price = fill_prices.get(ticker)
+
+        prior_row = (
+            NewPositionThesis.model_validate(prior_positions[ticker])
+            if ticker in prior_positions else None
+        )
+
+        try:
+            new_row = apply_stance_to_thesis(
+                stance,
+                prior_row  = prior_row,
+                fill_price = fill_price,
+                tick_id    = state.get("tick_id", "unknown"),
+                as_of      = state.get("as_of"),
+            )
+        except (AssertionError, ValueError):
+            # Log and skip — do not abort the tick on a thesis-write failure.
+            # Silent failure here is acceptable because the broker call already
+            # landed; losing the thesis update is a monitoring concern, not a
+            # correctness crash.  Per "silent failures are the recurring bug
+            # class" policy, this is the only place a swallowed exception is
+            # appropriate — and the exception type is narrow.
+            import sys
+            import traceback as _tb
+            print(
+                f"[executor/_executor_thesis_writer_callback] "
+                f"apply_stance_to_thesis raised for {ticker!r} "
+                f"(intent={stance.intent!r}): "
+                f"{_tb.format_exc()}",
+                file=sys.stderr,
+            )
+            continue
+
+        if new_row is None:
+            # close stance — drop the ticker from the position book.
+            new_positions.pop(ticker, None)
+        else:
+            new_positions[ticker] = new_row.model_dump(mode="json")
+
+    # ---- thesis carry-forward (explicit re-write) ----------------------
+    # ``decision.thesis is not None`` means the strategist is actively
+    # updating the standing thesis.  ``None`` is the carry-forward sentinel.
+    new_thesis: str = (
+        decision.thesis
+        if decision.thesis is not None
+        else state.get("user:thesis", "")
+    )
+
+    # ---- delta-tracked writes — ADK auto-yields the event --------------
+    # Writing via ``state[key] = value`` (where state is ADK's ``State``
+    # object) records the delta in ``_event_actions.state_delta`` so the
+    # runner's ``_handle_after_agent_callback`` auto-yields a state-delta
+    # Event, which ``SessionService.append_event`` then persists.
+
+    state["user:positions"] = new_positions
+    state["user:thesis"]    = new_thesis
+
+    return None
+
+
 def build_executor(broker: Broker, db_session=None) -> ExecutorAgent:
-    """Factory used by the pipeline builder to wire in the broker and DB session."""
+    """Factory used by the pipeline builder to wire in the broker and DB session.
+
+    Unchanged by Spec B except that the constructed ``ExecutorAgent`` now
+    registers ``_executor_thesis_writer_callback`` as its after-callback via
+    the constructor.
+    """
+
     return ExecutorAgent(broker=broker, db_session=db_session)

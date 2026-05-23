@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Awaitable, Callable
-from datetime import datetime
 
 from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
@@ -157,35 +156,27 @@ class MemoryWriter(BaseAgent):
         # ISO-8601 strings — DatabaseSessionService serialises state_delta
         # via json.dumps and will raise TypeError on bare datetime objects.
         memory_buffer_payload = [e.model_dump(mode="json") for e in updated_buffer]
-        # Carry-forward semantics: None means "keep what's already in state";
-        # an explicit string (even "") means the strategist is overwriting it.
-        # Using ``or`` would collapse "" and None into the same branch, silently
-        # treating an explicit clear as a carry-forward — use explicit None
-        # checks instead so both cases are traceable.
-        _raw_thesis = (
-            decision.get("thesis")
-            if isinstance(decision, dict)
-            else decision.thesis
-        )
-        new_thesis: str = (
-            state.get("thesis", "")
-            if _raw_thesis is None
-            else _raw_thesis
-        )
+
+        # NOTE (Band 4): MemoryWriter no longer reads or writes ``thesis`` /
+        # ``state["thesis"]``.  The bare-key ``thesis`` write has been removed;
+        # ``user:thesis`` is now the sole canonical key, written by
+        # ``_executor_thesis_writer_callback`` in executor/agent.py.
+        # The ``decision.thesis`` read that used to live here is also gone —
+        # the executor after-callback is the sole consumer of ``decision.thesis``
+        # for the persistence path.
 
         # Direct mutation — visible to any later agent in *this* tick that
         # reads ``ctx.session.state`` (same object reference).
         state["memory_buffer"] = memory_buffer_payload
         state["day_digest"]    = updated_digest
-        state["thesis"]        = new_thesis
 
         # Cross-tick propagation — ADK's ``InMemorySessionService`` only
         # merges mutations into the storage session via an Event whose
         # ``actions.state_delta`` carries them.  Without this yielded event,
         # the next tick's ``session_service.get_session`` re-fetch would
         # return a copy of storage that still has the *previous* tick's
-        # ``memory_buffer`` / ``day_digest`` / ``thesis`` — i.e. the
-        # strategist's prompt would see stale memory on every tick.
+        # ``memory_buffer`` / ``day_digest`` — i.e. the strategist's prompt
+        # would see stale memory on every tick.
         #
         # This is the same pattern as the Snapshotter fix (2026-05-19).
         # The wider audit + the planned move to a DB-hydration / RAG model
@@ -197,7 +188,6 @@ class MemoryWriter(BaseAgent):
             actions       = EventActions(state_delta={
                 "memory_buffer": memory_buffer_payload,
                 "day_digest":    updated_digest,
-                "thesis":        new_thesis,
             }),
         )
 

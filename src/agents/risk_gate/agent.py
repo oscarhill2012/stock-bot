@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import Any, Final
 
 from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
@@ -13,6 +13,11 @@ from orchestrator.state import MIN_HELD_WEIGHT
 
 from .constraints import apply_constraints
 from .orders import weights_to_orders
+
+# Hold and update are no-trade stances — risk caps are irrelevant.
+# They pass through unchanged and the executor's _run_async_impl
+# skips broker dispatch for them (resolve_broker_call returns None).
+_NO_RISK_GATE_INTENTS: Final[frozenset[str]] = frozenset({"hold", "update"})
 
 
 class RiskGateAgent(BaseAgent):
@@ -48,6 +53,25 @@ class RiskGateAgent(BaseAgent):
         )
 
         proposed = dict(decision.target_weights)
+
+        # Strip hold/update stances from ``proposed`` before clamping.
+        # These stances carry no weight change — the executor will skip
+        # broker dispatch for them (``resolve_broker_call`` returns ``None``).
+        # Leaving their tickers in the proposed dict would run the clamp
+        # logic against a stale/zero weight, which is semantically wrong.
+        _stance_intents = {
+            s.ticker: s.intent
+            for s in (decision.stances or [])
+            if s.intent is not None
+        }
+        for _ticker, _intent in list(_stance_intents.items()):
+            if _intent in _NO_RISK_GATE_INTENTS:
+                # Preserve the current weight in ``proposed`` unchanged —
+                # do not clip or zero it out.
+                # If the ticker is missing from target_weights (expected),
+                # we simply leave it absent from ``proposed`` too.
+                proposed.pop(_ticker, None)
+
         # Snapshot pre-clamp weights for lifecycle validation below.
         original_weights = dict(proposed)
 
