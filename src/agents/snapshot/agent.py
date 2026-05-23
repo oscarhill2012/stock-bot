@@ -47,7 +47,7 @@ class SnapshotterAgent(BaseAgent):
         # back to wall-clock via ``resolve_as_of(allow_wallclock=True)``.
         raw_as_of = state.get("as_of")
         recorded_at = resolve_as_of(
-            raw_as_of if isinstance(raw_as_of, datetime) else None,
+            raw_as_of,
             allow_wallclock=True,
             site="snapshot/agent",
         )

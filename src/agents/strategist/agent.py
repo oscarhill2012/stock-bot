@@ -218,7 +218,7 @@ def _strategist_validation_callback(
     # stance for (active-stances contract).
     raw_as_of = state.get("as_of")
     derivation_now = resolve_as_of(
-        raw_as_of if isinstance(raw_as_of, datetime) else None,
+        raw_as_of,
         allow_wallclock=True,
         site="strategist/agent._after_validation",
     )

@@ -548,12 +548,19 @@ class Runner:
                 # backtest agree on the same field.
                 "tickers":          wl_filtered,
                 "portfolio":        portfolio.model_dump(mode="json"),
-                # NOTE: ``positions`` and ``thesis`` are intentionally absent.
-                # They have migrated to ADK user-scoped state (``user:positions``,
-                # ``user:thesis``) per Spec B.  ADK's user_state merge populates
-                # them from the DatabaseSessionService row when the session is
-                # created — seeding them here would shadow the persisted values.
-                # See: docs/Phase10-post-first-backtest/specs/foundational-thesis-memory.md
+                # ``positions`` is intentionally absent — it has migrated to
+                # ``user:positions`` (Spec B, Band 4).  ADK's user_state merge
+                # re-hydrates ``user:positions`` from the DatabaseSessionService
+                # row on tick 2+; Band 4 will wire the Executor writer-of-record
+                # to persist it there.
+                #
+                # ``thesis`` must be seeded as an empty string so the strategist
+                # prompt template ({thesis}) resolves without raising KeyError.
+                # The MemoryWriter writes ``state["thesis"]`` via a yielded
+                # state_delta on each tick; the driver's per-tick ``state.update``
+                # carries the persisted value forward, so this seed is only the
+                # first-tick fallback.
+                "thesis":           "",
                 "memory_buffer":    [],
                 "day_digest":       "",
                 # Dump each PriceHistory to a JSON-safe dict so the ADK

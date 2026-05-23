@@ -125,9 +125,16 @@ class StrategistContextShim(BaseAgent):
         # Resolve the ``recorded_at`` timestamp for evidence aggregation.
         # Priority: state["as_of"] (backtest replay clock) > state["recorded_at"]
         # > wall-clock fallback (live, when STOCKBOT_STRICT_AS_OF=0).
+        #
+        # NOTE: DatabaseSessionService serialises state via JSON, so ``as_of``
+        # may arrive as an ISO-8601 string rather than a ``datetime``.  Pass
+        # the raw value to ``resolve_as_of`` which handles ``datetime``, ``str``,
+        # and ``None`` uniformly rather than duplicating the parsing here.
         as_of_raw = state.get("as_of")
-        if isinstance(as_of_raw, datetime):
-            recorded_at = as_of_raw
+        if as_of_raw is not None:
+            recorded_at = resolve_as_of(
+                as_of_raw, allow_wallclock=False, site="strategist/context_shim",
+            )
         else:
             recorded_at_raw = state.get("recorded_at")
             if isinstance(recorded_at_raw, str):

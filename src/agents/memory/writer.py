@@ -123,7 +123,7 @@ class MemoryWriter(BaseAgent):
         # wall-clock time.  Falls back to wall-clock on live runs.
         raw_as_of = state.get("as_of")
         entry_ts = resolve_as_of(
-            raw_as_of if isinstance(raw_as_of, datetime) else None,
+            raw_as_of,
             allow_wallclock=True,
             site="memory/writer",
         )
@@ -153,7 +153,10 @@ class MemoryWriter(BaseAgent):
 
         # Pre-compute the values once so both the in-tick direct mutation and
         # the cross-tick ``state_delta`` payload below stay consistent.
-        memory_buffer_payload = [e.model_dump() for e in updated_buffer]
+        # Use mode="json" so datetime fields (timestamp) are coerced to
+        # ISO-8601 strings — DatabaseSessionService serialises state_delta
+        # via json.dumps and will raise TypeError on bare datetime objects.
+        memory_buffer_payload = [e.model_dump(mode="json") for e in updated_buffer]
         new_thesis: str = (
             decision.get("updated_thesis", state.get("thesis", ""))
             if isinstance(decision, dict)

@@ -104,3 +104,41 @@ def test_factory_returns_agent(session):
     agent = build_strategist_decision_writer(session)
     assert isinstance(agent, StrategistDecisionWriter)
     assert agent.db_session is session
+
+
+def test_accepts_iso_string_as_of(session):
+    """state["as_of"] arriving as an ISO-8601 string (from DatabaseSessionService
+    JSON round-trip) must not raise; recorded_at on the DB row must be correct.
+
+    Locks in the fix that dropped the ``isinstance(raw_as_of, datetime)``
+    pre-filter and now passes ``raw_as_of`` directly to ``resolve_as_of``.
+    """
+    from datetime import datetime
+
+    iso_as_of = "2026-05-08T14:00:00+00:00"
+    decision = StrategistDecision(
+        stances=[
+            TickerStance(ticker="AAPL", preferred_weight=0.05, conviction=0.6,
+                         rationale="open", horizon="swing",
+                         target_price=200.0, stop_price=180.0),
+        ],
+        target_weights={"AAPL": 0.05},
+        decision_tag="iso_as_of_test", reasoning="x", updated_thesis="y",
+        confidence=0.6,
+    )
+    portfolio = Portfolio(cash=1000.0)
+    state = {
+        "tick_id":              "t-iso",
+        "as_of":                iso_as_of,      # ISO string, not datetime
+        "strategist_decision":  decision.model_dump(mode="json"),
+        "portfolio":            portfolio.model_dump(mode="json"),
+    }
+    writer = StrategistDecisionWriter(db_session=session)
+    _run(writer._run_async_impl(_StubCtx(state)))
+    session.commit()
+
+    rows = session.query(TickerStanceRow).all()
+    assert len(rows) == 1
+    # SQLite strips timezone info when storing; compare naive datetimes.
+    expected_dt = datetime.fromisoformat(iso_as_of).replace(tzinfo=None)
+    assert rows[0].recorded_at == expected_dt

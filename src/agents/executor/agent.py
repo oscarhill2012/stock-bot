@@ -138,7 +138,7 @@ class ExecutorAgent(BaseAgent):
                             # Fall back to wall-clock on live runs.
                             raw_as_of = state.get("as_of")
                             closed_at = resolve_as_of(
-                                raw_as_of if isinstance(raw_as_of, datetime) else None,
+                                raw_as_of,
                                 allow_wallclock=True,
                                 site="executor/agent",
                             )

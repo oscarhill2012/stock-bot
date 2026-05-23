@@ -86,3 +86,33 @@ def test_shim_yields_one_event_with_temp_prefixed_keys(populated_state: dict) ->
     # still serialised as a list/string pair.
     assert isinstance(delta["temp:ticker_evidence"], str)
     assert isinstance(delta["temp:ticker_evidence_objects"], list)
+
+
+def test_shim_accepts_iso_string_as_of(populated_state: dict) -> None:
+    """state["as_of"] arriving as an ISO-8601 string (from DatabaseSessionService
+    JSON round-trip) must not raise AsOfRequiredError.
+
+    Locks in the fix to context_shim that delegates ISO parsing to resolve_as_of
+    rather than the defunct ``isinstance(as_of_raw, datetime)`` pre-filter.
+    """
+    shim = StrategistContextShim()
+
+    iso_as_of = "2026-05-20T13:30:00+00:00"
+    populated_state["as_of"] = iso_as_of    # replace datetime with ISO string
+
+    fake_session = MagicMock()
+    fake_session.state = populated_state
+    fake_ctx = MagicMock()
+    fake_ctx.invocation_id = "inv-iso"
+    fake_ctx.session = fake_ctx.session_service = fake_session
+
+    async def _drain() -> list:
+        events: list = []
+        async for ev in shim._run_async_impl(fake_ctx):
+            events.append(ev)
+        return events
+
+    # Must not raise — previously the isinstance guard fell through to the
+    # wall-clock branch which raised under STOCKBOT_STRICT_AS_OF=1.
+    events = asyncio.run(_drain())
+    assert len(events) == 1, "Shim must still yield one event with an ISO-string as_of"
