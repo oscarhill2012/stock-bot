@@ -57,7 +57,7 @@ async def test_risk_gate_yields_state_delta_with_orders_and_clamps() -> None:
             "target_weights": {"AAPL": 0.05, "MSFT": 0.0},
             "decision_tag":   "test",
             "reasoning":      "ok",
-            "updated_thesis": "ok",
+            "thesis": "ok",
             "confidence":     0.7,
             "new_positions":  {},
             "close_reasons":  {},

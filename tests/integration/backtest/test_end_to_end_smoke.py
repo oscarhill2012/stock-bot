@@ -97,7 +97,7 @@ def _make_strategist_llm_response(tickers: list[str]):
         "target_weights": {t: 0.0 for t in tickers},
         "decision_tag":   "smoke_test_hold",
         "reasoning":      "Smoke test run — no live data.",
-        "updated_thesis": "Awaiting real signal.",
+        "thesis": "Awaiting real signal.",
         "confidence":     0.5,
     }
     return LlmResponse(

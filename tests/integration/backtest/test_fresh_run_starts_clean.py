@@ -173,7 +173,7 @@ def test_fresh_deletes_session_sqlite(
         decision = {
             "stances": stances, "target_weights": {t: 0.0 for t in tickers},
             "decision_tag": "fresh_test_hold", "reasoning": "stub",
-            "updated_thesis": "stub", "confidence": 0.5,
+            "thesis": "stub", "confidence": 0.5,
         }
 
         def _mock_before(ctx, req):

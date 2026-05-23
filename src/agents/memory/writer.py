@@ -158,9 +158,9 @@ class MemoryWriter(BaseAgent):
         # via json.dumps and will raise TypeError on bare datetime objects.
         memory_buffer_payload = [e.model_dump(mode="json") for e in updated_buffer]
         new_thesis: str = (
-            decision.get("updated_thesis", state.get("thesis", ""))
+            decision.get("thesis", state.get("thesis", ""))
             if isinstance(decision, dict)
-            else decision.updated_thesis
+            else (decision.thesis or state.get("thesis", ""))
         )
 
         # Direct mutation — visible to any later agent in *this* tick that

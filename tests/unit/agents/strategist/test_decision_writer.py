@@ -53,7 +53,7 @@ def test_writes_one_row_per_stance(session):
                          rationale="exit", close_reason="thesis broken"),
         ],
         target_weights={"AAPL": 0.08, "NVDA": 0.0},
-        decision_tag="rotation", reasoning="x", updated_thesis="y", confidence=0.65,
+        decision_tag="rotation", reasoning="x", thesis="y", confidence=0.65,
     )
     portfolio = Portfolio(
         cash=900.0,
@@ -92,7 +92,7 @@ def test_no_op_without_db_session():
             stances=[TickerStance(ticker="AAPL", preferred_weight=0.0,
                                   conviction=0.5, rationale="hold")],
             target_weights={"AAPL": 0.0},
-            decision_tag="x", reasoning="x", updated_thesis="y", confidence=0.5,
+            decision_tag="x", reasoning="x", thesis="y", confidence=0.5,
         ).model_dump(mode="json"),
         "portfolio": Portfolio(cash=100.0).model_dump(mode="json"),
     }
@@ -123,7 +123,7 @@ def test_accepts_iso_string_as_of(session):
                          target_price=200.0, stop_price=180.0),
         ],
         target_weights={"AAPL": 0.05},
-        decision_tag="iso_as_of_test", reasoning="x", updated_thesis="y",
+        decision_tag="iso_as_of_test", reasoning="x", thesis="y",
         confidence=0.6,
     )
     portfolio = Portfolio(cash=1000.0)

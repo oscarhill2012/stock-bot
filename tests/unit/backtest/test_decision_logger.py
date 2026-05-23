@@ -21,7 +21,7 @@ def _make_state() -> dict:
     Includes:
     - Two filled executions (one BUY, one SELL).
     - A ``strategist_decision`` carrying a ``stances`` list, plus the four
-      decision-level fields (``reasoning``, ``updated_thesis``, ``decision_tag``,
+      decision-level fields (``reasoning``, ``thesis``, ``decision_tag``,
       ``confidence``) the snapshot now surfaces.
     - ``temp:ticker_evidence_objects`` — the list of per-ticker TickerEvidence
       dumps the strategist's context shim writes.
@@ -116,7 +116,7 @@ def _make_state() -> dict:
             "close_reasons":  {"SIVB": "Thesis broken"},
             "trim_reasons":   {},
             "reasoning":      "Rotating out of regional banks into mega-cap tech on the back of the SIVB blowup.",
-            "updated_thesis": "Regional bank stress is the dominant risk; rotate to balance-sheet-strong mega-caps.",
+            "thesis": "Regional bank stress is the dominant risk; rotate to balance-sheet-strong mega-caps.",
             "decision_tag":   "rotate_to_megacap",
             "confidence":     0.78,
         },
@@ -181,7 +181,7 @@ def test_logs_one_file_per_filled_execution_with_populated_content(tmp_path: Pat
     assert sd["stance"]["close_reason"]     == "Thesis broken"
     assert sd["close_reason"]               == "Thesis broken"
     assert sd["reasoning"].startswith("Rotating out of regional banks")
-    assert sd["updated_thesis"].startswith("Regional bank stress")
+    assert sd["thesis"].startswith("Regional bank stress")
     assert sd["decision_tag"]               == "rotate_to_megacap"
     assert sd["confidence"]                 == 0.78
 

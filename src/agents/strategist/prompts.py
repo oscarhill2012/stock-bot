@@ -126,7 +126,9 @@ Schema-level rules (failing these means ADK rejects your response):
 - close_reason: ≤{{STANCE_CLOSE_REASON_MAX}} chars.
 - trim_reason: ≤{{STANCE_TRIM_REASON_MAX}} chars.
 - reasoning (decision-level): ≤{{DECISION_REASONING_MAX}} chars.
-- updated_thesis (decision-level): ≤{{DECISION_THESIS_MAX}} chars.
+- thesis (decision-level, optional): ≤{{DECISION_THESIS_MAX}} chars.
+  Emit the new standing thesis text only if your view has shifted;
+  omit/null to carry the existing standing thesis forward.
 - decision_tag (decision-level): snake_case label, ≤40 chars.
 - Off-watchlist tickers are rejected.
 
@@ -153,7 +155,7 @@ CLOSE (held at 0.05, exiting to 0.0):
 STRATEGIST_INSTRUCTION = (
     _RAW_INSTRUCTION
     .replace("{{DECISION_REASONING_MAX}}",  str(_DECISION.reasoning_max_chars))
-    .replace("{{DECISION_THESIS_MAX}}",     str(_DECISION.updated_thesis_max_chars))
+    .replace("{{DECISION_THESIS_MAX}}",     str(_DECISION.thesis_max_chars))
     .replace("{{STANCE_RATIONALE_MAX}}",    str(_STANCE.rationale_max_chars))
     .replace("{{STANCE_CATALYST_MAX}}",     str(_STANCE.catalyst_max_chars))
     .replace("{{STANCE_CLOSE_REASON_MAX}}", str(_STANCE.close_reason_max_chars))

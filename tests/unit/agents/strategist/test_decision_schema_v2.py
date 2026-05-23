@@ -14,7 +14,7 @@ def test_decision_with_stances():
                           target_price=210.0, stop_price=185.0),
         ],
         target_weights={},
-        decision_tag="x", reasoning="x", updated_thesis="y",
+        decision_tag="x", reasoning="x", thesis="y",
         confidence=0.6,
     )
     assert len(d.stances) == 1
@@ -24,7 +24,7 @@ def test_decision_trim_reasons_default_empty():
     """trim_reasons defaults to an empty dict when not supplied."""
     d = StrategistDecision(
         stances=[], target_weights={},
-        decision_tag="x", reasoning="x", updated_thesis="y", confidence=0.5,
+        decision_tag="x", reasoning="x", thesis="y", confidence=0.5,
     )
     assert d.trim_reasons == {}
 
@@ -33,7 +33,7 @@ def test_decision_trim_reasons_round_trip():
     """trim_reasons survives a model_dump → model_validate round-trip."""
     d = StrategistDecision(
         stances=[], target_weights={"MSFT": 0.05},
-        decision_tag="trim", reasoning="x", updated_thesis="y",
+        decision_tag="trim", reasoning="x", thesis="y",
         confidence=0.5,
         trim_reasons={"MSFT": "lock in profits"},
     )
@@ -45,7 +45,7 @@ def test_legacy_fields_preserved():
     """Existing legacy fields (target_weights, new_positions, close_reasons) still work."""
     d = StrategistDecision(
         stances=[], target_weights={"AAPL": 0.08},
-        decision_tag="x", reasoning="x", updated_thesis="y",
+        decision_tag="x", reasoning="x", thesis="y",
         confidence=0.7,
         new_positions={}, close_reasons={},
     )
@@ -68,7 +68,7 @@ def test_legacy_json_without_stances_parses():
         "target_weights": {"AAPL": 0.08},
         "decision_tag": "legacy",
         "reasoning": "x",
-        "updated_thesis": "y",
+        "thesis": "y",
         "confidence": 0.6,
     }
     d = StrategistDecision.model_validate(payload)

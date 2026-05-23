@@ -86,7 +86,7 @@ def test_decision_writer_uses_as_of(db_session) -> None:
         target_weights={"AAPL": 0.0},
         decision_tag="test_tag",
         reasoning="x",
-        updated_thesis="y",
+        thesis="y",
         confidence=0.5,
     )
     state = {
@@ -257,7 +257,7 @@ def test_memory_writer_uses_as_of() -> None:
     decision = {
         "decision_tag": "hold_all",
         "reasoning": "no clear catalyst",
-        "updated_thesis": "neutral",
+        "thesis": "neutral",
     }
     state = {
         "as_of": _HISTORICAL_TS,

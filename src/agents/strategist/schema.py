@@ -86,8 +86,19 @@ class StrategistDecision(BaseModel):
     target_weights: dict[str, float] = Field(default_factory=dict)
 
     decision_tag: str                                                                          # snake_case label for this tick
-    reasoning:      str = Field(max_length=_schema_cap(_DECISION.reasoning_max_chars))         # overall reasoning summary
-    updated_thesis: str = Field(max_length=_schema_cap(_DECISION.updated_thesis_max_chars))    # working hypothesis carried to next tick
+    reasoning: str = Field(max_length=_schema_cap(_DECISION.reasoning_max_chars))             # overall reasoning summary
+
+    thesis: str | None = Field(
+        None,
+        description=(
+            "Optional standing market thesis update.  When non-null, "
+            "Executor's after_agent_callback writes the new text to "
+            "state['user:thesis'].  When None, the prior user:thesis "
+            "is carried forward."
+        ),
+        max_length=_schema_cap(_DECISION.thesis_max_chars),
+    )
+
     confidence: float = Field(ge=0.0, le=1.0)
 
     # Required when opening a new position (weight 0 → >0).

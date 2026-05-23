@@ -58,7 +58,7 @@ def _log_offending_decision(
     that the LLM's own reasoning / decision_tag survives in the run log even
     when ``STOCKBOT_TRACE=1`` is not set.  Without this, the raised exception
     carries only the bad ticker(s) and the rest of the decision context
-    (decision_tag, reasoning, updated_thesis) is lost when the tick aborts.
+    (decision_tag, reasoning, thesis) is lost when the tick aborts.
 
     Args:
         tick_id: The tick identifier from state (or ``"unknown"`` fallback).
@@ -70,12 +70,12 @@ def _log_offending_decision(
 
     logger.error(
         "Strategist contract violation on tick=%s: %s | decision_tag=%r "
-        "reasoning=%r updated_thesis=%r confidence=%s n_stances=%d",
+        "reasoning=%r thesis=%r confidence=%s n_stances=%d",
         tick_id,
         violation,
         decision.decision_tag,
         decision.reasoning,
-        decision.updated_thesis,
+        decision.thesis,
         decision.confidence,
         len(decision.stances),
     )

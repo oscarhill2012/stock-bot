@@ -82,7 +82,7 @@ def test_after_does_not_require_exhaustive_stances():
                     stop_price=185.0,
                 ),
             ],
-            decision_tag="x", reasoning="x", updated_thesis="y", confidence=0.5,
+            decision_tag="x", reasoning="x", thesis="y", confidence=0.5,
         ).model_dump(mode="json"),
     )
 
@@ -111,7 +111,7 @@ def test_after_raises_on_extras():
                              rationale="open", horizon="swing",
                              target_price=200.0, stop_price=170.0),
             ],
-            decision_tag="x", reasoning="x", updated_thesis="y", confidence=0.5,
+            decision_tag="x", reasoning="x", thesis="y", confidence=0.5,
         ).model_dump(mode="json"),
     )
     with pytest.raises(StrategistContractViolation, match="GOOG"):
@@ -160,7 +160,7 @@ def test_after_raises_on_close_without_close_reason():
         strategist_decision=StrategistDecision(
             stances=[TickerStance(ticker="AAPL", preferred_weight=0.0,
                                   conviction=0.5, rationale="exit")],
-            decision_tag="x", reasoning="x", updated_thesis="y", confidence=0.5,
+            decision_tag="x", reasoning="x", thesis="y", confidence=0.5,
         ).model_dump(mode="json"),
     )
     with pytest.raises(StrategistContractViolation, match="close_reason"):
@@ -189,7 +189,7 @@ def test_after_raises_on_trim_without_trim_reason():
                                   conviction=0.5, rationale="reduce",
                                   horizon="swing",
                                   target_price=450.0, stop_price=395.0)],
-            decision_tag="x", reasoning="x", updated_thesis="y", confidence=0.5,
+            decision_tag="x", reasoning="x", thesis="y", confidence=0.5,
         ).model_dump(mode="json"),
     )
     with pytest.raises(StrategistContractViolation, match="trim_reason"):
@@ -204,7 +204,7 @@ def test_after_derives_legacy_fields_on_valid_input():
             stances=[TickerStance(ticker="AAPL", preferred_weight=0.05,
                                   conviction=0.7, rationale="open", horizon="swing",
                                   target_price=210.0, stop_price=185.0)],
-            decision_tag="open_aapl", reasoning="x", updated_thesis="y", confidence=0.7,
+            decision_tag="open_aapl", reasoning="x", thesis="y", confidence=0.7,
         ).model_dump(mode="json"),
     )
     out = _strategist_validation_callback(_Ctx(state))

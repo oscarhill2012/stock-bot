@@ -14,7 +14,7 @@ async def test_memory_writer_appends_buffer_entry():
         "strategist_decision": {
             "decision_tag": "buy_aapl",
             "reasoning": "Strong technical breakout",
-            "updated_thesis": "Bullish on tech",
+            "thesis": "Bullish on tech",
             "target_weights": {},
             "confidence": 0.8,
             "new_positions": {},
@@ -63,7 +63,7 @@ async def test_memory_writer_accepts_iso_string_as_of():
         "strategist_decision": {
             "decision_tag":   "iso_test",
             "reasoning":      "test",
-            "updated_thesis": "Bullish",
+            "thesis": "Bullish",
             "target_weights": {},
             "confidence":     0.7,
             "new_positions":  {},
