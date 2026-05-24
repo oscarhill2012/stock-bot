@@ -35,13 +35,15 @@ Files this plan touches, grouped by concern:
 | `src/agents/analysts/news/joiner.py` | News joiner | Pass `retries=` in `emit_analyst_summary` call |
 | `src/agents/analysts/fundamental/joiner.py` | Fundamental joiner | Pass `retries=` in `emit_analyst_summary` call |
 | `src/observability/terminal_log.py` | Terminal summary renderer | Extend `emit_analyst_summary` with optional `retries=` |
-| `tests/unit/agents/test_llm_retry.py` | Wrapper unit tests | **Rewrite** for the new API (ctor + classification + telemetry) |
+| `tests/unit/agents/test_llm_retry.py` | Wrapper unit tests | **Rewrite** for the new API (ctor + classification + telemetry); also absorbs the agent-name attribution contract from the deleted `tests/agents/test_llm_retry_agent_name.py` |
+| `tests/agents/test_llm_retry_agent_name.py` | Legacy tenacity `before_sleep` agent-name test | **Delete** — contract folded into the unit-test file above |
 | `tests/unit/config/test_retry_429.py` | 429 loader tests | **Create** (no prior test file existed at this path) |
 | `tests/unit/config/test_analysts_config.py` | Analyst config tests | Extend |
 | `tests/unit/config/test_strategist_config.py` | Strategist config tests | **Create** |
 | `tests/unit/observability/test_terminal_log.py` | Terminal summary tests | Extend (`retries=` suffix) |
 | `tests/analysts/test_per_ticker_branch.py` | Per-ticker branch wiring tests | Extend |
-| `tests/agents/strategist/test_build_strategist.py` | Strategist factory wiring tests | **Create** |
+| `tests/unit/agents/strategist/test_build_strategist.py` | Strategist factory wiring tests | **Create** (drops into existing Spec B / D3 directory alongside `test_strategist_callbacks_v2.py`) |
+| `tests/unit/agents/strategist/test_validation_callback.py` | Strategist validation-callback retry-suffix test | **Create** (mirrors the `_Ctx` shim pattern in `test_strategist_callbacks_v2.py`) |
 | `tests/integration/test_retry_smoke.py` | End-to-end one-tick smoke | **Create** |
 
 ---
@@ -839,7 +841,7 @@ def test_classify_returns_none_for_strategist_contract_violation() -> None:
     """StrategistContractViolation is NOT classified — it is a contract bug
     that retry will not fix."""
 
-    from agents.risk_gate.lifecycle import StrategistContractViolation
+    from agents.strategist.derivation import StrategistContractViolation
 
     assert _classify(StrategistContractViolation("off-watchlist")) is None
 ```
@@ -1737,7 +1739,7 @@ def test_classify_returns_none_for_unhandled() -> None:
 
 
 def test_classify_returns_none_for_strategist_contract_violation() -> None:
-    from agents.risk_gate.lifecycle import StrategistContractViolation
+    from agents.strategist.derivation import StrategistContractViolation
 
     assert _classify(StrategistContractViolation("off-watchlist")) is None
 
@@ -2028,7 +2030,7 @@ async def test_unclassified_exception_propagates_immediately() -> None:
 async def test_strategist_contract_violation_not_retried() -> None:
     """StrategistContractViolation propagates immediately (no retry)."""
 
-    from agents.risk_gate.lifecycle import StrategistContractViolation
+    from agents.strategist.derivation import StrategistContractViolation
 
     inner = _FakeInner(
         name   = "Strategist",
@@ -2185,6 +2187,83 @@ async def test_exhaustion_emits_structured_error_log(caplog) -> None:
     rec = exhausted[0]
     assert rec.exhausted_class == "rate_limit"
     assert rec.attempts_used   == {"rate_limit": 5, "timeout": 0, "schema": 0}
+
+
+# ---------------------------------------------------------------------------
+# Agent-name attribution on retry log records
+#
+# Folded in from the deleted ``tests/agents/test_llm_retry_agent_name.py``
+# (which pinned the legacy tenacity ``before_sleep`` hook).  The contract
+# survives the rewrite: every retry-class log record must carry the
+# wrapped agent's name in ``extra["agent"]`` so log analysis can attribute
+# retries without an adjacent-row heuristic.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_retry_attempt_log_carries_inner_agent_name(caplog) -> None:
+    """One 429 + success → the WARNING record's ``agent`` extra equals inner.name."""
+
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="agents.llm_retry")
+
+    err = ClientError(
+        code            = 429,
+        response_json   = {"error": {"status": "RESOURCE_EXHAUSTED"}},
+        response        = MagicMock(),
+    )
+    ev  = Event(author="TestAnalyst", content=None, actions=EventActions())
+
+    # _FakeInner.name defaults — override via constructor to a recognisable string.
+    inner = _FakeInner(name="TestAnalyst", script=[err, [ev]])
+
+    wrapper = RetryingAgentWrapper(
+        inner           = inner,
+        timeout_seconds = 5.0,
+        policies        = _fast_policies(),
+        retry_state_key = "temp:_obs_test_retries",
+    )
+
+    async for _ in wrapper.run_async(_ctx_with_state()):
+        pass
+
+    attempts = [r for r in caplog.records if r.message == "llm_retry_attempt"]
+    assert len(attempts) == 1
+    assert attempts[0].agent       == "TestAnalyst"
+    assert attempts[0].retry_class == "rate_limit"
+
+
+@pytest.mark.asyncio
+async def test_retry_exhausted_log_carries_inner_agent_name(caplog) -> None:
+    """Terminal exhaustion's ERROR record likewise carries ``agent`` = inner.name."""
+
+    import logging
+
+    caplog.set_level(logging.ERROR, logger="agents.llm_retry")
+
+    err = ClientError(
+        code            = 429,
+        response_json   = {"error": {"status": "RESOURCE_EXHAUSTED"}},
+        response        = MagicMock(),
+    )
+
+    inner = _FakeInner(name="TestAnalyst", script=[err] * 6)
+
+    wrapper = RetryingAgentWrapper(
+        inner           = inner,
+        timeout_seconds = 5.0,
+        policies        = _fast_policies(rate_limit_attempts=5),
+        retry_state_key = "temp:_obs_test_retries",
+    )
+
+    with pytest.raises(ClientError):
+        async for _ in wrapper.run_async(_ctx_with_state()):
+            pass
+
+    exhausted = [r for r in caplog.records if r.message == "llm_retry_exhausted"]
+    assert len(exhausted) == 1
+    assert exhausted[0].agent == "TestAnalyst"
 ```
 
 - [ ] **Step 2: Run the new test file to confirm everything fails (or fails to import)**
@@ -2502,7 +2581,11 @@ PYTHONPATH=src .venv/bin/python -m pytest tests/ -v 2>&1 | tail -50
 
 Expected: factory wiring tests for News, Fundamental, Strategist may now fail because the wrapper construction signature changed. **Defer those failures** — Tasks 9–11 fix the factories. If any *other* test fails (not a factory wiring test), investigate now.
 
-If `tests/agents/test_llm_retry_agent_name.py` references `RetryConfig`, `_is_resource_exhausted`, or the old ctor signature, update it in this task — fix to use the new ctor with `_fast_policies(...)` and `retry_state_key`. Keep its assertion semantics intact.
+**Delete** `tests/agents/test_llm_retry_agent_name.py`. Its contract — every retry log record must carry the wrapped agent's name — now lives in `test_retry_attempt_log_carries_inner_agent_name` and `test_retry_exhausted_log_carries_inner_agent_name` inside the rewritten `tests/unit/agents/test_llm_retry.py` (Step 1 of this task). The old file pinned the legacy tenacity `before_sleep` hook (deleted as part of the rewrite); rather than rewrite it against the new `_log_retry` / `_log_exhausted` helpers it lives next to, fold the assertion into the canonical unit-test file so there is exactly one retry-test location.
+
+```bash
+git rm tests/agents/test_llm_retry_agent_name.py
+```
 
 - [ ] **Step 6: Run ruff**
 
@@ -2515,7 +2598,11 @@ Expected: clean.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/agents/llm_retry.py tests/unit/agents/test_llm_retry.py tests/agents/test_llm_retry_agent_name.py
+git add src/agents/llm_retry.py tests/unit/agents/test_llm_retry.py
+# tests/agents/test_llm_retry_agent_name.py was deleted in Step 5 — its
+# `git rm` is already staged at this point; `git status --short` should
+# show the `D` entry alongside the modified files above.
+git status --short
 git commit -m "$(cat <<'EOF'
 feat(retry): three-class wrapper with per-call timeout
 
@@ -2526,6 +2613,11 @@ Rewrites RetryingAgentWrapper internals:
 - structured llm_retry_attempt WARNING per retry
 - structured llm_retry_exhausted ERROR on terminal exhaustion
 - drops the tenacity dependency from this module
+
+Folds the deleted tests/agents/test_llm_retry_agent_name.py into the
+canonical unit-test file — its agent-name attribution contract now
+covers the new _log_retry / _log_exhausted helpers, leaving one retry
+test location.
 
 Factory call sites are updated in the next three commits.
 
@@ -2965,11 +3057,11 @@ EOF
 
 **Files:**
 - Modify: `src/agents/strategist/agent.py`
-- Create: `tests/agents/strategist/test_build_strategist.py`
+- Create: `tests/unit/agents/strategist/test_build_strategist.py`
 
 - [ ] **Step 1: Write the failing wiring test**
 
-Create `tests/agents/strategist/test_build_strategist.py`:
+Create `tests/unit/agents/strategist/test_build_strategist.py`:
 
 ```python
 """Wiring test for ``agents.strategist.agent.build_strategist``.
@@ -3012,12 +3104,12 @@ def test_build_strategist_wires_llm_caps_from_config() -> None:
     assert cfg.max_output_tokens == 8000
 ```
 
-Also create the `tests/agents/strategist/` directory and an empty `__init__.py` if either does not exist.
+The `tests/unit/agents/strategist/` directory and its `__init__.py` already exist (Spec B / D3 added them) — drop straight into the existing tree alongside `test_strategist_callbacks_v2.py`.
 
 - [ ] **Step 2: Run to verify it fails**
 
 ```bash
-PYTHONPATH=src .venv/bin/python -m pytest tests/agents/strategist/test_build_strategist.py -v 2>&1 | tail -20
+PYTHONPATH=src .venv/bin/python -m pytest tests/unit/agents/strategist/test_build_strategist.py -v 2>&1 | tail -20
 ```
 
 - [ ] **Step 3: Edit `src/agents/strategist/agent.py::build_strategist`**
@@ -3073,7 +3165,7 @@ Update the `RetryingAgentWrapper(...)` call:
 - [ ] **Step 4: Run the test to verify it passes**
 
 ```bash
-PYTHONPATH=src .venv/bin/python -m pytest tests/agents/strategist/test_build_strategist.py -v 2>&1 | tail -20
+PYTHONPATH=src .venv/bin/python -m pytest tests/unit/agents/strategist/test_build_strategist.py -v 2>&1 | tail -20
 ```
 
 - [ ] **Step 5: Run the full suite — every previously-deferred failure should now be green**
@@ -3093,7 +3185,7 @@ Expected: every test that wasn't broken by Tasks 9–11's wiring should now be b
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/agents/strategist/agent.py tests/agents/strategist/test_build_strategist.py tests/agents/strategist/__init__.py
+git add src/agents/strategist/agent.py tests/unit/agents/strategist/test_build_strategist.py
 git commit -m "$(cat <<'EOF'
 feat(strategist): wire LLM caps + three-class retry policies
 
@@ -3275,7 +3367,7 @@ EOF
 
 **Files:**
 - Modify: `src/agents/strategist/agent.py::_strategist_validation_callback`
-- Modify: `tests/agents/strategist/` (add a callback test, or extend an existing one)
+- Modify: `tests/unit/agents/strategist/` (add a callback test, or extend an existing one)
 
 - [ ] **Step 1: Locate the callback's call to `emit_analyst_summary`**
 
@@ -3287,7 +3379,7 @@ Expected: one call inside `_strategist_validation_callback` (look for the commen
 
 - [ ] **Step 2: Write the failing test**
 
-Create or append to `tests/agents/strategist/test_validation_callback.py`:
+Create or append to `tests/unit/agents/strategist/test_validation_callback.py`:
 
 ```python
 """Test that the strategist validation callback passes the retry counter
@@ -3315,13 +3407,13 @@ def test_strategist_validation_callback_passes_retries(monkeypatch, caplog) -> N
     # _obs_strategist_calls accumulator, _obs_strategist_retries counter.
     # Match the shape used by neighbouring callback tests.
     #
-    # Skip cleanly if the test premise can't be assembled — the existing
-    # codebase already has a strategist-callback test pattern; reuse it.
-    pytest.importorskip("google.adk.agents.callback_context")
-    from google.adk.agents.callback_context import CallbackContext
-
-    # ... (assemble ctx per the existing pattern; see
-    # tests/agents/strategist/test_validation_callback*.py for examples) ...
+    # The canonical pattern to mirror is
+    # ``tests/unit/agents/strategist/test_strategist_callbacks_v2.py`` —
+    # added by Spec B / D3 to cover the validation callback's stance-per-held
+    # rule.  It uses a tiny hand-built ``_Ctx`` shim around the state dict
+    # (not a real CallbackContext) and calls
+    # ``_strategist_validation_callback(_Ctx(state))`` directly.  Mirror that
+    # shim verbatim; ``CallbackContext`` itself is not needed.
 
     # Invoke the callback.
     _strategist_validation_callback(ctx)
@@ -3330,12 +3422,12 @@ def test_strategist_validation_callback_passes_retries(monkeypatch, caplog) -> N
     assert any("retries schema×1" in r for r in rows)
 ```
 
-The exact `ctx` construction depends on the neighbouring test patterns in `tests/agents/strategist/`. If no such tests exist, look at `src/agents/strategist/agent.py::_strategist_validation_callback` to see what state keys it reads, then construct a minimal happy-path state.
+The exact `ctx` construction follows the `_Ctx` shim in `tests/unit/agents/strategist/test_strategist_callbacks_v2.py` (Spec B / D3). That file already exercises the happy-path validation callback with a populated state dict — copy its `_Ctx` class verbatim and extend its state fixture with `temp:_obs_strategist_retries: {"schema": 1}`.
 
 - [ ] **Step 3: Run to verify it fails**
 
 ```bash
-PYTHONPATH=src .venv/bin/python -m pytest tests/agents/strategist/test_validation_callback.py -v 2>&1 | tail -20
+PYTHONPATH=src .venv/bin/python -m pytest tests/unit/agents/strategist/test_validation_callback.py -v 2>&1 | tail -20
 ```
 
 - [ ] **Step 4: Edit `src/agents/strategist/agent.py::_strategist_validation_callback`**
@@ -3357,7 +3449,7 @@ Find the `emit_analyst_summary(...)` call inside the `if os.environ.get("STOCKBO
 - [ ] **Step 5: Run the test to verify it passes**
 
 ```bash
-PYTHONPATH=src .venv/bin/python -m pytest tests/agents/strategist/test_validation_callback.py -v 2>&1 | tail -20
+PYTHONPATH=src .venv/bin/python -m pytest tests/unit/agents/strategist/test_validation_callback.py -v 2>&1 | tail -20
 ```
 
 - [ ] **Step 6: Run the full suite**
@@ -3369,7 +3461,7 @@ PYTHONPATH=src .venv/bin/python -m pytest tests/ -v 2>&1 | tail -30
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/agents/strategist/agent.py tests/agents/strategist/
+git add src/agents/strategist/agent.py tests/unit/agents/strategist/
 git commit -m "$(cat <<'EOF'
 feat(strategist): join retry counter into terminal summary row
 
