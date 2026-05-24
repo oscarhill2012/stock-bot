@@ -2,14 +2,16 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 
 from google.adk.agents import LlmAgent
 from google.adk.agents.callback_context import CallbackContext
 from google.genai import types as genai_types
 
-from agents.strategist.derivation import StrategistContractViolation
-from agents.strategist.derivation import TickContext, derive_legacy_fields
+from agents.strategist.derivation import (
+    StrategistContractViolation,
+    TickContext,
+    derive_legacy_fields,
+)
 from agents.strategist.lifecycle import derive_lifecycle_action
 from agents.strategist.prompts import STRATEGIST_INSTRUCTION
 from agents.strategist.schema import StrategistDecision

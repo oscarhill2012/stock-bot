@@ -231,10 +231,7 @@ def format_tokens(n: int | None) -> str:
         # Express as Nk with one decimal place where the decimal is non-zero,
         # or as a plain integer k otherwise (e.g. 168k rather than 168.0k).
         k = n / 1000.0
-        if k == int(k):
-            text = f"{int(k)}k"
-        else:
-            text = f"{k:.1f}k"
+        text = f"{int(k)}k" if k == int(k) else f"{k:.1f}k"
     else:
         text = str(n)
 

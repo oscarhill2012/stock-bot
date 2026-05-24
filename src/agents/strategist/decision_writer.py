@@ -9,7 +9,6 @@ side-effectful write step wired into the orchestrator pipeline.
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from datetime import datetime
 from typing import Any
 
 from google.adk.agents import BaseAgent

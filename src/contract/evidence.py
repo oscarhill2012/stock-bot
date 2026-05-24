@@ -113,7 +113,7 @@ class AnalystVerdict(BaseModel):
     report: AnalystReport | None = None
 
     @model_validator(mode="after")
-    def _report_required_when_data_present(self) -> "AnalystVerdict":
+    def _report_required_when_data_present(self) -> AnalystVerdict:
         """Reject verdicts that claim data but omit the report block.
 
         LLM analysts must emit ``report`` whenever ``is_no_data=False`` — the

@@ -20,11 +20,11 @@ from google.genai import types as genai_types
 
 from agents.analysts._common import _chain_after, _chain_before
 from agents.analysts.cache_callbacks import make_report_cache_callbacks
-from agents.analysts.heuristics import FundamentalVocabulary
-from agents.analysts.report_cache import fundamental_hash_inputs_from_dict
 from agents.analysts.fundamental.prompts import build_fundamental_instruction
+from agents.analysts.heuristics import FundamentalVocabulary
 from agents.analysts.report_cache import (
     FUNDAMENTAL_PROMPT_VERSION,
+    fundamental_hash_inputs_from_dict,
 )
 from agents.isolated_failure import IsolatedFailureWrapper
 from agents.llm_retry import RetryingAgentWrapper, build_retry_policies

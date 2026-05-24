@@ -30,7 +30,6 @@ from typing import Any
 from agents.strategist.position_thesis import PositionThesis
 from broker.portfolio import Portfolio
 
-
 # Module-level logger — used to surface corrupt-entry skips loudly so a
 # malformed ``user:positions`` payload is discoverable in ops logs rather
 # than silently dropping a held position from the strategist's prompt.

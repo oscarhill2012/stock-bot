@@ -20,7 +20,7 @@ class Window(BaseModel):
     notes: str = ""
 
     @model_validator(mode="after")
-    def _check_range(self) -> "Window":
+    def _check_range(self) -> Window:
         # Reject backwards ranges early; downstream tick schedule would silently
         # yield zero ticks otherwise, which is the worst kind of "nothing happens".
         if self.end < self.start:
