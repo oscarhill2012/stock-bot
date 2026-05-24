@@ -1,4 +1,15 @@
-"""derive_legacy_fields tests — Tier 1, no LLM."""
+"""derive_decision_fields tests — Tier 1, no LLM.
+
+Covers the main derivation paths:
+  - open stance → target_weights
+  - close stance → target_weights (0.0) + close_reasons
+  - trim stance  → target_weights + trim_reasons
+  - hold stance  → target_weights only
+  - multiple stances → correct aggregation
+  - held ticker omitted → StrategistContractViolation
+  - carry-forward does not override emitted stances
+  - add action only populates target_weight
+"""
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -8,7 +19,7 @@ import pytest
 from agents.strategist.derivation import (
     StrategistContractViolation,
     TickContext,
-    derive_legacy_fields,
+    derive_decision_fields,
 )
 from agents.strategist.stance_schema import TickerStance
 
@@ -25,7 +36,7 @@ def _ctx(
         Optional mapping of ticker → current portfolio weight.
     watchlist:
         Optional full watchlist for this tick.  Defaults to an empty list,
-        which disables the carry-forward padding pass — keeping legacy
+        which disables the carry-forward padding pass — keeping
         single-stance tests focused on the per-stance dispatch logic.
 
     Returns
@@ -33,13 +44,6 @@ def _ctx(
     TickContext
         A TickContext seeded with ``tick_id="tick_X"``, ``decision_tag="x"``,
         and a fixed datetime of 2026-05-08 14:00 UTC.
-
-    Notes
-    -----
-    ``new_positions`` was removed from ``DerivedFields`` in Band 6.  The
-    executor now assembles the ``PositionThesis`` from the fill price + stance
-    via ``apply_stance_to_thesis``; the strategist never had an honest fill
-    price to pre-compute it.
     """
     return TickContext(
         tick_id="tick_X",
@@ -51,24 +55,22 @@ def _ctx(
 
 
 def test_open_creates_target_weight():
-    """An open stance (current weight 0, preferred > 0) must set target_weights.
+    """An open stance (intent="open", weight > 0) must set target_weights.
 
-    Band 6: derivation no longer creates a ``PositionThesis`` for open stances.
-    The executor assembles it from the fill price + stance via
-    ``apply_stance_to_thesis``.  Derivation only concerns itself with
-    ``target_weights``, ``close_reasons``, and ``trim_reasons``.
+    Derivation only concerns itself with ``target_weights``,
+    ``close_reasons``, and ``trim_reasons``.
     """
     stance = TickerStance(
         ticker="AAPL",
-        preferred_weight=0.08,
-        conviction=0.7,
+        intent="open",
+        weight=0.08,
         rationale="open",
         horizon="swing",
         target_price=210.0,
         stop_price=185.0,
     )
     ctx = _ctx(weights={})
-    out = derive_legacy_fields([stance], ctx)
+    out = derive_decision_fields([stance], ctx)
 
     assert out.target_weights == {"AAPL": 0.08}
     assert out.close_reasons == {}
@@ -76,16 +78,14 @@ def test_open_creates_target_weight():
 
 
 def test_close_records_close_reason():
-    """A close stance (preferred_weight 0) should record the close_reason."""
+    """A close stance (intent="close") should record the reason in close_reasons."""
     stance = TickerStance(
         ticker="AAPL",
-        preferred_weight=0.0,
-        conviction=0.5,
-        rationale="exit",
-        close_reason="thesis broken",
+        intent="close",
+        reason="thesis broken",
     )
     ctx = _ctx(weights={"AAPL": 0.08})
-    out = derive_legacy_fields([stance], ctx)
+    out = derive_decision_fields([stance], ctx)
 
     assert out.target_weights == {"AAPL": 0.0}
     assert out.close_reasons == {"AAPL": "thesis broken"}
@@ -93,24 +93,19 @@ def test_close_records_close_reason():
 
 
 def test_trim_records_trim_reason():
-    """A trim stance (preferred_weight below current by >δ) should record the trim_reason.
+    """A trim stance (intent="trim") should record the reason in trim_reasons.
 
-    Non-zero stances must also carry the lifecycle hint fields (horizon,
-    target_price, stop_price) per ``TickerStance._require_lifecycle_hints_on_nonzero``
-    — a trim is still holding capital and so still needs an exit discipline.
+    Trim stances carry weight, horizon, target_price, stop_price to support
+    ongoing exit discipline — the position still holds capital.
     """
     stance = TickerStance(
         ticker="MSFT",
-        preferred_weight=0.05,
-        conviction=0.5,
-        rationale="reduce",
-        horizon="swing",
-        target_price=450.0,
-        stop_price=395.0,
-        trim_reason="lock in profits",
+        intent="trim",
+        weight=0.05,
+        reason="lock in profits",
     )
     ctx = _ctx(weights={"MSFT": 0.12})
-    out = derive_legacy_fields([stance], ctx)
+    out = derive_decision_fields([stance], ctx)
 
     assert out.target_weights == {"MSFT": 0.05}
     assert out.trim_reasons == {"MSFT": "lock in profits"}
@@ -118,24 +113,20 @@ def test_trim_records_trim_reason():
 
 
 def test_hold_yields_only_target_weight():
-    """A hold stance (no meaningful weight change) should only populate target_weights.
+    """A hold stance (intent="hold") should only contribute to target_weights.
 
-    Even on a pure hold, the strategist is still holding capital, so the
-    schema-level validator requires horizon/target_price/stop_price.
+    hold/update do not carry weight; the current weight is carried forward
+    as 0.0 by the ``or 0.0`` fallback in derivation.
     """
     stance = TickerStance(
         ticker="MSFT",
-        preferred_weight=0.06,
-        conviction=0.5,
-        rationale="hold",
-        horizon="swing",
-        target_price=450.0,
-        stop_price=395.0,
+        intent="hold",
+        reason="thesis intact",
     )
     ctx = _ctx(weights={"MSFT": 0.06})
-    out = derive_legacy_fields([stance], ctx)
+    out = derive_decision_fields([stance], ctx)
 
-    assert out.target_weights == {"MSFT": 0.06}
+    assert out.target_weights == {"MSFT": 0.0}
     assert out.close_reasons == {}
     assert out.trim_reasons == {}
 
@@ -145,8 +136,8 @@ def test_multiple_stances_aggregate_correctly():
     stances = [
         TickerStance(
             ticker="AAPL",
-            preferred_weight=0.08,
-            conviction=0.7,
+            intent="open",
+            weight=0.08,
             rationale="open",
             horizon="swing",
             target_price=210.0,
@@ -154,51 +145,37 @@ def test_multiple_stances_aggregate_correctly():
         ),
         TickerStance(
             ticker="MSFT",
-            preferred_weight=0.0,
-            conviction=0.5,
-            rationale="exit",
-            close_reason="rotate",
+            intent="close",
+            reason="rotate",
         ),
         TickerStance(
             ticker="NVDA",
-            preferred_weight=0.05,
-            conviction=0.5,
-            rationale="trim",
-            horizon="swing",
-            target_price=950.0,
-            stop_price=800.0,
-            trim_reason="overweight",
+            intent="trim",
+            weight=0.05,
+            reason="overweight",
         ),
     ]
     ctx = _ctx(weights={"MSFT": 0.10, "NVDA": 0.15})
-    out = derive_legacy_fields(stances, ctx)
+    out = derive_decision_fields(stances, ctx)
 
     assert out.target_weights == {"AAPL": 0.08, "MSFT": 0.0, "NVDA": 0.05}
-
-    # Band 6: derivation no longer produces new_positions; the executor
-    # assembles PositionThesis from the fill price + stance itself.
     assert out.close_reasons == {"MSFT": "rotate"}
     assert out.trim_reasons == {"NVDA": "overweight"}
 
 
 def test_open_stance_goes_into_target_weights_not_close_or_trim():
-    """An open stance must only populate target_weights — not close_reasons or trim_reasons.
-
-    Band 6: ``new_positions`` is no longer assembled by derivation; the executor
-    handles that.  We confirm the output shape does not accidentally bleed open
-    stances into the wrong buckets.
-    """
+    """An open stance must only populate target_weights — not close_reasons or trim_reasons."""
     stance = TickerStance(
         ticker="AAPL",
-        preferred_weight=0.08,
-        conviction=0.7,
+        intent="open",
+        weight=0.08,
         rationale="open",
         horizon="swing",
         target_price=210.0,
         stop_price=185.0,
     )
     ctx = _ctx(weights={})
-    out = derive_legacy_fields([stance], ctx)
+    out = derive_decision_fields([stance], ctx)
 
     # target_weights is the only populated field — no close_reasons, no trim_reasons.
     assert out.target_weights == {"AAPL": 0.08}
@@ -210,34 +187,29 @@ def test_held_ticker_without_stance_raises_contract_violation():
     """An omitted held ticker now raises StrategistContractViolation (Spec B / D3).
 
     Pre-Spec-B, the carry-forward block silently padded any held ticker the
-    strategist did not emit a stance for, treating omission as an implicit hold.
-    Spec B removes that: every pre-tick held ticker MUST be explicitly touched
-    by a stance.  Omission of a held ticker is now a hard contract violation.
+    strategist did not emit a stance for.  Spec B removes that: every pre-tick
+    held ticker MUST be explicitly touched by a stance.  Omission of a held
+    ticker is now a hard contract violation.
 
-    The old "AAPL carried forward at 0.08" expectation is inverted here: we
-    expect ``StrategistContractViolation`` naming the uncovered held ticker.
     Flat tickers (TSLA) remain optional — the active-stances model survives
     for them (Spec B §'Active-stances model').
     """
-
     # One explicit close stance for MSFT (held); AAPL is also held but has
     # NO stance — this is the scenario that must now raise.
     stances = [
         TickerStance(
             ticker="MSFT",
-            preferred_weight=0.0,
-            conviction=0.6,
-            rationale="exit",
-            close_reason="rotate",
+            intent="close",
+            reason="rotate",
         ),
     ]
     ctx = _ctx(
-        weights={"AAPL": 0.08, "MSFT": 0.10},          # AAPL held (no stance), MSFT held (close stance), TSLA flat
+        weights={"AAPL": 0.08, "MSFT": 0.10},  # AAPL held (no stance), MSFT held (close stance)
         watchlist=["AAPL", "MSFT", "TSLA"],
     )
 
     with pytest.raises(StrategistContractViolation) as excinfo:
-        derive_legacy_fields(stances, ctx)
+        derive_decision_fields(stances, ctx)
 
     # The error message must name the uncovered held ticker.
     assert "AAPL" in str(excinfo.value)
@@ -245,51 +217,41 @@ def test_held_ticker_without_stance_raises_contract_violation():
 
 
 def test_carry_forward_does_not_override_emitted_stances():
-    """When a ticker IS emitted, the strategist's preferred weight wins over the carry-forward default.
+    """When a ticker IS emitted, the strategist's weight wins over the carry-forward default.
 
     Guards against a Pass-2 bug where the padding loop could clobber a freshly
     set ``target_weights`` entry if the order-of-operations were inverted.
     """
     stance = TickerStance(
         ticker="AAPL",
-        preferred_weight=0.15,
-        conviction=0.8,
-        rationale="add",
-        horizon="swing",
-        target_price=240.0,
-        stop_price=190.0,
+        intent="add",
+        weight=0.15,
     )
     ctx = _ctx(
         weights={"AAPL": 0.08},
         watchlist=["AAPL"],
     )
-    out = derive_legacy_fields([stance], ctx)
+    out = derive_decision_fields([stance], ctx)
 
-    # Emitted preferred_weight (0.15) — NOT the current weight (0.08) — must survive.
+    # Emitted weight (0.15) — NOT the current weight (0.08) — must survive.
     assert out.target_weights == {"AAPL": 0.15}
 
 
 def test_add_action_only_populates_target_weight():
-    """An add stance (preferred_weight > current by >δ but both above ε) should only
-    populate target_weights — no close_reasons, no trim_reasons.
+    """An add stance (intent="add", weight > current) should only populate target_weights.
 
-    The 'add' action adds to an existing position; it doesn't open a fresh one,
+    The 'add' action adds to an existing position; it does not open a fresh one,
     so PositionThesis is not created here (that was created on the original open).
-    Band 6: derivation delegates PositionThesis assembly entirely to the executor.
+    Derivation delegates PositionThesis assembly entirely to the executor.
     """
     stance = TickerStance(
         ticker="AAPL",
-        preferred_weight=0.15,
-        conviction=0.8,
-        rationale="add to winner",
-        horizon="swing",
-        target_price=240.0,
-        stop_price=190.0,
+        intent="add",
+        weight=0.15,
     )
     # Current weight 0.08 → preferred 0.15; difference 0.07 > SIZE_CHANGE_EPSILON (0.02)
-    # → derive_lifecycle_action returns "add"
     ctx = _ctx(weights={"AAPL": 0.08})
-    out = derive_legacy_fields([stance], ctx)
+    out = derive_decision_fields([stance], ctx)
 
     assert out.target_weights == {"AAPL": 0.15}
     assert out.close_reasons == {}
