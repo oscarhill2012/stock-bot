@@ -252,9 +252,13 @@ def test_zero_opened_price_degrades_gracefully():
     assert "$0.00" not in out
 
 
-def test_corrupt_thesis_dict_is_skipped_without_raising():
-    """A thesis entry that cannot be coerced to PositionThesis must be silently
-    skipped; the remaining positions must still render normally."""
+def test_corrupt_thesis_dict_is_skipped_with_warning(caplog):
+    """A thesis entry that cannot be coerced to PositionThesis must be skipped
+    without raising — the renderer is total — but the skip MUST emit a
+    ``logger.warning`` breadcrumb so a corrupt persisted thesis is
+    discoverable in ops logs rather than silently dropped.  Project rule:
+    silent failures are the recurring bug class — prefer noisy."""
+
     good_thesis = _thesis(ticker="AAPL").model_dump(mode="json")
     pf = Portfolio(
         cash=500.0,
@@ -264,10 +268,21 @@ def test_corrupt_thesis_dict_is_skipped_without_raising():
         },
     )
     # "MSFT" entry is a string — intentionally invalid, should be skipped.
-    out = render_held_positions_view(
-        positions = {"AAPL": good_thesis, "MSFT": "not-a-thesis"},
-        portfolio = pf,
-        as_of     = _AS_OF,
+    with caplog.at_level("WARNING", logger="agents.strategist.held_view"):
+        out = render_held_positions_view(
+            positions = {"AAPL": good_thesis, "MSFT": "not-a-thesis"},
+            portfolio = pf,
+            as_of     = _AS_OF,
+        )
+
+    assert "AAPL" in out      # good entry rendered
+    assert "MSFT" not in out  # corrupt entry dropped from output
+
+    # Skip is loud — the warning names the offending ticker so an operator
+    # can grep for it without having to correlate timestamps.
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1, (
+        f"expected exactly one WARNING on corrupt skip, got {len(warnings)}"
     )
-    assert "AAPL" in out   # good entry rendered
-    assert "MSFT" not in out  # corrupt entry silently dropped
+    assert "MSFT" in warnings[0].getMessage()
+    assert "skipping" in warnings[0].getMessage().lower()

@@ -16,16 +16,25 @@ rendered into the next tick's prompt (Principle 2 / Invariant 4) — the
 LLM must not anchor on its own prior-tick justification.
 
 The function is *total* — it never raises.  Entries whose thesis cannot
-be coerced to ``PositionThesis`` are silently skipped so one corrupt
-entry in state does not abort the tick.
+be coerced to ``PositionThesis`` are skipped so one corrupt entry in
+state does not abort the tick, but each skip emits a ``logger.warning``
+breadcrumb so the divergence is discoverable in ops logs rather than
+silently dropped from the strategist's prompt.
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import Any
 
 from agents.strategist.position_thesis import PositionThesis
 from broker.portfolio import Portfolio
+
+
+# Module-level logger — used to surface corrupt-entry skips loudly so a
+# malformed ``user:positions`` payload is discoverable in ops logs rather
+# than silently dropping a held position from the strategist's prompt.
+logger = logging.getLogger(__name__)
 
 
 # Number of trading hours per day used to convert raw elapsed hours into
@@ -297,8 +306,19 @@ def render_held_positions_view(
     for ticker in sorted(positions.keys()):
         try:
             thesis = _coerce_thesis(positions[ticker])
-        except Exception:  # noqa: BLE001 — defensive at rendering boundary;
-            # one corrupt position dict must not crash the tick.
+        except Exception as exc:  # noqa: BLE001 — defensive at rendering boundary;
+            # One corrupt position dict must not crash the tick, but the
+            # skip MUST NOT be silent — a malformed persisted thesis means
+            # the strategist's prompt is missing a held position the rest
+            # of the pipeline still tracks.  Emit a loud breadcrumb so the
+            # operator can spot the divergence in logs.  Project rule:
+            # silent failures are the recurring bug class — prefer noisy.
+            logger.warning(
+                "held_view: skipping ticker %r — could not coerce thesis "
+                "from state[\"user:positions\"]: %s",
+                ticker,
+                exc,
+            )
             continue
         blocks.append(_format_one(thesis, pf, as_of=as_of))
 
