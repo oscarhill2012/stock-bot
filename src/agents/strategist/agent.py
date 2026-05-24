@@ -272,11 +272,13 @@ def _strategist_validation_callback(
     # all three analysts' summary rows visually consistent.
     import os
     if os.environ.get("STOCKBOT_TERMINAL_LOG") == "1":
-        _strat_calls: list[dict] = state.get("temp:_obs_strategist_calls") or []
+        _strat_calls:   list[dict]     = state.get("temp:_obs_strategist_calls")   or []
+        _strat_retries: dict[str, int] = state.get("temp:_obs_strategist_retries") or {}
         emit_analyst_summary(
             "strategist",
-            calls=_strat_calls,
-            ticker_count=1,
+            calls        = _strat_calls,
+            ticker_count = 1,
+            retries      = _strat_retries,
         )
 
     return None
