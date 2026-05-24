@@ -168,8 +168,7 @@ def test_fresh_deletes_session_sqlite(
         from google.adk.models import LlmResponse
         from google.genai import types as genai_types
 
-        stances = [{"ticker": t, "preferred_weight": 0.0, "conviction": 0.5,
-                    "rationale": "fresh-test stub"} for t in tickers]
+        stances = [{"ticker": t, "intent": "hold", "reason": "fresh-test stub"} for t in tickers]
         decision = {
             "stances": stances, "target_weights": {t: 0.0 for t in tickers},
             "decision_tag": "fresh_test_hold", "reasoning": "stub",

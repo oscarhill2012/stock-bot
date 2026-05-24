@@ -86,31 +86,28 @@ def _make_state() -> dict:
 
         # Real shape: ``stances`` is a list, not a dict.  Each entry carries
         # ``ticker`` plus the per-ticker fields the snapshot surfaces.
+        # Intent-form only (Band 3 — preferred_weight / conviction deleted).
         "strategist_decision": {
             "stances": [
                 {
-                    "ticker":           "SIVB",
-                    "preferred_weight": 0.0,
-                    "conviction":       0.85,
-                    "rationale":        "Thesis broken — closing the position.",
-                    "horizon":          None,
-                    "target_price":     None,
-                    "stop_price":       None,
-                    "catalyst":         None,
-                    "close_reason":     "Thesis broken",
-                    "trim_reason":      None,
+                    "ticker":       "SIVB",
+                    "intent":       "close",
+                    "reason":       "Thesis broken",
+                    "rationale":    "Thesis broken — closing the position.",
+                    "horizon":      None,
+                    "target_price": None,
+                    "stop_price":   None,
+                    "catalyst":     None,
                 },
                 {
-                    "ticker":           "AAPL",
-                    "preferred_weight": 0.05,
-                    "conviction":       0.7,
-                    "rationale":        "Opening on bullish technical setup.",
-                    "horizon":          "swing",
-                    "target_price":     160.0,
-                    "stop_price":       145.0,
-                    "catalyst":         "Earnings beat expected next week",
-                    "close_reason":     None,
-                    "trim_reason":      None,
+                    "ticker":       "AAPL",
+                    "intent":       "open",
+                    "weight":       0.05,
+                    "rationale":    "Opening on bullish technical setup.",
+                    "horizon":      "swing",
+                    "target_price": 160.0,
+                    "stop_price":   145.0,
+                    "catalyst":     "Earnings beat expected next week",
                 },
             ],
             "close_reasons":  {"SIVB": "Thesis broken"},
@@ -176,14 +173,14 @@ def test_logs_one_file_per_filled_execution_with_populated_content(tmp_path: Pat
 
     # Strategist decision section is no longer empty.
     sd = sivb["strategist_decision"]
-    assert sd["stance"]["ticker"]           == "SIVB"
-    assert sd["stance"]["preferred_weight"] == 0.0
-    assert sd["stance"]["close_reason"]     == "Thesis broken"
-    assert sd["close_reason"]               == "Thesis broken"
+    assert sd["stance"]["ticker"]       == "SIVB"
+    assert sd["stance"]["intent"]       == "close"
+    assert sd["stance"]["reason"]       == "Thesis broken"
+    assert sd["close_reason"]           == "Thesis broken"
     assert sd["reasoning"].startswith("Rotating out of regional banks")
     assert sd["thesis"].startswith("Regional bank stress")
-    assert sd["decision_tag"]               == "rotate_to_megacap"
-    assert sd["confidence"]                 == 0.78
+    assert sd["decision_tag"]           == "rotate_to_megacap"
+    assert sd["confidence"]             == 0.78
 
     # Strategist view section is populated.
     sv = sivb["strategist_view"]
@@ -204,10 +201,11 @@ def test_logs_one_file_per_filled_execution_with_populated_content(tmp_path: Pat
     aapl      = json.loads(aapl_path.read_text())
 
     sd_a = aapl["strategist_decision"]
-    assert sd_a["stance"]["ticker"]           == "AAPL"
-    assert sd_a["stance"]["preferred_weight"] == 0.05
-    assert sd_a["stance"]["target_price"]     == 160.0
-    assert sd_a["close_reason"]               == ""  # AAPL not in close_reasons
+    assert sd_a["stance"]["ticker"]       == "AAPL"
+    assert sd_a["stance"]["intent"]       == "open"
+    assert sd_a["stance"]["weight"]       == 0.05
+    assert sd_a["stance"]["target_price"] == 160.0
+    assert sd_a["close_reason"]           == ""  # AAPL not in close_reasons
     assert sd_a["reasoning"].startswith("Rotating out of regional banks")  # tick-level field shared across both fills
 
     # AAPL is flat — held_view_at_decision is None because no prior thesis exists.

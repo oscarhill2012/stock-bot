@@ -47,28 +47,20 @@ class TestTargetWeightsReadIntentPath:
     def test_open_stance_populates_target_weight_from_weight_field(self):
         """An open stance at 5% must write 0.05 into target_weights via stance.weight."""
         # AVGO is flat; strategist opens at 5%.
-        # preferred_weight/conviction present because they are still required
-        # on TickerStance in Band 1 (Band 3 will delete them).
         stances = [TickerStance(
             ticker="AVGO", intent="open", weight=0.05,
-            preferred_weight=0.05, conviction=0.8,
             rationale="Strong setup", horizon="swing",
             target_price=2100.0, stop_price=1800.0,
             catalyst="earnings beat expected",
         )]
         ctx = _ctx(watchlist=("AVGO",))
         result = derive_decision_fields(stances, ctx)
-        # Derivation reads stance.weight (0.05), not preferred_weight (also 0.05
-        # here, but we are confirming the code path, not the value).
         assert result.target_weights["AVGO"] == 0.05
 
     def test_close_stance_populates_target_weight_zero(self):
         """A close stance must write 0.0 into target_weights regardless of prior weight."""
-        # preferred_weight=0.0 matches the legacy close pattern — but the new
-        # derivation reads intent, not preferred_weight.
         stances = [TickerStance(
             ticker="AVGO", intent="close", reason="thesis broke",
-            preferred_weight=0.0, conviction=0.5,
         )]
         ctx = _ctx(current_weights={"AVGO": 0.05}, watchlist=("AVGO",))
         result = derive_decision_fields(stances, ctx)
@@ -82,22 +74,28 @@ class TestCloseReasonFromIntent:
         """A close with a reason must populate close_reasons[ticker]."""
         stances = [TickerStance(
             ticker="AVGO", intent="close", reason="guidance cut invalidates thesis",
-            preferred_weight=0.0, conviction=0.5,
         )]
         ctx = _ctx(current_weights={"AVGO": 0.05}, watchlist=("AVGO",))
         result = derive_decision_fields(stances, ctx)
         assert result.close_reasons["AVGO"] == "guidance cut invalidates thesis"
 
     def test_close_without_reason_raises(self):
-        """A close with no reason must raise — silent exits are forbidden audit failures."""
-        # Silent failures are the recurring bug class — raise loud.
-        stances = [TickerStance(
-            ticker="AVGO", intent="close", reason=None,
-            preferred_weight=0.0, conviction=0.5,
-        )]
+        """A close with no reason must raise — silent exits are forbidden audit failures.
+
+        The schema enforces ``reason`` at parse time for close stances, so we
+        use ``model_construct`` to bypass validation and simulate a payload that
+        somehow arrives at derivation without a reason.  The derivation layer
+        must raise ``StrategistContractViolation`` rather than silently skipping.
+        """
+        # Build a close stance with no reason, bypassing schema validation.
+        bad_stance = TickerStance.model_construct(
+            ticker="AVGO",
+            intent="close",
+            reason=None,
+        )
         ctx = _ctx(current_weights={"AVGO": 0.05}, watchlist=("AVGO",))
         with pytest.raises(StrategistContractViolation, match="reason"):
-            derive_decision_fields(stances, ctx)
+            derive_decision_fields([bad_stance], ctx)
 
 
 class TestTrimReasonFromIntent:
@@ -108,7 +106,6 @@ class TestTrimReasonFromIntent:
         stances = [TickerStance(
             ticker="AVGO", intent="trim", weight=0.02,
             reason="taking partial profits at 50% to target",
-            preferred_weight=0.02, conviction=0.6,
         )]
         ctx = _ctx(current_weights={"AVGO": 0.05}, watchlist=("AVGO",))
         result = derive_decision_fields(stances, ctx)
@@ -119,21 +116,22 @@ class TestIntentNonNullEnforced:
     """A stance with intent=None must raise — no silent legacy-path fallback."""
 
     def test_intent_none_raises_contract_violation(self):
-        """intent=None must raise immediately rather than silently falling back to preferred_weight.
+        """intent=None must raise immediately — no silent legacy-path fallback.
 
-        We use preferred_weight=0.0 so the legacy _require_lifecycle_hints_on_nonzero
-        validator is satisfied (zero-weight stances are exempt from the hint check).
-        Band 3 will delete preferred_weight entirely; at that point only intent matters.
+        The schema enforces ``intent`` at parse time, so we use ``model_construct``
+        to bypass validation and simulate a payload arriving at derivation with
+        ``intent=None``.  The derivation layer must raise
+        ``StrategistContractViolation`` rather than silently treating it as a
+        hold-flat.
         """
-        # A legacy zero-weight stance with no intent — the new derivation must
-        # reject it loudly rather than silently treating it as a hold-flat.
-        stances = [TickerStance(
-            ticker="AVGO", intent=None,
-            preferred_weight=0.0, conviction=0.7,
-        )]
+        # Build a stance with intent=None, bypassing schema validation.
+        bad_stance = TickerStance.model_construct(
+            ticker="AVGO",
+            intent=None,
+        )
         ctx = _ctx(watchlist=("AVGO",))
         with pytest.raises(StrategistContractViolation, match="intent"):
-            derive_decision_fields(stances, ctx)
+            derive_decision_fields([bad_stance], ctx)
 
 
 class TestHeldCoverageInvariantPreserved:

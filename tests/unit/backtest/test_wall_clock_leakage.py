@@ -78,9 +78,8 @@ def test_decision_writer_uses_as_of(db_session) -> None:
         stances=[
             TickerStance(
                 ticker="AAPL",
-                preferred_weight=0.0,
-                conviction=0.5,
-                rationale="hold",
+                intent="hold",
+                reason="test hold",
             ),
         ],
         target_weights={"AAPL": 0.0},

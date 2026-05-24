@@ -161,10 +161,11 @@ def save_ticker_stance(
         recorded_at: Wall-clock time the strategist produced the decision
             (timezone-aware).
         stance: Dump of a ``TickerStance`` (a dict produced by
-            ``TickerStance.model_dump(mode="json")``). Must contain ``ticker``,
-            ``preferred_weight``, ``conviction`` and ``rationale`` (Band 1 —
-            legacy fields still present on TickerStance; Band 3 will delete them
-            and the DB column rename is user-gated per spec-b-plan-3).
+            ``TickerStance.model_dump(mode="json")``). Must contain ``ticker``.
+            ``preferred_weight`` and ``conviction`` are legacy DB columns
+            (user-gated rename per spec-b-plan-3) — they default to 0.0 when
+            absent from the dump (Band 3 deleted them from ``TickerStance``).
+            ``rationale`` is required on ``open`` stances; optional on others.
             Remaining lifecycle fields may be missing or ``None``.
         lifecycle_action: One of ``"open" | "close" | "trim" | "add" | "hold" | "update"``
             — the stance intent verb, now sourced from ``stance.intent`` directly
@@ -177,13 +178,18 @@ def save_ticker_stance(
         controls commit ordering so that the stance write can be batched with
         other writes for the same tick.
     """
+    # ``preferred_weight`` and ``conviction`` are legacy DB columns that are
+    # user-gated for rename (see spec-b-plan-3).  Band 3 deleted them from
+    # ``TickerStance``, so stance dicts produced by ``model_dump`` no longer
+    # carry them.  Fall back to 0.0 so the non-nullable columns receive a value
+    # until the column rename migration runs.
     row = TickerStanceRow(
         tick_id=tick_id,
         recorded_at=recorded_at,
         ticker=stance["ticker"],
-        preferred_weight=stance["preferred_weight"],
-        conviction=stance["conviction"],
-        rationale=stance["rationale"],
+        preferred_weight=stance.get("preferred_weight", 0.0),
+        conviction=stance.get("conviction", 0.0),
+        rationale=stance.get("rationale") or "",  # ``rationale`` is only populated on open stances
         horizon=stance.get("horizon"),
         target_price=stance.get("target_price"),
         stop_price=stance.get("stop_price"),

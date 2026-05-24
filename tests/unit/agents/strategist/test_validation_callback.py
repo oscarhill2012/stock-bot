@@ -9,13 +9,10 @@ sufficient for unit-level testing without importing any ADK internals.
 """
 from __future__ import annotations
 
-import pytest
-
 from agents.strategist.agent import _strategist_validation_callback
 from agents.strategist.schema import StrategistDecision
 from agents.strategist.stance_schema import TickerStance
 from broker.portfolio import Portfolio
-
 
 # ---------------------------------------------------------------------------
 # Minimal CallbackContext shim — matches the shim in test_strategist_callbacks_v2.py
@@ -50,13 +47,13 @@ def _valid_decision() -> dict:
     return StrategistDecision(
         stances=[
             TickerStance(
-                ticker          = "AAPL",
-                preferred_weight = 0.05,
-                conviction      = 0.7,
-                rationale       = "open",
-                horizon         = "swing",
-                target_price    = 210.0,
-                stop_price      = 185.0,
+                ticker       = "AAPL",
+                intent       = "open",
+                weight       = 0.05,
+                rationale    = "open",
+                horizon      = "swing",
+                target_price = 210.0,
+                stop_price   = 185.0,
             ),
         ],
         decision_tag = "open_aapl",

@@ -85,16 +85,14 @@ def _open_stance(ticker: str = "AVGO", weight: float = 0.10) -> TickerStance:
     """Return a valid ``open`` stance for ``ticker``."""
 
     return TickerStance(
-        ticker          = ticker,
-        preferred_weight = 0.0,
-        conviction       = 0.5,
-        intent           = "open",
-        weight           = weight,
-        target_price     = 1200.0,
-        stop_price       = 950.0,
-        catalyst         = "Q3 earnings",
-        horizon          = "swing",
-        rationale        = "AI capex thesis intact",
+        ticker       = ticker,
+        intent       = "open",
+        weight       = weight,
+        target_price = 1200.0,
+        stop_price   = 950.0,
+        catalyst     = "Q3 earnings",
+        horizon      = "swing",
+        rationale    = "AI capex thesis intact",
     )
 
 
@@ -206,10 +204,9 @@ def test_callback_close_stance_deletes_ticker():
     ).model_dump(mode="json")
 
     close_stance = TickerStance(
-        ticker           = "NVDA",
-        preferred_weight = 0.0,
-        conviction       = 0.5,
-        intent           = "close",
+        ticker = "NVDA",
+        intent = "close",
+        reason = "test close",
     )
 
     state = _minimal_state(
@@ -245,11 +242,9 @@ def test_callback_hold_stance_touches_review_fields_only():
     ).model_dump(mode="json")
 
     hold_stance = TickerStance(
-        ticker           = "MSFT",
-        preferred_weight = 0.0,
-        conviction       = 0.5,
-        intent           = "hold",
-        reason           = "No new information; thesis intact",
+        ticker = "MSFT",
+        intent = "hold",
+        reason = "No new information; thesis intact",
     )
 
     state = _minimal_state(

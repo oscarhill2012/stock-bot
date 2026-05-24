@@ -64,10 +64,14 @@ def test_template_instructs_per_ticker_stance_output():
     assert "intent" in text
     assert "weight" in text
 
-    # Legacy fields must not appear — their presence would re-introduce
-    # the dual-form ambiguity that caused the 2026-05-24 schema-retry storm.
+    # Legacy field names must not appear as JSON field references — their
+    # presence in the output contract would re-introduce the dual-form ambiguity
+    # that caused the 2026-05-24 schema-retry storm.
+    # Note: the word "conviction" may appear in English prose (e.g. "when conviction
+    # supports it"), so we check for the JSON key form ``"conviction"`` (with quotes)
+    # rather than the bare word.
     assert "preferred_weight" not in text
-    assert "conviction" not in text
+    assert '"conviction"' not in text
 
 
 def test_template_documents_intent_verb_rules():
