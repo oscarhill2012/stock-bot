@@ -138,42 +138,33 @@ WILL reject your response if the field is missing — these are not suggestions.
 | add    | grow an existing position               | weight, reason                             | horizon, target_price, stop_price, catalyst (updates)|
 | trim   | reduce an existing position (not to 0)  | weight, reason                             | —                                                    |
 | close  | exit an existing position completely    | reason                                     | —                                                    |
-| hold   | no trade — review only                  | reason (what has changed since open)       | —                                                    |
+| hold   | no trade — review only                  | reason                                     | —                                                    |
 | update | no trade — revise the thesis            | reason + ≥1 of target_price/stop_price/horizon/catalyst | the remaining of those four              |
 
-### Required-fields cheat-sheet — re-read before every open
+A missing required field is the most common decision-killer.  If you cannot
+fill every required field for the verb you've picked, pick a different verb
+(e.g. ``hold`` to pass on a trade you cannot fully thesize this tick).
 
-OPEN demands FIVE fields in the JSON object, every time:
-  1. weight         (float in (0, 1])
-  2. rationale      (1–3 sentences; ≤{{STANCE_RATIONALE_MAX}} chars hard cap)
-  3. horizon        (one of "intraday", "swing", "long_term")
-  4. target_price   (float, the price level your thesis is targeting)
-  5. stop_price     (float, the price level that invalidates your thesis)
+### Field constraints (schema-enforced)
 
-Emitting an ``open`` stance without all five is the most common decision-killer.
-Before you commit to ``intent: "open"``, verify your JSON object contains
-every one of those five keys with a non-null value.  If you cannot fill any
-of the five, choose a different verb instead (e.g. ``hold`` to pass on the
-trade this tick).
-
-Schema-level rules (failing these means ADK rejects your response):
-- weight: float in (0, 1] on open/add/trim — long-only, 0.0 not permitted
-  (use intent="close" instead).  Omit weight entirely (null) on close/hold/update
-  — emitting 0.0 or any number on those verbs is rejected by the schema.
-  The risk gate clamps single-ticker weight at {{MAX_POSITION_PCT}}%, per-tick delta
-  at {{MAX_DELTA_PCT}}%, and total turnover at {{MAX_TURNOVER_PCT}}%.  Propose
-  values that already respect these.
+- weight: float in (0, 1].  Required on open/add/trim; omit (null) on
+  close/hold/update — emitting a number on those verbs is rejected.
+  Risk gate clamps: single-ticker ≤{{MAX_POSITION_PCT}}%, per-tick delta
+  ≤{{MAX_DELTA_PCT}}%, total turnover ≤{{MAX_TURNOVER_PCT}}%.
   {{CASH_FLOOR_STANZA}}
 - horizon: one of "intraday", "swing", "long_term".
-- rationale: 1–3 sentences, ≤{{STANCE_RATIONALE_MAX}} chars (HARD cap, schema-
-  enforced).  FROZEN at open — you cannot change it later.  Write tight,
-  evidence-led prose; treat the cap as a paragraph budget, not a target.
-- reason: 1–3 sentences, ≤{{STANCE_RATIONALE_MAX}} chars (HARD cap, same
+- target_price / stop_price: floats.  target_price is where your thesis
+  pays off; stop_price is where it's invalidated.
+- rationale: 1–3 sentences, ≤{{STANCE_RATIONALE_MAX}} chars (hard cap).
+  FROZEN at open — you cannot revise it later.  Treat the cap as a
+  paragraph budget, not a target.
+- reason: 1–3 sentences, ≤{{STANCE_RATIONALE_MAX}} chars (hard cap, same
   budget as rationale).
-- catalyst: a single phrase or sentence, ≤{{STANCE_CATALYST_MAX}} chars (HARD cap).
+- catalyst: a single phrase or sentence, ≤{{STANCE_CATALYST_MAX}} chars.
 - confidence (decision-level): float in [0.0, 1.0].
 - reasoning (decision-level): ≤{{DECISION_REASONING_MAX}} chars.
-- thesis (decision-level, optional — null carries the prior thesis forward): ≤{{DECISION_THESIS_MAX}} chars.
+- thesis (decision-level, optional — null carries the prior thesis
+  forward): ≤{{DECISION_THESIS_MAX}} chars.
 - decision_tag (decision-level): snake_case label, ≤40 chars.
 - Off-watchlist tickers are rejected.
 
