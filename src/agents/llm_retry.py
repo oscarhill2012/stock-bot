@@ -56,13 +56,16 @@ The retry policy is read from ``config/llm_retry.json`` via
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import random
 from collections.abc import AsyncGenerator, Callable
-from typing import Any
+from typing import Any, Literal
 
 from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event
+from pydantic import BaseModel, Field
 from tenacity import (
     AsyncRetrying,
     RetryCallState,
@@ -341,6 +344,127 @@ def _is_resource_exhausted(exc: BaseException) -> bool:
         return _is_resource_exhausted(cause)
 
     return False
+
+
+class RetryPolicy(BaseModel):
+    """Per-class retry policy used by :class:`RetryingAgentWrapper`.
+
+    The wrapper holds a dict of policies keyed by class name
+    (``"rate_limit"`` / ``"timeout"`` / ``"schema"``).  Each class has
+    its own ``max_attempts`` budget and its own backoff schedule.
+
+    Attributes
+    ----------
+    max_attempts:
+        Total number of attempts for this class — one initial try plus
+        retries.  ``3`` means "one try plus up to two retries".  Must be
+        ``>= 1``.
+    backoff:
+        Either ``"immediate"`` (no sleep between retries — used for
+        model-misbehaviour classes like timeout and schema) or
+        ``"exp_jitter"`` (used for transient quota classes — currently
+        only ``rate_limit``).
+    base_delay_seconds:
+        Lower bound on the per-retry sleep when ``backoff ==
+        "exp_jitter"``.  Ignored otherwise.
+    max_delay_seconds:
+        Upper bound on the per-retry sleep when ``backoff ==
+        "exp_jitter"``.  Ignored otherwise.
+    """
+
+    max_attempts:       int                              = Field(ge=1, le=20)
+    backoff:            Literal["immediate", "exp_jitter"]
+    base_delay_seconds: float = Field(default=0.0, ge=0.0)
+    max_delay_seconds:  float = Field(default=0.0, ge=0.0)
+
+
+def _compute_exp_jitter(*, attempt_n: int, base: float, max_: float) -> float:
+    """Return an exponential-with-jitter delay in seconds for the n-th retry.
+
+    Mirrors tenacity's ``wait_exponential_jitter`` behaviour without the
+    dependency: delay = min(max_, base * 2^(attempt_n - 1)) + random
+    jitter in [0, base).  Saturates at ``max_`` once exponential growth
+    exceeds it.
+
+    Parameters
+    ----------
+    attempt_n:
+        1-based count of attempts already consumed for this class
+        (i.e. the first retry passes ``attempt_n=1``).
+    base:
+        Lower-bound delay seed in seconds.
+    max_:
+        Upper-bound cap in seconds.
+
+    Returns
+    -------
+    float
+        Delay in seconds, in the range ``[base, max_]``.
+    """
+
+    # Exponential growth from the base, capped at max_.  attempt_n is
+    # 1-based so the first retry sleeps near base; the second near 2*base; etc.
+    grown  = min(max_, base * (2 ** max(0, attempt_n - 1)))
+
+    # Add jitter in [0, base) so simultaneous wrappers don't lock-step.
+    jitter = random.uniform(0, base)
+
+    # Final clamp — jitter could push above max_ if max_ is close to grown.
+    return min(max_, grown + jitter)
+
+
+async def _sleep_per_policy(policy: RetryPolicy, *, attempt_n: int) -> None:
+    """Sleep between retries according to ``policy.backoff``.
+
+    For ``"immediate"`` policies this is a no-op (returns immediately
+    without calling ``asyncio.sleep``) — used for timeout and schema
+    classes where backing off does not help.  For ``"exp_jitter"`` it
+    sleeps for the value returned by :func:`_compute_exp_jitter`.
+
+    Parameters
+    ----------
+    policy:
+        The per-class policy.
+    attempt_n:
+        1-based count of attempts already consumed for this class
+        (passed through to ``_compute_exp_jitter``).
+    """
+
+    if policy.backoff == "immediate":
+        return
+
+    delay = _compute_exp_jitter(
+        attempt_n = attempt_n,
+        base      = policy.base_delay_seconds,
+        max_      = policy.max_delay_seconds,
+    )
+    await asyncio.sleep(delay)
+
+
+def _merge_increment(current: dict, cls: str) -> dict:
+    """Return a new dict equal to ``current`` with ``current[cls]`` += 1.
+
+    Pure function — does not mutate ``current``.  Used by the retry
+    wrapper to build the ``state_delta`` payload for the per-tick
+    retry-counter accumulator.
+
+    Parameters
+    ----------
+    current:
+        Current accumulator dict (may be empty / may lack ``cls``).
+    cls:
+        Retry-class name to increment (``"rate_limit"``, ``"timeout"``,
+        ``"schema"``).
+
+    Returns
+    -------
+    dict
+        New dict equal to ``current`` with ``cls`` incremented by 1.
+    """
+
+    out      = dict(current)
+    out[cls] = out.get(cls, 0) + 1
+    return out
 
 
 class RetryingAgentWrapper(BaseAgent):

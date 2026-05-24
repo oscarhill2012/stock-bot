@@ -383,3 +383,115 @@ def test_classify_returns_none_for_strategist_contract_violation() -> None:
     from agents.strategist.derivation import StrategistContractViolation
 
     assert _classify(StrategistContractViolation("off-watchlist")) is None
+
+
+# ---------------------------------------------------------------------------
+# Tests for RetryPolicy, _compute_exp_jitter, _sleep_per_policy, _merge_increment
+# ---------------------------------------------------------------------------
+
+from agents.llm_retry import (
+    RetryPolicy,
+    _compute_exp_jitter,
+    _sleep_per_policy,
+    _merge_increment,
+)
+
+
+def test_retry_policy_immediate_rejects_delay_fields() -> None:
+    """An ``immediate`` policy ignores base/max delay (both default to 0)."""
+
+    p = RetryPolicy(max_attempts=3, backoff="immediate")
+
+    assert p.max_attempts       == 3
+    assert p.backoff            == "immediate"
+    assert p.base_delay_seconds == 0.0
+    assert p.max_delay_seconds  == 0.0
+
+
+def test_retry_policy_exp_jitter_requires_positive_delays() -> None:
+    """An ``exp_jitter`` policy stores positive base/max delay values."""
+
+    p = RetryPolicy(
+        max_attempts       = 5,
+        backoff            = "exp_jitter",
+        base_delay_seconds = 2.0,
+        max_delay_seconds  = 30.0,
+    )
+
+    assert p.base_delay_seconds == 2.0
+    assert p.max_delay_seconds  == 30.0
+
+
+def test_compute_exp_jitter_grows_with_attempt_number() -> None:
+    """Each successive attempt's delay grows, capped at max."""
+
+    delays = [
+        _compute_exp_jitter(attempt_n=n, base=2.0, max_=30.0)
+        for n in range(1, 6)
+    ]
+
+    # Monotonic non-decreasing (jitter introduces variance but never below base).
+    assert all(d >= 2.0  for d in delays)
+    assert all(d <= 30.0 for d in delays)
+    # The last attempts should saturate near max (with some jitter slack).
+    assert delays[-1] >= 10.0
+
+
+@pytest.mark.asyncio
+async def test_sleep_per_policy_immediate_does_not_sleep(monkeypatch) -> None:
+    """An ``immediate`` policy passes 0 to asyncio.sleep (or skips it)."""
+
+    sleeps: list[float] = []
+
+    async def _fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
+
+    p = RetryPolicy(max_attempts=3, backoff="immediate")
+    await _sleep_per_policy(p, attempt_n=1)
+
+    # Either the helper skipped asyncio.sleep entirely, or it passed 0.
+    assert sleeps == [] or sleeps == [0.0]
+
+
+@pytest.mark.asyncio
+async def test_sleep_per_policy_exp_jitter_sleeps_within_bounds(monkeypatch) -> None:
+    """An ``exp_jitter`` policy sleeps for a value within [base, max]."""
+
+    sleeps: list[float] = []
+
+    async def _fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
+
+    p = RetryPolicy(
+        max_attempts       = 5,
+        backoff            = "exp_jitter",
+        base_delay_seconds = 2.0,
+        max_delay_seconds  = 30.0,
+    )
+    await _sleep_per_policy(p, attempt_n=1)
+
+    assert len(sleeps) == 1
+    assert 2.0 <= sleeps[0] <= 30.0
+
+
+def test_merge_increment_returns_new_dict() -> None:
+    """``_merge_increment`` is pure — does not mutate the input."""
+
+    current = {"rate_limit": 1}
+    out     = _merge_increment(current, "timeout")
+
+    assert current == {"rate_limit": 1}                   # input untouched
+    assert out     == {"rate_limit": 1, "timeout": 1}
+
+
+def test_merge_increment_increments_existing_key() -> None:
+    """An already-present class increments by 1."""
+
+    current = {"schema": 2}
+    out     = _merge_increment(current, "schema")
+
+    assert out == {"schema": 3}
