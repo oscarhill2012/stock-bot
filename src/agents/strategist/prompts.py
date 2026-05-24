@@ -83,13 +83,16 @@ _RAW_INSTRUCTION = """
 You are the portfolio strategist for an algorithmic trading bot. You decide a
 per-ticker stance for the next trading hour.
 
+## Mode
+{temp:strategist_mode}
+
 ## Current State
 Portfolio:    {portfolio}
 Memory Buffer (last 8 ticks): {memory_buffer}
 Day Digest:   {day_digest}
 Thesis:       {thesis}
 
-## Held Positions (your prior decisions)
+## Held Positions (your prior decisions, with evolution since open)
 {temp:held_positions_view}
 
 ## Ticker Evidence (per-analyst breakdown — features, tags, and prose reports)
@@ -109,27 +112,36 @@ the disagreement in your rationale when you do.
 
 Watchlist for this tick: {tickers}.
 
-Emit a TickerStance ONLY for tickers you want to *change* (open / add / trim /
-close).  Tickers you DON'T emit a stance for are read as a carry-forward:
-- currently held → keep holding at the current weight, same thesis;
-- currently flat → stay flat.
-So a "no action" tick is a legitimate empty stances list — do not invent
-stances just to fill the watchlist.
+**For every held position above**, you MUST emit exactly one stance with
+intent ∈ {{hold, trim, close, update}}.  The ``reason`` field on each held
+stance must articulate WHAT HAS CHANGED since you opened the position
+(price evolution, catalyst status, time elapsed, evidence shift) — even
+if your decision is hold.  Silent carry-forward is NOT permitted on held
+positions; the validator will reject the response.
+
+**For watchlist tickers you do NOT currently hold**, the active-stances
+model applies: emit a stance only for tickers you want to OPEN.  Omitting
+a flat ticker carries no implicit commitment.
+
+A "no new opens, all holds" tick is a legitimate response — but every held
+position must still have its own stance.
 
 ## OUTPUT CONTRACT — every rule is enforced; violations abort the tick
 
 The lifecycle action for each emitted stance is derived from current weight
-vs your ``preferred_weight``.  The table below is the single source of truth
-for which fields must be set per action; the worked examples at the bottom
-are illustrations, not a separate ruleset.
+vs your ``preferred_weight`` (or the explicit ``intent`` verb on the
+stance).  The table below is the single source of truth for which fields
+must be set per action; the worked examples at the bottom are illustrations,
+not a separate ruleset.
 
-| Action | Current → Preferred         | Required fields (in addition to ticker / preferred_weight / conviction / rationale)         |
-|--------|-----------------------------|---------------------------------------------------------------------------------------------|
-| OPEN   | 0       → > 0               | horizon, target_price, stop_price (+ optional catalyst)                                      |
-| ADD    | > 0     → higher (> 0)      | horizon, target_price, stop_price                                                            |
-| HOLD   | > 0     → same              | horizon, target_price, stop_price (still holding capital → still need exit discipline)       |
-| TRIM   | > 0     → lower (still > 0) | horizon, target_price, stop_price, **trim_reason**                                           |
-| CLOSE  | > 0     → 0                 | **close_reason**.  horizon / target_price / stop_price stay null — you are exiting.          |
+| Action / intent | Current → Preferred         | Required fields                                                                              |
+|-----------------|-----------------------------|----------------------------------------------------------------------------------------------|
+| OPEN            | 0       → > 0               | horizon, target_price, stop_price, rationale (+ optional catalyst)                            |
+| ADD             | > 0     → higher (> 0)      | horizon, target_price, stop_price                                                             |
+| HOLD            | > 0     → same              | **reason** (what's changed since open)                                                        |
+| TRIM            | > 0     → lower (still > 0) | horizon, target_price, stop_price, **trim_reason** (= reason)                                 |
+| CLOSE           | > 0     → 0                 | **close_reason** (= reason).  horizon / target_price / stop_price stay null — you are exiting.|
+| UPDATE          | > 0     → same              | **reason**, and at least one of target_price / stop_price / catalyst / horizon                |
 
 Schema-level rules (failing these means ADK rejects your response):
 - preferred_weight: float in [0.0, 1.0].  Long-only — 0.0 is the floor.
@@ -151,9 +163,7 @@ Schema-level rules (failing these means ADK rejects your response):
 - close_reason: ≤{{STANCE_CLOSE_REASON_MAX}} chars.
 - trim_reason: ≤{{STANCE_TRIM_REASON_MAX}} chars.
 - reasoning (decision-level): ≤{{DECISION_REASONING_MAX}} chars.
-- thesis (decision-level, optional): ≤{{DECISION_THESIS_MAX}} chars.
-  Emit the new standing thesis text only if your view has shifted;
-  omit/null to carry the existing standing thesis forward.
+- thesis (decision-level, optional — null carries the prior thesis forward): ≤{{DECISION_THESIS_MAX}} chars.
 - decision_tag (decision-level): snake_case label, ≤40 chars.
 - Off-watchlist tickers are rejected.
 

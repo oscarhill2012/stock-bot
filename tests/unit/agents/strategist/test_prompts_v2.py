@@ -46,9 +46,25 @@ def test_template_no_longer_has_active_positions_dump():
 
 
 def test_template_instructs_per_ticker_stance_output():
-    assert "TickerStance" in STRATEGIST_INSTRUCTION
-    assert "preferred_weight" in STRATEGIST_INSTRUCTION
-    assert "conviction" in STRATEGIST_INSTRUCTION
+    """The template must encode the per-held-position stance requirement.
+
+    Spec B rewrites ``## Your Job`` to explicitly mandate a stance for every
+    held position.  The old ``TickerStance`` class-name reference was dropped
+    from the prose (the class name is an implementation detail, not a contract
+    term); the new invariants are the per-held-position wording and the
+    ``preferred_weight`` / ``conviction`` field names that the schema enforces.
+    """
+    text = STRATEGIST_INSTRUCTION
+
+    # Spec B core invariant — every held position must have an explicit stance.
+    assert "you MUST emit exactly one stance" in text
+
+    # The mode placeholder wires the cold-start vs incremental framing.
+    assert "{temp:strategist_mode}" in text
+
+    # Schema field names remain (they drive the output contract table).
+    assert "preferred_weight" in text
+    assert "conviction" in text
 
 
 def test_template_documents_lifecycle_hint_rules():
@@ -96,9 +112,13 @@ def test_template_renders_with_all_required_slots():
     way.  The guard contract is preserved: any *missing* slot still raises
     ``KeyError`` before the assertions execute.
     """
-    # Pre-substitute the temp:-prefixed slots so .format() can handle them.
+    # Pre-substitute all temp:-prefixed slots so .format() can handle them.
+    # Spec B added {temp:strategist_mode} above ## Current State; it must be
+    # substituted here alongside the existing held_positions_view and
+    # ticker_evidence slots.
     template = (
         STRATEGIST_INSTRUCTION
+        .replace("{temp:strategist_mode}",     "Cold start — your portfolio is empty.")
         .replace("{temp:held_positions_view}", "(No held positions — portfolio is flat.)")
         .replace("{temp:ticker_evidence}",     "AAPL\n  Aggregate: bullish (magnitude 0.42)")
     )
