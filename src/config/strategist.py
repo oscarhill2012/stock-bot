@@ -53,6 +53,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from config.analysts import LlmCaps  # Shared shape — imported to avoid drift
+
 # Project-root-relative default path. The package is imported via
 # PYTHONPATH=src, so we resolve relative to the working directory rather than
 # relative to this file.
@@ -138,12 +140,19 @@ class StrategistConfig(BaseModel):
         Caps on each per-ticker stance.
     position_thesis_caps:
         Caps on the persisted thesis for held positions.
+    llm:
+        Per-call runtime caps for the strategist LLM (timeout, output
+        tokens, and per-class retry budgets).  Shares the same
+        :class:`~config.analysts.LlmCaps` shape as the analyst agents but
+        carries larger defaults (180 s, 8000 tokens) suited to the
+        strategist's full-watchlist stance output.
     """
 
     slack_percent:        int = Field(ge=0, le=50, default=10)
     decision_caps:        DecisionCaps
     stance_caps:          StanceCaps
     position_thesis_caps: PositionThesisCaps
+    llm:                  LlmCaps                                # Per-call runtime caps (timeout, tokens, retries)
 
     def schema_cap(self, prompt_cap: int) -> int:
         """Derive the schema-enforced ``max_length`` from a prompt-stated cap.

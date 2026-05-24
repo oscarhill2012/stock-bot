@@ -125,7 +125,8 @@ class FundamentalJoinerAgent(BaseAgent):
         # ticker_count and len(calls).
         #
         # Only emit when STOCKBOT_TERMINAL_LOG=1 (accumulator key present).
-        _obs_calls: list[dict] = state.get("temp:_obs_fundamental_calls") or []
+        _obs_calls:   list[dict]     = state.get("temp:_obs_fundamental_calls")   or []
+        _obs_retries: dict[str, int] = state.get("temp:_obs_fundamental_retries") or {}
         if _obs_calls or tickers:
             # Always emit the summary when there are tickers — even if all failed
             # (empty accumulator) so the operator knows the analyst ran.
@@ -133,8 +134,9 @@ class FundamentalJoinerAgent(BaseAgent):
             if os.environ.get("STOCKBOT_TERMINAL_LOG") == "1":
                 emit_analyst_summary(
                     "fundamental",
-                    calls=_obs_calls,
-                    ticker_count=len(tickers),
+                    calls        = _obs_calls,
+                    ticker_count = len(tickers),
+                    retries      = _obs_retries,
                 )
 
         # Surface trace — records the aggregated verdicts for debugging/auditing.

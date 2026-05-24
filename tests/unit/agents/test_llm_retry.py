@@ -1,22 +1,18 @@
-"""Unit tests for :class:`agents.llm_retry.RetryingAgentWrapper`.
+"""Unit tests for :class:`agents.llm_retry.RetryingAgentWrapper` and the
+classification / sleep / merge helpers it relies on.
 
-Four scenarios covered:
+Covers (per the three-layer retry spec):
 
-1. **Happy path** — the inner succeeds on its first attempt; every event it
-   yields is forwarded in order; ``run_async`` is invoked exactly once.
-2. **Transient 429** — the inner raises a 429 twice and then succeeds; the
-   wrapper invokes the inner three times, yields only the events from the
-   successful attempt, and discards the partial yields from the failed
-   attempts.
-3. **Persistent 429** — the inner raises 429 forever; the wrapper invokes
-   the inner exactly ``max_attempts`` times and re-raises the original
-   exception (preserved via ``reraise=True``).
-4. **Non-retryable error** — the inner raises a ``ValueError``; the
-   wrapper propagates it immediately on the first attempt without
-   sleeping.
-
-Each test injects a hand-built :class:`config.llm_retry.RetryConfig` with
-sub-second delays so the suite stays fast (``base_delay_seconds=0.001``).
+* Per-class budget independence (a timeout consumes only the timeout
+  counter; not the 429 counter).
+* asyncio.wait_for enforcement of the per-agent timeout.
+* Event buffering — failed-attempt events are discarded; only the
+  successful attempt's events flush.
+* state_delta emission of the per-tick retry counter accumulator.
+* StrategistContractViolation propagates immediately (not retried).
+* Structured llm_retry_exhausted ERROR log on terminal exhaustion.
+* Existing 429 happy-path / persistent / non-retryable behaviour
+  preserved verbatim.
 """
 from __future__ import annotations
 
@@ -28,252 +24,715 @@ from unittest.mock import MagicMock
 import pytest
 from google.adk.events import Event, EventActions
 from google.genai.errors import ClientError
+from pydantic import BaseModel as _BM, ValidationError as _VE
 
-from agents.llm_retry import RetryingAgentWrapper, _is_resource_exhausted
-from config.llm_retry import RetryConfig
+from agents.llm_retry import (
+    RetryingAgentWrapper,
+    RetryPolicy,
+    build_retry_policies,
+    _classify,
+    _compute_exp_jitter,
+    _is_rate_limit,
+    _is_schema_error,
+    _is_timeout,
+    _merge_increment,
+    _sleep_per_policy,
+)
+
 
 # ---------------------------------------------------------------------------
-# Test helpers
+# Shared fixtures and stubs
 # ---------------------------------------------------------------------------
 
 
-def _fast_config(*, max_attempts: int = 5) -> RetryConfig:
-    """Build a :class:`RetryConfig` with negligible delays for unit tests.
+class _Tiny(_BM):
+    """Trivial Pydantic model used to construct a real ValidationError."""
 
-    The retry wrapper sleeps between attempts in production; using the
-    production defaults (base_delay=2s, max_delay=30s) would make this
-    test file take several minutes to run even on the happy path because
-    tenacity still applies its own internal scheduling.
-    """
-
-    return RetryConfig(
-        max_attempts       = max_attempts,
-        base_delay_seconds = 0.001,
-        max_delay_seconds  = 0.001,
-    )
+    name: str
 
 
-def _make_client_error_429() -> ClientError:
-    """Construct a ``ClientError`` with ``status_code=429``.
+def _make_validation_error() -> _VE:
+    """Produce a real ``pydantic.ValidationError`` by failing a model parse."""
 
-    The genai SDK's ``ClientError`` constructor is fussy about its
-    arguments — it expects a response body and an httpx response.  We
-    cheat by directly setting ``status_code`` on a barely-initialised
-    instance because the wrapper's detection only looks at that
-    attribute.
-    """
+    try:
+        _Tiny.model_validate({"name": 123})
+    except _VE as ve:
+        return ve
 
-    err = ClientError.__new__(ClientError)
-    err.status_code = 429
-    err.code        = 429
-    err.message     = "RESOURCE_EXHAUSTED"
-    err.status      = "RESOURCE_EXHAUSTED"
-    err.details     = {}
-    err.response_json = {
-        "error": {"code": 429, "message": "RESOURCE_EXHAUSTED"}
+    raise AssertionError("Pydantic accepted invalid payload — test premise broken.")
+
+
+def _fast_policies(
+    *,
+    rate_limit_attempts: int = 5,
+    timeout_attempts:    int = 3,
+    schema_attempts:     int = 3,
+) -> dict[str, RetryPolicy]:
+    """Build a policy dict with sub-second 429 backoff for fast tests."""
+
+    return {
+        "rate_limit": RetryPolicy(
+            max_attempts       = rate_limit_attempts,
+            backoff            = "exp_jitter",
+            base_delay_seconds = 0.001,
+            max_delay_seconds  = 0.005,
+        ),
+        "timeout":    RetryPolicy(max_attempts=timeout_attempts, backoff="immediate"),
+        "schema":     RetryPolicy(max_attempts=schema_attempts,  backoff="immediate"),
     }
-
-    # BaseException requires ``args`` to be set before str() works.
-    err.args = ("429 RESOURCE_EXHAUSTED",)
-
-    return err
 
 
 class _FakeInner:
-    """A scriptable BaseAgent stand-in.
+    """Configurable fake of an ADK BaseAgent.
 
-    Constructed with a list of attempt outcomes — each outcome is either
-    ``None`` (succeed and yield the canned events) or an exception
-    instance (raise that exception).  The first call to ``run_async``
-    consumes outcomes[0], the second consumes outcomes[1], and so on.
-    Records the number of times it was invoked on ``call_count``.
+    Stores a script of per-attempt outcomes.  On each ``run_async`` call
+    it advances the script: an outcome can be either an Exception
+    (raised) or a list of Events (yielded).  Used by every wrapper test
+    to simulate transient / persistent failures and successes.
     """
-
-    name: str = "FakeInner"
 
     def __init__(
         self,
-        outcomes: list[BaseException | None],
-        events_per_success: list[Event] | None = None,
+        *,
+        name:     str,
+        script:   list[Any],          # each item: Exception | list[Event] | "sleep"
+        sleep_s:  float | None = None,
     ) -> None:
-        self._outcomes  = list(outcomes)
-        self._events    = events_per_success or [
-            Event(
-                author        = "FakeInner",
-                invocation_id = "test-invocation",
-                actions       = EventActions(state_delta={"fake": "ok"}),
-            ),
-        ]
-        self.call_count = 0
+        self.name        = name
+        self._script     = list(script)
+        self._sleep_s    = sleep_s
+        self.call_count  = 0
 
-    async def run_async(self, _ctx: Any) -> AsyncGenerator[Event, None]:
-        """Pop the next outcome and either raise or yield canned events."""
+    async def run_async(
+        self, ctx: Any,
+    ) -> AsyncGenerator[Event, None]:
+        """Yield (or raise) per the next scripted outcome."""
 
-        # Capture which attempt this is, then advance the counter so a
-        # subsequent retry consumes the next scripted outcome.
-        idx = self.call_count
         self.call_count += 1
 
-        # If we've run out of scripted outcomes, default to success —
-        # avoids IndexError in the "succeeds first try" test where
-        # outcomes=[] is conceptually equivalent to "no failures planned".
-        outcome = self._outcomes[idx] if idx < len(self._outcomes) else None
+        if not self._script:
+            raise AssertionError(
+                f"_FakeInner({self.name!r}) ran out of scripted outcomes "
+                f"(call {self.call_count})"
+            )
+
+        outcome = self._script.pop(0)
 
         if isinstance(outcome, BaseException):
             raise outcome
 
-        # Yield each canned event.  ADK agents normally yield as they go,
-        # so this loop matches that shape.
-        for ev in self._events:
+        if outcome == "sleep":
+            # Sleep longer than the wrapper's timeout so asyncio.wait_for fires.
+            await asyncio.sleep(self._sleep_s)
+            yield Event(author=self.name, content=None, actions=EventActions())
+            return
+
+        # Otherwise it's a list of Events to yield.
+        for ev in outcome:
             yield ev
 
 
-def _fake_ctx() -> MagicMock:
-    """Return a minimal MagicMock standing in for ``InvocationContext``."""
+def _ctx_with_state() -> MagicMock:
+    """Return a MagicMock ctx whose .session.state is a real dict.
 
-    ctx                  = MagicMock()
-    ctx.invocation_id    = "inv-test"
-    ctx.session          = MagicMock()
-    ctx.session.state    = {}
+    The wrapper reads ``ctx.session.state.get(retry_state_key)`` to
+    build the incremental state_delta payload, and yields
+    ``Event(state_delta=...)``.  Tests inspect the dict directly.
+
+    We use an unspec'd MagicMock (not ``spec=InvocationContext``) so
+    that ``ctx.session.state = {}`` is permitted without triggering the
+    MagicMock attribute-restriction machinery.
+    """
+
+    ctx = MagicMock()
+    ctx.session.state = {}
     return ctx
 
 
-async def _drain(wrapper: RetryingAgentWrapper, ctx: Any) -> list[Event]:
-    """Collect every event the wrapper yields into a list."""
+# ---------------------------------------------------------------------------
+# Classification predicates and dispatcher
+# ---------------------------------------------------------------------------
+
+
+def test_is_rate_limit_recognises_429_client_error() -> None:
+    err = ClientError(
+        code            = 429,
+        response_json   = {"error": {"status": "RESOURCE_EXHAUSTED"}},
+        response        = MagicMock(),
+    )
+
+    assert _is_rate_limit(err) is True
+    assert _classify(err)      == "rate_limit"
+
+
+def test_is_rate_limit_walks_cause_chain() -> None:
+    inner = ClientError(
+        code            = 429,
+        response_json   = {"error": {"status": "RESOURCE_EXHAUSTED"}},
+        response        = MagicMock(),
+    )
+    try:
+        try:
+            raise inner
+        except ClientError as ce:
+            raise RuntimeError("wrapped") from ce
+    except RuntimeError as outer:
+        assert _is_rate_limit(outer) is True
+        assert _classify(outer)      == "rate_limit"
+
+
+def test_is_timeout_recognises_asyncio_timeout() -> None:
+    assert _is_timeout(asyncio.TimeoutError()) is True
+    assert _is_timeout(TimeoutError())          is True
+    assert _classify(asyncio.TimeoutError())    == "timeout"
+
+
+def test_is_schema_error_recognises_pydantic_validation_error() -> None:
+    ve = _make_validation_error()
+
+    assert _is_schema_error(ve) is True
+    assert _classify(ve)        == "schema"
+
+
+def test_is_schema_error_walks_cause_chain() -> None:
+    ve = _make_validation_error()
+    try:
+        try:
+            raise ve
+        except _VE as inner:
+            raise RuntimeError("wrapped") from inner
+    except RuntimeError as outer:
+        assert _is_schema_error(outer) is True
+        assert _classify(outer)        == "schema"
+
+
+def test_classify_returns_none_for_unhandled() -> None:
+    assert _classify(ValueError("nope")) is None
+
+
+def test_classify_returns_none_for_strategist_contract_violation() -> None:
+    from agents.strategist.derivation import StrategistContractViolation
+
+    assert _classify(StrategistContractViolation("off-watchlist")) is None
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def test_retry_policy_immediate_defaults_delays_to_zero() -> None:
+    p = RetryPolicy(max_attempts=3, backoff="immediate")
+    assert p.base_delay_seconds == 0.0
+    assert p.max_delay_seconds  == 0.0
+
+
+def test_compute_exp_jitter_grows_with_attempt_number() -> None:
+    delays = [
+        _compute_exp_jitter(attempt_n=n, base=2.0, max_=30.0)
+        for n in range(1, 6)
+    ]
+    assert all(d >= 2.0  for d in delays)
+    assert all(d <= 30.0 for d in delays)
+    assert delays[-1] >= 10.0
+
+
+@pytest.mark.asyncio
+async def test_sleep_per_policy_immediate_does_not_sleep(monkeypatch) -> None:
+    sleeps: list[float] = []
+
+    async def _fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
+
+    p = RetryPolicy(max_attempts=3, backoff="immediate")
+    await _sleep_per_policy(p, attempt_n=1)
+
+    assert sleeps == [] or sleeps == [0.0]
+
+
+@pytest.mark.asyncio
+async def test_sleep_per_policy_exp_jitter_sleeps_within_bounds(monkeypatch) -> None:
+    sleeps: list[float] = []
+
+    async def _fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
+
+    p = RetryPolicy(
+        max_attempts       = 5,
+        backoff            = "exp_jitter",
+        base_delay_seconds = 2.0,
+        max_delay_seconds  = 30.0,
+    )
+    await _sleep_per_policy(p, attempt_n=1)
+
+    assert len(sleeps) == 1
+    assert 2.0 <= sleeps[0] <= 30.0
+
+
+def test_merge_increment_returns_new_dict_and_increments() -> None:
+    current = {"rate_limit": 1}
+    out     = _merge_increment(current, "timeout")
+    assert current == {"rate_limit": 1}
+    assert out     == {"rate_limit": 1, "timeout": 1}
+
+    out2 = _merge_increment({"schema": 2}, "schema")
+    assert out2 == {"schema": 3}
+
+
+def test_build_retry_policies_composes_three_classes(monkeypatch) -> None:
+    from config import retry_429 as cfg_mod
+
+    monkeypatch.setattr(
+        cfg_mod,
+        "get_retry_429_policy",
+        lambda: cfg_mod.Retry429Policy(
+            max_attempts       = 5,
+            base_delay_seconds = 2.0,
+            max_delay_seconds  = 30.0,
+        ),
+    )
+
+    policies = build_retry_policies(timeout_retries=3, schema_retries=3)
+    assert set(policies.keys()) == {"rate_limit", "timeout", "schema"}
+    assert policies["rate_limit"].max_attempts == 5
+    assert policies["rate_limit"].backoff      == "exp_jitter"
+    assert policies["timeout"].max_attempts    == 3
+    assert policies["timeout"].backoff         == "immediate"
+    assert policies["schema"].max_attempts     == 3
+    assert policies["schema"].backoff          == "immediate"
+
+
+# ---------------------------------------------------------------------------
+# Wrapper happy path
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_succeeds_first_try_forwards_all_events() -> None:
+    """Inner succeeds on first call; every event is yielded in order."""
+
+    ev1 = Event(author="X", content=None, actions=EventActions())
+    ev2 = Event(author="X", content=None, actions=EventActions())
+
+    inner = _FakeInner(name="X", script=[[ev1, ev2]])
+
+    wrapper = RetryingAgentWrapper(
+        inner           = inner,
+        timeout_seconds = 5.0,
+        policies        = _fast_policies(),
+        retry_state_key = "temp:_obs_test_retries",
+    )
+
+    ctx = _ctx_with_state()
 
     out: list[Event] = []
     async for ev in wrapper._run_async_impl(ctx):
         out.append(ev)
-    return out
+
+    assert inner.call_count == 1
+    assert out == [ev1, ev2]
 
 
 # ---------------------------------------------------------------------------
-# 1. Happy path
+# Per-class retry behaviour
 # ---------------------------------------------------------------------------
 
 
-def test_succeeds_first_try_forwards_all_events() -> None:
-    """Inner succeeds on attempt 1 → 1 invocation, every event forwarded."""
+@pytest.mark.asyncio
+async def test_rate_limit_retries_up_to_max_then_raises() -> None:
+    """Six consecutive 429s exhaust max_attempts=5 and re-raise."""
 
-    inner = _FakeInner(outcomes=[])
+    err = ClientError(
+        code            = 429,
+        response_json   = {"error": {"status": "RESOURCE_EXHAUSTED"}},
+        response        = MagicMock(),
+    )
+
+    inner = _FakeInner(name="X", script=[err] * 6)
 
     wrapper = RetryingAgentWrapper(
-        name         = "test",
-        inner        = inner,
-        retry_config = _fast_config(),
-    )
-
-    events = asyncio.run(_drain(wrapper, _fake_ctx()))
-
-    assert inner.call_count == 1, "should invoke inner exactly once on success"
-    assert len(events) == 1
-    assert events[0].actions.state_delta == {"fake": "ok"}
-
-
-# ---------------------------------------------------------------------------
-# 2. Transient 429 — retry succeeds
-# ---------------------------------------------------------------------------
-
-
-def test_retries_on_429_then_succeeds() -> None:
-    """Two 429s followed by success → 3 invocations, only success events yielded."""
-
-    inner = _FakeInner(
-        outcomes = [
-            _make_client_error_429(),
-            _make_client_error_429(),
-            None,  # third attempt succeeds
-        ],
-    )
-
-    wrapper = RetryingAgentWrapper(
-        name         = "test",
-        inner        = inner,
-        retry_config = _fast_config(max_attempts=5),
-    )
-
-    events = asyncio.run(_drain(wrapper, _fake_ctx()))
-
-    assert inner.call_count == 3
-    # Only the events from the successful attempt — partial yields from
-    # the failed attempts must be discarded.
-    assert len(events) == 1
-    assert events[0].actions.state_delta == {"fake": "ok"}
-
-
-# ---------------------------------------------------------------------------
-# 3. Persistent 429 — exhausted attempts re-raise
-# ---------------------------------------------------------------------------
-
-
-def test_persistent_429_raises_after_max_attempts() -> None:
-    """429 every attempt → exactly max_attempts invocations, then re-raise."""
-
-    inner = _FakeInner(
-        outcomes = [_make_client_error_429() for _ in range(10)],
-    )
-
-    wrapper = RetryingAgentWrapper(
-        name         = "test",
-        inner        = inner,
-        retry_config = _fast_config(max_attempts=3),
+        inner           = inner,
+        timeout_seconds = 5.0,
+        policies        = _fast_policies(rate_limit_attempts=5),
+        retry_state_key = "temp:_obs_test_retries",
     )
 
     with pytest.raises(ClientError):
-        asyncio.run(_drain(wrapper, _fake_ctx()))
+        async for _ in wrapper._run_async_impl(_ctx_with_state()):
+            pass
 
-    assert inner.call_count == 3, "must stop after max_attempts attempts"
-
-
-# ---------------------------------------------------------------------------
-# 4. Non-retryable error — immediate propagation
-# ---------------------------------------------------------------------------
+    assert inner.call_count == 5
 
 
-def test_non_429_error_propagates_without_retry() -> None:
-    """A ValueError must propagate immediately on the first attempt."""
+@pytest.mark.asyncio
+async def test_rate_limit_retries_then_succeeds() -> None:
+    """Two 429s followed by success yields only the success events."""
+
+    err = ClientError(
+        code            = 429,
+        response_json   = {"error": {"status": "RESOURCE_EXHAUSTED"}},
+        response        = MagicMock(),
+    )
+    ev  = Event(author="X", content=None, actions=EventActions())
+
+    inner = _FakeInner(name="X", script=[err, err, [ev]])
+
+    wrapper = RetryingAgentWrapper(
+        inner           = inner,
+        timeout_seconds = 5.0,
+        policies        = _fast_policies(),
+        retry_state_key = "temp:_obs_test_retries",
+    )
+
+    out: list[Event] = []
+    async for e in wrapper._run_async_impl(_ctx_with_state()):
+        out.append(e)
+
+    assert inner.call_count == 3
+    # The two retry state_delta events come first; the success event last.
+    assert out[-1] is ev
+
+
+@pytest.mark.asyncio
+async def test_timeout_retries_up_to_max_then_raises() -> None:
+    """Four consecutive timeouts exhaust max_attempts=3 and re-raise TimeoutError."""
 
     inner = _FakeInner(
-        outcomes = [ValueError("not a rate limit")],
+        name    = "X",
+        script  = ["sleep"] * 4,
+        sleep_s = 1.0,                                  # longer than wrapper timeout
     )
 
     wrapper = RetryingAgentWrapper(
-        name         = "test",
-        inner        = inner,
-        retry_config = _fast_config(max_attempts=5),
+        inner           = inner,
+        timeout_seconds = 0.05,                         # 50ms — easy to overshoot
+        policies        = _fast_policies(timeout_attempts=3),
+        retry_state_key = "temp:_obs_test_retries",
     )
 
-    with pytest.raises(ValueError, match="not a rate limit"):
-        asyncio.run(_drain(wrapper, _fake_ctx()))
+    with pytest.raises(TimeoutError):
+        async for _ in wrapper._run_async_impl(_ctx_with_state()):
+            pass
 
-    assert inner.call_count == 1, "non-retryable errors must not retry"
+    assert inner.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_schema_retries_up_to_max_then_raises() -> None:
+    """Four ValidationErrors exhaust max_attempts=3 and re-raise."""
+
+    inner = _FakeInner(
+        name   = "X",
+        script = [_make_validation_error() for _ in range(4)],
+    )
+
+    wrapper = RetryingAgentWrapper(
+        inner           = inner,
+        timeout_seconds = 5.0,
+        policies        = _fast_policies(schema_attempts=3),
+        retry_state_key = "temp:_obs_test_retries",
+    )
+
+    with pytest.raises(_VE):
+        async for _ in wrapper._run_async_impl(_ctx_with_state()):
+            pass
+
+    assert inner.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_independent_budgets_per_class() -> None:
+    """One 429 + one timeout + one schema + success — none of those budgets
+    individually exhaust, so all four attempts run and the success yields."""
+
+    err_429 = ClientError(
+        code          = 429,
+        response_json = {"error": {"status": "RESOURCE_EXHAUSTED"}},
+        response      = MagicMock(),
+    )
+    ev      = Event(author="X", content=None, actions=EventActions())
+
+    # Script: 429 → timeout (sleep) → schema → success.
+    inner = _FakeInner(
+        name    = "X",
+        script  = [err_429, "sleep", _make_validation_error(), [ev]],
+        sleep_s = 1.0,
+    )
+
+    wrapper = RetryingAgentWrapper(
+        inner           = inner,
+        timeout_seconds = 0.05,
+        policies        = _fast_policies(),
+        retry_state_key = "temp:_obs_test_retries",
+    )
+
+    out: list[Event] = []
+    async for e in wrapper._run_async_impl(_ctx_with_state()):
+        out.append(e)
+
+    assert inner.call_count == 4
+    assert out[-1] is ev
+
+
+@pytest.mark.asyncio
+async def test_unclassified_exception_propagates_immediately() -> None:
+    """A ValueError is unclassified — wrapper raises on the first attempt."""
+
+    inner = _FakeInner(name="X", script=[ValueError("boom")])
+
+    wrapper = RetryingAgentWrapper(
+        inner           = inner,
+        timeout_seconds = 5.0,
+        policies        = _fast_policies(),
+        retry_state_key = "temp:_obs_test_retries",
+    )
+
+    with pytest.raises(ValueError, match="boom"):
+        async for _ in wrapper._run_async_impl(_ctx_with_state()):
+            pass
+
+    assert inner.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_strategist_contract_violation_not_retried() -> None:
+    """StrategistContractViolation propagates immediately (no retry)."""
+
+    from agents.strategist.derivation import StrategistContractViolation
+
+    inner = _FakeInner(
+        name   = "Strategist",
+        script = [StrategistContractViolation("off-watchlist")],
+    )
+
+    wrapper = RetryingAgentWrapper(
+        inner           = inner,
+        timeout_seconds = 5.0,
+        policies        = _fast_policies(),
+        retry_state_key = "temp:_obs_strategist_retries",
+    )
+
+    with pytest.raises(StrategistContractViolation):
+        async for _ in wrapper._run_async_impl(_ctx_with_state()):
+            pass
+
+    assert inner.call_count == 1
 
 
 # ---------------------------------------------------------------------------
-# 5. Detection helper — chained-cause exception is still recognised
+# Event buffering
 # ---------------------------------------------------------------------------
 
 
-def test_is_resource_exhausted_walks_cause_chain() -> None:
-    """A RuntimeError that wraps a 429 ClientError must still be retryable."""
+@pytest.mark.asyncio
+async def test_event_buffer_discards_failed_attempt_events() -> None:
+    """A failed attempt's yielded events do not reach the outer pipeline."""
 
-    inner_err  = _make_client_error_429()
-    outer_err  = RuntimeError("ADK wrapper error")
-    outer_err.__cause__ = inner_err
+    err = ClientError(
+        code          = 429,
+        response_json = {"error": {"status": "RESOURCE_EXHAUSTED"}},
+        response      = MagicMock(),
+    )
 
-    assert _is_resource_exhausted(outer_err) is True
+    e_fail = Event(author="X", content=None, actions=EventActions())
+    e_succ = Event(author="X", content=None, actions=EventActions())
+
+    # Custom fake that yields one event THEN raises on the first call,
+    # then yields a different event and succeeds on the second.
+    class _PartialFail:
+        name = "X"
+        call_count = 0
+
+        async def run_async(self, ctx):                # type: ignore[no-untyped-def]
+            _PartialFail.call_count += 1
+
+            if _PartialFail.call_count == 1:
+                yield e_fail
+                raise err
+
+            yield e_succ
+
+    wrapper = RetryingAgentWrapper(
+        inner           = _PartialFail(),
+        timeout_seconds = 5.0,
+        policies        = _fast_policies(),
+        retry_state_key = "temp:_obs_test_retries",
+    )
+
+    out: list[Event] = []
+    async for e in wrapper._run_async_impl(_ctx_with_state()):
+        out.append(e)
+
+    # The failed-attempt event e_fail must NOT appear in the inner-event stream.
+    # The success event e_succ must appear (after the retry's state_delta event).
+    assert e_fail not in out
+    assert e_succ in out
 
 
-def test_is_resource_exhausted_rejects_non_429_client_error() -> None:
-    """A ClientError with status 400 must NOT be retried."""
+# ---------------------------------------------------------------------------
+# Per-tick retry-counter telemetry
+# ---------------------------------------------------------------------------
 
-    err = ClientError.__new__(ClientError)
-    err.status_code   = 400
-    err.code          = 400
-    err.message       = "Bad Request"
-    err.status        = "INVALID_ARGUMENT"
-    err.details       = {}
-    err.response_json = {"error": {"code": 400}}
-    err.args          = ("400 INVALID_ARGUMENT",)
 
-    assert _is_resource_exhausted(err) is False
+@pytest.mark.asyncio
+async def test_retry_emits_state_delta_event_for_obs_counter() -> None:
+    """After a retry, the wrapper has yielded a state_delta event with
+    the retry-counter increment BEFORE the inner's success events."""
+
+    err = ClientError(
+        code          = 429,
+        response_json = {"error": {"status": "RESOURCE_EXHAUSTED"}},
+        response      = MagicMock(),
+    )
+    ev  = Event(author="X", content=None, actions=EventActions())
+
+    inner = _FakeInner(name="X", script=[err, [ev]])
+
+    wrapper = RetryingAgentWrapper(
+        inner           = inner,
+        timeout_seconds = 5.0,
+        policies        = _fast_policies(),
+        retry_state_key = "temp:_obs_news_retries",
+    )
+
+    ctx = _ctx_with_state()
+
+    out: list[Event] = []
+    async for e in wrapper._run_async_impl(ctx):
+        out.append(e)
+
+    # The first event must be the state_delta increment for rate_limit;
+    # the success event ev must come after.
+    delta_evs = [
+        e for e in out
+        if e.actions is not None
+        and e.actions.state_delta
+        and "temp:_obs_news_retries" in (e.actions.state_delta or {})
+    ]
+
+    assert len(delta_evs) == 1
+    delta = delta_evs[0].actions.state_delta["temp:_obs_news_retries"]
+    assert delta == {"rate_limit": 1}
+
+    # And the increment event comes before the success event in the stream.
+    assert out.index(delta_evs[0]) < out.index(ev)
+
+
+# ---------------------------------------------------------------------------
+# Exhaustion log
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_exhaustion_emits_structured_error_log(caplog) -> None:
+    """On terminal exhaustion, exactly one llm_retry_exhausted ERROR row appears."""
+
+    import logging
+
+    caplog.set_level(logging.ERROR, logger="agents.llm_retry")
+
+    err = ClientError(
+        code          = 429,
+        response_json = {"error": {"status": "RESOURCE_EXHAUSTED"}},
+        response      = MagicMock(),
+    )
+
+    inner = _FakeInner(name="X", script=[err] * 6)
+
+    wrapper = RetryingAgentWrapper(
+        inner           = inner,
+        timeout_seconds = 5.0,
+        policies        = _fast_policies(rate_limit_attempts=5),
+        retry_state_key = "temp:_obs_test_retries",
+    )
+
+    with pytest.raises(ClientError):
+        async for _ in wrapper._run_async_impl(_ctx_with_state()):
+            pass
+
+    exhausted = [r for r in caplog.records if r.message == "llm_retry_exhausted"]
+    assert len(exhausted) == 1
+    rec = exhausted[0]
+    assert rec.exhausted_class == "rate_limit"
+    assert rec.attempts_used   == {"rate_limit": 5, "timeout": 0, "schema": 0}
+
+
+# ---------------------------------------------------------------------------
+# Agent-name attribution on retry log records
+#
+# Folded in from the deleted ``tests/agents/test_llm_retry_agent_name.py``
+# (which pinned the legacy tenacity ``before_sleep`` hook).  The contract
+# survives the rewrite: every retry-class log record must carry the
+# wrapped agent's name in ``extra["agent"]`` so log analysis can attribute
+# retries without an adjacent-row heuristic.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_retry_attempt_log_carries_inner_agent_name(caplog) -> None:
+    """One 429 + success → the WARNING record's ``agent`` extra equals inner.name."""
+
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="agents.llm_retry")
+
+    err = ClientError(
+        code            = 429,
+        response_json   = {"error": {"status": "RESOURCE_EXHAUSTED"}},
+        response        = MagicMock(),
+    )
+    ev  = Event(author="TestAnalyst", content=None, actions=EventActions())
+
+    # _FakeInner.name defaults — override via constructor to a recognisable string.
+    inner = _FakeInner(name="TestAnalyst", script=[err, [ev]])
+
+    wrapper = RetryingAgentWrapper(
+        inner           = inner,
+        timeout_seconds = 5.0,
+        policies        = _fast_policies(),
+        retry_state_key = "temp:_obs_test_retries",
+    )
+
+    async for _ in wrapper._run_async_impl(_ctx_with_state()):
+        pass
+
+    attempts = [r for r in caplog.records if r.message == "llm_retry_attempt"]
+    assert len(attempts) == 1
+    assert attempts[0].agent       == "TestAnalyst"
+    assert attempts[0].retry_class == "rate_limit"
+
+
+@pytest.mark.asyncio
+async def test_retry_exhausted_log_carries_inner_agent_name(caplog) -> None:
+    """Terminal exhaustion's ERROR record likewise carries ``agent`` = inner.name."""
+
+    import logging
+
+    caplog.set_level(logging.ERROR, logger="agents.llm_retry")
+
+    err = ClientError(
+        code            = 429,
+        response_json   = {"error": {"status": "RESOURCE_EXHAUSTED"}},
+        response        = MagicMock(),
+    )
+
+    inner = _FakeInner(name="TestAnalyst", script=[err] * 6)
+
+    wrapper = RetryingAgentWrapper(
+        inner           = inner,
+        timeout_seconds = 5.0,
+        policies        = _fast_policies(rate_limit_attempts=5),
+        retry_state_key = "temp:_obs_test_retries",
+    )
+
+    with pytest.raises(ClientError):
+        async for _ in wrapper._run_async_impl(_ctx_with_state()):
+            pass
+
+    exhausted = [r for r in caplog.records if r.message == "llm_retry_exhausted"]
+    assert len(exhausted) == 1
+    assert exhausted[0].agent == "TestAnalyst"

@@ -13,7 +13,7 @@ and reference these files by relative path (resolved from the project root).
 | `strategist.json` | Character caps on strategist LLM free-text fields | `src/config/strategist.py` (`get_strategist_config()`) |
 | `risk_gate.json` | Five position-sizing constraints for the risk gate | `src/config/risk_gate.py` (`get_risk_gate_config()`) |
 | `models.json` | LLM + embedding model IDs for every model-using component | `src/config/models.py` (`get_models_config()`) |
-| `llm_retry.json` | Backoff + retry policy applied to every LLM agent call (Vertex 429 handling) | `src/config/llm_retry.py` (`get_retry_config()`) |
+| `retry_429.json` | Backoff + retry policy for Vertex AI HTTP 429 (RESOURCE_EXHAUSTED) responses. Per-agent timeout/schema retry counts live in `analysts.json` / `strategist.json`. | `src/config/retry_429.py` (`get_retry_429_policy()`) |
 | `backtest_windows.json` | Era-keyed historical date windows for the backtest harness | `src/backtest/windows.py` (`load_windows()`) |
 | `backtest_settings.json` | Backtests root (cache + runs nest per-window underneath), tick schedule, and lookback defaults for backtesting | `src/backtest/settings.py` (`get_backtest_settings()`) |
 
@@ -199,6 +199,10 @@ process restart is required after edits.
 |---|---|---|
 | `news.max_articles_per_ticker` | int [1–200] | Maximum article count per ticker fed to the News LLM. Wider than the old hard-coded 10 — default 20. |
 | `news.max_summary_chars` | int [1–10000] | Maximum characters of each article's summary kept in the prompt. Default 500 (widened from 300). |
+| `news.llm.timeout_seconds` | float (0–600] | Wall-clock timeout (seconds) for one News-analyst LLM call. Range `(0, 600]`. Default 60. |
+| `news.llm.max_output_tokens` | int [256–32768] | Cap on output tokens per call. Range `[256, 32768]`. Default 2000. |
+| `news.llm.timeout_retries` | int [1–10] | Total attempts on timeout (1 initial try + retries). Range `[1, 10]`. Default 3. |
+| `news.llm.schema_retries` | int [1–10] | Total attempts on `pydantic.ValidationError`. Range `[1, 10]`. Default 3. |
 
 ### `fundamental` — Fundamental analyst input caps
 
@@ -208,6 +212,10 @@ process restart is required after edits.
 | `fundamental.max_filing_risk_chars` | int [1–20000] | Character cap on the risk-factors excerpt for each filing. Default 1500 (widened from 500). |
 | `fundamental.max_insider_footnotes` | int [0–50] | Maximum insider footnote snippets included in the LLM prompt per ticker. Default 5. |
 | `fundamental.max_insider_footnote_chars` | int [1–5000] | Character cap per footnote excerpt. Default 400 (widened from 200). |
+| `fundamental.llm.timeout_seconds` | float (0–600] | Wall-clock timeout (seconds) for one Fundamental-analyst LLM call. Range `(0, 600]`. Default 60. |
+| `fundamental.llm.max_output_tokens` | int [256–32768] | Cap on output tokens per call. Range `[256, 32768]`. Default 2000. |
+| `fundamental.llm.timeout_retries` | int [1–10] | Total attempts on timeout (1 initial try + retries). Range `[1, 10]`. Default 3. |
+| `fundamental.llm.schema_retries` | int [1–10] | Total attempts on `pydantic.ValidationError`. Range `[1, 10]`. Default 3. |
 
 ### `slack_percent` — prompt-cap vs. schema-cap headroom (analyst outputs)
 
@@ -331,6 +339,15 @@ mechanism that keeps data clean without losing meaning. See the docstring of
 | `position_thesis_caps.catalyst_max_chars` | int [20–500] | Cap on `PositionThesis.catalyst` — optional named catalyst for the held position. Default 100. |
 | `position_thesis_caps.last_review_note_max_chars` | int [20–1000] | Cap on `PositionThesis.last_review_note` — short note appended each tick we review (but do not close) the position. Default 200. |
 
+### `llm` — per-call runtime caps
+
+| Setting | Type | Meaning |
+|---|---|---|
+| `llm.timeout_seconds` | float | Wall-clock timeout (seconds) for the strategist LLM call. Range `(0, 600]`. Default 180. |
+| `llm.max_output_tokens` | int | Cap on output tokens per strategist call. Range `[256, 32768]`. Default 8000. |
+| `llm.timeout_retries` | int | Total attempts on timeout (1 initial try + retries). Range `[1, 10]`. Default 3. |
+| `llm.schema_retries` | int | Total attempts on `pydantic.ValidationError`. Range `[1, 10]`. Default 3. |
+
 The strategist prompt template at `src/agents/strategist/prompts.py` reads
 the same config singleton and substitutes the `≤N chars` markers at module
 load, so the prompt-facing caps the LLM is told are always the values from
@@ -409,16 +426,20 @@ operator-facing note; the loader strips it before validation.
 
 ---
 
-## `llm_retry.json` — LLM 429 backoff + retry policy
+## `retry_429.json` — Vertex AI HTTP 429 backoff + retry policy
 
-Retry policy applied to every LLM-bearing agent in the pipeline (Fundamental,
-News, Strategist). Wraps each branch in
-`src/agents/llm_retry.py::RetryingAgentWrapper`, which catches Vertex AI
-`HTTP 429 RESOURCE_EXHAUSTED` responses and re-runs the inner agent with
-exponential-with-jitter backoff before failing the tick.
+Retry policy for Vertex AI `HTTP 429 RESOURCE_EXHAUSTED` responses, applied to
+every LLM-bearing agent in the pipeline (Fundamental, News, Strategist). Wraps
+each branch in `src/agents/llm_retry.py::RetryingAgentWrapper`, which catches
+the 429 and re-runs the inner agent with exponential-with-jitter backoff before
+failing the tick.
 
-Loaded once at boot via `src/config/llm_retry.py::get_retry_config()`
+Loaded once at boot via `src/config/retry_429.py::get_retry_429_policy()`
 (`lru_cache(maxsize=1)`); a process restart is required after edits.
+
+Per-agent timeout budgets and schema-validation retry counts live in
+`config/analysts.json` and `config/strategist.json` — only the 429 back-off
+policy is project-wide and stored here.
 
 **Why this is needed.** Vertex AI's Gemini models share capacity via Dynamic
 Shared Quota by default — transient 429s are a normal operating condition
@@ -438,7 +459,7 @@ malformed request that retrying cannot fix.
 | `base_delay_seconds` | float >0 | Initial wait before the first retry, in seconds. Subsequent retries grow exponentially with jitter, capped at `max_delay_seconds`. Default 2.0. |
 | `max_delay_seconds` | float ≥ `base_delay_seconds` | Upper bound on any single inter-retry wait, in seconds. Default 30.0. |
 
-A leading `_comment` field is permitted at the top of `llm_retry.json`; the
+A leading `_comment` field is permitted at the top of `retry_429.json`; the
 loader strips it before validation.
 
 ---

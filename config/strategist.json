@@ -2,17 +2,23 @@
   "slack_percent": 15,
   "decision_caps": {
     "reasoning_max_chars": 1000,
-    "thesis_max_chars": 800
+    "thesis_max_chars":     800
   },
   "stance_caps": {
-    "rationale_max_chars": 250,
-    "catalyst_max_chars": 120,
+    "rationale_max_chars":    250,
+    "catalyst_max_chars":     120,
     "close_reason_max_chars": 120,
-    "trim_reason_max_chars": 120
+    "trim_reason_max_chars":  120
   },
   "position_thesis_caps": {
-    "rationale_max_chars": 400,
-    "catalyst_max_chars": 100,
-    "last_review_note_max_chars": 200
+    "rationale_max_chars":         400,
+    "catalyst_max_chars":          100,
+    "last_review_note_max_chars":  200
+  },
+  "llm": {
+    "timeout_seconds":   180,
+    "max_output_tokens": 8000,
+    "timeout_retries":   3,
+    "schema_retries":    3
   }
 }

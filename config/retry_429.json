@@ -1,0 +1,6 @@
+{
+  "_comment": "Vertex AI HTTP 429 retry policy. See src/config/retry_429.py for the loader. Timeout and schema retry counts live per-agent in config/analysts.json and config/strategist.json — only the 429 policy is project-wide.",
+  "max_attempts": 5,
+  "base_delay_seconds": 2.0,
+  "max_delay_seconds": 30.0
+}

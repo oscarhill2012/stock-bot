@@ -174,6 +174,7 @@ async def get_stock_news(
         Historical clock timestamp.  Defaults to ``datetime.now(UTC)``.
     """
     from datetime import timedelta as _td
+
     from data.config import get_config
     as_of = resolve_as_of(as_of, allow_wallclock=True, site="data.get_stock_news")
     as_of_date = as_of.date()

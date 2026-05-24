@@ -12,21 +12,21 @@ from dataclasses import dataclass
 from typing import Any, Literal, Protocol, TypeVar
 
 from .config import get_config
-from .rate_limit import AsyncRateLimiter
+from .models.analyst_consensus import AnalystConsensusBundle
+from .models.company_ratios import CompanyRatios
+from .models.earnings import EarningsHistory
+from .models.filings import Filing
+from .models.news import NewsArticle
+from .models.options import OptionContract
 
 # ---------------------------------------------------------------------------
 # Payload-type imports — each canonical model used in DOMAIN_SHAPES below.
 # ---------------------------------------------------------------------------
 from .models.price_history import PriceHistory
-from .models.company_ratios import CompanyRatios
-from .models.news import NewsArticle
 from .models.sentiment import SocialSentiment
-from .models.trades import Form4Bundle, PoliticianTrade, NotableHolder
-from .models.filings import Filing
-from .models.earnings import EarningsHistory
-from .models.analyst_consensus import AnalystConsensusBundle
 from .models.short_interest import ShortInterestSnapshot
-from .models.options import OptionContract
+from .models.trades import Form4Bundle, NotableHolder, PoliticianTrade
+from .rate_limit import AsyncRateLimiter
 
 # ---------------------------------------------------------------------------
 # Provider canonical-shape contracts (Phase 7.6)

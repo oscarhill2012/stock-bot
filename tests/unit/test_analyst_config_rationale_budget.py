@@ -26,14 +26,24 @@ def _write_config(tmp_path: Path, *, cap: int, headroom: int) -> Path:
         "news": {
             "max_articles_per_ticker": 50,
             "max_summary_chars": 800,
-            "llm": {"http_timeout_seconds": 60, "max_output_tokens": 2048},
+            "llm": {
+                "timeout_seconds":   60,
+                "max_output_tokens": 2048,
+                "timeout_retries":   3,
+                "schema_retries":    3,
+            },
         },
         "fundamental": {
             "max_filing_mda_chars":       8000,
             "max_filing_risk_chars":      4000,
             "max_insider_footnotes":      10,
             "max_insider_footnote_chars": 800,
-            "llm": {"http_timeout_seconds": 60, "max_output_tokens": 2048},
+            "llm": {
+                "timeout_seconds":   60,
+                "max_output_tokens": 2048,
+                "timeout_retries":   3,
+                "schema_retries":    3,
+            },
         },
         "cache": {"enabled": False, "directory": "/tmp/cache"},
         "output_caps": {

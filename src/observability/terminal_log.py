@@ -231,10 +231,7 @@ def format_tokens(n: int | None) -> str:
         # Express as Nk with one decimal place where the decimal is non-zero,
         # or as a plain integer k otherwise (e.g. 168k rather than 168.0k).
         k = n / 1000.0
-        if k == int(k):
-            text = f"{int(k)}k"
-        else:
-            text = f"{k:.1f}k"
+        text = f"{int(k)}k" if k == int(k) else f"{k:.1f}k"
     else:
         text = str(n)
 
@@ -459,8 +456,9 @@ def make_observability_callbacks(
 def emit_analyst_summary(
     analyst_label: str,
     *,
-    calls: list[dict],
+    calls:        list[dict],
     ticker_count: int,
+    retries:      dict[str, int] | None = None,
 ) -> None:
     """Emit one tidy summary row per analyst per tick on ``stockbot.tick``.
 
@@ -498,6 +496,13 @@ def emit_analyst_summary(
     ticker_count:
         Total number of tickers that were *attempted* for this analyst.  Used
         to compute the failed count: ``failed = ticker_count - len(calls)``.
+    retries:
+        Optional per-tick retry-class counter dict, written by
+        :class:`agents.llm_retry.RetryingAgentWrapper` to a per-analyst
+        session-state key.  When non-empty, a ``· retries
+        <class>×<n>`` suffix is appended to the summary row for each
+        non-zero class.  Class order in the suffix is fixed:
+        ``rate_limit``, ``timeout``, ``schema``.
 
     Returns
     -------
@@ -599,6 +604,21 @@ def emit_analyst_summary(
                 f"  {label_col} {count_col:>8}{fail_str}{cache_str}"
                 f" · {lat_str} · {tok_str} tok total"
             )
+
+    # Per-tick retry-counter suffix.  Only non-zero classes render; the
+    # fixed order (rate_limit, timeout, schema) matches the
+    # _classify dispatcher's priority order and keeps row layout stable.
+    if retries:
+
+        retry_order = ("rate_limit", "timeout", "schema")
+        parts       = [
+            f"{cls}×{retries[cls]}"
+            for cls in retry_order
+            if retries.get(cls)                                # non-zero only
+        ]
+
+        if parts:
+            row = f"{row} · retries {' '.join(parts)}"
 
     tick_log.info(row)
 

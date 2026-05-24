@@ -139,3 +139,75 @@ def test_fundamental_branch_composition():
     assert "{ticker}" not in llm.instruction
     assert "AAPL" in llm.instruction
     assert "{temp:fundamental_context_AAPL}" in llm.instruction
+
+
+def test_news_branch_wires_llm_caps_from_config() -> None:
+    """The News per-ticker branch reads ``news.llm.*`` and passes them to
+    the LlmAgent (max_output_tokens) and to the RetryingAgentWrapper
+    (timeout_seconds, policies, retry_state_key).
+    """
+
+    from agents.analysts.news.per_ticker import build_news_branch_for_ticker
+    from agents.analysts.heuristics       import load_heuristics
+    from agents.isolated_failure          import IsolatedFailureWrapper
+    from agents.llm_retry                 import RetryingAgentWrapper
+
+    # ``AnalystHeuristics`` stores the news vocab under ``news_vocabulary``
+    # (not ``.news``), so we use the correct field name.
+    vocab = load_heuristics().news_vocabulary
+
+    branch = build_news_branch_for_ticker("AAPL", vocab)
+
+    assert isinstance(branch, IsolatedFailureWrapper)
+
+    retrying = branch.inner
+    assert isinstance(retrying, RetryingAgentWrapper)
+
+    # Wrapper-level wiring.
+    assert retrying.timeout_seconds == 60
+    assert retrying.retry_state_key == "temp:_obs_news_retries"
+    assert set(retrying.policies.keys()) == {"rate_limit", "timeout", "schema"}
+    assert retrying.policies["timeout"].max_attempts  == 3
+    assert retrying.policies["schema"].max_attempts   == 3
+
+    # LlmAgent-level wiring — max_output_tokens flows into generate_content_config.
+    llm = retrying.inner
+    cfg = llm.generate_content_config
+
+    assert cfg is not None
+    assert cfg.max_output_tokens == 2000
+
+
+def test_fundamental_branch_wires_llm_caps_from_config() -> None:
+    """The Fundamental per-ticker branch reads ``fundamental.llm.*`` and
+    passes them through correctly to the LlmAgent and RetryingAgentWrapper."""
+
+    from agents.analysts.fundamental.per_ticker import build_fundamental_branch_for_ticker
+    from agents.analysts.heuristics             import load_heuristics
+    from agents.isolated_failure                import IsolatedFailureWrapper
+    from agents.llm_retry                       import RetryingAgentWrapper
+
+    # ``AnalystHeuristics`` stores the fundamental vocab under
+    # ``fundamental_vocabulary`` (not ``.fundamental``), so we use the
+    # correct field name — mirrors the pattern used in the News test above.
+    vocab = load_heuristics().fundamental_vocabulary
+
+    branch = build_fundamental_branch_for_ticker("AAPL", vocab)
+
+    assert isinstance(branch, IsolatedFailureWrapper)
+
+    retrying = branch.inner
+    assert isinstance(retrying, RetryingAgentWrapper)
+
+    # Wrapper-level wiring — timeout and retry state key.
+    assert retrying.timeout_seconds == 60
+    assert retrying.retry_state_key == "temp:_obs_fundamental_retries"
+    assert retrying.policies["timeout"].max_attempts == 3
+    assert retrying.policies["schema"].max_attempts  == 3
+
+    # LlmAgent-level wiring — max_output_tokens flows into generate_content_config.
+    llm = retrying.inner
+    cfg = llm.generate_content_config
+
+    assert cfg is not None
+    assert cfg.max_output_tokens == 2000
