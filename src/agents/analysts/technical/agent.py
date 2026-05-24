@@ -31,6 +31,7 @@ from google.adk.events import Event, EventActions
 from agents.analysts._common import make_evidence_callback
 from agents.analysts.heuristics import TechnicalHeuristics, load_heuristics
 from contract.extractors.technical import derive_technical_verdict, extract_technical_features
+from data.timeguard import resolve_as_of
 from observability.trace import _trace_maybe
 
 from .fetch import technical_fetch_callback
@@ -106,9 +107,17 @@ class TechnicalAnalyst(BaseAgent):
         # ticks so stale data can never bleed across invocation boundaries.
         data: dict[str, dict] = state.get("temp:technical_data", {}) or {}
 
-        # Historical clock: backtest sets state["as_of"]; live falls back to None
-        # (the extractor ignores it for clock-free features).
-        as_of = state.get("as_of") or None
+        # Historical clock: backtest sets state["as_of"] as an ISO string
+        # (DatabaseSessionService cannot serialise raw datetime — see
+        # backtest/driver.py:494–499); live runs set it as a tz-aware
+        # datetime via orchestrator/tick.py.  ``resolve_as_of`` normalises
+        # both shapes to ``datetime`` so the extractor's PIT clamp on
+        # reference_prices can do its date comparison without surprises.
+        # ``allow_wallclock=True`` matches every other technical-pipeline
+        # site (technical/fetch.py, fundamental/fetch_agent.py, etc.).
+        as_of = resolve_as_of(
+            state.get("as_of"), allow_wallclock=True, site="technical/agent",
+        )
 
         # Build as a list of dicts so make_evidence_callback can iterate them
         # and build its ticker → verdict lookup.  Each dict includes a

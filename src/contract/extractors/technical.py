@@ -129,9 +129,27 @@ def _relative_strength(
     # cannot leak post-as_of data into the percentage change.  Bars whose
     # ``timestamp`` is a ``date`` or ``datetime`` are both handled by the
     # ``_bar_date`` helper.
+    #
+    # The driver ISO-stringifies ``state["as_of"]`` before persisting it
+    # through ADK's DatabaseSessionService (see backtest/driver.py:494–499).
+    # Agents are responsible for parsing it back via ``resolve_as_of`` before
+    # invoking this extractor — if a raw ``str`` reaches here it means a
+    # caller skipped that step, and the comparison would otherwise crash
+    # deep in the list comprehension with ``date <= str``.  Raise loudly
+    # so the missing coercion is obvious in the traceback.
     ref_bars = ref_ph.bars
     if as_of is not None:
-        cutoff = as_of.date() if isinstance(as_of, datetime) else as_of
+        if isinstance(as_of, datetime):
+            cutoff = as_of.date()
+        elif isinstance(as_of, date):
+            cutoff = as_of
+        else:
+            raise TypeError(
+                f"_relative_strength expected as_of to be date|datetime|None; "
+                f"got {type(as_of).__name__!r}.  If this came from "
+                f"state['as_of'], coerce it with data.timeguard.resolve_as_of "
+                f"at the agent boundary first."
+            )
         ref_bars = [b for b in ref_bars if _bar_date(b) <= cutoff]
 
     ref_closes = [b.close for b in ref_bars]

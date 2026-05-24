@@ -90,10 +90,22 @@ class IsolatedFailureWrapper(BaseAgent):
             async for inner_event in self.inner.run_async(ctx):
                 yield inner_event
         except Exception as exc:  # noqa: BLE001 — deliberate broad catch at the isolation boundary
-            # Structured failure log — picked up by the per-tick obs/logs
-            # aggregator so failed branches are visible without crashing the tick.
+            # Structured failure log — the ``extra`` payload is picked up by
+            # the per-tick obs/logs aggregator (keeps the fields machine-
+            # parseable for downstream dashboards).  The message string
+            # duplicates the same fields so the failure is *also* readable
+            # in any plain ``logging.Formatter`` output, and ``exc_info=True``
+            # prints the traceback — without it, every branch failure is a
+            # silent dead-end (see commit history for the news 0/20 incident
+            # where the original extras-only format hid the root cause for
+            # hours).
             _LOGGER.warning(
-                "branch_failed",
+                "branch_failed analyst=%s ticker=%s exc=%s: %s",
+                self.analyst,
+                self.ticker,
+                type(exc).__name__,
+                exc,
+                exc_info=True,
                 extra={
                     "kind":        "branch_failed",
                     "analyst":     self.analyst,

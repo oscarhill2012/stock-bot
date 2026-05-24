@@ -408,8 +408,19 @@ def _log_retry(
         Per-class remaining attempts at the moment of the retry.
     """
 
+    # Dual-channel logging — ``extra`` keeps the fields machine-parseable for
+    # downstream dashboards, and the message string mirrors them so the row
+    # is also human-readable in any plain ``logging.Formatter`` (without this
+    # the news/strategist failures only showed up as bare "llm_retry_attempt"
+    # lines with no clue what actually went wrong).  Same shape applied to
+    # ``agents.isolated_failure.branch_failed`` for the same reason.
     _LOGGER.warning(
-        "llm_retry_attempt",
+        "llm_retry_attempt agent=%s class=%s remaining=%s exc=%s: %s",
+        agent_name,
+        cls,
+        dict(remaining),
+        type(exc).__name__,
+        exc,
         extra={
             "kind":               "llm_retry_attempt",
             "agent":              agent_name,
@@ -450,8 +461,19 @@ def _log_exhausted(
         Per-class remaining attempts at the moment of exhaustion.
     """
 
+    # Exhaustion is the terminal failure for this wrapper run — fold the
+    # exception details into the message string AND attach ``exc_info=True``
+    # so the traceback is captured in the obs log alongside the structured
+    # fields.  Anything less and the next "tick aborted" event becomes a
+    # forensic exercise (see the news 0/20 incident and the strategist
+    # schema-exhaustion that this very change is following up on).
     _LOGGER.error(
-        "llm_retry_exhausted",
+        "llm_retry_exhausted agent=%s exhausted_class=%s exc=%s: %s",
+        agent_name,
+        cls,
+        type(exc).__name__,
+        exc,
+        exc_info=True,
         extra={
             "kind":            "llm_retry_exhausted",
             "agent":           agent_name,

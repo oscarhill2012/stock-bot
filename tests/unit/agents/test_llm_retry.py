@@ -654,7 +654,10 @@ async def test_exhaustion_emits_structured_error_log(caplog) -> None:
         async for _ in wrapper._run_async_impl(_ctx_with_state()):
             pass
 
-    exhausted = [r for r in caplog.records if r.message == "llm_retry_exhausted"]
+    # Filter by the structured ``kind`` extra rather than the formatted message
+    # string — the message string now folds in the exception detail (see
+    # llm_retry.py change for why) and is no longer the bare event slug.
+    exhausted = [r for r in caplog.records if getattr(r, "kind", None) == "llm_retry_exhausted"]
     assert len(exhausted) == 1
     rec = exhausted[0]
     assert rec.exhausted_class == "rate_limit"
@@ -700,7 +703,9 @@ async def test_retry_attempt_log_carries_inner_agent_name(caplog) -> None:
     async for _ in wrapper._run_async_impl(_ctx_with_state()):
         pass
 
-    attempts = [r for r in caplog.records if r.message == "llm_retry_attempt"]
+    # See note on the exhausted-filter test above — gate on the structured
+    # ``kind`` extra, not the (now exception-decorated) message string.
+    attempts = [r for r in caplog.records if getattr(r, "kind", None) == "llm_retry_attempt"]
     assert len(attempts) == 1
     assert attempts[0].agent       == "TestAnalyst"
     assert attempts[0].retry_class == "rate_limit"
@@ -733,6 +738,8 @@ async def test_retry_exhausted_log_carries_inner_agent_name(caplog) -> None:
         async for _ in wrapper._run_async_impl(_ctx_with_state()):
             pass
 
-    exhausted = [r for r in caplog.records if r.message == "llm_retry_exhausted"]
+    # See note on the exhausted-filter test above — gate on the structured
+    # ``kind`` extra, not the (now exception-decorated) message string.
+    exhausted = [r for r in caplog.records if getattr(r, "kind", None) == "llm_retry_exhausted"]
     assert len(exhausted) == 1
     assert exhausted[0].agent == "TestAnalyst"

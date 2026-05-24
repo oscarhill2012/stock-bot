@@ -79,6 +79,7 @@ from pydantic import ValidationError
 
 from agents.analysts.report_cache import log_cache_hit_to_state, read_cache, write_cache
 from config.analysts import get_analysts_config
+from data.timeguard import resolve_as_of
 from observability.trace import TraceWriter
 
 # Module-level logger — disk errors after a paid LLM call must warn, not crash.
@@ -393,8 +394,17 @@ def make_report_cache_callbacks(
                 verdict=verdict_payload,
                 report=report_payload,
                 # Pass the tick's as_of so future cache hits can surface the
-                # originating tick in the audit telemetry.
-                originating_as_of=state.get("as_of"),
+                # originating tick in the audit telemetry.  ``write_cache``
+                # calls ``.isoformat()`` on this value, so we must coerce
+                # the backtest's ISO-string ``state["as_of"]`` back to a
+                # datetime here at the boundary — without this the news
+                # branch raises ``AttributeError: 'str' object has no
+                # attribute 'isoformat'`` on every cache write.
+                originating_as_of=resolve_as_of(
+                    state.get("as_of"),
+                    allow_wallclock=True,
+                    site="cache_callbacks.write_cache",
+                ),
             )
         except OSError:
             # Disk errors after a paid LLM call must not crash the agent tick.

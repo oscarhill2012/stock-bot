@@ -258,6 +258,72 @@ def test_technical_relative_strength_absent_when_no_state():
     assert "relative_strength_vs_sector_20d" not in features
 
 
+def test_relative_strength_accepts_datetime_as_of():
+    """Passing a ``datetime`` ``as_of`` clamps reference bars to that cutoff.
+
+    Regression cover for the ``_relative_strength`` PIT clamp path: the
+    extractor must accept the canonical ``datetime`` shape (the live-run
+    value produced by ``resolve_as_of``) without raising.
+    """
+    aapl_prices = [100.0] * 4 + [100.0, 105.0, 106.0, 107.0, 108.0, 110.0]
+    spy_prices  = [100.0] * 4 + [100.0, 101.0, 102.0, 103.0, 104.0, 105.0]
+
+    ratios = CompanyRatios(ticker="AAPL", as_of=date(2023, 3, 10), sector="Technology")
+    raw = {
+        "ticker": "AAPL",
+        "bars": _make_bars(aapl_prices),
+        "ratios": ratios.model_dump(),
+    }
+    state = {
+        "reference_prices": {
+            "SPY": _ph("SPY", spy_prices),
+            "XLK": _ph("XLK", spy_prices),
+        },
+    }
+
+    # ``as_of`` covers the entire ten-bar synthetic window, so the clamp is a
+    # no-op and the RS values still match the unclamped expectation.
+    features = extract_technical_features(
+        raw, state=state, as_of=datetime(2023, 3, 10, 13, 30, tzinfo=UTC),
+    )
+
+    expected_rs_spy_5d = 0.10 - 0.05
+    assert "relative_strength_vs_spy_5d" in features
+    assert abs(features["relative_strength_vs_spy_5d"] - expected_rs_spy_5d) < 1e-9
+
+
+def test_relative_strength_rejects_string_as_of():
+    """Passing an ISO-string ``as_of`` to the extractor must raise ``TypeError``.
+
+    The driver coerces ``state["as_of"]`` to an ISO string when seeding the
+    ADK session (DatabaseSessionService cannot JSON-serialise raw
+    ``datetime``).  Agents are responsible for parsing it back via
+    ``resolve_as_of`` before invoking the extractor; if a raw string slips
+    through, the extractor must fail loudly rather than silently producing a
+    ``date <= str`` comparison crash deep inside the lookback list-comprehension.
+    """
+    aapl_prices = [100.0] * 4 + [100.0, 105.0, 106.0, 107.0, 108.0, 110.0]
+    spy_prices  = [100.0] * 4 + [100.0, 101.0, 102.0, 103.0, 104.0, 105.0]
+
+    ratios = CompanyRatios(ticker="AAPL", as_of=date(2023, 3, 10), sector="Technology")
+    raw = {
+        "ticker": "AAPL",
+        "bars": _make_bars(aapl_prices),
+        "ratios": ratios.model_dump(),
+    }
+    state = {
+        "reference_prices": {
+            "SPY": _ph("SPY", spy_prices),
+            "XLK": _ph("XLK", spy_prices),
+        },
+    }
+
+    with pytest.raises(TypeError, match=r"as_of"):
+        extract_technical_features(
+            raw, state=state, as_of="2023-03-10T13:30:00+00:00",
+        )
+
+
 def test_technical_relative_strength_5d_values_match_expected():
     """``relative_strength_vs_spy_5d`` is AAPL 5d return minus SPY 5d return."""
     # 10 bars.  5d window uses bars[-6] to bars[-1] (6th-from-last to last).

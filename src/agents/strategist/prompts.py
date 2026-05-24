@@ -143,6 +143,28 @@ not a separate ruleset.
 | CLOSE           | > 0     → 0                 | **close_reason** (= reason).  horizon / target_price / stop_price stay null — you are exiting.|
 | UPDATE          | > 0     → same              | **reason**, and at least one of target_price / stop_price / catalyst / horizon                |
 
+### NULL DISCIPLINE — read this twice before emitting any stance
+
+The fields ``horizon``, ``target_price``, and ``stop_price`` are CONDITIONALLY
+required.  The conditional is on lifecycle action, not on confidence:
+
+- **OPEN, ADD, TRIM, UPDATE** (any stance with ``preferred_weight > 0``):
+  ``horizon``, ``target_price``, ``stop_price`` MUST be **non-null** values
+  (a horizon literal, a positive float price, a positive float price).
+  Emitting ``null`` for any of them is a hard validation failure — the
+  schema validator will reject the entire decision and you will be
+  re-prompted.  "I am not sure of the exact target" is not an excuse;
+  provide your best estimate.
+
+- **CLOSE, HOLD** (``preferred_weight == 0`` or unchanged hold):
+  ``horizon``, ``target_price``, ``stop_price`` MUST be **null** —
+  you are exiting (or have already articulated discipline elsewhere), so
+  those fields carry no meaning.
+
+The two worked examples below illustrate exactly these two regimes.
+Generalising the all-nulls shape of the CLOSE example onto an OPEN stance
+is the single most common way decisions get rejected — do not do it.
+
 Schema-level rules (failing these means ADK rejects your response):
 - preferred_weight: float in [0.0, 1.0].  Long-only — 0.0 is the floor.
 
@@ -183,6 +205,17 @@ CLOSE (held at 0.05, exiting to 0.0):
 "catalyst": null,
 "close_reason": "guidance cut invalidates thesis",
 "trim_reason": null}}
+
+REJECTED — DO NOT EMIT (this exact shape is the most common decision-killer):
+{{"ticker": "XYZ", "preferred_weight": 0.1, "conviction": 0.7,
+"rationale": "Strong setup",
+"horizon": null, "target_price": null, "stop_price": null,
+"catalyst": null, "close_reason": null, "trim_reason": null}}
+↑ preferred_weight > 0 with null horizon/target_price/stop_price triggers
+"Stance for XYZ proposes a non-zero weight (0.1) but is missing required
+lifecycle hint fields: ['horizon', 'target_price', 'stop_price']" and aborts
+the whole decision.  If you are opening, you must commit to a horizon,
+a target, and a stop — full stop.
 """
 
 # Build-time substitution of the cap markers.  ``str.replace`` is used rather

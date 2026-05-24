@@ -90,9 +90,21 @@ class SnapshotterAgent(BaseAgent):
 
         # ``recorded_at`` was resolved above so the SPY lookup could honour
         # the tick clock; re-use it here for the snapshot row's timestamp.
+        #
+        # ISO-stringify before storing — this dict is published into ADK
+        # session state below (``state["last_snapshot"]`` + state_delta) and
+        # the backtest's ``DatabaseSessionService`` JSON-serialises the
+        # whole session state on every ``append_event``.  json.dumps cannot
+        # encode a raw ``datetime`` (TypeError "Object of type datetime is
+        # not JSON serializable") and would abort the tick mid-snapshot.
+        # ``save_portfolio_snapshot`` calls ``resolve_as_of`` on whatever
+        # shape it receives, so the ISO string round-trips losslessly into
+        # the SQLAlchemy ``DateTime`` column.  Same coercion the backtest
+        # driver applies to ``state["as_of"]`` for exactly the same reason
+        # (see ``backtest/driver.py:494-499``).
         snap = {
             "tick_id":              tick_id,
-            "recorded_at":          recorded_at,
+            "recorded_at":          recorded_at.isoformat(),
             "bot_total_value":      bot_total,
             "bot_cash":             bot_cash,
             "bot_positions_value":  bot_positions_value,

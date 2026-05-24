@@ -70,7 +70,13 @@ async def test_snapshotter_accepts_iso_string_as_of():
 
     assert "last_snapshot" in state
     snap = state["last_snapshot"]
-    # recorded_at must be the parsed datetime, not the original string.
+    # recorded_at is now ISO-stringified inside the snap dict so that
+    # DatabaseSessionService can JSON-serialise the full session-state
+    # write at end of tick — it cannot encode raw datetime objects (see
+    # snapshot/agent.py comment for full reasoning).  The string must
+    # still round-trip to the same instant as the original input.
     expected_dt = datetime.fromisoformat(iso_as_of)
+    assert isinstance(snap["recorded_at"], str)
+    actual_dt = datetime.fromisoformat(snap["recorded_at"])
     # Compare naive (SQLite-friendly) datetimes.
-    assert snap["recorded_at"].replace(tzinfo=None) == expected_dt.replace(tzinfo=None)
+    assert actual_dt.replace(tzinfo=None) == expected_dt.replace(tzinfo=None)
