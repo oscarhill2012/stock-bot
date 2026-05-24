@@ -221,3 +221,78 @@ async def test_joiner_output_consumable_by_strategist_index_evidence():
     )
     assert "AAPL" in indexed
     assert indexed["AAPL"].ticker == "AAPL"
+
+
+@pytest.mark.asyncio
+async def test_fundamental_joiner_passes_retries_to_summary(monkeypatch) -> None:
+    """The joiner reads temp:_obs_fundamental_retries and passes it as the
+    ``retries=`` kwarg to ``emit_analyst_summary``.
+
+    Symmetric mirror of ``test_news_joiner_passes_retries_to_summary`` in
+    ``tests/analysts/news/test_joiner.py``.  ``InMemorySessionService`` strips
+    ``temp:`` keys on session creation, so they are injected directly onto
+    ``session.state`` after creation, then ``emit_analyst_summary`` is
+    monkeypatched to capture its kwargs without producing log output.
+    """
+    captured: list[dict] = []
+
+    def _fake_emit(analyst_label: str, *, calls, ticker_count, retries=None) -> None:
+        """Capture the call kwargs for assertion; do not emit any log output."""
+        captured.append({
+            "analyst_label": analyst_label,
+            "calls":         calls,
+            "ticker_count":  ticker_count,
+            "retries":       retries,
+        })
+
+    monkeypatch.setenv("STOCKBOT_TERMINAL_LOG", "1")
+    monkeypatch.setattr(
+        "agents.analysts.fundamental.joiner.emit_analyst_summary",
+        _fake_emit,
+    )
+
+    state = {
+        "tickers":  ["AAPL"],
+        "tick_id":  "t-retry",
+        "as_of":    "2026-05-21T14:00",
+        "temp:fundamental_data": {
+            "AAPL": _make_ticker_slice(pe=22.0),
+        },
+        "temp:fundamental_verdict_AAPL": {
+            "ticker":      "AAPL",
+            "lean":        "bullish",
+            "magnitude":   0.6,
+            "confidence":  0.7,
+            "rationale":   "ok",
+            "key_factors": [],
+            "is_no_data":  False,
+        },
+    }
+
+    svc     = InMemorySessionService()
+    session = await svc.create_session(
+        app_name="test", user_id="test", state=state, session_id="t-retry",
+    )
+
+    # InMemorySessionService strips temp: keys; inject them directly onto the
+    # state dict after creation so the joiner can read them.
+    session.state["temp:_obs_fundamental_calls"]   = [
+        {"ticker": "AAPL", "elapsed": 1.2, "prompt_tokens": 1200,
+         "candidate_tokens": 600, "ok": True},
+    ]
+    session.state["temp:_obs_fundamental_retries"] = {"timeout": 1}
+
+    agent = FundamentalJoinerAgent(name="FundamentalJoiner")
+    ctx   = InvocationContext(
+        session_service=svc, session=session, invocation_id="inv-retry", agent=agent,
+    )
+
+    # Drive the joiner — the monkeypatched emit_analyst_summary captures args.
+    _events = [ev async for ev in agent.run_async(ctx)]
+
+    assert captured, "emit_analyst_summary was never called"
+    call = captured[0]
+    assert call["analyst_label"] == "fundamental"
+    assert call["retries"] == {"timeout": 1}, (
+        f"Expected retries={{'timeout': 1}}; got retries={call['retries']}"
+    )
