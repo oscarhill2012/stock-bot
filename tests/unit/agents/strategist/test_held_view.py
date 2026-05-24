@@ -246,6 +246,10 @@ def test_zero_opened_price_degrades_gracefully():
     # The "% from entry" suffix must be absent when opened_price is 0.0
     # (no valid denominator).
     assert "from entry" not in out
+    # The header must not emit a misleading "$0.00" price — it must use
+    # the "entry price unknown" sentinel instead.
+    assert "entry price unknown" in out
+    assert "$0.00" not in out
 
 
 def test_corrupt_thesis_dict_is_skipped_without_raising():

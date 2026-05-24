@@ -135,11 +135,21 @@ def _format_one(
     current_price = pos.last_price if pos is not None else None
 
     # Header line — when the position was opened and at what price.
+    # Guard against a misleading "$0.00" when opened_price is unknown /
+    # unrecorded; legacy persistence rows may carry 0.0 as a sentinel.
     opened_str = thesis.opened_at.strftime("%Y-%m-%d %H:%M")
+    if thesis.opened_price > 0.0:
+        opened_price_str = (
+            f"at ${thesis.opened_price:.2f}  (tick {thesis.opened_tick_id})"
+        )
+    else:
+        opened_price_str = (
+            f"(entry price unknown)  (tick {thesis.opened_tick_id})"
+        )
+
     lines: list[str] = [
         ticker,
-        f"  Opened on {opened_str} at ${thesis.opened_price:.2f}  "
-        f"(tick {thesis.opened_tick_id})",
+        f"  Opened on {opened_str} {opened_price_str}",
     ]
 
     # ── Your commitments on entry ────────────────────────────────────────

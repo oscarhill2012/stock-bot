@@ -101,8 +101,8 @@ def test_held_view_renders_evolution_columns() -> None:
     assert "Your commitments on entry"   in out
     assert "Evolution"                   in out
 
-    # Evolution columns named in the spec at lines ~588-614 of
-    # docs/Phase10-post-first-backtest/specs/foundational-thesis-memory.md.
+    # Evolution columns block — see spec's PositionThesis evolution section
+    # in docs/Phase10-post-first-backtest/specs/foundational-thesis-memory.md.
     assert "Held for:"   in out                       # time-elapsed line
     assert "Now:"        in out                       # current price line
     assert "To target:"  in out                       # distance-to-target line
@@ -143,10 +143,11 @@ def test_held_view_computes_pct_to_target_and_stop_correctly() -> None:
         as_of     = datetime(2026, 5, 8, 14, 0, tzinfo=UTC),
     )
 
-    # The exact format string is decided in the implementation step;
-    # we assert the rounded percentages survive somewhere in the output.
-    assert "+9.1%"  in out  or  "+9.09%"  in out      # to-target
-    assert "-18.2%" in out  or  "-18.18%" in out      # to-stop
+    # Pin both the label and the signed-dollar + percentage together so a
+    # regression in either the label or the arithmetic causes a test failure.
+    # Format: "    To target:  ${delta:+.2f}  ({pct:+.1f}% from now)"
+    assert "To target:  $+10.00  (+9.1% from now)" in out
+    assert "To stop:    $-20.00  (-18.2% from now)" in out
 
 
 def test_held_view_handles_null_target_and_stop() -> None:
@@ -160,7 +161,8 @@ def test_held_view_handles_null_target_and_stop() -> None:
     )
 
     assert "Your commitments on entry" in out
-    # Either render "no target set" / "no stop set" or omit the lines —
-    # both are spec-compliant. The non-negotiable contract is no crash
-    # and no division-by-None.
+    # The non-negotiable contract: no crash and no division-by-None.
     assert "AVGO" in out
+    # Renderer must emit the explicit sentinel strings for null target / stop.
+    assert "(no target set)" in out
+    assert "(no stop set)"   in out
