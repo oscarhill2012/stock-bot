@@ -152,7 +152,7 @@ class SmartMoneyAnalyst(BaseAgent):
         # Write the verdict list so the after_agent_callback can read it.
         state["smart_money_verdicts"] = verdicts
 
-        # Surface trace — no-op unless state["_trace"] is set by trace_tick.py.
+        # Surface trace — no-op unless state["temp:_trace"] is set by trace_tick.py.
         _trace_maybe(ctx.session.state, "02_smart_money_verdict", verdicts)
 
         # No events emitted — pure state mutation, same as TechnicalAnalyst.

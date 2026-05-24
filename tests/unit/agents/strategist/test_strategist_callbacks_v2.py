@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from agents.risk_gate.lifecycle import StrategistContractViolation
+from agents.strategist.derivation import StrategistContractViolation
 from agents.strategist.agent import _strategist_validation_callback
 from agents.strategist.schema import PositionThesis, StrategistDecision
 from agents.strategist.stance_schema import TickerStance
@@ -50,21 +50,21 @@ def _ev(analyst: str, lean: str = "neutral", conf: float = 0.0,
 # ── after callback: active-stances contract ──────────────────────────────────
 
 
-def test_after_does_not_require_exhaustive_stances():
-    """Omitted watchlist tickers are treated as implicit holds — not an error.
+def test_after_requires_explicit_stance_for_held_tickers():
+    """Held tickers must have an explicit stance — omission now raises StrategistContractViolation.
 
-    Pre-2026-05-21 the callback required a TickerStance for every watchlist
-    ticker.  The active-stances simplification drops that: the strategist
-    emits stances only for tickers it wants to *change* (open / add /
-    trim / close); any omitted ticker is read as a carry-forward
-    (held → keep holding at current weight, flat → stay flat).
+    Pre-Spec-B, omitting a held ticker was read as an implicit hold (carry-forward).
+    Spec B / D3 removes that: every pre-tick held ticker must receive an explicit
+    stance on every tick.  The active-stances model survives only for flat
+    watchlist tickers.
 
-    This test pins that contract on the callback side: a one-stance
-    decision against a two-ticker watchlist must NOT raise, and the
-    derived ``target_weights`` must pad the omitted ticker using its
-    current weight (here: MSFT held at 0.10 carries forward; AAPL stays
-    at its emitted 0.05).
+    This test was originally ``test_after_does_not_require_exhaustive_stances``
+    (asserting that MSFT's omission was safe).  It is inverted here: MSFT IS
+    held, so omitting it must now raise.  The fix is to supply an explicit hold
+    stance for MSFT alongside the AAPL open stance.  A flat-ticker omission
+    (e.g. a third ticker with no portfolio weight) would still be permitted.
     """
+
     state = _State(
         tickers=["AAPL", "MSFT"],
         positions={},
@@ -81,22 +81,68 @@ def test_after_does_not_require_exhaustive_stances():
                     target_price=210.0,
                     stop_price=185.0,
                 ),
+                # MSFT is held — must supply an explicit stance (Spec B / D3).
+                # Using a hold stance to indicate "no change, thesis intact".
+                TickerStance(
+                    ticker="MSFT",
+                    preferred_weight=0.70,
+                    conviction=0.6,
+                    rationale="hold",
+                    horizon="swing",
+                    target_price=450.0,
+                    stop_price=395.0,
+                ),
             ],
-            decision_tag="x", reasoning="x", updated_thesis="y", confidence=0.5,
+            decision_tag="x", reasoning="x", thesis="y", confidence=0.5,
         ).model_dump(mode="json"),
     )
 
-    # Must not raise — omission is read as implicit hold.
+    # Must not raise — both held ticker (MSFT) and new open (AAPL) are covered.
     assert _strategist_validation_callback(_Ctx(state)) is None
 
-    # Derived target_weights pads MSFT with its current weight (carry-forward).
+    # target_weights contains the emitted preferred weights for both tickers.
     decided = state["strategist_decision"]
     target_weights = decided["target_weights"]
-    assert target_weights["AAPL"] == 0.05          # emitted preferred wins
-    # MSFT was held going in (5 shares × 420 last_price = $2100; total = $3000) → ~0.7
-    # We only check that it's non-zero and matches the portfolio's current weight.
-    assert target_weights["MSFT"] > 0.0
-    assert "MSFT" in target_weights                # NOT dropped, padded
+    assert target_weights["AAPL"] == 0.05          # new open
+    assert target_weights["MSFT"] == 0.70          # explicit hold weight
+
+
+def test_after_held_ticker_omission_raises_contract_violation():
+    """Omitting a held ticker raises StrategistContractViolation (Spec B / D3).
+
+    This is the negative case for ``test_after_requires_explicit_stance_for_held_tickers``
+    — confirms the callback surfaces the violation before the omission propagates
+    downstream.
+    """
+
+    state = _State(
+        tickers=["AAPL", "MSFT"],
+        positions={},
+        portfolio=_portfolio({"MSFT": (5.0, 410.0, 420.0)}, cash=900.0).model_dump(mode="json"),
+        tick_id="t",
+        strategist_decision=StrategistDecision(
+            stances=[
+                TickerStance(
+                    ticker="AAPL",
+                    preferred_weight=0.05,
+                    conviction=0.7,
+                    rationale="open",
+                    horizon="swing",
+                    target_price=210.0,
+                    stop_price=185.0,
+                ),
+                # MSFT intentionally omitted — must raise per Spec B / D3.
+            ],
+            decision_tag="x", reasoning="x", thesis="y", confidence=0.5,
+        ).model_dump(mode="json"),
+    )
+
+    with pytest.raises(StrategistContractViolation) as excinfo:
+        _strategist_validation_callback(_Ctx(state))
+
+    # The error must name the uncovered held ticker.
+    assert "MSFT" in str(excinfo.value)
+    assert "Held position(s)" in str(excinfo.value)
 
 
 def test_after_raises_on_extras():
@@ -111,7 +157,7 @@ def test_after_raises_on_extras():
                              rationale="open", horizon="swing",
                              target_price=200.0, stop_price=170.0),
             ],
-            decision_tag="x", reasoning="x", updated_thesis="y", confidence=0.5,
+            decision_tag="x", reasoning="x", thesis="y", confidence=0.5,
         ).model_dump(mode="json"),
     )
     with pytest.raises(StrategistContractViolation, match="GOOG"):
@@ -160,7 +206,7 @@ def test_after_raises_on_close_without_close_reason():
         strategist_decision=StrategistDecision(
             stances=[TickerStance(ticker="AAPL", preferred_weight=0.0,
                                   conviction=0.5, rationale="exit")],
-            decision_tag="x", reasoning="x", updated_thesis="y", confidence=0.5,
+            decision_tag="x", reasoning="x", thesis="y", confidence=0.5,
         ).model_dump(mode="json"),
     )
     with pytest.raises(StrategistContractViolation, match="close_reason"):
@@ -189,7 +235,7 @@ def test_after_raises_on_trim_without_trim_reason():
                                   conviction=0.5, rationale="reduce",
                                   horizon="swing",
                                   target_price=450.0, stop_price=395.0)],
-            decision_tag="x", reasoning="x", updated_thesis="y", confidence=0.5,
+            decision_tag="x", reasoning="x", thesis="y", confidence=0.5,
         ).model_dump(mode="json"),
     )
     with pytest.raises(StrategistContractViolation, match="trim_reason"):
@@ -197,6 +243,12 @@ def test_after_raises_on_trim_without_trim_reason():
 
 
 def test_after_derives_legacy_fields_on_valid_input():
+    """The validation callback derives target_weights / close_reasons / trim_reasons from stances.
+
+    Band 6: ``new_positions`` is no longer derived by the strategist callback;
+    that assembly was moved to the executor's BUY-path where the real fill
+    price is known.  We assert only on target_weights and the reason dicts.
+    """
     state = _State(
         tickers=["AAPL"],
         positions={}, portfolio=_portfolio().model_dump(mode="json"), tick_id="tick_X",
@@ -204,14 +256,15 @@ def test_after_derives_legacy_fields_on_valid_input():
             stances=[TickerStance(ticker="AAPL", preferred_weight=0.05,
                                   conviction=0.7, rationale="open", horizon="swing",
                                   target_price=210.0, stop_price=185.0)],
-            decision_tag="open_aapl", reasoning="x", updated_thesis="y", confidence=0.7,
+            decision_tag="open_aapl", reasoning="x", thesis="y", confidence=0.7,
         ).model_dump(mode="json"),
     )
     out = _strategist_validation_callback(_Ctx(state))
     assert out is None
     decided = state["strategist_decision"]
     assert decided["target_weights"] == {"AAPL": 0.05}
-    assert "AAPL" in decided["new_positions"]
-    assert decided["new_positions"]["AAPL"]["opened_tick_id"] == "tick_X"
+    # Band 6: new_positions is no longer a field on StrategistDecision; the
+    # executor assembles the PositionThesis from the fill price + stance.
+    assert "new_positions" not in decided
     assert decided["close_reasons"] == {}
     assert decided["trim_reasons"] == {}

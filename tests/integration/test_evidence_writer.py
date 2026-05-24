@@ -112,3 +112,38 @@ def test_factory_returns_named_agent():
     """build_evidence_writer must produce an EvidenceWriter with the correct name."""
     w = build_evidence_writer(db_session=None)
     assert w.name == "EvidenceWriter"
+
+
+@pytest.mark.asyncio
+async def test_evidence_writer_accepts_iso_string_as_of(db_session):
+    """state["as_of"] may arrive as an ISO-8601 string after DatabaseSessionService
+    JSON serialisation; the writer must accept it without raising AsOfRequiredError.
+
+    Locks in the fix that dropped the ``isinstance(raw_as_of, datetime)``
+    pre-filter and now passes ``raw_as_of`` directly to ``resolve_as_of``.
+    """
+    from datetime import datetime
+
+    writer = EvidenceWriter(db_session=db_session)
+    iso_as_of = "2026-05-08T14:00:00+00:00"
+
+    state = {
+        "tick_id":                       "2026-05-08T14:00:00Z",
+        "as_of":                         iso_as_of,          # ISO string, not datetime
+        "technical_evidence":            [_evidence("technical", "AAPL")],
+        "fundamental_evidence":          [],
+        "news_evidence":                 [],
+        "smart_money_evidence":          [],
+        "temp:ticker_evidence_objects":  [_ticker_evidence("AAPL")],
+    }
+    ctx = MagicMock()
+    ctx.session.state = state
+    async for _ in writer._run_async_impl(ctx):
+        pass
+
+    rows = db_session.query(AnalystEvidenceRow).all()
+    assert len(rows) == 1
+    # The recorded_at on the row must represent the same moment as the ISO string.
+    # SQLite strips timezone info when storing, so compare naive datetimes.
+    expected_dt = datetime.fromisoformat(iso_as_of).replace(tzinfo=None)
+    assert rows[0].recorded_at == expected_dt

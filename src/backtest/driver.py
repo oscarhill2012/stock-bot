@@ -25,7 +25,6 @@ from pathlib import Path
 from typing import Any
 
 from google.adk import Runner
-from google.adk.sessions import InMemorySessionService
 from google.genai import types as genai_types
 
 from backtest.schedule import Tick
@@ -33,6 +32,7 @@ from data.timeguard import drain_wallclock_fallback_count
 from observability.drain import drain_tick
 from observability.otel_setup import install_observability
 from observability.trace import TraceWriter
+from orchestrator.persistence import make_session_service
 from orchestrator.pipeline import build_pipeline
 
 logger = logging.getLogger(__name__)
@@ -110,6 +110,14 @@ class Driver:
     run_id:
         Optional stable identifier for this run.  Defaults to
         ``"<window_key>-local"`` so unit tests can omit it.
+    session_db_url:
+        SQLAlchemy-style URL for the ADK session database.  Passed directly to
+        ``make_session_service(db_url=…)`` on each tick.  Use
+        ``sqlite+aiosqlite:///:memory:`` in unit tests that don't need
+        cross-tick persistence; use the per-run path
+        ``sqlite+aiosqlite:///runs/<run-id>/session.sqlite`` in production
+        backtest runs.  Defaults to the in-memory sentinel so tests that
+        construct Driver without a real runs directory still work.
     db_session:
         SQLAlchemy session for trade-log and stance writes.  ``None`` disables
         persistence (tests do this by default).
@@ -138,6 +146,7 @@ class Driver:
         run_dir: Path,
         window_key: str,
         run_id: str = "",
+        session_db_url: str = "sqlite+aiosqlite:///:memory:",
         db_session: Any = None,
         decision_logger: Any = None,
         failure_abort_ratio: float = 0.10,
@@ -148,6 +157,7 @@ class Driver:
         self._run_id             = run_id or f"{window_key}-local"
         self._run_dir            = Path(run_dir)
         self._window_key         = window_key
+        self._session_db_url     = session_db_url
         self._db_session         = db_session
         self._dl                 = decision_logger
         self._ratio              = failure_abort_ratio
@@ -213,7 +223,6 @@ class Driver:
             )
 
             tw = TraceWriter()
-            state["_trace"]           = tw
             state["as_of"]            = tick.as_of
             state["tick_phase"]       = tick.phase
             # Deterministic tick_id: stable composite of (run_id, as_of, phase)
@@ -222,8 +231,6 @@ class Driver:
             state["tick_id"]          = (
                 f"{self._run_id}-{tick.as_of.isoformat()}-{tick.phase}"
             )
-            state["_decision_logger"] = self._dl
-
             # Update FakeBroker price to the day's open or close.  The
             # symbol list comes from ``state["tickers"]`` — A1.6 folded
             # the redundant ``state["watchlist"]`` key away.  Live has
@@ -248,9 +255,10 @@ class Driver:
             # risk_gate (which DOES read the live broker).  Re-pulling here
             # eliminates that source-of-truth split.
             #
-            # ``state["positions"]`` (the thesis book) is propagated
-            # separately by the executor's state_delta event and does not
-            # need a refresh here.
+            # ``state["positions"]`` (the thesis book) is propagated by
+            # the executor's state_delta event (``"positions"`` key) and
+            # does not need a refresh here.
+            # TODO Band 5: drop once reads migrate to user:positions.
             state["portfolio"] = (
                 await self._broker.get_portfolio()
             ).model_dump(mode="json")
@@ -298,7 +306,7 @@ class Driver:
                 pass
 
             try:
-                await self._run_one_tick(state)
+                await self._run_one_tick(state, tw)
             except Exception as exc:
                 logger.exception("tick %s failed", tick.as_of)
                 self._failed.append({
@@ -414,13 +422,18 @@ class Driver:
             if isinstance(ev, dict) and ev.get("message") == "report_cache_hit"
         ]
 
-    async def _run_one_tick(self, state: dict) -> None:
-        """Drive the pipeline once via ADK's Runner + InMemorySessionService.
+    async def _run_one_tick(self, state: dict, tw: TraceWriter) -> None:
+        """Drive the pipeline once via ADK's Runner + DatabaseSessionService.
 
-        Creates a fresh in-memory session service per tick so ADK session IDs
-        never collide across ticks.  After the runner finishes, the updated
-        session state is merged back into ``state`` so the next tick inherits
-        positions and portfolio data.
+        Creates a fresh session per tick so ADK session IDs never collide
+        across ticks.  The session service is backed by the per-run SQLite
+        file (``runs/<run-id>/session.sqlite``) so user-scoped state
+        (``user:positions``, ``user:thesis``) persists across ticks within
+        the same run.
+
+        After the runner finishes, the updated session state is merged back
+        into ``state`` so the next tick inherits pipeline-process keys such as
+        ``last_snapshot``, ``portfolio``, ``reference_prices`` etc.
 
         Known ADK 1.32 issue: the runner may raise ``AttributeError`` or
         ``BaseExceptionGroup`` *after* the pipeline completes (teardown bug in
@@ -431,6 +444,11 @@ class Driver:
         ----------
         state:
             The shared mutable state dict for this tick (mutated in place).
+        tw:
+            The ``TraceWriter`` instance for this tick.  Passed in from
+            ``run()`` so it can be injected onto the live ADK session after
+            ``create_session`` returns (temp:-prefixed keys in the seed dict
+            are discarded by ADK's ``extract_state_delta``).
         """
         # Phase 9: rebuild the pipeline each tick so the News and Fundamental
         # analyst branches fan out across the current ``state["tickers"]``.
@@ -443,10 +461,18 @@ class Driver:
             tickers=state.get("tickers", []) or [],
         )
 
-        session_service = InMemorySessionService()
+        # App name is per-window so each backtest run's user_state rows are
+        # isolated from other windows and from live/paper runs.
+        app_name = f"StockBot-backtest-{self._window_key}"
+
+        # One shared session service instance per tick — backed by the
+        # per-run SQLite file so user-scoped state (user:positions,
+        # user:thesis) persists across ticks within this run.
+        session_service = make_session_service(db_url=self._session_db_url)
+
         runner = Runner(
             agent=pipeline,
-            app_name="backtest",
+            app_name=app_name,
             session_service=session_service,
         )
 
@@ -455,12 +481,36 @@ class Driver:
         # parallel test processes).
         session_id = f"{state['tick_id']}-{uuid.uuid4().hex[:8]}"
 
+        # Build the seed dict for ADK's create_session.  Rules:
+        # 1. Strip temp:-prefixed keys — ADK's extract_state_delta discards
+        #    them anyway and they must be injected onto the live session object
+        #    directly after create_session (see temp:_trace injection below).
+        # 2. Coerce datetime objects to ISO strings — DatabaseSessionService
+        #    serialises state via json.dumps, which cannot handle native
+        #    datetime objects.  The live path's ``state["as_of"]`` and the
+        #    driver's per-tick ``state["as_of"]`` are both datetimes; agents
+        #    that read ``as_of`` must tolerate either datetime or ISO string
+        #    and coerce as needed.
+        from datetime import datetime as _dt
+        seed_state = {
+            k: (v.isoformat() if isinstance(v, _dt) else v)
+            for k, v in state.items()
+            if not k.startswith("temp:")
+        }
+
         adk_session = await session_service.create_session(
-            app_name="backtest",
-            user_id="backtest",
-            state=dict(state),  # shallow copy — ADK mutates its own session state
+            app_name=app_name,
+            user_id="stockbot",
+            state=seed_state,
             session_id=session_id,
         )
+
+        # Inject runtime observability handles directly onto the live session
+        # state.  ADK keeps them addressable for the duration of this
+        # invocation, but extract_state_delta / _trim_temp_delta_state strip
+        # them from any persisted event delta — they never reach the DB.
+        adk_session.state["temp:_trace"]           = tw
+        adk_session.state["temp:_decision_logger"] = self._dl
 
         message = genai_types.Content(
             parts=[genai_types.Part(
@@ -493,7 +543,7 @@ class Driver:
         pipeline_exc: BaseException | None = None
         try:
             async for _ in runner.run_async(
-                user_id="backtest",
+                user_id="stockbot",
                 session_id=adk_session.id,
                 new_message=message,
             ):
@@ -502,15 +552,58 @@ class Driver:
             pipeline_exc = exc
             _log_exception_chain(exc, state["tick_id"])
 
-        # Pull session state back into ``state`` so the next tick sees
-        # positions, portfolio, and any other keys written by pipeline agents.
+        # Pull session state back into ``state`` so the next tick can access
+        # per-process pipeline keys written by agents.  Keys are selectively
+        # carried; see decisions below.
         updated = await session_service.get_session(
-            app_name="backtest",
-            user_id="backtest",
+            app_name=app_name,
+            user_id="stockbot",
             session_id=adk_session.id,
         )
         if updated is not None:
-            state.update(dict(updated.state))
+            updated_state = dict(updated.state)
+
+            # ── State-carry decisions (Band 2 review) ─────────────────────
+            #
+            # ``user:positions`` / ``user:thesis`` — DROPPED.
+            #   These are user-scoped keys written by the Executor's
+            #   after_agent_callback (Band 4).  They persist in the
+            #   DatabaseSessionService row and are re-hydrated by ADK's
+            #   user_state merge on the next session create — carrying them
+            #   here would shadow the DB row with a stale in-memory copy.
+            #
+            # ``last_snapshot`` — KEPT.
+            #   The pipeline-completion check (``_enforce_completion``) reads
+            #   this key from ``state`` directly after the tick.  It must be
+            #   present in ``state`` for that guard to fire.
+            #
+            # ``portfolio`` — KEPT.
+            #   Re-fetched from the broker at each tick boundary by
+            #   ``driver.run()`` anyway, but carrying it here is harmless and
+            #   mirrors the live path where the broker call is the authority.
+            #
+            # ``reference_prices`` — KEPT.
+            #   Refreshed per-tick by ``_seed_reference_prices`` in
+            #   ``driver.run()``.  Carrying the post-tick value is harmless.
+            #
+            # ``memory_buffer`` / ``day_digest`` — KEPT.
+            #   These are ordinary cross-tick pipeline keys that survive in the
+            #   session state and must be visible to the next tick's agents.
+            #
+            # ``temp:*`` — DROPPED implicitly.
+            #   ADK strips temp:-prefixed keys from persisted deltas; they
+            #   will not appear in ``updated.state`` at all.
+            #
+            # All other keys that appear in updated.state (analyst outputs,
+            # decision artefacts, etc.) are tick-scoped and will be
+            # overwritten by the next tick's agents — carrying them forward
+            # is safe (they won't be read) but adds noise.  We carry the
+            # full state minus the user: prefix keys to keep the logic simple.
+            state.update({
+                k: v
+                for k, v in updated_state.items()
+                if not k.startswith("user:")
+            })
 
         # ── pipeline-completion check ──────────────────────────────────────
         # The Snapshotter is the *last* agent in the pipeline and writes

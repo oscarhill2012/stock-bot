@@ -4,9 +4,9 @@ Registered as a post-execution hook on the live Executor agent.  Lives outside
 the backtest-only path so the RAG-seed corpus also accumulates from live paper
 trading once the bot is deployed.
 
-Activated by setting ``state['_decision_logger']`` to a ``DecisionLogger``
+Activated by setting ``state['temp:_decision_logger']`` to a ``DecisionLogger``
 instance.  When the key is absent the hook is a no-op — identical posture to
-the TraceWriter hook (``state['_trace']``).
+the TraceWriter hook (``state['temp:_trace']``).
 """
 from __future__ import annotations
 
@@ -170,7 +170,7 @@ class DecisionLogger:
             Expected keys: ``executions``, ``as_of``, ``tick_phase``,
             ``tick_id``, ``temp:ticker_evidence_objects`` (list of per-ticker
             TickerEvidence dumps), ``strategist_decision`` (with ``stances``
-            list, ``reasoning``, ``updated_thesis``, ``decision_tag``,
+            list, ``reasoning``, ``thesis``, ``decision_tag``,
             ``confidence``), ``positions`` (held-position thesis book keyed
             by ticker), ``clamps``.
         """
@@ -339,16 +339,16 @@ class DecisionLogger:
             # Full strategist accountability payload — used by the future
             # persistent-memory loop to retrieve past decisions by reasoning /
             # decision_tag and compare against realised outcomes.  Keep the
-            # tick-level reasoning and updated_thesis as full strings (not
+            # tick-level reasoning and thesis as full strings (not
             # truncated excerpts): the RAG corpus needs the real text, and
             # one decision per fill is the right granularity to pay that cost.
             "strategist_decision": {
-                "stance":         _coerce(stance),
-                "close_reason":   close_reason,
-                "reasoning":      decision.get("reasoning", ""),
-                "updated_thesis": decision.get("updated_thesis", ""),
-                "decision_tag":   decision.get("decision_tag", ""),
-                "confidence":     decision.get("confidence"),
+                "stance":       _coerce(stance),
+                "close_reason": close_reason,
+                "reasoning":    decision.get("reasoning", ""),
+                "thesis":       decision.get("thesis", ""),
+                "decision_tag": decision.get("decision_tag", ""),
+                "confidence":   decision.get("confidence"),
             },
 
             "risk_gate": {

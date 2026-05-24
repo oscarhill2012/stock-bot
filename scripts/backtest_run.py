@@ -95,6 +95,17 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--fresh",
+        action="store_true",
+        default=False,
+        help=(
+            "delete runs/<run-id>/session.sqlite before starting so the run "
+            "begins with an empty user_state row (no inherited thesis from a "
+            "prior run of the same window).  Has no effect if no session file "
+            "exists yet."
+        ),
+    )
+    parser.add_argument(
         "--log-level",
         choices=("minimal", "info", "debug"),
         default="minimal",
@@ -129,6 +140,7 @@ def main() -> None:
         args.window,
         tick_limit       = args.limit,
         run_id_override  = args.run_id,
+        fresh            = args.fresh,
     )
 
     print(f"run_id:  {result.run_id}")

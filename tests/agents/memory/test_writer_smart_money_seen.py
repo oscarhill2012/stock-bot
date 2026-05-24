@@ -16,7 +16,7 @@ async def test_smart_money_seen_true_when_real_evidence(monkeypatch):
         "strategist_decision": {
             "decision_tag": "test",
             "reasoning": "x",
-            "updated_thesis": "t",
+            "thesis": "t",
         },
         "memory_buffer": [],
         "day_digest": "",
@@ -54,7 +54,7 @@ async def test_smart_money_seen_false_when_only_no_data(monkeypatch):
         "strategist_decision": {
             "decision_tag": "test",
             "reasoning": "x",
-            "updated_thesis": "t",
+            "thesis": "t",
         },
         "memory_buffer": [],
         "day_digest": "",

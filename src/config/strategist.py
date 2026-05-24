@@ -1,6 +1,6 @@
 """Loader for ``config/strategist.json`` — character caps on strategist LLM fields.
 
-The strategist produces free-text fields (``reasoning``, ``updated_thesis``,
+The strategist produces free-text fields (``reasoning``, ``thesis``,
 per-stance ``rationale``, ``catalyst``, ``close_reason``, ``trim_reason``, and
 ``PositionThesis`` rationale/notes).  Each is capped via ``pydantic.Field
 (max_length=...)`` to keep prompts and persistence rows bounded.  The caps used
@@ -68,13 +68,14 @@ class DecisionCaps(BaseModel):
         Max length of ``StrategistDecision.reasoning`` — the overall summary
         the LLM emits across all stances.  Raised from the original 300 after
         live runs showed Gemini routinely wanted more headroom.
-    updated_thesis_max_chars:
-        Max length of ``StrategistDecision.updated_thesis`` — the working
-        hypothesis carried into the next tick.
+    thesis_max_chars:
+        Max length of ``StrategistDecision.thesis`` — the optional standing
+        market thesis update.  When non-null, overwrites ``state['user:thesis']``;
+        when null/omitted, the prior thesis is carried forward unchanged.
     """
 
-    reasoning_max_chars:      int = Field(ge=50, le=2000)
-    updated_thesis_max_chars: int = Field(ge=50, le=2000)
+    reasoning_max_chars: int = Field(ge=50, le=2000)
+    thesis_max_chars:    int = Field(ge=50, le=2000)
 
 
 class StanceCaps(BaseModel):

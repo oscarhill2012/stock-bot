@@ -79,7 +79,7 @@ class EvidenceWriter(BaseAgent):
         # on live runs where as_of is absent.
         raw_as_of = state.get("as_of")
         evidence_recorded_at: datetime = resolve_as_of(
-            raw_as_of if isinstance(raw_as_of, datetime) else None,
+            raw_as_of,
             allow_wallclock=True,
             site="evidence_writer",
         )

@@ -80,10 +80,14 @@ class TickState(BaseModel):
     smart_money_data: dict[str, Any] | None = None
 
     # Persistent across ticks (loaded from and saved to the ADK session store).
+    # NOTE: ``positions`` and ``thesis`` have been migrated to user-scoped ADK
+    # session state — they are addressed as ``session.state["user:positions"]``
+    # and ``session.state["user:thesis"]`` and are NOT fields on TickState.
+    # Reads of ``TickState.positions`` or ``TickState.thesis`` are a type error
+    # by design — those sites must be migrated to the prefixed keys.
+    # See: docs/Phase10-post-first-backtest/specs/foundational-thesis-memory.md (Spec B).
     memory_buffer: list[Any]  = Field(default_factory=list)
     day_digest: str           = ""
-    thesis: str               = ""
-    positions: dict[str, Any] = Field(default_factory=dict)
     last_executed_tick_id: str | None = None
 
     # Written by the Strategist LlmAgent.

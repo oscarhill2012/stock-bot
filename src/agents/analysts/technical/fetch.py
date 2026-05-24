@@ -89,7 +89,7 @@ async def technical_fetch_callback(
     # within the same invocation via ``_run_async_impl``.
     state["temp:technical_data"] = technical_data
 
-    # Surface trace — no-op unless state["_trace"] is set by trace_tick.py.
+    # Surface trace — no-op unless state["temp:_trace"] is set by trace_tick.py.
     _trace_maybe(state, "01_fetch_technical", technical_data)
 
     return None

@@ -5,8 +5,53 @@ import asyncio
 import logging
 import uuid
 from datetime import UTC, date, datetime
+from enum import Enum
 
 logger = logging.getLogger(__name__)
+
+
+class BrokerMode(Enum):
+    """Enumeration of supported broker operating modes.
+
+    Used to partition ADK session state between paper and live runs —
+    each mode maps to a distinct ``app_name`` so their ``user_state``
+    rows are structurally disjoint in the ``DatabaseSessionService``.
+    """
+
+    LIVE  = "live"
+    PAPER = "paper"
+
+
+def _dispatch_app_name(broker_mode: BrokerMode) -> str:
+    """Return the ADK app_name for the current broker mode.
+
+    Parameters
+    ----------
+    broker_mode
+        ``BrokerMode.LIVE`` or ``BrokerMode.PAPER`` — read from the
+        broker layer configuration.
+
+    Returns
+    -------
+    str
+        ``"StockBot-live"`` or ``"StockBot-paper"``.  These values
+        partition the ADK user_state table so paper and live portfolios
+        cannot share thesis rows.  Backtest uses a third value,
+        ``f"StockBot-backtest-{window_key}"``, set in the backtest
+        driver / runner — tick.py does not handle that path.
+
+    Raises
+    ------
+    ValueError
+        When ``broker_mode`` is not one of the supported enum members.
+    """
+    match broker_mode:
+        case BrokerMode.LIVE:
+            return "StockBot-live"
+        case BrokerMode.PAPER:
+            return "StockBot-paper"
+        case _:
+            raise ValueError(f"Unsupported broker mode: {broker_mode!r}")
 
 # Symbols fetched once per tick as market and sector benchmarks.
 # SPY is the broad-market reference; the 11 SPDR sector ETFs cover every
@@ -62,11 +107,13 @@ async def _build_initial_state(broker, tick_id: str, tickers: list[str]) -> dict
 
     Reads the live portfolio from the broker, fetches reference prices,
     and seeds the Phase 2 lifecycle keys (``tick_id``, ``as_of``,
-    ``tick_phase``) plus the cross-tick fields the pipeline expects.
-    The cross-tick fields (``memory_buffer``, ``day_digest``, ``thesis``,
-    ``positions``) are seeded empty here — true persistence-backed
-    rehydration is tracked in ``docs/todo-fixes.md`` item 2.5.3 and is
-    out of scope for A1.
+    ``tick_phase``) plus the per-tick pipeline fields the pipeline expects.
+
+    Cross-tick fields (``user:positions``, ``user:thesis``) are NOT seeded
+    here — ADK's user_state merge populates them from the
+    ``DatabaseSessionService`` row when the session is created.  See
+    ``docs/Phase10-post-first-backtest/specs/foundational-thesis-memory.md``
+    (Spec B) for the full persistence model.
 
     Args:
         broker: Any broker implementing ``get_portfolio() -> Portfolio``.
@@ -103,8 +150,6 @@ async def _build_initial_state(broker, tick_id: str, tickers: list[str]) -> dict
         "tickers": tickers,
         "memory_buffer": [],
         "day_digest": "",
-        "thesis": "",
-        "positions": {},
         "portfolio": portfolio.model_dump(mode="json"),
         # Dump each PriceHistory to a JSON-safe dict so the ADK SqlSessionService
         # (which serialises state via plain json.dumps) doesn't choke on Pydantic
@@ -173,19 +218,30 @@ async def run_once(broker, session=None, *, tick_label: str | None = None) -> di
     # ``tickers`` was resolved above via ``get_watchlist()`` and is also
     # seeded into the ADK session state by ``_build_initial_state`` below.
     pipeline = build_pipeline(broker, session, tickers=tickers)
+
+    # Resolve the broker mode from its ``mode`` attribute (``"paper"`` or
+    # ``"live"``).  FakeBroker does not expose ``.mode``; default to PAPER
+    # so test runs land in the paper namespace rather than raising.
+    _raw_mode = getattr(broker, "mode", "paper")
+    _broker_mode = BrokerMode(_raw_mode) if _raw_mode in BrokerMode._value2member_map_ else BrokerMode.PAPER
+    _app_name = _dispatch_app_name(_broker_mode)
+
     session_service = make_session_service()
     runner = Runner(
         agent=pipeline,
-        app_name="StockBot",
+        app_name=_app_name,
         session_service=session_service,
     )
 
     # Create a fresh session with the minimal state every tick needs.
     # Portfolio is seeded from the broker so the strategist's held-view
     # callback renders real holdings on the very first tick.
+    # Cross-tick state (user:positions, user:thesis) is NOT seeded here —
+    # ADK's user_state merge hydrates it from the DB row on session create
+    # (Spec B: docs/Phase10-post-first-backtest/specs/foundational-thesis-memory.md).
     initial_state = await _build_initial_state(broker, tick_id, tickers)
     adk_session = await session_service.create_session(
-        app_name="StockBot",
+        app_name=_app_name,
         user_id="stockbot",
         state=initial_state,
     )
@@ -214,7 +270,7 @@ async def run_once(broker, session=None, *, tick_label: str | None = None) -> di
         )
 
     updated = await session_service.get_session(
-        app_name="StockBot",
+        app_name=_app_name,
         user_id="stockbot",
         session_id=adk_session.id,
     )

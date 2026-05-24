@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Awaitable, Callable
-from datetime import datetime
 
 from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
@@ -123,7 +122,7 @@ class MemoryWriter(BaseAgent):
         # wall-clock time.  Falls back to wall-clock on live runs.
         raw_as_of = state.get("as_of")
         entry_ts = resolve_as_of(
-            raw_as_of if isinstance(raw_as_of, datetime) else None,
+            raw_as_of,
             allow_wallclock=True,
             site="memory/writer",
         )
@@ -153,26 +152,31 @@ class MemoryWriter(BaseAgent):
 
         # Pre-compute the values once so both the in-tick direct mutation and
         # the cross-tick ``state_delta`` payload below stay consistent.
-        memory_buffer_payload = [e.model_dump() for e in updated_buffer]
-        new_thesis: str = (
-            decision.get("updated_thesis", state.get("thesis", ""))
-            if isinstance(decision, dict)
-            else decision.updated_thesis
-        )
+        # Use mode="json" so datetime fields (timestamp) are coerced to
+        # ISO-8601 strings — DatabaseSessionService serialises state_delta
+        # via json.dumps and will raise TypeError on bare datetime objects.
+        memory_buffer_payload = [e.model_dump(mode="json") for e in updated_buffer]
+
+        # NOTE (Band 4): MemoryWriter no longer reads or writes ``thesis`` /
+        # ``state["thesis"]``.  The bare-key ``thesis`` write has been removed;
+        # ``user:thesis`` is now the sole canonical key, written by
+        # ``_executor_thesis_writer_callback`` in executor/agent.py.
+        # The ``decision.thesis`` read that used to live here is also gone —
+        # the executor after-callback is the sole consumer of ``decision.thesis``
+        # for the persistence path.
 
         # Direct mutation — visible to any later agent in *this* tick that
         # reads ``ctx.session.state`` (same object reference).
         state["memory_buffer"] = memory_buffer_payload
         state["day_digest"]    = updated_digest
-        state["thesis"]        = new_thesis
 
         # Cross-tick propagation — ADK's ``InMemorySessionService`` only
         # merges mutations into the storage session via an Event whose
         # ``actions.state_delta`` carries them.  Without this yielded event,
         # the next tick's ``session_service.get_session`` re-fetch would
         # return a copy of storage that still has the *previous* tick's
-        # ``memory_buffer`` / ``day_digest`` / ``thesis`` — i.e. the
-        # strategist's prompt would see stale memory on every tick.
+        # ``memory_buffer`` / ``day_digest`` — i.e. the strategist's prompt
+        # would see stale memory on every tick.
         #
         # This is the same pattern as the Snapshotter fix (2026-05-19).
         # The wider audit + the planned move to a DB-hydration / RAG model
@@ -184,7 +188,6 @@ class MemoryWriter(BaseAgent):
             actions       = EventActions(state_delta={
                 "memory_buffer": memory_buffer_payload,
                 "day_digest":    updated_digest,
-                "thesis":        new_thesis,
             }),
         )
 

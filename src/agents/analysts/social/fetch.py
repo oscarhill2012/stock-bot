@@ -76,7 +76,7 @@ async def social_fetch_callback(
     # ``SocialAnalyst._run_async_impl``; must not survive to the next tick.
     state["temp:social_data"] = social_data
 
-    # Surface trace — no-op unless state["_trace"] is set by trace_tick.py.
+    # Surface trace — no-op unless state["temp:_trace"] is set by trace_tick.py.
     _trace_maybe(state, "01_fetch_social", social_data)
 
     # Return None so the agent body (_run_async_impl) continues normally.

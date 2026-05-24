@@ -148,7 +148,7 @@ async def test_strategist_v2_emits_per_ticker_stances_with_held_position():
     USER_ID = "t"
 
     # ── Build the AAPL held-position thesis ──────────────────────────────────
-    # The strategist's held-view callback reads ``state["positions"]`` and
+    # The strategist's held-view callback reads ``state["user:positions"]`` and
     # renders it into a prompt block; this seeds a realistic held position so
     # the callback path is exercised.
     aapl_thesis = PositionThesis(

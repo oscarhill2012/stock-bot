@@ -111,7 +111,7 @@ class NewsFetchAgent(BaseAgent):
             f"=== {t} ===\n{per_ticker_blocks[t]}" for t in tickers
         )
 
-        # Surface trace — no-op unless state["_trace"] is set.
+        # Surface trace — no-op unless state["temp:_trace"] is set.
         _trace_maybe(state, "01_fetch_news", news_data)
 
         yield Event(

@@ -88,7 +88,7 @@ class StrategistDecisionWriter(BaseAgent):
         # only on live runs where as_of is absent.
         raw_as_of = state.get("as_of")
         recorded_at = resolve_as_of(
-            raw_as_of if isinstance(raw_as_of, datetime) else None,
+            raw_as_of,
             allow_wallclock=True,
             site="decision_writer",
         )

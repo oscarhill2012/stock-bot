@@ -10,7 +10,7 @@ from the broker has to be re-pulled at the tick boundary or it goes stale.
 The bug this guards against:
 
   - Tick 1 BUYs MSFT.  Broker now holds MSFT.
-  - Tick 2 starts.  ``state["positions"]`` is propagated by the executor's
+  - Tick 2 starts.  ``state["user:positions"]`` is propagated by the executor's
     state_delta event, but ``state["portfolio"]`` is NOT — without the
     driver's refresh it still carries the empty-at-start portfolio dump.
   - Strategist's after-callback reads ``state["portfolio"]``, sees MSFT
@@ -106,10 +106,10 @@ async def test_portfolio_is_refreshed_at_tick_start(tmp_path: Path) -> None:
     assert initial_portfolio["positions"] == {}, "test precondition"
 
     state: dict = {
-        "watchlist":  ["MSFT"],
-        "tickers":    ["MSFT"],
-        "portfolio":  initial_portfolio,
-        "positions":  {},
+        "watchlist":       ["MSFT"],
+        "tickers":         ["MSFT"],
+        "portfolio":       initial_portfolio,
+        "user:positions":  {},
     }
 
     # Patch the ADK Runner the driver instantiates per tick to return our
@@ -187,10 +187,10 @@ async def test_portfolio_refreshed_even_when_initial_dump_already_present(
 
     # Deliberately stale state: pretend the previous tick saw no positions.
     state: dict = {
-        "watchlist":  ["AAPL"],
-        "tickers":    ["AAPL"],
-        "portfolio":  {"cash": 999_999.0, "positions": {}},   # obviously fake
-        "positions":  {},
+        "watchlist":       ["AAPL"],
+        "tickers":         ["AAPL"],
+        "portfolio":       {"cash": 999_999.0, "positions": {}},   # obviously fake
+        "user:positions":  {},
     }
 
     schedule = [Tick(as_of=datetime(2025, 9, 2, 13, 30, tzinfo=UTC), phase="open")]

@@ -2,7 +2,7 @@
   "slack_percent": 15,
   "decision_caps": {
     "reasoning_max_chars": 1000,
-    "updated_thesis_max_chars": 800
+    "thesis_max_chars": 800
   },
   "stance_caps": {
     "rationale_max_chars": 250,

@@ -27,7 +27,7 @@ def _make_ctx(state: dict) -> MagicMock:
 
 @pytest.mark.asyncio
 async def test_executor_no_op_without_decision_logger() -> None:
-    """Executor runs normally when ``_decision_logger`` is absent from state.
+    """Executor runs normally when ``temp:_decision_logger`` is absent from state.
 
     This guards the live-mode path: the hook must be a strict no-op when the
     key is not set, so the executor's existing behaviour is unchanged.
@@ -41,8 +41,8 @@ async def test_executor_no_op_without_decision_logger() -> None:
             Order(ticker="AAPL", action="BUY", quantity=1, est_price=150.0).model_dump()
         ],
         "positions": {},
-        "strategist_decision": {"new_positions": {}},
-        # No ``_decision_logger`` key — the hook must not fire.
+        "strategist_decision": {"stances": []},
+        # No ``temp:_decision_logger`` key — the hook must not fire.
     }
     ctx = _make_ctx(state)
 
@@ -67,22 +67,30 @@ async def test_executor_calls_decision_logger_on_fill() -> None:
 
     state = {
         "tick_id": "t1",
+        "as_of":   "2023-03-13T09:30:00+00:00",
         "final_orders": [
             Order(ticker="AAPL", action="BUY", quantity=1, est_price=150.0).model_dump()
         ],
         "positions": {},
         "strategist_decision": {
-            "new_positions": {
-                "AAPL": {
-                    "opened_price": 150.0,
-                    "horizon": "swing",
-                    "rationale": "test",
-                    "opened_tag": "test",
-                    "opened_at": "2023-03-13T09:30:00+00:00",
-                }
-            }
+            # Band 6: executor assembles PositionThesis from the open-intent
+            # stance + fill price; ``new_positions`` is no longer needed here.
+            "stances": [
+                {
+                    "ticker":           "AAPL",
+                    "preferred_weight": 0.10,
+                    "conviction":       0.8,
+                    "intent":           "open",
+                    "weight":           0.10,
+                    "horizon":          "swing",
+                    "rationale":        "test",
+                    "target_price":     170.0,
+                    "stop_price":       130.0,
+                    "catalyst":         "test catalyst",
+                },
+            ],
         },
-        "_decision_logger": fake_logger,
+        "temp:_decision_logger": fake_logger,
     }
     ctx = _make_ctx(state)
 
@@ -117,8 +125,8 @@ async def test_executor_logger_exception_does_not_abort_tick() -> None:
             Order(ticker="AAPL", action="BUY", quantity=1, est_price=150.0).model_dump()
         ],
         "positions": {},
-        "strategist_decision": {"new_positions": {}},
-        "_decision_logger": broken_logger,
+        "strategist_decision": {"stances": []},
+        "temp:_decision_logger": broken_logger,
     }
     ctx = _make_ctx(state)
 
@@ -127,4 +135,49 @@ async def test_executor_logger_exception_does_not_abort_tick() -> None:
         pass
 
     # Fill was still recorded correctly.
+    assert state["executions"][0]["status"] == "filled"
+
+
+@pytest.mark.asyncio
+async def test_executor_accepts_iso_string_as_of_on_sell() -> None:
+    """state["as_of"] arriving as an ISO-8601 string must not raise when the
+    executor calculates holding_hours for a SELL order.
+
+    Locks in the fix that dropped the ``isinstance(raw_as_of, datetime)``
+    pre-filter at the resolve_as_of call inside the SELL branch.
+    """
+    from broker.portfolio import Position
+
+    broker = FakeBroker(starting_cash=10_000, prices={"AAPL": 160.0})
+    # Seed broker with an existing AAPL position so the SELL can fill.
+    broker._positions["AAPL"] = Position(quantity=1, avg_cost=150.0, last_price=160.0)
+    agent = ExecutorAgent(broker=broker, db_session=None)
+
+    iso_as_of = "2026-05-08T14:00:00+00:00"
+
+    state = {
+        "tick_id":  "t-iso-sell",
+        "as_of":    iso_as_of,              # ISO string, not datetime
+        "final_orders": [
+            Order(ticker="AAPL", action="SELL", quantity=1, est_price=160.0).model_dump()
+        ],
+        "positions": {
+            "AAPL": {
+                "opened_price":   150.0,
+                "horizon":        "swing",
+                "rationale":      "test",
+                "opened_tag":     "test",
+                "opened_at":      "2026-05-01T14:00:00+00:00",
+                "opened_tick_id": "t-open",
+            }
+        },
+        "strategist_decision": {"stances": []},
+    }
+    ctx = _make_ctx(state)
+
+    # Must not raise — previously the isinstance pre-filter turned as_of to None
+    # and STOCKBOT_STRICT_AS_OF=1 would cause AsOfRequiredError on SELL.
+    async for _ in agent._run_async_impl(ctx):
+        pass
+
     assert state["executions"][0]["status"] == "filled"

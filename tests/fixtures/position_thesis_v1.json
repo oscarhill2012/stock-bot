@@ -1,0 +1,15 @@
+{
+  "ticker": "AVGO",
+  "opened_at": "2026-05-01T14:00:00+00:00",
+  "opened_tick_id": "tick-0001",
+  "opened_price": 187.50,
+  "weight": 0.08,
+  "target_price": 220.00,
+  "stop_price": 175.00,
+  "catalyst": "AI accelerator cycle accelerating into H2 data-centre capex wave",
+  "horizon": "swing",
+  "rationale": "AVGO is the clearest infrastructure bet on the AI capex wave: custom silicon contracts with hyperscalers lock in multi-year revenue visibility while the analogue/connectivity segment provides a margin floor.",
+  "last_reviewed_at": "2026-05-08T14:00:00+00:00",
+  "last_reviewed_decision": "hold",
+  "last_reviewed_reason": "Price action intact; no adverse catalyst; maintaining position."
+}

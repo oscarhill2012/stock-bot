@@ -33,9 +33,9 @@ class _ExplodingTraceWriter:
 def test_trace_failure_logs_exception(caplog: pytest.LogCaptureFixture) -> None:
     """A snapshot crash logs an exception record but does not propagate."""
 
-    # ``_trace_maybe`` looks up ``state["_trace"]`` via ``.get``; a plain
+    # ``_trace_maybe`` looks up ``state["temp:_trace"]`` via ``.get``; a plain
     # dict satisfies that interface without needing an ADK session object.
-    state = {"_trace": _ExplodingTraceWriter()}
+    state = {"temp:_trace": _ExplodingTraceWriter()}
 
     caplog.set_level(logging.WARNING, logger="observability.trace")
 

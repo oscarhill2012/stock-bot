@@ -40,7 +40,7 @@ def _fake_response(text: str) -> SimpleNamespace:
 def test_before_callback_captures_system_and_user_text() -> None:
     """The captured prompt must concatenate system + user under labelled headings."""
     tw = TraceWriter()
-    state = _FakeState({"_trace": tw})
+    state = _FakeState({"temp:_trace": tw})
     ctx = SimpleNamespace(state=state)
 
     before, _after = make_llm_trace_callbacks("03_news_llm", model="gemini-test")
@@ -56,7 +56,7 @@ def test_before_callback_captures_system_and_user_text() -> None:
 def test_after_callback_overwrites_pending_marker() -> None:
     """After-callback replaces the ``(pending)`` placeholder with the model response."""
     tw = TraceWriter()
-    state = _FakeState({"_trace": tw})
+    state = _FakeState({"temp:_trace": tw})
     ctx = SimpleNamespace(state=state)
 
     before, after = make_llm_trace_callbacks("03_news_llm", model="gemini-test")
@@ -81,7 +81,7 @@ def test_callbacks_are_noops_without_trace_writer() -> None:
 def test_after_callback_without_before_is_safe() -> None:
     """After-callback runs even if the before-callback never fired (orphan ordering)."""
     tw = TraceWriter()
-    state = _FakeState({"_trace": tw})
+    state = _FakeState({"temp:_trace": tw})
     ctx = SimpleNamespace(state=state)
 
     _before, after = make_llm_trace_callbacks("03_news_llm", model="gemini-test")

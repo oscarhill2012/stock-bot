@@ -128,7 +128,7 @@ class TechnicalAnalyst(BaseAgent):
             v_dict["ticker"] = ticker
             verdicts.append(v_dict)
 
-        # Surface trace — no-op unless state["_trace"] is set by trace_tick.py.
+        # Surface trace — no-op unless state["temp:_trace"] is set by trace_tick.py.
         # Run before the yield so the trace records the same payload the
         # state_delta carries.
         _trace_maybe(ctx.session.state, "02_technical_verdict", verdicts)

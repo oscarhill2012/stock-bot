@@ -251,7 +251,7 @@ def make_report_cache_callbacks(
 
         if trace_label is not None:
             try:
-                tw = state.get("_trace")
+                tw = state.get("temp:_trace")
             except (AttributeError, TypeError):
                 tw = None
 

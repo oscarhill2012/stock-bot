@@ -8,7 +8,7 @@ from google.adk.agents import LlmAgent
 from google.adk.agents.callback_context import CallbackContext
 from google.genai import types as genai_types
 
-from agents.risk_gate.lifecycle import StrategistContractViolation
+from agents.strategist.derivation import StrategistContractViolation
 from agents.strategist.derivation import TickContext, derive_legacy_fields
 from agents.strategist.lifecycle import derive_lifecycle_action
 from agents.strategist.prompts import STRATEGIST_INSTRUCTION
@@ -58,7 +58,7 @@ def _log_offending_decision(
     that the LLM's own reasoning / decision_tag survives in the run log even
     when ``STOCKBOT_TRACE=1`` is not set.  Without this, the raised exception
     carries only the bad ticker(s) and the rest of the decision context
-    (decision_tag, reasoning, updated_thesis) is lost when the tick aborts.
+    (decision_tag, reasoning, thesis) is lost when the tick aborts.
 
     Args:
         tick_id: The tick identifier from state (or ``"unknown"`` fallback).
@@ -70,12 +70,12 @@ def _log_offending_decision(
 
     logger.error(
         "Strategist contract violation on tick=%s: %s | decision_tag=%r "
-        "reasoning=%r updated_thesis=%r confidence=%s n_stances=%d",
+        "reasoning=%r thesis=%r confidence=%s n_stances=%d",
         tick_id,
         violation,
         decision.decision_tag,
         decision.reasoning,
-        decision.updated_thesis,
+        decision.thesis,
         decision.confidence,
         len(decision.stances),
     )
@@ -218,7 +218,7 @@ def _strategist_validation_callback(
     # stance for (active-stances contract).
     raw_as_of = state.get("as_of")
     derivation_now = resolve_as_of(
-        raw_as_of if isinstance(raw_as_of, datetime) else None,
+        raw_as_of,
         allow_wallclock=True,
         site="strategist/agent._after_validation",
     )
@@ -231,7 +231,6 @@ def _strategist_validation_callback(
     )
     derived = derive_legacy_fields(decision.stances, ctx)
     decision.target_weights = derived.target_weights
-    decision.new_positions = derived.new_positions
     decision.close_reasons = derived.close_reasons
     decision.trim_reasons = derived.trim_reasons
 
@@ -263,7 +262,7 @@ def _strategist_validation_callback(
     # Surface the strategist decision on the per-tick trace so downstream
     # inspection (decisions/, report/) and ad-hoc trace forensics can see
     # the full stance set, decision_tag, reasoning, and derived weights.
-    # No-op unless state["_trace"] is set by the backtest driver.
+    # No-op unless state["temp:_trace"] is set by the backtest driver.
     _trace_maybe(state, "03_strategist", decision_dump)
 
     # ── Terminal summary row ──────────────────────────────────────────────────
