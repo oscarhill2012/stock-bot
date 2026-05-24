@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 
 from google.adk.agents import LlmAgent
+from google.genai import types as genai_types
 
 from agents.analysts._common import _chain_after, _chain_before
 from agents.analysts.cache_callbacks import make_report_cache_callbacks
@@ -23,7 +24,8 @@ from agents.analysts.report_cache import (
     news_hash_inputs,
 )
 from agents.isolated_failure import IsolatedFailureWrapper
-from agents.llm_retry import RetryingAgentWrapper
+from agents.llm_retry import RetryingAgentWrapper, build_retry_policies
+from config.analysts import get_analysts_config
 from config.models import get_models_config
 from contract.evidence import TickerVerdict
 from observability.terminal_log import make_observability_callbacks
@@ -137,27 +139,44 @@ def build_news_branch_for_ticker(
     before_cb = _chain_before(cache_before, obs_before, trace_before)
     after_cb  = _chain_after(cache_after, obs_after, trace_after)
 
+    # Read the per-agent LLM caps from analysts config.  These drive three
+    # things: the GenerateContentConfig token cap on the LlmAgent call,
+    # and the timeout + retry budgets on the RetryingAgentWrapper.
+    llm_caps = get_analysts_config().news.llm
+
     # -----------------------------------------------------------------------
     # Assemble the LlmAgent.
     # - before_agent_callback and after_agent_callback are intentionally omitted
     #   (left as None) — see docstring above.
     # - before_model_callback / after_model_callback carry cache + trace hooks.
+    # - generate_content_config caps output tokens so long-running generation
+    #   cannot wedge the tick before the wall-clock timeout fires.
     # -----------------------------------------------------------------------
     llm = LlmAgent(
-        name             = f"NewsAnalyst_{ticker}",
-        model            = model,
-        instruction      = instruction,
-        output_schema    = TickerVerdict,
-        output_key       = f"temp:news_verdict_{ticker}",
-        before_model_callback = before_cb,
-        after_model_callback  = after_cb,
+        name                    = f"NewsAnalyst_{ticker}",
+        model                   = model,
+        instruction             = instruction,
+        output_schema           = TickerVerdict,
+        output_key              = f"temp:news_verdict_{ticker}",
+        before_model_callback   = before_cb,
+        after_model_callback    = after_cb,
+        generate_content_config = genai_types.GenerateContentConfig(
+            max_output_tokens = llm_caps.max_output_tokens,
+        ),
     )
 
-    # Wrap in the retry layer so transient Vertex AI 429s are handled before
-    # any failure bubbles up to the isolation boundary.
+    # Wrap in the retry layer so transient Vertex AI 429s, wall-clock
+    # timeouts, and schema-validation failures are all handled before any
+    # exception bubbles up to the isolation boundary.
     retrying = RetryingAgentWrapper(
-        name  = f"NewsAnalyst_{ticker}_retrying",
-        inner = llm,
+        name            = f"NewsAnalyst_{ticker}_retrying",
+        inner           = llm,
+        timeout_seconds = llm_caps.timeout_seconds,
+        policies        = build_retry_policies(
+            timeout_retries = llm_caps.timeout_retries,
+            schema_retries  = llm_caps.schema_retries,
+        ),
+        retry_state_key = "temp:_obs_news_retries",
     )
 
     # Outermost isolation wrapper — catches and logs any exception (including
