@@ -3,6 +3,9 @@
 news_verdicts + news_evidence; synthesises no-data for missing keys."""
 from __future__ import annotations
 
+import logging
+import os
+
 import pytest
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.sessions import InMemorySessionService
@@ -144,3 +147,84 @@ async def test_joiner_output_consumable_by_strategist_index_evidence():
     indexed = _index_evidence({"news_evidence": delta["news_evidence"]}, "news_evidence")
     assert "AAPL" in indexed
     assert indexed["AAPL"].ticker == "AAPL"
+
+
+@pytest.mark.asyncio
+async def test_news_joiner_passes_retries_to_summary(monkeypatch) -> None:
+    """The joiner reads temp:_obs_news_retries and passes it as the
+    ``retries=`` kwarg to ``emit_analyst_summary``.
+
+    ``InMemorySessionService`` strips ``temp:`` prefixed keys on session
+    creation, so this test cannot populate them via the normal session init.
+    Instead it:
+
+    1. Monkeypatches ``emit_analyst_summary`` so we can capture the kwargs it
+       receives without any terminal output.
+    2. Populates ``temp:_obs_news_retries`` directly onto the session state
+       dict *after* session creation (ADK's InMemorySessionService returns a
+       plain ``dict`` via ``session.state``, so direct assignment works).
+    """
+    captured: list[dict] = []
+
+    def _fake_emit(analyst_label: str, *, calls, ticker_count, retries=None) -> None:
+        """Capture the call kwargs for assertion; do not emit any log output."""
+        captured.append({
+            "analyst_label": analyst_label,
+            "calls":         calls,
+            "ticker_count":  ticker_count,
+            "retries":       retries,
+        })
+
+    # Patch at the module the joiner imports from so the replacement is seen
+    # regardless of how Python caches the function reference.
+    monkeypatch.setenv("STOCKBOT_TERMINAL_LOG", "1")
+    monkeypatch.setattr(
+        "agents.analysts.news.joiner.emit_analyst_summary",
+        _fake_emit,
+    )
+
+    state = {
+        "tickers":  ["AAPL"],
+        "tick_id":  "t-retry",
+        "as_of":    "2026-05-21T14:00",
+        "temp:news_data": {
+            "AAPL": {"news": [{"title": "Rate-limited news", "summary": "ok"}]},
+        },
+        "temp:news_verdict_AAPL": {
+            "ticker":      "AAPL",
+            "lean":        "bullish",
+            "magnitude":   0.6,
+            "confidence":  0.7,
+            "rationale":   "ok",
+            "key_factors": [],
+            "is_no_data":  False,
+        },
+    }
+
+    svc     = InMemorySessionService()
+    session = await svc.create_session(
+        app_name="test", user_id="test", state=state, session_id="t-retry",
+    )
+
+    # InMemorySessionService strips temp: keys; inject them directly onto the
+    # state dict after creation so the joiner can read them.
+    session.state["temp:_obs_news_calls"]   = [
+        {"ticker": "AAPL", "elapsed": 1.0, "prompt_tokens": 1000,
+         "candidate_tokens": 500, "ok": True},
+    ]
+    session.state["temp:_obs_news_retries"] = {"rate_limit": 2}
+
+    agent = NewsJoinerAgent(name="NewsJoiner")
+    ctx   = InvocationContext(
+        session_service=svc, session=session, invocation_id="inv-retry", agent=agent,
+    )
+
+    # Drive the joiner — the monkeypatched emit_analyst_summary captures args.
+    _events = [ev async for ev in agent.run_async(ctx)]
+
+    assert captured, "emit_analyst_summary was never called"
+    call = captured[0]
+    assert call["analyst_label"] == "news"
+    assert call["retries"] == {"rate_limit": 2}, (
+        f"Expected retries={{'rate_limit': 2}}; got retries={call['retries']}"
+    )
