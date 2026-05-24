@@ -344,7 +344,7 @@ mechanism that keeps data clean without losing meaning. See the docstring of
 | Setting | Type | Meaning |
 |---|---|---|
 | `llm.timeout_seconds` | float | Wall-clock timeout (seconds) for the strategist LLM call. Range `(0, 600]`. Default 180. |
-| `llm.max_output_tokens` | int | Cap on output tokens per strategist call. Range `[256, 32768]`. Default 8000. |
+| `llm.max_output_tokens` | int | Cap on output tokens per strategist call. Range `[256, 32768]`. Default 16000 — sized for a 20-ticker watchlist with full open-thesis composites (weight + rationale + horizon + target_price + stop_price + catalyst per stance) plus decision-level reasoning + thesis. |
 | `llm.timeout_retries` | int | Total attempts on timeout (1 initial try + retries). Range `[1, 10]`. Default 3. |
 | `llm.schema_retries` | int | Total attempts on `pydantic.ValidationError`. Range `[1, 10]`. Default 3. |
 

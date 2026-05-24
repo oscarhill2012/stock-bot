@@ -129,16 +129,32 @@ position must still have its own stance.
 ## OUTPUT CONTRACT — every rule is enforced; violations abort the tick
 
 Each stance carries an ``intent`` verb and the fields required for that verb.
-The table below is the single source of truth.
+The table below is the single source of truth.  "Required" means the schema
+WILL reject your response if the field is missing — these are not suggestions.
 
-| Intent | What it means                           | Required fields                                                                      |
-|--------|-----------------------------------------|--------------------------------------------------------------------------------------|
-| open   | enter a flat ticker (current weight 0)  | weight, rationale, horizon, target_price, stop_price (catalyst optional)             |
-| add    | grow an existing position               | weight, reason (+ optional horizon/target_price/stop_price/catalyst update)          |
-| trim   | reduce an existing position (not to 0)  | weight, reason                                                                       |
-| close  | exit an existing position completely    | reason                                                                               |
-| hold   | no trade — review only                  | reason (what has changed since open)                                                 |
-| update | no trade — revise the thesis            | reason + at least one of target_price / stop_price / horizon / catalyst              |
+| Intent | What it means                           | Required fields                            | Optional fields                                      |
+|--------|-----------------------------------------|--------------------------------------------|------------------------------------------------------|
+| open   | enter a flat ticker (current weight 0)  | weight, rationale, horizon, target_price, stop_price | catalyst                                   |
+| add    | grow an existing position               | weight, reason                             | horizon, target_price, stop_price, catalyst (updates)|
+| trim   | reduce an existing position (not to 0)  | weight, reason                             | —                                                    |
+| close  | exit an existing position completely    | reason                                     | —                                                    |
+| hold   | no trade — review only                  | reason (what has changed since open)       | —                                                    |
+| update | no trade — revise the thesis            | reason + ≥1 of target_price/stop_price/horizon/catalyst | the remaining of those four              |
+
+### Required-fields cheat-sheet — re-read before every open
+
+OPEN demands FIVE fields in the JSON object, every time:
+  1. weight         (float in (0, 1])
+  2. rationale      (string, ≤{{STANCE_RATIONALE_MAX}} chars)
+  3. horizon        (one of "intraday", "swing", "long_term")
+  4. target_price   (float, the price level your thesis is targeting)
+  5. stop_price     (float, the price level that invalidates your thesis)
+
+Emitting an ``open`` stance without all five is the most common decision-killer.
+Before you commit to ``intent: "open"``, verify your JSON object contains
+every one of those five keys with a non-null value.  If you cannot fill any
+of the five, choose a different verb instead (e.g. ``hold`` to pass on the
+trade this tick).
 
 Schema-level rules (failing these means ADK rejects your response):
 - weight: float in (0, 1] on open/add/trim — long-only, 0.0 not permitted
@@ -150,7 +166,8 @@ Schema-level rules (failing these means ADK rejects your response):
   {{CASH_FLOOR_STANZA}}
 - horizon: one of "intraday", "swing", "long_term".
 - rationale: ≤{{STANCE_RATIONALE_MAX}} chars.  FROZEN at open — you cannot change it later.
-- reason / catalyst: ≤{{STANCE_RATIONALE_MAX}} chars each.
+  This is a HARD cap, not a soft target.  Write tight, evidence-led prose.
+- reason / catalyst: ≤{{STANCE_RATIONALE_MAX}} chars each.  Also hard caps.
 - confidence (decision-level): float in [0.0, 1.0].
 - reasoning (decision-level): ≤{{DECISION_REASONING_MAX}} chars.
 - thesis (decision-level, optional — null carries the prior thesis forward): ≤{{DECISION_THESIS_MAX}} chars.
