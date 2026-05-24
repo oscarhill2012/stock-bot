@@ -344,17 +344,25 @@ def build_strategist():
     import os
 
     from google.adk.agents import SequentialAgent
+    from google.genai import types as genai_types
 
     from agents.analysts._common import _chain_after, _chain_before
-    from agents.llm_retry import RetryingAgentWrapper
+    from agents.llm_retry import RetryingAgentWrapper, build_retry_policies
     from agents.strategist.context_shim import StrategistContextShim
     from config.models import get_models_config
+    from config.strategist import get_strategist_config
     from observability.terminal_log import make_observability_callbacks
     from observability.trace import make_llm_trace_callbacks
 
     # Read the model ID from the central config.  One JSON edit moves both
     # live and backtest runs — no shadow constant to forget.
     model_name = get_models_config().strategist
+
+    # Read the per-call runtime caps from config/strategist.json.  These drive
+    # the LlmAgent's token budget and the RetryingAgentWrapper's timeout + retry
+    # budgets — the single source of truth so tuning one JSON key takes effect
+    # everywhere.
+    llm_caps = get_strategist_config().llm
 
     # Observability callbacks — emit one terminal log row for the strategist
     # LLM call.  Only wired when STOCKBOT_TERMINAL_LOG=1 so backtest replays
@@ -395,22 +403,34 @@ def build_strategist():
     # the prompt itself forbids negative weights — see
     # ``tests/unit/agents/strategist/test_after_model_unwired.py``).
     llm = LlmAgent(
-        name                  = "Strategist",
-        model                 = model_name,
-        instruction           = STRATEGIST_INSTRUCTION,
-        output_schema         = StrategistDecision,
-        output_key            = "strategist_decision",
-        after_agent_callback  = _strategist_validation_callback,
-        before_model_callback = before_model,
-        after_model_callback  = after_model,
+        name                    = "Strategist",
+        model                   = model_name,
+        instruction             = STRATEGIST_INSTRUCTION,
+        output_schema           = StrategistDecision,
+        output_key              = "strategist_decision",
+        after_agent_callback    = _strategist_validation_callback,
+        before_model_callback   = before_model,
+        after_model_callback    = after_model,
+        generate_content_config = genai_types.GenerateContentConfig(
+            max_output_tokens = llm_caps.max_output_tokens,
+        ),
     )
 
     # Wrap the LlmAgent in the retry layer so transient Vertex 429s trigger
-    # exponential backoff.  The wrap goes here (inside the SequentialAgent),
-    # not around the SequentialAgent itself — see the docstring for why.
+    # exponential backoff, wall-clock timeouts abort hung calls, and schema
+    # failures trigger re-prompts.  The wrap goes here (inside the
+    # SequentialAgent), not around the SequentialAgent itself — see the
+    # docstring for why.  The retry budgets (timeout_retries, schema_retries)
+    # come from the same strategist.llm config section as the token budget.
     wrapped_llm = RetryingAgentWrapper(
-        name  = "StrategistLlmRetrying",
-        inner = llm,
+        name            = "StrategistLlmRetrying",
+        inner           = llm,
+        timeout_seconds = llm_caps.timeout_seconds,
+        policies        = build_retry_policies(
+            timeout_retries = llm_caps.timeout_retries,
+            schema_retries  = llm_caps.schema_retries,
+        ),
+        retry_state_key = "temp:_obs_strategist_retries",
     )
 
     return SequentialAgent(
