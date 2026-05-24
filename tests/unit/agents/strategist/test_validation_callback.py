@@ -42,7 +42,7 @@ def _valid_decision() -> dict:
     """Return a minimal valid StrategistDecision dict (open AAPL, flat MSFT omitted).
 
     The watchlist is ['AAPL'] so we need a stance for AAPL only.
-    preferred_weight > 0 requires the lifecycle hint fields.
+    ``intent == "open"`` requires rationale + horizon + target_price + stop_price.
     """
     return StrategistDecision(
         stances=[

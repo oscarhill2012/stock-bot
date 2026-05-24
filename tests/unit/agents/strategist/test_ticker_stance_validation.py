@@ -279,7 +279,7 @@ def test_update_missing_all_commitment_fields():
 
 
 # ---------------------------------------------------------------------------
-# Legacy stance validation (preferred_weight path, no intent field)
+# Open-stance rationale regression guard
 # ---------------------------------------------------------------------------
 
 

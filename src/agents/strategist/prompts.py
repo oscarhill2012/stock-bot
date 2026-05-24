@@ -141,7 +141,9 @@ The table below is the single source of truth.
 | update | no trade — revise the thesis            | reason + at least one of target_price / stop_price / horizon / catalyst              |
 
 Schema-level rules (failing these means ADK rejects your response):
-- weight: float in [0, 1].  Long-only — 0.0 not permitted (use intent="close" instead).
+- weight: float in (0, 1] on open/add/trim — long-only, 0.0 not permitted
+  (use intent="close" instead).  Omit weight entirely (null) on close/hold/update
+  — emitting 0.0 or any number on those verbs is rejected by the schema.
   The risk gate clamps single-ticker weight at {{MAX_POSITION_PCT}}%, per-tick delta
   at {{MAX_DELTA_PCT}}%, and total turnover at {{MAX_TURNOVER_PCT}}%.  Propose
   values that already respect these.
