@@ -2,13 +2,25 @@
   "slack_percent": 15,
   "news": {
     "max_articles_per_ticker": 25,
-    "max_summary_chars": 1500
+    "max_summary_chars":       1500,
+    "llm": {
+      "timeout_seconds":   60,
+      "max_output_tokens": 2000,
+      "timeout_retries":   3,
+      "schema_retries":    3
+    }
   },
   "fundamental": {
-    "max_filing_mda_chars": 1500,
-    "max_filing_risk_chars": 1500,
-    "max_insider_footnotes": 5,
-    "max_insider_footnote_chars": 400
+    "max_filing_mda_chars":       1500,
+    "max_filing_risk_chars":      1500,
+    "max_insider_footnotes":      5,
+    "max_insider_footnote_chars": 400,
+    "llm": {
+      "timeout_seconds":   60,
+      "max_output_tokens": 2000,
+      "timeout_retries":   3,
+      "schema_retries":    3
+    }
   },
   "output_caps": {
     "verdict_rationale_max_chars":             200,
@@ -18,7 +30,7 @@
     "report_driver_body_max_chars": 500
   },
   "cache": {
-    "enabled": true,
+    "enabled":   true,
     "directory": "cache/reports"
   }
 }

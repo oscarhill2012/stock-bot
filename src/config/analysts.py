@@ -32,20 +32,61 @@ from pydantic import BaseModel, Field
 _DEFAULT_PATH = Path("config/analysts.json")
 
 
+class LlmCaps(BaseModel):
+    """Per-LLM-agent runtime caps used by the retry wrapper.
+
+    Each LLM-calling agent (each analyst, the strategist) carries its own
+    instance of this block in its config file.  The wrapper reads
+    ``timeout_seconds`` to bound each call's wall-clock time, the LlmAgent
+    receives ``max_output_tokens`` via ``GenerateContentConfig`` to bound
+    output length, and the wrapper composes per-class retry budgets from
+    ``timeout_retries`` and ``schema_retries``.
+
+    The project-wide HTTP 429 policy is **not** here — it lives in
+    ``config/retry_429.json`` because it is identical across agents.
+
+    Attributes
+    ----------
+    timeout_seconds:
+        Per-call wall-clock timeout in seconds.  Enforced via
+        ``asyncio.wait_for(...)`` inside ``RetryingAgentWrapper``.  Range
+        ``(0, 600]``.
+    max_output_tokens:
+        Cap on the model's generated output tokens.  Set on every call
+        (not just retries) so output loops cannot wedge the tick in the
+        first place.  Range ``[256, 32768]``.
+    timeout_retries:
+        Total attempts the wrapper makes when wall-clock timeouts fire.
+        ``3`` means one initial try plus up to two retries.  Range
+        ``[1, 10]``.
+    schema_retries:
+        Total attempts the wrapper makes when ``pydantic.ValidationError``
+        fires (output_schema parse failed).  Same shape as
+        ``timeout_retries``.
+    """
+
+    timeout_seconds:   float = Field(gt=0.0, le=600.0)
+    max_output_tokens: int   = Field(ge=256, le=32_768)
+    timeout_retries:   int   = Field(ge=1, le=10)
+    schema_retries:    int   = Field(ge=1, le=10)
+
+
 class NewsCaps(BaseModel):
     """Truncation caps for the News analyst's LLM context."""
 
-    max_articles_per_ticker: int = Field(ge=1, le=200)
-    max_summary_chars:       int = Field(ge=1, le=10_000)
+    max_articles_per_ticker: int     = Field(ge=1, le=200)
+    max_summary_chars:       int     = Field(ge=1, le=10_000)
+    llm:                     LlmCaps                           # NEW — per-call runtime caps
 
 
 class FundamentalCaps(BaseModel):
     """Truncation caps for the Fundamental analyst's LLM context."""
 
-    max_filing_mda_chars:       int = Field(ge=1, le=20_000)
-    max_filing_risk_chars:      int = Field(ge=1, le=20_000)
-    max_insider_footnotes:      int = Field(ge=0, le=50)
-    max_insider_footnote_chars: int = Field(ge=1, le=5_000)
+    max_filing_mda_chars:       int     = Field(ge=1, le=20_000)
+    max_filing_risk_chars:      int     = Field(ge=1, le=20_000)
+    max_insider_footnotes:      int     = Field(ge=0, le=50)
+    max_insider_footnote_chars: int     = Field(ge=1, le=5_000)
+    llm:                        LlmCaps                        # NEW — per-call runtime caps
 
 
 class CacheSettings(BaseModel):

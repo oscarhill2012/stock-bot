@@ -199,6 +199,10 @@ process restart is required after edits.
 |---|---|---|
 | `news.max_articles_per_ticker` | int [1–200] | Maximum article count per ticker fed to the News LLM. Wider than the old hard-coded 10 — default 20. |
 | `news.max_summary_chars` | int [1–10000] | Maximum characters of each article's summary kept in the prompt. Default 500 (widened from 300). |
+| `news.llm.timeout_seconds` | float (0–600] | Wall-clock timeout (seconds) for one News-analyst LLM call. Range `(0, 600]`. Default 60. |
+| `news.llm.max_output_tokens` | int [256–32768] | Cap on output tokens per call. Range `[256, 32768]`. Default 2000. |
+| `news.llm.timeout_retries` | int [1–10] | Total attempts on timeout (1 initial try + retries). Range `[1, 10]`. Default 3. |
+| `news.llm.schema_retries` | int [1–10] | Total attempts on `pydantic.ValidationError`. Range `[1, 10]`. Default 3. |
 
 ### `fundamental` — Fundamental analyst input caps
 
@@ -208,6 +212,10 @@ process restart is required after edits.
 | `fundamental.max_filing_risk_chars` | int [1–20000] | Character cap on the risk-factors excerpt for each filing. Default 1500 (widened from 500). |
 | `fundamental.max_insider_footnotes` | int [0–50] | Maximum insider footnote snippets included in the LLM prompt per ticker. Default 5. |
 | `fundamental.max_insider_footnote_chars` | int [1–5000] | Character cap per footnote excerpt. Default 400 (widened from 200). |
+| `fundamental.llm.timeout_seconds` | float (0–600] | Wall-clock timeout (seconds) for one Fundamental-analyst LLM call. Range `(0, 600]`. Default 60. |
+| `fundamental.llm.max_output_tokens` | int [256–32768] | Cap on output tokens per call. Range `[256, 32768]`. Default 2000. |
+| `fundamental.llm.timeout_retries` | int [1–10] | Total attempts on timeout (1 initial try + retries). Range `[1, 10]`. Default 3. |
+| `fundamental.llm.schema_retries` | int [1–10] | Total attempts on `pydantic.ValidationError`. Range `[1, 10]`. Default 3. |
 
 ### `slack_percent` — prompt-cap vs. schema-cap headroom (analyst outputs)
 
