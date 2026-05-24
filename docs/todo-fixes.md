@@ -382,6 +382,82 @@ Each analyst's fetcher takes responsibility for what *it* needs.
 
 ---
 
+#### 2.4 — Eliminate legacy `TickerStance` validator path; make `intent` required (HIGH)
+
+**Goal.** Collapse the two parallel `TickerStance` validation surfaces in
+`src/agents/strategist/stance_schema.py` into one.  Make `intent` a required
+field on every emitted stance (no more `None`), delete the legacy
+`_require_lifecycle_hints_on_nonzero` validator that fires only when
+`intent is None`, and resolve the `preferred_weight` / `weight` duality
+in the same pass.  Every `TickerStance(...)` callsite — production code,
+test fixtures, persisted rows — names an explicit verb from the closed
+set `{open, add, trim, close, hold, update}`.
+
+**Non-goals.**
+
+- Do **not** redesign the stance schema — the verb set is fixed by Spec B
+  and is not in scope to extend or rename.
+- Do **not** change the strategist prompt — Plan 2 already pins the
+  per-held stance requirement.  This is schema enforcement of what the
+  prompt already promises.
+- Do **not** add new lifecycle hints; the existing pair (target/stop or
+  weight + reason) is the contract.
+
+**Current state — two parallel surfaces, one of which exists only to paper
+over the other.**
+
+- `src/agents/strategist/stance_schema.py:114-160` declares `intent` as
+  `Literal[...] | None = None` — i.e. nullable.
+- `src/agents/strategist/stance_schema.py:_require_intent_fields` (the
+  *new* validator) fires only when `intent is not None` and enforces the
+  per-verb required-field rules (`reason` required on `hold|trim|update`;
+  `weight` required on `open|add|trim`; etc.).
+- `src/agents/strategist/stance_schema.py:_require_lifecycle_hints_on_nonzero`
+  (the *legacy* validator) fires only when `intent is None` and enforces
+  a weaker, intent-free rule.  It exists solely to keep stance rows that
+  the LLM emitted without a verb from blowing up — i.e. it papers over a
+  contract gap rather than closing it.
+- The Plan 2 strategist prompt now demands a stance per held ticker and
+  is built around the verb-based vocabulary, but the schema still
+  silently accepts `intent=None`, so a malformed LLM response can slip
+  through the cheap validator and never trigger the verb-conditional
+  checks the prompt promises.
+- `preferred_weight` (legacy) vs `weight` (new) is the same shape of
+  drift one layer down — two fields meaning the same thing, one a relic
+  of the pre-intent contract.
+
+**Key decisions for the spec.**
+
+- **`preferred_weight` collapse.** Either delete it outright, or make it
+  a `@computed_field` over `weight` so existing readers in
+  `src/agents/strategist/derivation.py` continue to compile.  The
+  derivation code is what reads it today; that side has to move too.
+- **Per-verb reason framing.** `_require_intent_fields` requires `reason`
+  on `hold | trim | update`.  Spec B's vocabulary memo (user, 2026-05-24)
+  suggests `close` should also require a reason — currently asymmetric.
+  Decide whether to tighten now or note as a follow-up.
+- **Migration scope.** Every `TickerStance(` callsite needs an explicit
+  intent — test fixtures, persisted-row reconstruction in
+  `src/orchestrator/persistence.py`, replay scripts.  Audit step is the
+  bulk of the work; the schema change itself is two lines.
+- **Backwards-compat for persisted rows.** Pre-deployment, no persisted
+  paper or live rows exist yet (see `project_stockbot_deployment_state`),
+  so no shim is needed — old backtest artefacts can be regenerated.
+
+**Effort.** Medium.  Schema-tightening + derivation update + per-callsite
+audit and fixture sweep.  The audit is the slow part; the diff is small.
+
+**Origin.** 2026-05-24 — flagged by the Opus final review of Spec B Plan
+2 (strategist-surface implementation) as an "intent gap" carried through
+from the pre-intent schema.  User flagged HIGH on the grounds that
+carrying parallel legacy mechanisms past the point of need is the exact
+"premature-abstraction & double-mechanism collapse" pattern Group 3 was
+built to address — but unlike Group 3 items, this one gates honest
+post-backtest analysis of strategist behaviour, so it ships *before* the
+first trustworthy backtest window, not after.
+
+---
+
 ### Group 2.5 — Cross-tick ADK session state propagation
 
 **Cohesion justification:** every custom `BaseAgent` subclass in `src/agents/`
