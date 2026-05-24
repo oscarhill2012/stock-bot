@@ -71,7 +71,8 @@ from tenacity import (
     wait_exponential_jitter,
 )
 
-from config.llm_retry import RetryConfig, get_retry_config
+from config.retry_429 import Retry429Policy as RetryConfig
+from config.retry_429 import get_retry_429_policy as get_retry_config
 
 _LOGGER = logging.getLogger(__name__)
 

@@ -24,7 +24,7 @@ from google.adk.events import Event, EventActions
 from google.genai.errors import ClientError
 
 from agents.llm_retry import RetryingAgentWrapper
-from config.llm_retry import RetryConfig
+from config.retry_429 import Retry429Policy as RetryConfig
 
 
 # ---------------------------------------------------------------------------

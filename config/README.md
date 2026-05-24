@@ -13,7 +13,7 @@ and reference these files by relative path (resolved from the project root).
 | `strategist.json` | Character caps on strategist LLM free-text fields | `src/config/strategist.py` (`get_strategist_config()`) |
 | `risk_gate.json` | Five position-sizing constraints for the risk gate | `src/config/risk_gate.py` (`get_risk_gate_config()`) |
 | `models.json` | LLM + embedding model IDs for every model-using component | `src/config/models.py` (`get_models_config()`) |
-| `llm_retry.json` | Backoff + retry policy applied to every LLM agent call (Vertex 429 handling) | `src/config/llm_retry.py` (`get_retry_config()`) |
+| `retry_429.json` | Backoff + retry policy for Vertex AI HTTP 429 (RESOURCE_EXHAUSTED) responses. Per-agent timeout/schema retry counts live in `analysts.json` / `strategist.json`. | `src/config/retry_429.py` (`get_retry_429_policy()`) |
 | `backtest_windows.json` | Era-keyed historical date windows for the backtest harness | `src/backtest/windows.py` (`load_windows()`) |
 | `backtest_settings.json` | Backtests root (cache + runs nest per-window underneath), tick schedule, and lookback defaults for backtesting | `src/backtest/settings.py` (`get_backtest_settings()`) |
 
@@ -409,16 +409,20 @@ operator-facing note; the loader strips it before validation.
 
 ---
 
-## `llm_retry.json` — LLM 429 backoff + retry policy
+## `retry_429.json` — Vertex AI HTTP 429 backoff + retry policy
 
-Retry policy applied to every LLM-bearing agent in the pipeline (Fundamental,
-News, Strategist). Wraps each branch in
-`src/agents/llm_retry.py::RetryingAgentWrapper`, which catches Vertex AI
-`HTTP 429 RESOURCE_EXHAUSTED` responses and re-runs the inner agent with
-exponential-with-jitter backoff before failing the tick.
+Retry policy for Vertex AI `HTTP 429 RESOURCE_EXHAUSTED` responses, applied to
+every LLM-bearing agent in the pipeline (Fundamental, News, Strategist). Wraps
+each branch in `src/agents/llm_retry.py::RetryingAgentWrapper`, which catches
+the 429 and re-runs the inner agent with exponential-with-jitter backoff before
+failing the tick.
 
-Loaded once at boot via `src/config/llm_retry.py::get_retry_config()`
+Loaded once at boot via `src/config/retry_429.py::get_retry_429_policy()`
 (`lru_cache(maxsize=1)`); a process restart is required after edits.
+
+Per-agent timeout budgets and schema-validation retry counts live in
+`config/analysts.json` and `config/strategist.json` — only the 429 back-off
+policy is project-wide and stored here.
 
 **Why this is needed.** Vertex AI's Gemini models share capacity via Dynamic
 Shared Quota by default — transient 429s are a normal operating condition
@@ -438,7 +442,7 @@ malformed request that retrying cannot fix.
 | `base_delay_seconds` | float >0 | Initial wait before the first retry, in seconds. Subsequent retries grow exponentially with jitter, capped at `max_delay_seconds`. Default 2.0. |
 | `max_delay_seconds` | float ≥ `base_delay_seconds` | Upper bound on any single inter-retry wait, in seconds. Default 30.0. |
 
-A leading `_comment` field is permitted at the top of `llm_retry.json`; the
+A leading `_comment` field is permitted at the top of `retry_429.json`; the
 loader strips it before validation.
 
 ---

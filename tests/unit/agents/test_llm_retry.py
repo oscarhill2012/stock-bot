@@ -15,8 +15,9 @@ Four scenarios covered:
    wrapper propagates it immediately on the first attempt without
    sleeping.
 
-Each test injects a hand-built :class:`config.llm_retry.RetryConfig` with
-sub-second delays so the suite stays fast (``base_delay_seconds=0.001``).
+Each test injects a hand-built :class:`config.retry_429.Retry429Policy` (aliased
+as ``RetryConfig``) with sub-second delays so the suite stays fast
+(``base_delay_seconds=0.001``).
 """
 from __future__ import annotations
 
@@ -30,7 +31,7 @@ from google.adk.events import Event, EventActions
 from google.genai.errors import ClientError
 
 from agents.llm_retry import RetryingAgentWrapper, _is_resource_exhausted
-from config.llm_retry import RetryConfig
+from config.retry_429 import Retry429Policy as RetryConfig
 
 # ---------------------------------------------------------------------------
 # Test helpers
