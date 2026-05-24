@@ -339,6 +339,15 @@ mechanism that keeps data clean without losing meaning. See the docstring of
 | `position_thesis_caps.catalyst_max_chars` | int [20–500] | Cap on `PositionThesis.catalyst` — optional named catalyst for the held position. Default 100. |
 | `position_thesis_caps.last_review_note_max_chars` | int [20–1000] | Cap on `PositionThesis.last_review_note` — short note appended each tick we review (but do not close) the position. Default 200. |
 
+### `llm` — per-call runtime caps
+
+| Setting | Type | Meaning |
+|---|---|---|
+| `llm.timeout_seconds` | float | Wall-clock timeout (seconds) for the strategist LLM call. Range `(0, 600]`. Default 180. |
+| `llm.max_output_tokens` | int | Cap on output tokens per strategist call. Range `[256, 32768]`. Default 8000. |
+| `llm.timeout_retries` | int | Total attempts on timeout (1 initial try + retries). Range `[1, 10]`. Default 3. |
+| `llm.schema_retries` | int | Total attempts on `pydantic.ValidationError`. Range `[1, 10]`. Default 3. |
+
 The strategist prompt template at `src/agents/strategist/prompts.py` reads
 the same config singleton and substitutes the `≤N chars` markers at module
 load, so the prompt-facing caps the LLM is told are always the values from
