@@ -131,8 +131,12 @@ class TickerStance(BaseModel):
     )
 
     # Narrative for hold/trim/close/update — "what has changed since open".
+    # Capped at ``rationale_max_chars`` because the field carries the same
+    # paragraph-sized narrative on every verb that uses it; no operational
+    # reason to make it tighter than the open-rationale budget.
     reason: str | None = Field(
         default=None,
+        max_length=_schema_cap(_STANCE.rationale_max_chars),
         description=(
             "Required for trim / close / hold / update — articulates "
             "what has changed since the position was opened."

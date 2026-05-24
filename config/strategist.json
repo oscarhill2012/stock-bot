@@ -5,10 +5,10 @@
     "thesis_max_chars":     800
   },
   "stance_caps": {
-    "rationale_max_chars":    250,
-    "catalyst_max_chars":     120,
-    "close_reason_max_chars": 120,
-    "trim_reason_max_chars":  120
+    "rationale_max_chars":    400,
+    "catalyst_max_chars":     200,
+    "close_reason_max_chars": 200,
+    "trim_reason_max_chars":  200
   },
   "position_thesis_caps": {
     "rationale_max_chars":         400,

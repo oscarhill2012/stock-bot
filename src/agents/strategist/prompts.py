@@ -145,7 +145,7 @@ WILL reject your response if the field is missing — these are not suggestions.
 
 OPEN demands FIVE fields in the JSON object, every time:
   1. weight         (float in (0, 1])
-  2. rationale      (string, ≤{{STANCE_RATIONALE_MAX}} chars)
+  2. rationale      (1–3 sentences; ≤{{STANCE_RATIONALE_MAX}} chars hard cap)
   3. horizon        (one of "intraday", "swing", "long_term")
   4. target_price   (float, the price level your thesis is targeting)
   5. stop_price     (float, the price level that invalidates your thesis)
@@ -165,9 +165,12 @@ Schema-level rules (failing these means ADK rejects your response):
   values that already respect these.
   {{CASH_FLOOR_STANZA}}
 - horizon: one of "intraday", "swing", "long_term".
-- rationale: ≤{{STANCE_RATIONALE_MAX}} chars.  FROZEN at open — you cannot change it later.
-  This is a HARD cap, not a soft target.  Write tight, evidence-led prose.
-- reason / catalyst: ≤{{STANCE_RATIONALE_MAX}} chars each.  Also hard caps.
+- rationale: 1–3 sentences, ≤{{STANCE_RATIONALE_MAX}} chars (HARD cap, schema-
+  enforced).  FROZEN at open — you cannot change it later.  Write tight,
+  evidence-led prose; treat the cap as a paragraph budget, not a target.
+- reason: 1–3 sentences, ≤{{STANCE_RATIONALE_MAX}} chars (HARD cap, same
+  budget as rationale).
+- catalyst: a single phrase or sentence, ≤{{STANCE_CATALYST_MAX}} chars (HARD cap).
 - confidence (decision-level): float in [0.0, 1.0].
 - reasoning (decision-level): ≤{{DECISION_REASONING_MAX}} chars.
 - thesis (decision-level, optional — null carries the prior thesis forward): ≤{{DECISION_THESIS_MAX}} chars.
@@ -196,8 +199,9 @@ STRATEGIST_INSTRUCTION = (
     _RAW_INSTRUCTION
     .replace("{{DECISION_REASONING_MAX}}",  str(_DECISION.reasoning_max_chars))
     .replace("{{DECISION_THESIS_MAX}}",     str(_DECISION.thesis_max_chars))
-    # ``rationale`` cap also governs ``reason`` and ``catalyst`` in the new vocab.
+    # ``rationale`` cap also governs ``reason`` (both schema-enforced).
     .replace("{{STANCE_RATIONALE_MAX}}",    str(_STANCE.rationale_max_chars))
+    .replace("{{STANCE_CATALYST_MAX}}",     str(_STANCE.catalyst_max_chars))
     # R5 — risk-gate percentages injected from config/risk_gate.json.
     .replace("{{MAX_POSITION_PCT}}",        str(_MAX_POSITION_PCT))
     .replace("{{MAX_DELTA_PCT}}",           str(_MAX_DELTA_PCT))
