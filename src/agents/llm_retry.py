@@ -467,6 +467,53 @@ def _merge_increment(current: dict, cls: str) -> dict:
     return out
 
 
+def build_retry_policies(
+    *,
+    timeout_retries: int,
+    schema_retries:  int,
+) -> dict[str, RetryPolicy]:
+    """Compose the per-agent retry-policy dict for the wrapper.
+
+    The 429 (``rate_limit``) policy is project-wide — loaded once from
+    ``config/retry_429.json``.  The ``timeout`` and ``schema`` policies
+    are per-agent, with their ``max_attempts`` supplied by the caller
+    and their backoff hard-coded to ``"immediate"`` (no sleep — these
+    are model-misbehaviour failures, not capacity issues).
+
+    Parameters
+    ----------
+    timeout_retries:
+        Total attempts the wrapper makes on wall-clock timeout
+        (``asyncio.TimeoutError``).
+    schema_retries:
+        Total attempts the wrapper makes on
+        ``pydantic.ValidationError`` from the LLM ``output_schema`` parse.
+
+    Returns
+    -------
+    dict[str, RetryPolicy]
+        Policies keyed by class name; passed to
+        :class:`RetryingAgentWrapper`'s ``policies`` constructor arg.
+    """
+
+    # Resolve the project-wide 429 policy.  ``get_retry_429_policy()`` is
+    # cached, so this is effectively free after the first call.
+    from config.retry_429 import get_retry_429_policy
+
+    cfg = get_retry_429_policy()
+
+    return {
+        "rate_limit": RetryPolicy(
+            max_attempts       = cfg.max_attempts,
+            backoff            = "exp_jitter",
+            base_delay_seconds = cfg.base_delay_seconds,
+            max_delay_seconds  = cfg.max_delay_seconds,
+        ),
+        "timeout":    RetryPolicy(max_attempts=timeout_retries, backoff="immediate"),
+        "schema":     RetryPolicy(max_attempts=schema_retries,  backoff="immediate"),
+    }
+
+
 class RetryingAgentWrapper(BaseAgent):
     """Proxy an inner ADK agent, retrying on Vertex 429 with backoff + jitter.
 

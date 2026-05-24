@@ -495,3 +495,43 @@ def test_merge_increment_increments_existing_key() -> None:
     out     = _merge_increment(current, "schema")
 
     assert out == {"schema": 3}
+
+
+# ---------------------------------------------------------------------------
+# Tests for build_retry_policies — composes the per-agent policy dict
+# from the per-agent retry counts plus the project-wide 429 policy.
+# ---------------------------------------------------------------------------
+
+from agents.llm_retry import build_retry_policies
+
+
+def test_build_retry_policies_composes_three_classes(monkeypatch) -> None:
+    """The returned dict has exactly three classes with correct shapes."""
+
+    # Stub the 429 policy loader so the test is hermetic.
+    from config import retry_429 as cfg_mod
+
+    monkeypatch.setattr(
+        cfg_mod,
+        "get_retry_429_policy",
+        lambda: cfg_mod.Retry429Policy(
+            max_attempts       = 5,
+            base_delay_seconds = 2.0,
+            max_delay_seconds  = 30.0,
+        ),
+    )
+
+    policies = build_retry_policies(timeout_retries=3, schema_retries=3)
+
+    assert set(policies.keys()) == {"rate_limit", "timeout", "schema"}
+
+    assert policies["rate_limit"].max_attempts       == 5
+    assert policies["rate_limit"].backoff            == "exp_jitter"
+    assert policies["rate_limit"].base_delay_seconds == 2.0
+    assert policies["rate_limit"].max_delay_seconds  == 30.0
+
+    assert policies["timeout"].max_attempts == 3
+    assert policies["timeout"].backoff      == "immediate"
+
+    assert policies["schema"].max_attempts == 3
+    assert policies["schema"].backoff      == "immediate"
