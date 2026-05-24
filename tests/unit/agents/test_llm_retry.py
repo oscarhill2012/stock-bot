@@ -278,3 +278,108 @@ def test_is_resource_exhausted_rejects_non_429_client_error() -> None:
     err.args          = ("400 INVALID_ARGUMENT",)
 
     assert _is_resource_exhausted(err) is False
+
+
+# ---------------------------------------------------------------------------
+# Tests for the per-class predicate helpers and the top-level _classify dispatcher
+# ---------------------------------------------------------------------------
+
+import asyncio
+from pydantic import BaseModel as _BM, ValidationError as _VE
+
+from agents.llm_retry import _classify, _is_rate_limit, _is_timeout, _is_schema_error
+
+
+class _Tiny(_BM):
+    """Trivial Pydantic model used to construct a real ValidationError."""
+
+    name: str
+
+
+def _make_validation_error() -> _VE:
+    """Produce a real ``pydantic.ValidationError`` by failing a model parse."""
+
+    try:
+        _Tiny.model_validate({"name": 123})           # 123 is not a string
+    except _VE as ve:
+        return ve
+
+    raise AssertionError("Pydantic accepted invalid payload — test premise broken.")
+
+
+def test_is_rate_limit_recognises_429_client_error() -> None:
+    """A google.genai ClientError with status_code 429 classifies as rate_limit."""
+
+    err = ClientError(
+        code            = 429,
+        response_json   = {"error": {"status": "RESOURCE_EXHAUSTED"}},
+        response        = MagicMock(),
+    )
+
+    assert _is_rate_limit(err) is True
+    assert _classify(err)      == "rate_limit"
+
+
+def test_is_rate_limit_walks_cause_chain() -> None:
+    """A 429 wrapped via `raise X from Y` still classifies as rate_limit."""
+
+    inner = ClientError(
+        code            = 429,
+        response_json   = {"error": {"status": "RESOURCE_EXHAUSTED"}},
+        response        = MagicMock(),
+    )
+    try:
+        try:
+            raise inner
+        except ClientError as ce:
+            raise RuntimeError("wrapped") from ce
+    except RuntimeError as outer:
+        assert _is_rate_limit(outer) is True
+        assert _classify(outer)      == "rate_limit"
+
+
+def test_is_timeout_recognises_asyncio_timeout() -> None:
+    """asyncio.TimeoutError / TimeoutError classify as timeout."""
+
+    assert _is_timeout(asyncio.TimeoutError()) is True
+    assert _is_timeout(TimeoutError())          is True
+    assert _classify(asyncio.TimeoutError())    == "timeout"
+    assert _classify(TimeoutError())            == "timeout"
+
+
+def test_is_schema_error_recognises_pydantic_validation_error() -> None:
+    """A real ``pydantic.ValidationError`` classifies as schema."""
+
+    ve = _make_validation_error()
+
+    assert _is_schema_error(ve) is True
+    assert _classify(ve)        == "schema"
+
+
+def test_is_schema_error_walks_cause_chain() -> None:
+    """A wrapped ValidationError still classifies as schema."""
+
+    ve = _make_validation_error()
+    try:
+        try:
+            raise ve
+        except _VE as inner:
+            raise RuntimeError("wrapped") from inner
+    except RuntimeError as outer:
+        assert _is_schema_error(outer) is True
+        assert _classify(outer)        == "schema"
+
+
+def test_classify_returns_none_for_unhandled() -> None:
+    """A vanilla ValueError is not retryable — _classify returns None."""
+
+    assert _classify(ValueError("nope")) is None
+
+
+def test_classify_returns_none_for_strategist_contract_violation() -> None:
+    """StrategistContractViolation is NOT classified — it is a contract bug
+    that retry will not fix."""
+
+    from agents.strategist.derivation import StrategistContractViolation
+
+    assert _classify(StrategistContractViolation("off-watchlist")) is None

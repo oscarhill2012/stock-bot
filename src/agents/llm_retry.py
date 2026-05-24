@@ -115,6 +115,170 @@ def _make_before_sleep(name: str) -> Callable[[RetryCallState], None]:
     return _hook
 
 
+def _is_rate_limit(exc: BaseException) -> bool:
+    """Return ``True`` if ``exc`` (or any link in its cause chain) is a
+    Vertex AI HTTP 429 / RESOURCE_EXHAUSTED response.
+
+    This is the rate-limit predicate used by :func:`_classify`.  The body
+    is the same as the legacy ``_is_resource_exhausted`` — kept identical
+    so existing behaviour is preserved verbatim.
+
+    Two detection layers (matching the legacy function):
+
+    * ADK's :class:`google.adk.models.google_llm._ResourceExhaustedError`
+      — defensive import so a future rename does not silently break us.
+    * The underlying :class:`google.genai.errors.ClientError` with
+      ``status_code == 429`` — caught directly and via ``__cause__``.
+
+    Parameters
+    ----------
+    exc:
+        The exception to classify.
+
+    Returns
+    -------
+    bool
+        ``True`` if this exception (or anything in its cause chain) is
+        a Vertex 429; ``False`` otherwise.
+    """
+
+    # Layer 1 — ADK's wrapper class.  Defensive import.
+    try:
+        from google.adk.models.google_llm import _ResourceExhaustedError
+
+        if isinstance(exc, _ResourceExhaustedError):
+            return True
+
+    except ImportError:
+        pass
+
+    # Layer 2 — the underlying SDK error.  The SDK stores the HTTP status
+    # code in ``.code`` (set in ``APIError.__init__``).  Older or patched
+    # instances may carry a ``status_code`` attribute instead; we check
+    # both so the predicate works regardless of how the exception was
+    # constructed (normal constructor *or* the ``__new__``-hack used in
+    # tests for unrelated reasons).
+    try:
+        from google.genai.errors import ClientError
+
+        if isinstance(exc, ClientError):
+            http_code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+
+            if http_code == 429:
+                return True
+
+    except ImportError:
+        pass
+
+    # Walk the __cause__ chain.  Stop on self-loops (defensive).
+    cause = exc.__cause__
+
+    if cause is not None and cause is not exc:
+        return _is_rate_limit(cause)
+
+    return False
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    """Return ``True`` if ``exc`` is a wall-clock timeout the wrapper should retry.
+
+    ``asyncio.TimeoutError`` is an alias for the built-in ``TimeoutError``
+    from Python 3.11 onwards — checking the built-in covers both.  We do
+    NOT classify network-layer ``httpx.TimeoutException`` here: those
+    would only fire if Vertex itself raised an HTTP-layer timeout
+    (rare, and a real infra error that retry will not fix).
+
+    Parameters
+    ----------
+    exc:
+        The exception to classify.
+
+    Returns
+    -------
+    bool
+        ``True`` if ``exc`` is a ``TimeoutError`` (or alias); ``False``
+        otherwise.
+    """
+
+    return isinstance(exc, TimeoutError)
+
+
+def _is_schema_error(exc: BaseException) -> bool:
+    """Return ``True`` if ``exc`` (or its cause chain) is a Pydantic
+    ``ValidationError`` from the LLM output_schema parse.
+
+    Walks ``__cause__`` so a ValidationError wrapped via
+    ``raise SomethingElse from ve`` still classifies as a schema error.
+    ``StrategistContractViolation`` is deliberately *not* classified — it
+    is raised by the strategist's validation callback *after* the
+    schema parse already succeeded, and is a systemic contract bug that
+    retry will not fix.
+
+    Parameters
+    ----------
+    exc:
+        The exception to classify.
+
+    Returns
+    -------
+    bool
+        ``True`` if a ``pydantic.ValidationError`` appears anywhere in
+        the cause chain.
+    """
+
+    # Defensive import — Pydantic is a hard project dependency, but we
+    # mirror the import-guard style used by _is_rate_limit so the module
+    # is uniformly robust.
+    try:
+        from pydantic import ValidationError
+
+        if isinstance(exc, ValidationError):
+            return True
+
+    except ImportError:
+        return False
+
+    cause = exc.__cause__
+
+    if cause is not None and cause is not exc:
+        return _is_schema_error(cause)
+
+    return False
+
+
+def _classify(exc: BaseException) -> str | None:
+    """Top-level retry classifier — dispatches to the per-class predicates.
+
+    Returns one of ``"rate_limit"``, ``"timeout"``, ``"schema"``, or
+    ``None`` (not retryable).  Order matters when two predicates could
+    in principle match the same exception — none currently overlap, but
+    the order encodes priority should that ever change: rate-limit first
+    (most common transient), then timeout, then schema.
+
+    Parameters
+    ----------
+    exc:
+        The exception raised by the inner agent.
+
+    Returns
+    -------
+    str | None
+        Class name to look up in the policy dict, or ``None`` if the
+        wrapper should re-raise immediately.
+    """
+
+    if _is_rate_limit(exc):
+        return "rate_limit"
+
+    if _is_timeout(exc):
+        return "timeout"
+
+    if _is_schema_error(exc):
+        return "schema"
+
+    return None
+
+
 def _is_resource_exhausted(exc: BaseException) -> bool:
     """Return ``True`` if ``exc`` (or any link in its cause chain) is a
     Vertex AI HTTP 429 / RESOURCE_EXHAUSTED response.
