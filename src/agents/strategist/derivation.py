@@ -97,9 +97,11 @@ class TickContext:
             determine the lifecycle action (open / close / trim / add / hold).
         watchlist: The full watchlist for this tick.  Derivation pads
             ``target_weights`` for every watchlist ticker so downstream
-            agents (risk_gate, executor) always see an exhaustive dict:
-            tickers the strategist did not emit a stance for are filled
-            with their current weight (held → carry-forward; flat → 0.0).
+            agents (risk_gate, executor) always see an exhaustive dict.
+            Flat tickers (current weight ≈ 0) the strategist did not emit
+            a stance for are padded to 0.0.  Held tickers MUST have an
+            explicit stance — omission raises ``StrategistContractViolation``
+            (Spec B / D3).
 
     Note:
         ``current_prices`` deliberately omitted: the strategist no longer
@@ -162,15 +164,18 @@ def derive_legacy_fields(
     strategist's after-callback (C9), which is responsible for validating the
     stances before calling here.
 
-    Active-stances model:
+    Active-stances model (Spec B / D3):
 
-        The strategist only emits stances for tickers it wants to *change*
-        (open / add / trim / close).  Any watchlist ticker the strategist
-        does NOT emit a stance for is treated as carry-forward — held
-        positions stay held at their current weight; flat tickers stay
-        flat.  Derivation pads ``target_weights`` accordingly so
-        downstream agents (risk_gate, executor) always see an exhaustive
-        dict.
+        The strategist MUST emit a stance for every pre-tick held ticker
+        (open / add / trim / close / hold / update).  Silent carry-forward
+        of held positions is no longer permitted; omitting a held ticker
+        raises ``StrategistContractViolation``.
+
+        Flat watchlist tickers (current weight ≈ 0) remain optional — the
+        strategist only needs to emit a stance when it wants to *change* a
+        flat ticker's exposure (open / add).  Flat tickers the strategist
+        does NOT mention are padded to 0.0 in Pass 2 so downstream agents
+        always see an exhaustive ``target_weights`` dict.
 
     Each emitted stance is processed independently:
 
@@ -190,8 +195,10 @@ def derive_legacy_fields(
     fill price from the broker.  Pre-computing it here was always wrong because
     the strategist runs before the order fills and has no honest fill price.
 
-    Then ``target_weights`` is padded for un-emitted watchlist tickers
-    using carry-forward semantics (current weight if held; 0.0 if flat).
+    Then ``target_weights`` is padded for un-emitted FLAT watchlist tickers
+    to 0.0 (the active-stances model).  Held tickers must have been covered
+    by an explicit stance — Pass 1.5 enforces this with
+    ``StrategistContractViolation`` (Spec B / D3).
 
     Parameters
     ----------
@@ -251,24 +258,39 @@ def derive_legacy_fields(
 
         # "add" and "hold" actions: target_weights already set above; nothing else needed.
 
-    # ── Pass 2: carry-forward padding ────────────────────────────────────────
-    # Any watchlist ticker the strategist did NOT emit a stance for keeps its
-    # current weight (held → continue holding; flat → continue flat).  This
-    # is what makes "omission = implicit hold" safe — downstream sees a full
-    # target_weights dict and the risk_gate / executor do not need to know
-    # the difference between "explicit hold" and "implicit hold".
-    for ticker in ctx.watchlist:
-        if ticker not in emitted:
-            carry_weight = ctx.current_weights.get(ticker, 0.0)
-            target_weights[ticker] = carry_weight
+    # ── Pass 1.5: stance required per held position (Spec B / D3) ────────────
+    # Every pre-tick held ticker MUST have been touched by a stance above.
+    # Silent carry-forward of held positions is no longer permitted — the
+    # strategist must explicitly engage with each held position on every
+    # tick (Principle 3 of the spec).  Flat tickers remain optional (the
+    # active-stances model survives for them — Pass 2 below).
+    held_tickers = {
+        t for t, w in ctx.current_weights.items() if w > 0.0
+    }
+    uncovered_held = held_tickers - emitted
+    if uncovered_held:
+        # Sort for deterministic error messages — easier to grep for in logs.
+        names = ", ".join(sorted(uncovered_held))
+        raise StrategistContractViolation(
+            f"Held position(s) {{{names}}} have no matching stance in the "
+            f"strategist's output.  Every pre-tick held ticker must be "
+            f"explicitly engaged with on every tick (Spec B / D3) — emit a "
+            f"hold / trim / close / update stance for each."
+        )
 
-            # S6: carry-forward tickers also get a decision tag so downstream
-            # agents have a complete per-ticker intent map for every watchlist
-            # entry, not just the ones the strategist explicitly emitted a stance for.
-            decision_tags[ticker] = derive_decision_tag(
-                prior=carry_weight,
-                new=carry_weight,
-            )
+    # ── Pass 2: carry-forward padding for FLAT tickers only ──────────────────
+    # Any *flat* watchlist ticker the strategist did not emit a stance for
+    # keeps its current weight (0.0) — the active-stances model survives for
+    # flat tickers since the LLM has no view to commit to.  Held tickers are
+    # NOT padded here — Pass 1.5 above guarantees they were covered by an
+    # explicit stance.
+    for ticker in ctx.watchlist:
+        if ticker in emitted:
+            continue
+        # By construction (Pass 1.5), ticker is NOT in held_tickers — so its
+        # current weight is 0.0 (or absent) and we pad with 0.0.
+        target_weights[ticker] = 0.0
+        decision_tags[ticker]  = derive_decision_tag(prior=0.0, new=0.0)
 
     return DerivedFields(
         target_weights=target_weights,

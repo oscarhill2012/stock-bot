@@ -3,7 +3,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
+
 from agents.strategist.derivation import (
+    StrategistContractViolation,
     TickContext,
     derive_legacy_fields,
 )
@@ -203,20 +206,22 @@ def test_open_stance_goes_into_target_weights_not_close_or_trim():
     assert out.trim_reasons == {}
 
 
-def test_carry_forward_pads_unemitted_watchlist_tickers():
-    """Watchlist tickers the strategist did NOT emit a stance for keep their current weight.
+def test_held_ticker_without_stance_raises_contract_violation():
+    """An omitted held ticker now raises StrategistContractViolation (Spec B / D3).
 
-    This pins the "active-stances only" contract: the strategist emits a stance
-    only when it wants to *change* a ticker's exposure (open / add / trim /
-    close).  Omission is read as an *implicit hold* — held positions stay held
-    at their current weight, flat tickers stay flat.
+    Pre-Spec-B, the carry-forward block silently padded any held ticker the
+    strategist did not emit a stance for, treating omission as an implicit hold.
+    Spec B removes that: every pre-tick held ticker MUST be explicitly touched
+    by a stance.  Omission of a held ticker is now a hard contract violation.
 
-    Derivation pads ``target_weights`` for every watchlist ticker so downstream
-    (risk_gate, executor) keeps seeing an exhaustive dict; no other field
-    (``close_reasons`` / ``trim_reasons``) is touched on a carry-forward,
-    because no lifecycle action is happening.
+    The old "AAPL carried forward at 0.08" expectation is inverted here: we
+    expect ``StrategistContractViolation`` naming the uncovered held ticker.
+    Flat tickers (TSLA) remain optional — the active-stances model survives
+    for them (Spec B §'Active-stances model').
     """
-    # One explicit close stance; AAPL (held) and TSLA (flat) are NOT in stances.
+
+    # One explicit close stance for MSFT (held); AAPL is also held but has
+    # NO stance — this is the scenario that must now raise.
     stances = [
         TickerStance(
             ticker="MSFT",
@@ -227,17 +232,16 @@ def test_carry_forward_pads_unemitted_watchlist_tickers():
         ),
     ]
     ctx = _ctx(
-        weights={"AAPL": 0.08, "MSFT": 0.10},          # AAPL held, MSFT held, TSLA flat
+        weights={"AAPL": 0.08, "MSFT": 0.10},          # AAPL held (no stance), MSFT held (close stance), TSLA flat
         watchlist=["AAPL", "MSFT", "TSLA"],
     )
-    out = derive_legacy_fields(stances, ctx)
 
-    # MSFT closed explicitly, AAPL carried forward, TSLA padded at flat (0.0).
-    assert out.target_weights == {"AAPL": 0.08, "MSFT": 0.0, "TSLA": 0.0}
+    with pytest.raises(StrategistContractViolation) as excinfo:
+        derive_legacy_fields(stances, ctx)
 
-    # The carry-forward pass must NOT invent close-reasons or trim-reasons.
-    assert out.close_reasons == {"MSFT": "rotate"}
-    assert out.trim_reasons == {}
+    # The error message must name the uncovered held ticker.
+    assert "AAPL" in str(excinfo.value)
+    assert "Held position(s)" in str(excinfo.value)
 
 
 def test_carry_forward_does_not_override_emitted_stances():
