@@ -192,13 +192,18 @@ def test_nonzero_stance_without_lifecycle_fields_fails_at_schema():
 
 
 def test_after_raises_on_close_without_close_reason():
-    """Full closes missing reason abort the tick.
+    """Full closes missing reason abort the tick at schema re-validation.
 
-    ``TickerStance`` enforces ``reason`` at the schema level for close stances,
-    so this test bypasses Pydantic validation via ``model_construct`` to
-    simulate a stale or in-flight payload that slips through with ``reason=None``.
-    The derivation layer must catch it and raise ``StrategistContractViolation``
-    before the tick propagates downstream.
+    Post-7590ba1 the strategist callback re-validates the decision through
+    ``StrategistLLMDecision`` (the narrow LLM-emit schema), which in turn
+    runs ``TickerStance``'s verb-conditional validator.  A ``reason``-less
+    close stance fails there with a ``pydantic.ValidationError`` long
+    before derivation runs — schema is now the source of truth, derivation
+    only handles cross-stance contract (held-coverage, off-watchlist).
+
+    We bypass Pydantic via ``model_construct`` to simulate a payload that
+    somehow reaches the callback with ``reason=None`` and pin that the
+    callback STILL aborts loudly.
     """
     thesis = PositionThesis(
         ticker="AAPL", opened_at=datetime.now(tz=UTC),
@@ -230,17 +235,17 @@ def test_after_raises_on_close_without_close_reason():
         tick_id="t",
         strategist_decision=decision,  # already a model instance — not a dict
     )
-    with pytest.raises(StrategistContractViolation, match="reason"):
+    with pytest.raises(ValidationError, match="reason"):
         _strategist_validation_callback(_Ctx(state))
 
 
 def test_after_raises_on_trim_without_trim_reason():
-    """Trims missing reason abort the tick.
+    """Trims missing reason abort the tick at schema re-validation.
 
-    ``TickerStance`` enforces ``reason`` at the schema level for trim stances,
-    so this test bypasses Pydantic validation via ``model_construct`` to simulate
-    a payload that reaches derivation with ``reason=None``.  The derivation layer
-    must raise ``StrategistContractViolation`` before the tick propagates.
+    See ``test_after_raises_on_close_without_close_reason`` for the full
+    rationale.  Same path: ``TickerStance``'s verb-conditional validator
+    rejects a ``reason``-less trim with ``pydantic.ValidationError`` as
+    soon as the callback re-validates the LLM payload.
     """
     thesis = PositionThesis(
         ticker="MSFT", opened_at=datetime.now(tz=UTC),
@@ -271,7 +276,7 @@ def test_after_raises_on_trim_without_trim_reason():
         tick_id="t",
         strategist_decision=decision,  # already a model instance — not a dict
     )
-    with pytest.raises(StrategistContractViolation, match="trim_reason|reason"):
+    with pytest.raises(ValidationError, match="reason"):
         _strategist_validation_callback(_Ctx(state))
 
 

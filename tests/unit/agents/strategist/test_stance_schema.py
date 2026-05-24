@@ -326,24 +326,31 @@ class TestBoundaryValues:
         )
         assert s.weight == 1.0
 
-    def test_rejects_rationale_over_schema_cap(self):
-        """rationale is bounded by the schema cap (prompt cap + slack headroom).
+    def test_accepts_long_rationale_no_schema_cap(self):
+        """``rationale`` is no longer bounded by the Pydantic schema cap.
 
-        Reads the live schema cap so that retuning the prompt cap or slack
-        does not silently invalidate this regression.
+        After the 2026-05-24 two-class split + field reorder
+        (commit 7590ba1), ``TickerStance.rationale`` has no ``max_length``.
+        Vertex's constrained decoder treats schema ``maxLength`` as a fill
+        target and pads strings toward the cap; the prompt states the
+        upper bound in words instead.  This test pins that decision so a
+        future "tidy-up" doesn't silently restore the constraint and
+        re-introduce the fill-bias spiral.
         """
         cfg        = get_strategist_config()
         schema_cap = cfg.schema_cap(cfg.stance_caps.rationale_max_chars)
 
-        with pytest.raises(ValidationError):
-            TickerStance(
-                ticker="AAPL", intent="open",
-                weight=0.05,
-                rationale="x" * (schema_cap + 1),   # one char over the schema cap
-                horizon="swing",
-                target_price=200.0,
-                stop_price=180.0,
-            )
+        # Should accept a rationale comfortably over the prior schema cap.
+        s = TickerStance(
+            ticker="AAPL", intent="open",
+            weight=0.05,
+            rationale="x" * (schema_cap + 1),
+            horizon="swing",
+            target_price=200.0,
+            stop_price=180.0,
+        )
+
+        assert len(s.rationale or "") == schema_cap + 1
 
     def test_rejects_unknown_horizon(self):
         """horizon is a Literal — unknown values must fail field validation."""

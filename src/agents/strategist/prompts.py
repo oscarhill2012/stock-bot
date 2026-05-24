@@ -48,7 +48,7 @@ if _RISK.cash_floor_weight <= 0.0:
 else:
     _CASH_FLOOR_STANZA = (
         f"- Watchlist weight sum capped at "
-        f"{100 - _CASH_FLOOR_PCT} percent (Cash reserve at least {_CASH_FLOOR_PCT} percent)."
+        f"{100 - _CASH_FLOOR_PCT}% (Cash reserve ≥{_CASH_FLOOR_PCT}%)."
     )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -149,9 +149,8 @@ fill every required field for the verb you've picked, pick a different verb
 
 - weight: float greater than 0 and at most 1.  Required on open/add/trim;
   omit (null) on close/hold/update — emitting a number on those verbs is
-  rejected.  Risk gate clamps: single-ticker at most {{MAX_POSITION_PCT}}
-  percent, per-tick delta at most {{MAX_DELTA_PCT}} percent, total turnover
-  at most {{MAX_TURNOVER_PCT}} percent.
+  rejected.  Risk gate clamps: single-ticker ≤{{MAX_POSITION_PCT}}%,
+  per-tick delta ≤{{MAX_DELTA_PCT}}%, total turnover ≤{{MAX_TURNOVER_PCT}}%.
   {{CASH_FLOOR_STANZA}}
 - horizon: one of "intraday", "swing", "long_term".
 - target_price / stop_price: floats.  target_price is where your thesis
