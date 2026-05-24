@@ -26,6 +26,10 @@ from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event, EventActions
 
 from agents.strategist.held_view import render_held_positions_view
+from agents.strategist.prompts import (
+    COLD_START_MODE_TEMPLATE,
+    INCREMENTAL_MODE_TEMPLATE,
+)
 from broker.portfolio import Portfolio
 from contract.digest import build_ticker_evidence
 from contract.digest_defaults import DEFAULT_ANALYST_WEIGHTS
@@ -114,17 +118,19 @@ class StrategistContextShim(BaseAgent):
         state = ctx.session.state
 
         # ── Held-positions view ───────────────────────────────────────────
-        positions = state.get("positions", {}) or {}
+        # Read from the user-scoped key Plan 1 ships.  The legacy bare
+        # ``state["positions"]`` is never written post-Plan-1, but the
+        # fallback keeps tests on the migrated code path informative if
+        # one slips in.
+        positions = state.get("user:positions") or state.get("positions") or {}
         portfolio = _coerce_portfolio(state.get("portfolio"))
-        held_view = render_held_positions_view(positions, portfolio)
 
-        # ── Ticker-evidence view ──────────────────────────────────────────
-        tickers: list[str] = state.get("tickers", []) or []
-        tick_id: str = state.get("tick_id", "unknown")
-
-        # Resolve the ``recorded_at`` timestamp for evidence aggregation.
-        # Priority: state["as_of"] (backtest replay clock) > state["recorded_at"]
+        # Resolve the ``recorded_at`` / ``as_of`` timestamp for the
+        # evolution columns AND the evidence aggregation.  Priority:
+        # state["as_of"] (backtest replay clock) > state["recorded_at"]
         # > wall-clock fallback (live, when STOCKBOT_STRICT_AS_OF=0).
+        # Must be resolved before the held-view call so we can thread
+        # ``as_of`` through to the evolution renderer.
         #
         # NOTE: DatabaseSessionService serialises state via JSON, so ``as_of``
         # may arrive as an ISO-8601 string rather than a ``datetime``.  Pass
@@ -145,6 +151,26 @@ class StrategistContextShim(BaseAgent):
                 recorded_at = resolve_as_of(
                     None, allow_wallclock=True, site="strategist/context_shim",
                 )
+
+        held_view = render_held_positions_view(
+            positions = positions,
+            portfolio = portfolio,
+            as_of     = recorded_at,
+        )
+
+        # ── Mode header — cold-start vs incremental framing ──────────────
+        # Drives the structural diversity of the prompt across ticks.
+        # Cold start: portfolio is empty; encourage 1-3 fresh opens.
+        # Incremental: emit a stance per held position with a 'what's
+        # changed' reason.  See Principle 4 in the spec.
+        if not positions:
+            mode_text = COLD_START_MODE_TEMPLATE
+        else:
+            mode_text = INCREMENTAL_MODE_TEMPLATE.format(N=len(positions))
+
+        # ── Ticker-evidence view ──────────────────────────────────────────
+        tickers: list[str] = state.get("tickers", []) or []
+        tick_id: str = state.get("tick_id", "unknown")
 
         # Index every analyst's evidence list by ticker.
         tech = _index_evidence(state, "technical_evidence")
@@ -196,6 +222,7 @@ class StrategistContextShim(BaseAgent):
             author        = self.name,
             invocation_id = ctx.invocation_id,
             actions       = EventActions(state_delta={
+                "temp:strategist_mode":         mode_text,
                 "temp:held_positions_view":     held_view,
                 "temp:ticker_evidence":         ticker_evidence_rendered,
                 "temp:ticker_evidence_objects": ticker_evidence_objects,

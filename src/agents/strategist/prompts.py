@@ -51,6 +51,31 @@ else:
         f"{100 - _CASH_FLOOR_PCT}% (Cash reserve ≥{_CASH_FLOOR_PCT}%)."
     )
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Spec B — Mode header templates
+# ─────────────────────────────────────────────────────────────────────────────
+# These two literal strings drive the cold-start vs incremental framing
+# described in the spec at lines ~562-580.  Selection happens in
+# ``StrategistContextShim._run_async_impl``, which substitutes the count and
+# emits the chosen template under ``temp:strategist_mode``.  The strategist
+# instruction template carries a ``{temp:strategist_mode}`` placeholder which ADK's
+# ``inject_session_state`` resolves at runtime.
+
+COLD_START_MODE_TEMPLATE: str = (
+    "Cold start — your portfolio is empty.  No prior open positions to evaluate.  "
+    "Build an initial portfolio by scanning the watchlist evidence below.  Open "
+    "1-3 high-conviction entries.  You may also write or revise the standing "
+    "market thesis if you have a view."
+)
+
+INCREMENTAL_MODE_TEMPLATE: str = (
+    "Incremental — you have {N} held positions opened on prior ticks.  Each is "
+    "rendered below with the commitments you made on entry and the evolution "
+    "since.  For every held position you MUST emit a stance (hold / trim / "
+    "close / update) with a 'what has changed' reason.  You may also scan the "
+    "watchlist evidence for fresh entry candidates and open new positions."
+)
+
 # Raw template — uses ``{{NAME}}`` markers for the build-time cap substitution
 # below so that runtime ``{portfolio}``/``{tickers}`` placeholders survive
 # untouched for ADK's ``.format()`` pass.

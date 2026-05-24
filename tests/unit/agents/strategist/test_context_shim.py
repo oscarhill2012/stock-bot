@@ -27,21 +27,21 @@ from agents.strategist.context_shim import StrategistContextShim
 def populated_state() -> dict:
     """Build a session-state dict with the keys the shim needs to read.
 
-    The shim reads ``positions``, ``portfolio``, ``tickers``, ``tick_id``,
+    The shim reads ``user:positions``, ``portfolio``, ``tickers``, ``tick_id``,
     ``as_of``, and the four per-analyst ``*_evidence`` lists.  An empty
-    ``positions`` dict is fine — the held-view renderer handles the flat-
+    ``user:positions`` dict is fine — the held-view renderer handles the flat-
     portfolio case.  The evidence lists are empty too — the evidence-view
     branch handles that path.
     """
     return {
-        "tickers":            ["AAPL"],
-        "tick_id":            "test-tick-1",
-        "as_of":              datetime(2026, 5, 20, 13, 30, tzinfo=UTC),
-        "positions":          {},
-        "portfolio":          {"cash": 100_000.0, "positions": {}},
-        "technical_evidence": [],
+        "tickers":              ["AAPL"],
+        "tick_id":              "test-tick-1",
+        "as_of":                datetime(2026, 5, 20, 13, 30, tzinfo=UTC),
+        "user:positions":       {},
+        "portfolio":            {"cash": 100_000.0, "positions": {}},
+        "technical_evidence":   [],
         "fundamental_evidence": [],
-        "news_evidence":      [],
+        "news_evidence":        [],
         "smart_money_evidence": [],
     }
 
@@ -73,6 +73,7 @@ def test_shim_yields_one_event_with_temp_prefixed_keys(populated_state: dict) ->
 
     delta = events[0].actions.state_delta
     expected_keys = {
+        "temp:strategist_mode",
         "temp:held_positions_view",
         "temp:ticker_evidence",
         "temp:ticker_evidence_objects",
