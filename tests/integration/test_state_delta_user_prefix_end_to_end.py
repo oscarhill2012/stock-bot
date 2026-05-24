@@ -19,8 +19,9 @@ See contract-invariants.md §C-Rule 1 amendment (2026-05-23).
 """
 from __future__ import annotations
 
-import pytest
 from datetime import UTC, datetime
+
+import pytest
 from google.adk import Runner
 from google.adk.sessions import DatabaseSessionService
 from google.genai import types as genai_types
@@ -70,16 +71,14 @@ async def test_user_positions_and_thesis_written_after_executor_tick():
                 "thesis":       "FCF-driven AI infrastructure thesis",
                 "stances": [
                     {
-                        "ticker":          "AAPL",
-                        "preferred_weight": 0.0,
-                        "conviction":       0.8,
-                        "intent":           "open",
-                        "weight":           0.10,
-                        "horizon":          "swing",
-                        "rationale":        "Strong FCF + insider buying",
-                        "target_price":     220.0,
-                        "stop_price":       185.0,
-                        "catalyst":         "Q3 earnings beat",
+                        "ticker":       "AAPL",
+                        "intent":       "open",
+                        "weight":       0.10,
+                        "horizon":      "swing",
+                        "rationale":    "Strong FCF + insider buying",
+                        "target_price": 220.0,
+                        "stop_price":   185.0,
+                        "catalyst":     "Q3 earnings beat",
                     },
                 ],
                 "target_weights": {"AAPL": 0.10},

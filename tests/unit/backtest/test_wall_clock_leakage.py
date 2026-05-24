@@ -16,11 +16,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from orchestrator.persistence import (
-    Base,
     AnalystEvidenceRow,
+    Base,
+    PortfolioSnapshotRow,
     TickerEvidenceRow,
     TickerStanceRow,
-    PortfolioSnapshotRow,
     TradeLogRow,
 )
 
@@ -78,9 +78,8 @@ def test_decision_writer_uses_as_of(db_session) -> None:
         stances=[
             TickerStance(
                 ticker="AAPL",
-                preferred_weight=0.0,
-                conviction=0.5,
-                rationale="hold",
+                intent="hold",
+                reason="test hold",
             ),
         ],
         target_weights={"AAPL": 0.0},
@@ -110,6 +109,7 @@ def test_decision_writer_uses_as_of(db_session) -> None:
 def test_snapshotter_uses_as_of(db_session) -> None:
     """SnapshotterAgent should stamp portfolio snapshots with state["as_of"]."""
     from unittest.mock import AsyncMock, MagicMock
+
     from agents.snapshot.agent import SnapshotterAgent
     from broker.portfolio import Portfolio
 
@@ -201,13 +201,12 @@ def test_evidence_writer_uses_as_of(db_session) -> None:
 
 def test_executor_closed_at_uses_as_of(db_session) -> None:
     """ExecutorAgent should stamp closed_at from state["as_of"] for deterministic holding_hours."""
-    from unittest.mock import AsyncMock, MagicMock
+    # Opened 24 hours before the historical tick — holding_hours should be 24.
+    from datetime import timedelta
+
     from agents.executor.agent import ExecutorAgent
     from broker.fake import FakeBroker
     from orchestrator.state import Order
-
-    # Opened 24 hours before the historical tick — holding_hours should be 24.
-    from datetime import timedelta
     opened_at = _HISTORICAL_TS - timedelta(hours=24)
     opened_at_str = opened_at.isoformat()
 

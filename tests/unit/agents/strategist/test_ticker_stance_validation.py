@@ -22,7 +22,6 @@ from pydantic import ValidationError
 
 from agents.strategist.stance_schema import TickerStance
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -30,7 +29,6 @@ from agents.strategist.stance_schema import TickerStance
 def _open(**overrides) -> dict:
     """Return a fully-populated open stance dict, with optional field overrides."""
     base = dict(
-        preferred_weight=0.0, conviction=0.0,
         ticker="AAPL",
         intent="open",
         weight=0.08,
@@ -47,7 +45,6 @@ def _open(**overrides) -> dict:
 def _add(**overrides) -> dict:
     """Return a minimal valid add stance dict."""
     base = dict(
-        preferred_weight=0.0, conviction=0.0,
         ticker="AAPL",
         intent="add",
         weight=0.12,
@@ -59,7 +56,6 @@ def _add(**overrides) -> dict:
 def _trim(**overrides) -> dict:
     """Return a minimal valid trim stance dict."""
     base = dict(
-        preferred_weight=0.0, conviction=0.0,
         ticker="AAPL",
         intent="trim",
         weight=0.05,
@@ -70,11 +66,16 @@ def _trim(**overrides) -> dict:
 
 
 def _close(**overrides) -> dict:
-    """Return a minimal valid close stance dict."""
+    """Return a minimal valid close stance dict.
+
+    ``reason`` is required on close in the new schema — include a default
+    so the helper is valid by default.  Tests that want to test a missing
+    reason can pass ``reason=None`` as an override.
+    """
     base = dict(
-        preferred_weight=0.0, conviction=0.0,
         ticker="AAPL",
         intent="close",
+        reason="test close reason",
     )
     base.update(overrides)
     return base
@@ -83,7 +84,6 @@ def _close(**overrides) -> dict:
 def _hold(**overrides) -> dict:
     """Return a minimal valid hold stance dict."""
     base = dict(
-        preferred_weight=0.0, conviction=0.0,
         ticker="AAPL",
         intent="hold",
         reason="No change in thesis; price action still intact.",
@@ -95,7 +95,6 @@ def _hold(**overrides) -> dict:
 def _update(**overrides) -> dict:
     """Return a minimal valid update stance dict."""
     base = dict(
-        preferred_weight=0.0, conviction=0.0,
         ticker="AAPL",
         intent="update",
         reason="Raised target after stronger-than-expected earnings.",
@@ -158,7 +157,6 @@ def test_update_minimal_valid():
 def test_update_valid_with_only_stop_price():
     """update with only stop_price as the mutated field is sufficient."""
     data = dict(
-        preferred_weight=0.0, conviction=0.0,
         ticker="AAPL",
         intent="update",
         reason="Stop raised to protect gains.",
@@ -171,7 +169,6 @@ def test_update_valid_with_only_stop_price():
 def test_update_valid_with_only_horizon():
     """update with only horizon as the mutated field is sufficient."""
     data = dict(
-        preferred_weight=0.0, conviction=0.0,
         ticker="AAPL",
         intent="update",
         reason="Extending horizon after catalyst delay.",
@@ -190,12 +187,16 @@ def test_update_valid_with_only_horizon():
     "weight",
     "target_price",
     "stop_price",
-    "catalyst",
     "horizon",
     "rationale",
 ])
 def test_open_missing_required_field(missing_field: str):
-    """Every required field for open, individually absent, must raise ValidationError."""
+    """Every required field for open, individually absent, must raise ValidationError.
+
+    Note: ``catalyst`` is **optional** on open — it is excluded from this
+    parametrised list intentionally.  The schema only requires weight, rationale,
+    horizon, target_price, and stop_price for the open verb.
+    """
     data = _open()
     data[missing_field] = None
 
@@ -262,7 +263,6 @@ def test_update_missing_reason():
 def test_update_missing_all_commitment_fields():
     """update with reason but no mutable fields raises ValidationError."""
     data = dict(
-        preferred_weight=0.0, conviction=0.0,
         ticker="AAPL",
         intent="update",
         reason="I have a reason but nothing to change.",
@@ -279,33 +279,32 @@ def test_update_missing_all_commitment_fields():
 
 
 # ---------------------------------------------------------------------------
-# Legacy stance validation (preferred_weight path, no intent field)
+# Open-stance rationale regression guard
 # ---------------------------------------------------------------------------
 
 
-def test_legacy_nonzero_weight_missing_rationale():
-    """A legacy stance with preferred_weight > 0 and no rationale must fail at
-    TickerStance validation, not later at derive_legacy_fields.
+def test_open_stance_missing_rationale():
+    """An open stance missing rationale must fail at the schema level.
 
-    Regression guard: before the fix, ``_require_lifecycle_hints_on_nonzero``
-    did not include ``rationale`` in its missing-field check, so the stance
-    passed schema validation and only failed when ``derive_legacy_fields`` tried
-    to construct ``PositionThesis(rationale=None, ...)``.  The error now fires
-    early, at the schema layer, with a clear message.
+    Regression guard: ``rationale`` is required on ``open`` because it seeds the
+    ``PositionThesis`` row (Invariant 3 — frozen at entry).  Omitting it must
+    raise early at parse time with a message that names ``rationale``, so the
+    LLM's re-prompt includes the correct field.  It must never pass silently to
+    derivation.
     """
     data = dict(
         ticker="MSFT",
-        preferred_weight=0.10,   # non-zero — commits capital
-        conviction=0.75,
+        intent="open",
+        weight=0.10,
         horizon="swing",
         target_price=420.0,
         stop_price=390.0,
-        # rationale intentionally omitted — this must raise, not pass silently
+        # rationale intentionally omitted — must raise, not pass silently
     )
 
     with pytest.raises(ValidationError) as exc_info:
         TickerStance.model_validate(data)
 
     msg = str(exc_info.value)
-    # The error should call out the missing field by name.
+    # The error must name the missing field so the LLM's re-prompt is actionable.
     assert "rationale" in msg

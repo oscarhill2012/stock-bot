@@ -1,11 +1,11 @@
-"""Derive legacy decision fields from per-ticker stances.
+"""Derive canonical decision fields from per-ticker stances.
 
-The strategist's after-callback runs ``derive_legacy_fields`` to populate
+The strategist's after-callback runs ``derive_decision_fields`` to populate
 ``StrategistDecision.target_weights`` / ``close_reasons`` / ``trim_reasons``
-from the LLM-emitted ``stances``. Downstream agents (risk_gate, executor,
+from the LLM-emitted ``stances``.  Downstream agents (risk_gate, executor,
 memory_writer) keep their existing input shape, so this function acts as the
 translation layer between the richer per-ticker stance model and the flat
-legacy fields.
+derived fields.
 
 ``new_positions`` was a derived field that pre-computed a ``PositionThesis``
 for every ``open`` stance at decision time.  It was removed in Band 6: the
@@ -25,7 +25,6 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from agents.strategist.lifecycle import derive_lifecycle_action
 from agents.strategist.stance_schema import TickerStance
 from orchestrator.state import ORDER_EPSILON
 
@@ -34,7 +33,7 @@ class StrategistContractViolation(RuntimeError):
     """Raised when the strategist's output violates a position-lifecycle invariant.
 
     The strategist's after-callback raises this for off-watchlist tickers, missing
-    close_reasons, or missing trim_reasons.  The risk_gate also raises this if a
+    close reasons, or missing trim reasons.  The risk_gate also raises this if a
     close slips through without a reason.  Callers (pipeline, backtest runner)
     should treat this as a hard tick failure.
     """
@@ -94,7 +93,7 @@ class TickContext:
             (e.g. ``"morning_sweep_2026_05_08"``).
         now: Timestamp of the current tick, used as ``opened_at`` for new positions.
         current_weights: Mapping of ticker → current portfolio weight. Used to
-            determine the lifecycle action (open / close / trim / add / hold).
+            verify that held tickers have explicit stances (Spec B / D3).
         watchlist: The full watchlist for this tick.  Derivation pads
             ``target_weights`` for every watchlist ticker so downstream
             agents (risk_gate, executor) always see an exhaustive dict.
@@ -131,9 +130,10 @@ class DerivedFields:
         target_weights: Target portfolio weight for every stance ticker,
             including holds (weight unchanged) and closes (weight → 0.0).
         close_reasons: Human-readable reason for each full exit, keyed by ticker.
-            Only populated when the stance supplies a ``close_reason``.
+            Only populated when the stance supplies a ``reason`` with ``intent=="close"``.
         trim_reasons: Human-readable reason for each partial size reduction,
-            keyed by ticker. Only populated when the stance supplies a ``trim_reason``.
+            keyed by ticker. Only populated when the stance supplies a ``reason``
+            with ``intent=="trim"``.
         decision_tags: Per-ticker intent tag derived from (prior, new) weight pair.
 
     Note:
@@ -153,7 +153,7 @@ class DerivedFields:
     """
 
 
-def derive_legacy_fields(
+def derive_decision_fields(
     stances: Iterable[TickerStance],
     ctx: TickContext,
 ) -> DerivedFields:
@@ -163,6 +163,12 @@ def derive_legacy_fields(
     a ``DerivedFields`` snapshot with no side effects. It is called from the
     strategist's after-callback (C9), which is responsible for validating the
     stances before calling here.
+
+    Reads ``stance.intent`` as the canonical action verb and ``stance.weight``
+    as the target portfolio weight.  The legacy ``preferred_weight`` field is
+    no longer consulted — ``intent is None`` on any stance raises
+    ``StrategistContractViolation`` immediately (silent legacy-path fallback
+    is the recurring bug class, per ``feedback_silent_failures_loud_tests``).
 
     Active-stances model (Spec B / D3):
 
@@ -179,15 +185,16 @@ def derive_legacy_fields(
 
     Each emitted stance is processed independently:
 
-    - ``target_weights`` is populated for *every* emitted stance regardless
-      of action.
-    - ``close_reasons`` fires only on ``"close"`` and only when the stance
-      actually carries a ``close_reason``.  An empty ``close_reason`` on a
-      close action is a silent skip here; the after-callback rejects such
-      output before calling derivation in production.
+    - ``target_weights`` is populated for *every* emitted stance.
+      Opens/adds/trims write ``stance.weight``; closes write ``0.0``
+      (the full exit); holds/updates write ``stance.weight or 0.0``
+      (preserving the current weight where weight is not re-stated).
+    - ``close_reasons`` fires only on ``"close"`` and requires a non-empty
+      ``stance.reason`` — raising ``StrategistContractViolation`` if absent,
+      because silent exits without a reason are forbidden audit failures.
     - ``trim_reasons`` mirrors ``close_reasons`` for the ``"trim"`` action.
-    - ``"open"``, ``"add"``, and ``"hold"`` actions only contribute to
-      ``target_weights``.
+    - ``"open"``, ``"add"``, ``"hold"``, and ``"update"`` actions only
+      contribute to ``target_weights``.
 
     Note: ``new_positions`` was removed in Band 6.  The executor now assembles
     the ``PositionThesis`` for each ``open`` stance itself, using
@@ -204,7 +211,8 @@ def derive_legacy_fields(
     ----------
     stances:
         Iterable of ``TickerStance`` objects — one per *active* ticker for
-        this tick (not every watchlist ticker; omissions = carry-forward).
+        this tick (not every watchlist ticker; omissions = carry-forward for
+        flat tickers only).
     ctx:
         ``TickContext`` carrying tick metadata, current portfolio state,
         and the full watchlist used for carry-forward padding.
@@ -214,6 +222,14 @@ def derive_legacy_fields(
     DerivedFields
         Frozen snapshot of the derived dicts, ready to merge into
         ``StrategistDecision``.
+
+    Raises
+    ------
+    StrategistContractViolation
+        - When any stance has ``intent is None`` (no silent legacy fallback).
+        - When a ``"close"`` stance has no ``reason`` (audit requirement).
+        - When a ``"trim"`` stance has no ``reason`` (audit requirement).
+        - When a pre-tick held ticker has no stance (Spec B / D3).
     """
     target_weights: dict[str, float] = {}
     close_reasons: dict[str, str] = {}
@@ -224,39 +240,70 @@ def derive_legacy_fields(
     # Whatever the strategist explicitly said about a ticker takes precedence
     # over the carry-forward default applied in Pass 2 below.
     emitted: set[str] = set()
+
     for stance in stances:
 
         emitted.add(stance.ticker)
 
-        # Every stance contributes its preferred weight regardless of action.
-        target_weights[stance.ticker] = stance.preferred_weight
+        # Guard: intent MUST be present — no silent legacy-path fallback.
+        # Silently falling through to preferred_weight was the recurring bug class
+        # (see auto-memory feedback_silent_failures_loud_tests).
+        if stance.intent is None:
+            raise StrategistContractViolation(
+                f"Stance for {stance.ticker!r} has intent=None.  "
+                f"Every stance must carry an explicit intent verb "
+                f"(open / add / trim / close / hold / update)."
+            )
 
-        # Determine what needs to happen based on current vs preferred weight.
-        current = ctx.current_weights.get(stance.ticker, 0.0)
-        action = derive_lifecycle_action(current, stance.preferred_weight)
+        # Read the canonical action directly from intent — no weight comparison.
+        action = stance.intent
+
+        # Derive the new target weight from the stance's explicit weight field.
+        # Closes always target 0.0 (full exit); holds/updates use current weight
+        # if no new weight was stated (weight=None); opens/adds/trims use weight.
+        if action == "close":
+            target_weights[stance.ticker] = 0.0
+
+        else:
+            # ``or 0.0`` handles close/hold/update where weight is None —
+            # the risk-gate and executor both tolerate 0.0 as "no change".
+            target_weights[stance.ticker] = stance.weight or 0.0
 
         # S6: derive a per-ticker intent tag from the (prior, new) weight pair.
-        # This replaces the constant ``catalyst_driven_entry`` the LLM was emitting
-        # for every tick — giving Spec B / Spec C memory writers a discriminating
-        # key they can actually use to distinguish entries from exits, holds, etc.
+        # Replaces the constant ``catalyst_driven_entry`` the LLM emitted for
+        # every tick — gives Spec B / Spec C memory writers a discriminating key.
+        current = ctx.current_weights.get(stance.ticker, 0.0)
+
         decision_tags[stance.ticker] = derive_decision_tag(
             prior=current,
-            new=stance.preferred_weight,
+            new=target_weights[stance.ticker],
         )
 
-        # ``open`` and ``add`` stances only need target_weights set above.
-        # The executor assembles the PositionThesis for ``open`` stances
-        # itself using apply_stance_to_thesis + the real fill price.
+        # ── Close reason — required, not optional ────────────────────────────
+        # A full exit without a reason is an audit failure; raise rather than
+        # silently skipping (the prior implementation used a falsy check and
+        # skipped silently, which is the recurring bug class).
+        if action == "close":
+            if not stance.reason:
+                raise StrategistContractViolation(
+                    f"Stance for {stance.ticker!r} has intent='close' but "
+                    f"reason is missing or empty.  Every close must articulate "
+                    f"why the position is being exited so the audit trail is complete."
+                )
+            close_reasons[stance.ticker] = stance.reason
 
-        if action == "close" and stance.close_reason:
-            # Record the exit reason; silently skip if close_reason is absent.
-            close_reasons[stance.ticker] = stance.close_reason
+        # ── Trim reason — required, not optional ────────────────────────────
+        # Same principle as close: a trim without a reason is a silent failure.
+        elif action == "trim":
+            if not stance.reason:
+                raise StrategistContractViolation(
+                    f"Stance for {stance.ticker!r} has intent='trim' but "
+                    f"reason is missing or empty.  Every trim must articulate "
+                    f"why the position size is being reduced."
+                )
+            trim_reasons[stance.ticker] = stance.reason
 
-        elif action == "trim" and stance.trim_reason:
-            # Record the trim reason; silently skip if trim_reason is absent.
-            trim_reasons[stance.ticker] = stance.trim_reason
-
-        # "add" and "hold" actions: target_weights already set above; nothing else needed.
+        # "open", "add", "hold", "update" only contribute to target_weights above.
 
     # ── Pass 1.5: stance required per held position (Spec B / D3) ────────────
     # Every pre-tick held ticker MUST have been touched by a stance above.
@@ -268,6 +315,7 @@ def derive_legacy_fields(
         t for t, w in ctx.current_weights.items() if w > 0.0
     }
     uncovered_held = held_tickers - emitted
+
     if uncovered_held:
         # Sort for deterministic error messages — easier to grep for in logs.
         names = ", ".join(sorted(uncovered_held))
@@ -287,6 +335,7 @@ def derive_legacy_fields(
     for ticker in ctx.watchlist:
         if ticker in emitted:
             continue
+
         # By construction (Pass 1.5), ticker is NOT in held_tickers — so its
         # current weight is 0.0 (or absent) and we pad with 0.0.
         target_weights[ticker] = 0.0

@@ -89,3 +89,6 @@ docs/surface-traces/
 
 # Backtest golden-cache SQLite files — binary, large, developer-local only.
 backtests/
+
+# Local investigation scripts (untracked)
+scratch/

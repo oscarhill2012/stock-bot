@@ -48,54 +48,62 @@ def test_template_no_longer_has_active_positions_dump():
 def test_template_instructs_per_ticker_stance_output():
     """The template must encode the per-held-position stance requirement.
 
-    Spec B rewrites ``## Your Job`` to explicitly mandate a stance for every
-    held position.  The old ``TickerStance`` class-name reference was dropped
-    from the prose (the class name is an implementation detail, not a contract
-    term); the new invariants are the per-held-position wording and the
-    ``preferred_weight`` / ``conviction`` field names that the schema enforces.
+    Band 2 (Task 5) rewrites the OUTPUT CONTRACT to a single intent-based
+    vocabulary.  ``preferred_weight`` and ``conviction`` are gone; the new
+    canonical fields are ``intent`` and ``weight``.
     """
     text = STRATEGIST_INSTRUCTION
 
-    # Spec B core invariant — every held position must have an explicit stance.
+    # Core invariant — every held position must have an explicit stance.
     assert "you MUST emit exactly one stance" in text
 
     # The mode placeholder wires the cold-start vs incremental framing.
     assert "{temp:strategist_mode}" in text
 
-    # Schema field names remain (they drive the output contract table).
-    assert "preferred_weight" in text
-    assert "conviction" in text
+    # New canonical field names replace the legacy dual-form vocabulary.
+    assert "intent" in text
+    assert "weight" in text
+
+    # Legacy field names must not appear as JSON field references — their
+    # presence in the output contract would re-introduce the dual-form ambiguity
+    # that caused the 2026-05-24 schema-retry storm.
+    # Note: the word "conviction" may appear in English prose (e.g. "when conviction
+    # supports it"), so we check for the JSON key form ``"conviction"`` (with quotes)
+    # rather than the bare word.
+    assert "preferred_weight" not in text
+    assert '"conviction"' not in text
 
 
-def test_template_documents_lifecycle_hint_rules():
-    """The prompt must communicate the lifecycle-hint contract:
+def test_template_documents_intent_verb_rules():
+    """The prompt must communicate the intent-verb contract from the end-state table.
 
-    - any non-zero stance carries horizon / target_price / stop_price;
-    - CLOSE stances carry close_reason;
-    - TRIM stances carry trim_reason.
-
-    The "non-zero ⇒ lifecycle hints" rule was tightened (any positive
-    weight, not just opens) when ``TickerStance._require_lifecycle_hints_on_nonzero``
-    was added — see ``stance_schema.py``.  The prompt mirrors that change.
+    Band 2 (Task 5) replaces the legacy lifecycle-hint table with a clean
+    intent-verb table.  Every verb must be named; the structural thesis fields
+    (horizon, target_price, stop_price) remain required for open/add/trim.
+    ``close_reason`` and ``trim_reason`` are gone; their role is carried by
+    the unified ``reason`` field.
     """
-
     text = STRATEGIST_INSTRUCTION
 
-    # Lifecycle action vocabulary still surfaces — CLOSE and TRIM remain
-    # explicit because they each carry a distinct reason field.
-    assert "CLOSE" in text and "TRIM" in text
+    # All six intent verbs must appear in the contract table.
+    assert "open" in text
+    assert "add" in text
+    assert "trim" in text
+    assert "close" in text
+    assert "hold" in text
+    assert "update" in text
 
-    # Any held position requires the exit-discipline triple — the HOLD row
-    # in the lifecycle table documents this (R5 removed the old "non-zero"
-    # prose; the table is now the single source of truth).
-    assert "HOLD" in text
+    # Structural thesis fields remain required for open/add/trim.
     assert "horizon" in text
     assert "target_price" in text
     assert "stop_price" in text
 
-    # Reason fields keyed to the lifecycle action.
-    assert "close_reason" in text
-    assert "trim_reason" in text
+    # Unified reason field replaces the legacy per-action fields.
+    assert "reason" in text
+
+    # Legacy per-action reason fields must not appear.
+    assert "close_reason" not in text
+    assert "trim_reason" not in text
 
 
 def test_template_renders_with_all_required_slots():

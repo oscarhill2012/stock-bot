@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from google.adk.agents import SequentialAgent
 
-from agents.llm_retry          import RetryingAgentWrapper
-from agents.strategist.agent   import build_strategist
+from agents.llm_retry import RetryingAgentWrapper
+from agents.strategist.agent import build_strategist
 
 
 def test_build_strategist_wires_llm_caps_from_config() -> None:
@@ -35,4 +35,4 @@ def test_build_strategist_wires_llm_caps_from_config() -> None:
     cfg = llm.generate_content_config
 
     assert cfg is not None
-    assert cfg.max_output_tokens == 8000
+    assert cfg.max_output_tokens == 16000

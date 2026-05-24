@@ -128,106 +128,101 @@ position must still have its own stance.
 
 ## OUTPUT CONTRACT — every rule is enforced; violations abort the tick
 
-The lifecycle action for each emitted stance is derived from current weight
-vs your ``preferred_weight`` (or the explicit ``intent`` verb on the
-stance).  The table below is the single source of truth for which fields
-must be set per action; the worked examples at the bottom are illustrations,
-not a separate ruleset.
+Each stance carries an ``intent`` verb and the fields required for that verb.
+The table below is the single source of truth.  "Required" means the schema
+WILL reject your response if the field is missing — these are not suggestions.
 
-| Action / intent | Current → Preferred         | Required fields                                                                              |
-|-----------------|-----------------------------|----------------------------------------------------------------------------------------------|
-| OPEN            | 0       → > 0               | horizon, target_price, stop_price, rationale (+ optional catalyst)                            |
-| ADD             | > 0     → higher (> 0)      | horizon, target_price, stop_price                                                             |
-| HOLD            | > 0     → same              | **reason** (what's changed since open)                                                        |
-| TRIM            | > 0     → lower (still > 0) | horizon, target_price, stop_price, **trim_reason** (= reason)                                 |
-| CLOSE           | > 0     → 0                 | **close_reason** (= reason).  horizon / target_price / stop_price stay null — you are exiting.|
-| UPDATE          | > 0     → same              | **reason**, and at least one of target_price / stop_price / catalyst / horizon                |
+| Intent | What it means                           | Required fields                            | Optional fields                                      |
+|--------|-----------------------------------------|--------------------------------------------|------------------------------------------------------|
+| open   | enter a flat ticker (current weight 0)  | weight, horizon, target_price, stop_price, rationale | catalyst                                   |
+| add    | grow an existing position               | weight, reason                             | horizon, target_price, stop_price, catalyst (updates)|
+| trim   | reduce an existing position (not to 0)  | weight, reason                             | —                                                    |
+| close  | exit an existing position completely    | reason                                     | —                                                    |
+| hold   | no trade — review only                  | reason                                     | —                                                    |
+| update | no trade — revise the thesis            | reason plus one or more of target_price / stop_price / horizon / catalyst | the remaining of those four              |
 
-### NULL DISCIPLINE — read this twice before emitting any stance
+A missing required field is the most common decision-killer.  If you cannot
+fill every required field for the verb you've picked, pick a different verb
+(e.g. ``hold`` to pass on a trade you cannot fully thesize this tick).
 
-The fields ``horizon``, ``target_price``, and ``stop_price`` are CONDITIONALLY
-required.  The conditional is on lifecycle action, not on confidence:
+### Field constraints (schema-enforced)
 
-- **OPEN, ADD, TRIM, UPDATE** (any stance with ``preferred_weight > 0``):
-  ``horizon``, ``target_price``, ``stop_price`` MUST be **non-null** values
-  (a horizon literal, a positive float price, a positive float price).
-  Emitting ``null`` for any of them is a hard validation failure — the
-  schema validator will reject the entire decision and you will be
-  re-prompted.  "I am not sure of the exact target" is not an excuse;
-  provide your best estimate.
-
-- **CLOSE, HOLD** (``preferred_weight == 0`` or unchanged hold):
-  ``horizon``, ``target_price``, ``stop_price`` MUST be **null** —
-  you are exiting (or have already articulated discipline elsewhere), so
-  those fields carry no meaning.
-
-The two worked examples below illustrate exactly these two regimes.
-Generalising the all-nulls shape of the CLOSE example onto an OPEN stance
-is the single most common way decisions get rejected — do not do it.
-
-Schema-level rules (failing these means ADK rejects your response):
-- preferred_weight: float in [0.0, 1.0].  Long-only — 0.0 is the floor.
-
-  Hard rules the risk gate enforces after you respond (so a stance that
-  violates them will be clamped — propose values that already respect them):
-  - Single-ticker weight capped at {{MAX_POSITION_PCT}}%.
-  - Per-ticker weight change capped at {{MAX_DELTA_PCT}}% per tick — if you
-    want to size up faster, the gate will trim your delta back to
-    {{MAX_DELTA_PCT}}% and you ramp over multiple ticks.
-  - Total per-tick turnover (sum of |deltas| across watchlist) capped at
-    {{MAX_TURNOVER_PCT}}%.
+- weight: float greater than 0 and at most 1.  Required on open/add/trim;
+  omit (null) on close/hold/update — emitting a number on those verbs is
+  rejected.  Risk gate clamps: single-ticker ≤{{MAX_POSITION_PCT}}%,
+  per-tick delta ≤{{MAX_DELTA_PCT}}%, total turnover ≤{{MAX_TURNOVER_PCT}}%.
   {{CASH_FLOOR_STANZA}}
-- conviction: float in [0.0, 1.0].
-- confidence (decision-level): float in [0.0, 1.0].
-- horizon: one of "intraday", "swing", "long_term" — or null.
-- rationale: ≤{{STANCE_RATIONALE_MAX}} chars.
-- catalyst (optional): ≤{{STANCE_CATALYST_MAX}} chars.
-- close_reason: ≤{{STANCE_CLOSE_REASON_MAX}} chars.
-- trim_reason: ≤{{STANCE_TRIM_REASON_MAX}} chars.
-- reasoning (decision-level): ≤{{DECISION_REASONING_MAX}} chars.
-- thesis (decision-level, optional — null carries the prior thesis forward): ≤{{DECISION_THESIS_MAX}} chars.
-- decision_tag (decision-level): snake_case label, ≤40 chars.
+- horizon: one of "intraday", "swing", "long_term".
+- target_price / stop_price: floats.  target_price is where your thesis
+  pays off; stop_price is where it's invalidated.
+- rationale: as brief as you like — one short sentence is fine.  There is
+  NO minimum length.  Hard upper limit of {{STANCE_RATIONALE_MAX}}
+  characters.  Do not pad; do not repeat yourself.  FROZEN at open — you
+  cannot revise it later.
+- reason: as brief as you like — one short sentence is fine.  There is
+  NO minimum length.  Hard upper limit of {{STANCE_RATIONALE_MAX}}
+  characters.  Do not pad.
+- catalyst: a single phrase or short sentence.  Hard upper limit of
+  {{STANCE_CATALYST_MAX}} characters.
+- confidence (decision-level): float between 0.0 and 1.0 inclusive.
+- reasoning (decision-level): brief.  Hard upper limit of
+  {{DECISION_REASONING_MAX}} characters.  No minimum.
+- thesis (decision-level, optional — null carries the prior thesis
+  forward): hard upper limit of {{DECISION_THESIS_MAX}} characters.
+- decision_tag (decision-level): snake_case label, hard upper limit of
+  40 characters.
 - Off-watchlist tickers are rejected.
 
-## Two worked examples (the rest follow the table above)
+## How to submit your output
 
-OPEN (currently flat, opening at 0.05):
-{{"ticker": "XYZ", "preferred_weight": 0.05, "conviction": 0.7,
-"rationale": "Strong fundamentals, bullish technical setup",
-"horizon": "swing", "target_price": 215.0, "stop_price": 180.0,
-"catalyst": "earnings beat expected next week",
-"close_reason": null, "trim_reason": null}}
+Emit ONE JSON object with this exact top-level shape — nothing else:
 
-CLOSE (held at 0.05, exiting to 0.0):
-{{"ticker": "XYZ", "preferred_weight": 0.0, "conviction": 0.7,
-"rationale": "Thesis invalidated by guidance cut",
-"horizon": null, "target_price": null, "stop_price": null,
-"catalyst": null,
-"close_reason": "guidance cut invalidates thesis",
-"trim_reason": null}}
+{{
+  "stances": [ ... one stance per ticker you are acting on ... ],
+  "decision_tag": "snake_case_label",
+  "reasoning": "One short paragraph on the tick as a whole.",
+  "thesis": null,
+  "confidence": 0.7
+}}
 
-REJECTED — DO NOT EMIT (this exact shape is the most common decision-killer):
-{{"ticker": "XYZ", "preferred_weight": 0.1, "conviction": 0.7,
-"rationale": "Strong setup",
-"horizon": null, "target_price": null, "stop_price": null,
-"catalyst": null, "close_reason": null, "trim_reason": null}}
-↑ preferred_weight > 0 with null horizon/target_price/stop_price triggers
-"Stance for XYZ proposes a non-zero weight (0.1) but is missing required
-lifecycle hint fields: ['horizon', 'target_price', 'stop_price']" and aborts
-the whole decision.  If you are opening, you must commit to a horizon,
-a target, and a stop — full stop.
+Keep every text field short.  One sentence is usually enough; two if
+needed.  Do NOT pad, repeat yourself, or restate the field's other
+values inside its text.  Stop writing as soon as the point is made.
+
+Worked example — complete output for a 2-ticker tick (one open, one hold):
+
+{{
+  "stances": [
+    {{
+      "ticker": "XYZ", "intent": "open", "weight": 0.05,
+      "horizon": "swing", "target_price": 215.0, "stop_price": 180.0,
+      "catalyst": "earnings beat expected next week",
+      "rationale": "Strong fundamentals and bullish technical setup."
+    }},
+    {{
+      "ticker": "ABC", "intent": "hold",
+      "reason": "Thesis intact; no material change since open."
+    }}
+  ],
+  "decision_tag": "ai_momentum_add",
+  "reasoning": "Adding XYZ on AI catalyst; ABC carries forward on unchanged thesis.",
+  "thesis": null,
+  "confidence": 0.7
+}}
 """
 
 # Build-time substitution of the cap markers.  ``str.replace`` is used rather
 # than ``.format`` so that the runtime ``{...}`` placeholders are not touched.
+# Note: ``{{STANCE_CLOSE_REASON_MAX}}`` and ``{{STANCE_TRIM_REASON_MAX}}``
+# have been removed — the new prompt unifies both under ``{{STANCE_RATIONALE_MAX}}``,
+# since ``reason`` is now the single free-text verb-conditional field.
 STRATEGIST_INSTRUCTION = (
     _RAW_INSTRUCTION
     .replace("{{DECISION_REASONING_MAX}}",  str(_DECISION.reasoning_max_chars))
     .replace("{{DECISION_THESIS_MAX}}",     str(_DECISION.thesis_max_chars))
+    # ``rationale`` cap also governs ``reason`` (both schema-enforced).
     .replace("{{STANCE_RATIONALE_MAX}}",    str(_STANCE.rationale_max_chars))
     .replace("{{STANCE_CATALYST_MAX}}",     str(_STANCE.catalyst_max_chars))
-    .replace("{{STANCE_CLOSE_REASON_MAX}}", str(_STANCE.close_reason_max_chars))
-    .replace("{{STANCE_TRIM_REASON_MAX}}",  str(_STANCE.trim_reason_max_chars))
     # R5 — risk-gate percentages injected from config/risk_gate.json.
     .replace("{{MAX_POSITION_PCT}}",        str(_MAX_POSITION_PCT))
     .replace("{{MAX_DELTA_PCT}}",           str(_MAX_DELTA_PCT))

@@ -31,15 +31,13 @@ from agents.strategist.stance_schema import TickerStance
 def _make_stance(**kwargs) -> TickerStance:
     """Build a minimal valid ``TickerStance`` with sensible defaults.
 
-    The legacy ``preferred_weight`` / ``conviction`` fields are required on
-    the model (not optional) — supply them so we bypass the legacy validator
-    and only trigger the intent-based one.
+    Intent is required on every stance; callers must supply it via kwargs.
+    Additional verb-conditional fields (weight, reason, etc.) are passed
+    through as needed for each test.
     """
 
     defaults = {
-        "ticker":           "AAPL",
-        "preferred_weight": 0.0,
-        "conviction":       0.5,
+        "ticker": "AAPL",
     }
     defaults.update(kwargs)
     return TickerStance(**defaults)
@@ -97,7 +95,7 @@ def test_resolve_broker_call_close_returns_sell_all():
     """``close`` intent must return a SELL descriptor."""
 
     prior = _make_prior_row()
-    stance = _make_stance(intent="close")
+    stance = _make_stance(intent="close", reason="thesis invalidated")
     result = resolve_broker_call(stance, prior_row=prior)
 
     assert result is not None
@@ -267,7 +265,7 @@ def test_apply_stance_close_returns_none_signalling_deletion():
     """``close`` must return ``None`` so the caller drops the ticker."""
 
     prior = _make_prior_row()
-    stance = _make_stance(intent="close")
+    stance = _make_stance(intent="close", reason="thesis invalidated")
 
     result = apply_stance_to_thesis(
         stance,

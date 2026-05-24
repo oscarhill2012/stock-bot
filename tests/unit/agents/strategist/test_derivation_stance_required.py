@@ -1,13 +1,13 @@
 """Chunk 5 — D3 derivation tests for the held-stance post-condition.
 
-Spec B removes the carry-forward block at ``derivation.py:254-271``
-(which padded ``target_weights`` for un-emitted *held* tickers) and
-replaces it with an explicit post-condition: every pre-tick held
-ticker MUST have a matching stance in the strategist's output.
+Spec B removes the carry-forward block that padded ``target_weights`` for
+un-emitted *held* tickers and replaces it with an explicit post-condition:
+every pre-tick held ticker MUST have a matching stance in the strategist's
+output.
 
-Carry-forward for *flat* watchlist tickers (the active-stances model)
-stays in place — flat tickers carry no implicit commitment, so omitting
-them remains legal.
+Carry-forward for *flat* watchlist tickers (the active-stances model) stays
+in place — flat tickers carry no implicit commitment, so omitting them remains
+legal.
 
 This module pins the two halves of the new contract:
   * D3-violation case — a held ticker with no stance raises
@@ -23,7 +23,7 @@ import pytest
 from agents.strategist.derivation import (
     StrategistContractViolation,
     TickContext,
-    derive_legacy_fields,
+    derive_decision_fields,
 )
 from agents.strategist.stance_schema import TickerStance
 
@@ -67,22 +67,20 @@ def test_held_ticker_without_stance_raises_validation_error() -> None:
 
     stances = [
         TickerStance(
-            # Legacy stance (no intent) — we are testing the D3 post-condition
-            # inside derive_legacy_fields, not the intent validator.  MSFT is
-            # flat; the stance merely establishes that derivation ran far enough
-            # to reach Pass 1.5 and encounter the uncovered held ticker.
-            ticker           = "MSFT",
-            preferred_weight = 0.03,
-            conviction       = 0.7,
-            rationale        = "Open on bullish technical setup",
-            horizon          = "swing",
-            target_price     = 450.0,
-            stop_price       = 380.0,
+            # MSFT is flat; the stance merely establishes that derivation ran
+            # far enough to reach Pass 1.5 and encounter the uncovered held ticker.
+            ticker  = "MSFT",
+            intent  = "open",
+            weight  = 0.03,
+            rationale    = "Open on bullish technical setup",
+            horizon      = "swing",
+            target_price = 450.0,
+            stop_price   = 380.0,
         ),
     ]
 
     with pytest.raises(StrategistContractViolation) as excinfo:
-        derive_legacy_fields(
+        derive_decision_fields(
             stances,
             _ctx(
                 current_weights = {"AVGO": 0.05},
@@ -107,23 +105,16 @@ def test_flat_ticker_without_stance_is_ok() -> None:
 
     stances = [
         TickerStance(
-            # ``intent`` is required on TickerStance post Plan 1 Band 3 —
-            # AVGO is held and the rationale articulates a review without
-            # weight change, so "hold" is the honest verb.  Plan 1 Band 3's
-            # verb-conditional validator requires ``reason`` on hold.
-            intent           = "hold",
-            ticker           = "AVGO",
-            preferred_weight = 0.05,
-            conviction       = 0.7,
-            rationale        = "Hold — thesis intact, evidence steady",
-            reason           = "No new evidence; commitments unchanged.",
-            horizon          = "swing",
-            target_price     = 120.0,
-            stop_price       =  90.0,
+            # AVGO is held — the strategist reviews it and decides to hold:
+            # no weight change, thesis intact.  ``intent="hold"`` with
+            # ``reason`` satisfies the verb-conditional validator.
+            intent       = "hold",
+            ticker       = "AVGO",
+            reason       = "No new evidence; commitments unchanged.",
         ),
     ]
 
-    derived = derive_legacy_fields(
+    derived = derive_decision_fields(
         stances,
         _ctx(
             current_weights = {"AVGO": 0.05},
@@ -131,8 +122,8 @@ def test_flat_ticker_without_stance_is_ok() -> None:
         ),
     )
 
-    # Held ticker — its emitted weight is preserved.
-    assert derived.target_weights["AVGO"] == 0.05
+    # Held ticker — its emitted weight falls back to 0.0 (hold carries no weight).
+    assert derived.target_weights["AVGO"] == 0.0
     # Flat tickers — carry-forward pads to 0.0 (their current weight).
     assert derived.target_weights["MSFT"] == 0.0
     assert derived.target_weights["XOM"]  == 0.0

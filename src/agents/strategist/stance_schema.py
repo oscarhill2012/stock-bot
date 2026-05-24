@@ -1,47 +1,60 @@
 """TickerStance — the strategist's per-ticker decision substrate.
 
+**Single canonical form (Band 3).**
+
 The strategist emits one ``TickerStance`` per watchlist ticker on every tick.
-Downstream derivation helpers (``derive_legacy_fields``) read a list of stances
-and produce the flat ``target_weights``, ``close_reasons``, and ``trim_reasons``
-fields that downstream agents expect.  ``new_positions`` was removed in Band 6
-(see module docstring for why).
+Each stance carries an ``intent`` verb and the fields required for that verb;
+there is no legacy dual-form — the old ``preferred_weight`` / ``conviction`` /
+``close_reason`` / ``trim_reason`` fields have been deleted.
+
+``derive_decision_fields`` reads a list of stances and produces the flat
+``target_weights``, ``close_reasons``, and ``trim_reasons`` fields that
+downstream agents expect.
 
 The stance is *not* a trade instruction. It expresses the strategist's desired
 portfolio position and the reasoning behind it. The executor translates that
 desire into actual orders.
 
 Consumers:
-- ``derive_legacy_fields`` (C4) — flattens stances into the legacy output shape
+- ``derive_decision_fields`` (C4) — flattens stances into the canonical output shape
 - ``StrategistDecision`` (C7) — embeds the stance list in the decision payload
 - The after-callback (C9) — validates stances before persisting
 - ``TickerStanceRow`` (C10) — persists each stance to the database
 
-Verb vocabulary (Spec B — Band 3)
-----------------------------------
-The ``intent`` field replaces the implicit ``preferred_weight``-derived action
-for the richer vocabulary.  Full verb set:
+Verb vocabulary (Spec B — Band 3, single canonical form)
+---------------------------------------------------------
+The ``intent`` field is the canonical action verb and is **required** on every
+stance.  Verb-conditional field requirements:
 
     open   — enter flat → held; broker BUY to ``weight``.
+             Required: weight, rationale, horizon, target_price, stop_price.
+             Optional: catalyst.
+
     add    — increase existing position; broker BUY delta to ``weight``.
+             Required: weight.
+             Optional: reason, horizon, target_price, stop_price, catalyst.
+
     trim   — reduce existing position (not to zero); broker SELL delta.
+             Required: weight, reason.
+
     close  — full exit; broker SELL all.
-    hold   — no trade; review fields only.  ``reason`` required.
-    update — no trade; mutate thesis fields only.  ``reason`` + at least
-             one of target_price / stop_price / catalyst / horizon required.
+             Required: reason.
+             Forbidden: weight (use 'trim' for a partial exit).
 
-The legacy ``preferred_weight`` / ``conviction`` / ``close_reason`` /
-``trim_reason`` fields remain on the model for backward compatibility
-with ``derive_legacy_fields`` and the existing test suite.
+    hold   — no trade; review fields only.
+             Required: reason.
+             Forbidden: weight.
 
-``new_positions`` (the pre-computed ``PositionThesis`` for each ``open``
-stance) was removed from the derivation pipeline in Band 6.  The executor
-now assembles it from the fill price + stance via ``apply_stance_to_thesis``.
+    update — no trade; mutate thesis fields only.
+             Required: reason + at least one of
+             target_price / stop_price / catalyst / horizon.
+             Forbidden: weight.
 """
 from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from config.strategist import get_strategist_config
 
@@ -63,227 +76,171 @@ _schema_cap = _cfg.schema_cap                                                  #
 class TickerStance(BaseModel):
     """One stance per watchlist ticker per strategist tick.
 
+    ``intent`` is required on every stance; verb-conditional fields are
+    described in full in the module docstring above.
+
+    ``extra="forbid"`` ensures that stale callers passing deleted fields
+    (``preferred_weight``, ``conviction``, ``close_reason``, ``trim_reason``)
+    receive a loud ``ValidationError`` rather than silent truncation.
+
     Args:
-        ticker: The stock ticker symbol (e.g. ``"AAPL"``).
-        preferred_weight: Target portfolio weight in ``[0.0, 1.0]``.
-            Legacy field — 0.0 signals a full close; values above the risk
-            gate's single-position cap will be clamped downstream.
-        conviction: The strategist's own confidence in this stance,
-            in ``[0.0, 1.0]``. Distinct from analyst ``confidence`` —
-            conviction is the *synthesised* view after weighing all
-            analyst signals, whereas analyst confidence is each analyst's
-            self-reported certainty about their individual signal.
-        intent: Stance verb.  See Spec B §'Stance vocabulary'.  New in
-            Band 3 — replaces the implicit ``preferred_weight``-derived
-            action.  Accepted values: ``open``, ``add``, ``trim``,
-            ``close``, ``hold``, ``update``.
-        weight: Post-stance portfolio weight in ``[0, 1]``.  Required for
-            open/add/trim; ignored for close/hold/update.
-        reason: Required for hold/trim/update — the "what's changed since
-            opening" articulation.  Ignored for open/add/close.
-        rationale: A short human-readable justification for the stance.
-            Required on ``open`` (FROZEN at entry — Invariant 3); ignored
-            on add/trim/close/hold/update.  Also present on legacy stances
-            as a free-text field.
-        horizon: Investment horizon.  Required on ``open`` (seeds the
-            PositionThesis); optional on add/update; ignored on
-            trim/close/hold.
-        target_price: Price target (fundamental upside anchor).  Required
-            on ``open``; optional on add/update.
-        stop_price: Stop-loss level.  Required on ``open``; optional on
-            add/update.
-        catalyst: Optional short description of the expected near-term
-            catalyst.
-        close_reason: Legacy field — why the position is being closed.
-            Distinct from ``trim_reason`` — a close exits the position
-            entirely, whereas a trim just reduces it.
-        trim_reason: Legacy field — why the position size is being reduced
-            but not zeroed.
+        ticker:       The stock ticker symbol (e.g. ``"AAPL"``).
+        intent:       Stance verb — one of open / add / trim / close / hold /
+                      update.  Required on every stance.
+        weight:       Post-stance portfolio weight in ``[0, 1]``.  Required for
+                      open/add/trim; forbidden on close/hold/update.
+        reason:       Required for trim / close / hold / update — articulates
+                      what has changed since the position was opened.
+        rationale:    Required on ``open`` (FROZEN at entry — Invariant 3).
+                      Not used on other verbs.
+        horizon:      Investment horizon.  Required on ``open``; optional on
+                      add/update; not used on trim/close/hold.
+        target_price: Price target (fundamental upside anchor).  Required on
+                      ``open``; optional on add/update.
+        stop_price:   Stop-loss level.  Required on ``open``; optional on
+                      add/update.
+        catalyst:     Optional short description of the expected near-term
+                      catalyst.  Accepted on open/add/update.
     """
+
+    # Forbid extra kwargs — deleted fields (preferred_weight, conviction,
+    # close_reason, trim_reason) will raise ValidationError rather than being
+    # silently ignored.  This catches stale callers immediately.
+    model_config = ConfigDict(extra="forbid")
 
     ticker: str
 
-    # ── Legacy weight/conviction fields (preserved for backward compat) ──────
+    # ── Canonical intent verb (required) ─────────────────────────────────────
 
-    # Target portfolio weight — bounded fraction of total portfolio value.
-    preferred_weight: float = Field(ge=0.0, le=1.0)
-
-    # Synthesised conviction after weighing all analyst signals.
-    conviction: float = Field(ge=0.0, le=1.0)
-
-    # ── Spec B Band 3: new intent enum + verb-conditional fields ─────────────
-
-    intent: Literal["open", "add", "trim", "close", "hold", "update"] | None = Field(
-        None,
-        description="Stance verb.  See Spec B §'Stance vocabulary'.",
+    intent: Literal["open", "add", "trim", "close", "hold", "update"] = Field(
+        description="Stance verb.  See module docstring for verb-conditional rules.",
     )
 
+    # ── Verb-conditional fields ───────────────────────────────────────────────
+    #
+    # **Field order matters** (Band 3 fix, 2026-05-24):
+    #
+    # Pydantic v2 emits JSON Schema ``properties`` in declaration order, and
+    # Vertex's constrained decoder honours that order when generating output.
+    # Previously the long free-text fields (``rationale`` / ``reason``) sat
+    # before the structured commitment fields (``horizon`` / ``target_price``
+    # / ``stop_price``).  The model would write a clean stance head, then
+    # spiral into a repetition attractor inside ``rationale`` (e.g. 7000+
+    # chars of " - - - - "), never reaching the required commitment fields
+    # — so the per-stance ``model_validator`` rejected the stance for
+    # missing ``horizon`` / ``target_price`` / ``stop_price`` despite
+    # ``finish_reason=STOP`` and a syntactically clean JSON wrapper.
+    #
+    # Putting the cheap, well-bounded fields first means the model commits
+    # to them while still on-task, and the prose fields come last where
+    # any decoder spiral cannot strand a required commitment.
+    # ─────────────────────────────────────────────────────────────────────────
+
+    # Target portfolio weight — required on open/add/trim; forbidden on
+    # close/hold/update.  The validator below enforces these constraints.
     weight: float | None = Field(
-        None,
+        default=None,
+        ge=0.0,
+        le=1.0,
         description=(
             "Post-stance portfolio weight in [0, 1].  Required for "
-            "open/add/trim.  Ignored for close/hold/update."
+            "open/add/trim.  Forbidden on close/hold/update."
         ),
     )
 
-    reason: str | None = Field(
-        None,
-        description=(
-            "Required for hold/trim/update — the 'what's changed since "
-            "opening' articulation.  Ignored for open/add/close."
-        ),
-    )
-
-    # Optional lifecycle / context fields (exist on legacy model too).
+    # Open-specific commitment fields (also mutable on add/update).  Emitted
+    # BEFORE the long prose fields below so the model commits to them before
+    # any rationale-spiral can derail the rest of the stance.
     horizon: Literal["intraday", "swing", "long_term"] | None = None
     target_price: float | None = None
-    stop_price: float | None = None
-    catalyst: str | None = Field(default=None, max_length=_schema_cap(_STANCE.catalyst_max_chars))
+    stop_price:   float | None = None
 
-    # Brief justification; kept short to encourage clear thinking.
-    # On legacy stances this is always populated; on new intent-based stances
-    # it is only required on ``open`` (FROZEN at entry per Invariant 3).
-    rationale: str | None = Field(
-        default=None,
-        max_length=_schema_cap(_STANCE.rationale_max_chars),
-        description=(
-            "Required on open (FROZEN at entry — Invariant 3).  "
-            "Ignored on add/trim/close/hold/update."
-        ),
-    )
+    # Optional context field accepted on open/add/update.  Kept near the
+    # structured fields rather than alongside the prose fields for the same
+    # reason — it is short and structured.
+    catalyst: str | None = Field(default=None)
 
-    # ── Legacy reason fields (preserved for backward compat) ─────────────────
+    # ── Free-text prose fields (declared last on purpose) ────────────────────
+    #
+    # ``reason`` and ``rationale`` are the long, unbounded fields where
+    # Vertex's constrained decoder is most prone to repetition spirals.
+    # Declaring them after the structured fields above means a spiral here
+    # can only truncate the stance's own prose — it cannot strand
+    # ``horizon`` / ``target_price`` / ``stop_price`` unwritten.
+    #
+    # max_length intentionally NOT set: Vertex's constrained decoder treats
+    # schema-level maxLength as a fill target and pads strings (verbatim
+    # repetition, hallucinated padding text) toward the cap.  The prompt
+    # tells the model the upper bound in words; we trust the model to
+    # honour it.
 
-    # close_reason: full exit (preferred_weight == 0.0).
-    # trim_reason:  partial reduction (preferred_weight > 0.0 but lower than current).
-    close_reason: str | None = Field(default=None, max_length=_schema_cap(_STANCE.close_reason_max_chars))
-    trim_reason:  str | None = Field(default=None, max_length=_schema_cap(_STANCE.trim_reason_max_chars))
+    # Narrative for hold/trim/close/update — "what has changed since open".
+    reason: str | None = Field(default=None)
 
-    # ── Non-zero position contract (legacy validator) ─────────────────────────
-    # Any stance proposing a non-zero portfolio weight (opens AND adds) must
-    # carry the lifecycle hint fields the executor / memory writer need to
-    # populate ``PositionThesis``: ``horizon``, ``target_price``, and
-    # ``stop_price``.  Enforced here at the schema level so a malformed LLM
-    # output fails ADK's ``output_schema`` parse rather than reaching the
-    # strategist's after-callback as a silent partial decision.  The earlier
-    # ``return _reprompt(...)`` path in the after-callback did not actually
-    # re-prompt the LLM — see the strategist-callback bug fix.
-    @model_validator(mode="after")
-    def _require_lifecycle_hints_on_nonzero(self) -> TickerStance:
-        """Reject any stance with ``preferred_weight > 0`` and missing exit discipline.
+    # Brief justification — required on ``open``; not used on other verbs.
+    rationale: str | None = Field(default=None)
 
-        A non-zero weight commits capital, so the strategist must always
-        articulate the price target it expects to reach (``target_price``),
-        the stop-loss level beyond which the thesis is invalidated
-        (``stop_price``), and the holding horizon (``horizon``).  Holds and
-        full closes (``preferred_weight == 0``) are exempt — those stances
-        carry no exit discipline of their own.
-
-        Note: this validator only fires when the legacy ``preferred_weight``
-        field is present and non-zero.  Intent-based stances (``intent``
-        field set) are validated by ``_require_intent_fields`` instead.
-
-        Raises:
-            ValueError: if any required field is missing on a non-zero
-                legacy stance.  Aggregated into a single message so the LLM
-                sees every missing field at once on the re-prompt.
-        """
-
-        # Skip if this is a new intent-based stance — the other validator handles it.
-        if self.intent is not None:
-            return self
-
-        if self.preferred_weight <= 0.0:
-
-            # Zero-weight stances (full close / hold-flat) have no exit
-            # discipline of their own — close_reason / trim_reason are
-            # validated elsewhere where current portfolio weights are known.
-            return self
-
-        missing: list[str] = [
-
-            name
-            for name, value in (
-                ("horizon",      self.horizon),
-                ("target_price", self.target_price),
-                ("stop_price",   self.stop_price),
-                # ``rationale`` is also required on non-zero legacy stances so
-                # ``derive_legacy_fields`` can construct a valid PositionThesis
-                # (whose ``rationale`` field is required).  Omitting it here
-                # used to let the schema pass but fail later at derivation.
-                ("rationale",    self.rationale),
-            )
-            if value is None
-        ]
-
-        if missing:
-
-            raise ValueError(
-                f"Stance for {self.ticker} proposes a non-zero weight "
-                f"({self.preferred_weight}) but is missing required lifecycle "
-                f"hint fields: {missing}.  Any non-zero stance must include "
-                f"horizon, target_price, and stop_price so the executor and "
-                f"memory writer can populate PositionThesis correctly."
-            )
-
-        return self
+    # ── Verb-conditional validator ────────────────────────────────────────────
 
     @model_validator(mode="after")
     def _require_intent_fields(self) -> TickerStance:
-        """Validate verb-conditional field requirements when ``intent`` is set.
+        """Enforce the verb-conditional field contract from the End-state table.
 
-        Each verb in the Spec B stance vocabulary has a set of required fields.
-        This validator enforces those rules at schema parse time so a malformed
-        LLM output fails early with a clear message rather than silently
-        propagating a partial stance to the executor.
+        Each verb in the Spec B stance vocabulary has a set of required and
+        forbidden fields.  This validator fires at schema parse time so a
+        malformed LLM output fails early with a descriptive message rather than
+        silently producing a partial stance that reaches the executor.
 
-        Verb rules (Spec B §'Validation rules'):
-            open:   weight, target_price, stop_price, catalyst, horizon,
-                    rationale all required.
-            add:    weight required.
-            trim:   weight + reason required.
-            close:  no additional required fields beyond ticker + intent.
-            hold:   reason required.
-            update: reason + at least one of target_price / stop_price /
-                    catalyst / horizon required.
+        End-state contract (single canonical form — Band 3):
+
+            open   → require weight (> 0), rationale, horizon,
+                     target_price, stop_price.  catalyst optional.
+            add    → require weight.  Other fields optional updates.
+            trim   → require weight, reason.
+            close  → require reason.  weight forbidden.
+            hold   → require reason.  weight forbidden.
+            update → require reason AND at least one of
+                     target_price / stop_price / horizon / catalyst.
+                     weight forbidden.
 
         Raises:
-            ValueError: describing the violated rule and, where applicable,
-                suggesting the alternative verb.
+            ValueError: describing the violated rule with suggestions where
+                applicable.  Multiple violations are aggregated so the LLM
+                sees all missing fields at once on the re-prompt.
         """
-
-        # Only applies when the new intent field is present.
-        if self.intent is None:
-            return self
 
         match self.intent:
 
             case "open":
                 # ``open`` seeds a new PositionThesis — all commitment fields
-                # are required to populate the row with complete data.
+                # are required.  catalyst is optional (useful but not blocking).
+                # weight must be > 0 — a zero-weight open is meaningless.
                 missing = [
                     name for name, value in (
                         ("weight",       self.weight),
+                        ("rationale",    self.rationale),
+                        ("horizon",      self.horizon),
                         ("target_price", self.target_price),
                         ("stop_price",   self.stop_price),
-                        ("catalyst",     self.catalyst),
-                        ("horizon",      self.horizon),
-                        ("rationale",    self.rationale),
                     )
                     if value is None
                 ]
+
+                # weight=0.0 passes the None check above but is not a valid open.
+                if self.weight is not None and self.weight <= 0.0:
+                    missing.append("weight (must be > 0.0)")
+
                 if missing:
                     raise ValueError(
                         f"Stance for {self.ticker!r} has intent='open' but is missing "
-                        f"required fields: {missing}.  All of weight, target_price, "
-                        f"stop_price, catalyst, horizon, rationale are required on "
-                        f"open (they seed the PositionThesis row)."
+                        f"required fields: {missing}.  All of weight (> 0), rationale, "
+                        f"horizon, target_price, stop_price are required on open — "
+                        f"they seed the PositionThesis row."
                     )
 
             case "add":
                 # ``add`` increases an existing position — only weight is
-                # strictly required; commitment fields are optional (they
-                # mutate the existing PositionThesis if supplied).
+                # strictly required; thesis fields are optional updates.
                 if self.weight is None:
                     raise ValueError(
                         f"Stance for {self.ticker!r} has intent='add' but weight is "
@@ -292,8 +249,8 @@ class TickerStance(BaseModel):
                     )
 
             case "trim":
-                # ``trim`` reduces but does not close — weight anchors the
-                # new target size and reason articulates what changed.
+                # ``trim`` reduces but does not close — weight anchors the new
+                # target size; reason articulates what changed.
                 missing = [
                     name for name, value in (
                         ("weight", self.weight),
@@ -305,33 +262,63 @@ class TickerStance(BaseModel):
                     raise ValueError(
                         f"Stance for {self.ticker!r} has intent='trim' but is missing "
                         f"required fields: {missing}.  Did you mean 'close' (no weight "
-                        f"needed) or 'hold' (no weight change, but reason still required)?"
+                        f"needed) or 'hold' (no weight change, reason still required)?"
                     )
 
             case "close":
-                # ``close`` exits fully — no extra required fields; the
-                # executor sells the entire position.
-                pass
+                # ``close`` exits fully — no size change, so weight is
+                # meaningless and forbidden.  reason documents why.
+                #
+                # We forbid weight entirely rather than silently accepting 0.0
+                # because 0.0 creates ambiguity ("did the LLM mean close or
+                # hold-flat?").  See Plan 3 'Out of scope' footnote.
+                errors: list[str] = []
+                if self.reason is None:
+                    errors.append(
+                        "reason is required on close to document why the "
+                        "position is being exited"
+                    )
+                if self.weight is not None:
+                    errors.append(
+                        "weight must not be set on close — use intent='trim' "
+                        "for a partial exit"
+                    )
+                if errors:
+                    raise ValueError(
+                        f"Stance for {self.ticker!r} has intent='close' but: "
+                        + "; ".join(errors)
+                    )
 
             case "hold":
-                # ``hold`` is a no-trade review — reason articulates what
-                # changed (or didn't) since opening.
+                # ``hold`` is a no-trade review — reason articulates what has
+                # changed (or not) since opening.  weight is forbidden.
+                errors = []
                 if self.reason is None:
+                    errors.append(
+                        "reason is required on hold to articulate what has "
+                        "changed since the position was opened"
+                    )
+                if self.weight is not None:
+                    errors.append(
+                        "weight must not be set on hold — a hold carries no "
+                        "size change; use 'add' or 'trim' to resize"
+                    )
+                if errors:
                     raise ValueError(
-                        f"Stance for {self.ticker!r} has intent='hold' but reason is "
-                        f"missing.  reason is required on hold to articulate what has "
-                        f"changed since the position was opened."
+                        f"Stance for {self.ticker!r} has intent='hold' but: "
+                        + "; ".join(errors)
                     )
 
             case "update":
-                # ``update`` mutates thesis fields with no trade — reason is
-                # required, plus at least one field to actually update.
-                errors: list[str] = []
+                # ``update`` mutates thesis fields with no trade.  reason is
+                # required; at least one field to actually update is required;
+                # weight is forbidden (no trade = no sizing change).
+                errors = []
 
                 if self.reason is None:
                     errors.append(
-                        "reason is missing — reason is required on update to "
-                        "articulate why the thesis parameters are changing"
+                        "reason is required on update to articulate why the "
+                        "thesis parameters are changing"
                     )
 
                 # Require at least one of the mutable commitment fields.
@@ -348,6 +335,12 @@ class TickerStance(BaseModel):
                         "at least one of target_price / stop_price / catalyst / "
                         "horizon must be supplied so the update has something to "
                         "mutate — did you mean 'hold' (no thesis fields changing)?"
+                    )
+
+                if self.weight is not None:
+                    errors.append(
+                        "weight must not be set on update — no trade occurs; "
+                        "use 'add' or 'trim' to change position size"
                     )
 
                 if errors:

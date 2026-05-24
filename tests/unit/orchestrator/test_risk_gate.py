@@ -94,11 +94,9 @@ async def test_risk_gate_passes_hold_through_unchanged():
     """
 
     hold_stance = TickerStance(
-        ticker           = "MSFT",
-        preferred_weight = 0.0,
-        conviction       = 0.5,
-        intent           = "hold",
-        reason           = "No new information",
+        ticker = "MSFT",
+        intent = "hold",
+        reason = "No new information",
     )
     decision = _decision_with_stances([hold_stance])
 
@@ -129,12 +127,10 @@ async def test_risk_gate_passes_update_through_unchanged():
     """``update`` stances must not be touched by the clamping logic."""
 
     update_stance = TickerStance(
-        ticker           = "NVDA",
-        preferred_weight = 0.0,
-        conviction       = 0.5,
-        intent           = "update",
-        reason           = "Raising target after earnings beat",
-        target_price     = 1100.0,
+        ticker       = "NVDA",
+        intent       = "update",
+        reason       = "Raising target after earnings beat",
+        target_price = 1100.0,
     )
     decision = _decision_with_stances([update_stance])
 
@@ -170,16 +166,14 @@ async def test_risk_gate_caps_open_at_max_position_weight():
     overweight = MAX_POSITION_WEIGHT + 0.15
 
     open_stance = TickerStance(
-        ticker           = "AAPL",
-        preferred_weight = overweight,
-        conviction       = 0.8,
-        intent           = "open",
-        weight           = overweight,
-        target_price     = 220.0,
-        stop_price       = 180.0,
-        catalyst         = "iPhone supercycle",
-        horizon          = "swing",
-        rationale        = "Strong product cycle",
+        ticker       = "AAPL",
+        intent       = "open",
+        weight       = overweight,
+        target_price = 220.0,
+        stop_price   = 180.0,
+        catalyst     = "iPhone supercycle",
+        horizon      = "swing",
+        rationale    = "Strong product cycle",
     )
     decision = _decision_with_stances([open_stance])
     # Also put the weight in target_weights so the risk gate sees it.
@@ -214,11 +208,9 @@ async def test_risk_gate_caps_add_at_max_delta_per_ticker():
     requested_weight = current_weight + MAX_DELTA_PER_TICKER + 0.10
 
     add_stance = TickerStance(
-        ticker           = "TSLA",
-        preferred_weight = requested_weight,
-        conviction       = 0.7,
-        intent           = "add",
-        weight           = requested_weight,
+        ticker = "TSLA",
+        intent = "add",
+        weight = requested_weight,
     )
 
     # Build a fake broker that reports TSLA held at current_weight.

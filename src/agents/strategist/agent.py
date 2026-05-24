@@ -1,4 +1,4 @@
-"""Strategist v2 LlmAgent — emits per-ticker TickerStance, derives legacy fields server-side."""
+"""Strategist v2 LlmAgent — emits per-ticker TickerStance, derives decision fields server-side."""
 from __future__ import annotations
 
 import logging
@@ -10,11 +10,10 @@ from google.genai import types as genai_types
 from agents.strategist.derivation import (
     StrategistContractViolation,
     TickContext,
-    derive_legacy_fields,
+    derive_decision_fields,
 )
-from agents.strategist.lifecycle import derive_lifecycle_action
 from agents.strategist.prompts import STRATEGIST_INSTRUCTION
-from agents.strategist.schema import StrategistDecision
+from agents.strategist.schema import StrategistDecision, StrategistLLMDecision
 from broker.portfolio import Portfolio
 from data.timeguard import resolve_as_of
 from observability.terminal_log import emit_analyst_summary
@@ -51,7 +50,7 @@ def _coerce_portfolio(value: Portfolio | dict | None) -> Portfolio:
 
 def _log_offending_decision(
     tick_id: str,
-    decision: StrategistDecision,
+    decision: StrategistDecision | StrategistLLMDecision,
     violation: str,
 ) -> None:
     """Emit a structured error log capturing the strategist's offending output.
@@ -86,15 +85,12 @@ def _log_offending_decision(
 def _strategist_validation_callback(
     callback_context: CallbackContext,
 ) -> genai_types.Content | None:
-    """Validate per-ticker stances; on success, derive legacy fields and write back.
+    """Validate per-ticker stances; on success, derive decision fields and write back.
 
     Runs the cross-stance checks that the schema can't express on its own
-    (no off-watchlist tickers, and lifecycle-specific reason fields that
-    depend on the current portfolio).  Per-stance discipline (non-zero
-    stances must carry horizon/target_price/stop_price) is enforced at the
-    schema level by ``TickerStance._require_lifecycle_hints_on_nonzero`` —
-    failures there raise during ADK's ``output_schema`` parse and never
-    reach this callback.
+    (off-watchlist tickers; intent=None on any stance).  Verb-conditional
+    reason checks (close/trim must supply a reason) are delegated to
+    ``derive_decision_fields`` which raises loudly on violation.
 
     Active-stances contract (from the 2026-05-21 simplification):
 
@@ -105,8 +101,7 @@ def _strategist_validation_callback(
         (held → keep holding, flat → stay flat).  Derivation pads
         ``target_weights`` accordingly so downstream agents still see an
         exhaustive dict.  This callback therefore does NOT enforce
-        exhaustiveness — only that whatever IS emitted is on-watchlist and
-        carries the required lifecycle reasons.
+        exhaustiveness — only that whatever IS emitted is on-watchlist.
 
     Why every failure raises rather than returning Content:
 
@@ -130,19 +125,33 @@ def _strategist_validation_callback(
 
     Raises:
         StrategistContractViolation: when the decision violates a
-            watchlist-level contract (off-watchlist tickers, or missing
-            close_reason/trim_reason for the lifecycle action implied by
-            current vs preferred weight).
+            watchlist-level contract (off-watchlist tickers, intent=None,
+            or missing reason on close/trim).
     """
     state = callback_context.state
     raw = state.get("strategist_decision")
     if not raw:
         return None
 
-    # Deserialise if the decision arrived as a JSON dict (post-serialisation path).
-    decision = (
-        StrategistDecision.model_validate(raw) if isinstance(raw, dict) else raw
-    )
+    # The LLM now emits the narrow ``StrategistLLMDecision`` shape; the full
+    # ``StrategistDecision`` (with derived dicts) is constructed below.  Accept
+    # either form here so test fixtures and replays that hand-craft full
+    # decisions still parse — ``StrategistLLMDecision`` is a strict prefix of
+    # ``StrategistDecision``, so any dict that validates as the full shape will
+    # also validate as the narrow one (Pydantic ignores extras by default).
+    if isinstance(raw, dict):
+        llm_decision = StrategistLLMDecision.model_validate(raw)
+    elif isinstance(raw, StrategistDecision):
+        # Replay path — extract the LLM-emitted subset.
+        llm_decision = StrategistLLMDecision(
+            stances      = raw.stances,
+            decision_tag = raw.decision_tag,
+            reasoning    = raw.reasoning,
+            thesis       = raw.thesis,
+            confidence   = raw.confidence,
+        )
+    else:
+        llm_decision = raw                                                     # already StrategistLLMDecision
 
     tickers: list[str] = state.get("tickers", []) or []
     portfolio = _coerce_portfolio(state.get("portfolio"))
@@ -152,9 +161,9 @@ def _strategist_validation_callback(
     # ── Pass 1: No off-watchlist tickers ─────────────────────────────────────
     # Prevents the model from inventing tickers not in the current watchlist.
     # No exhaustiveness check — omission is read as an implicit hold by
-    # ``derive_legacy_fields`` (active-stances contract); the strategist only
+    # ``derive_decision_fields`` (active-stances contract); the strategist only
     # emits stances for the tickers it wants to *change*.
-    emitted = {s.ticker for s in decision.stances}
+    emitted = {s.ticker for s in llm_decision.stances}
     extras = [t for t in emitted if t not in tickers]
     if extras:
 
@@ -162,54 +171,29 @@ def _strategist_validation_callback(
             f"Strategist included off-watchlist tickers: {extras}.  "
             f"Only emit stances for the watchlist."
         )
-        _log_offending_decision(str(tick_id), decision, msg)
+        _log_offending_decision(str(tick_id), llm_decision, msg)
         raise StrategistContractViolation(msg)
 
-    # ── Pass 2: Lifecycle reason enforcement ─────────────────────────────────
-    # The derived action for each stance is computed from current vs preferred
-    # weight.  Closes and trims need an explicit reason in the audit trail —
-    # these checks live here (not in the schema) because they depend on the
-    # current portfolio state, which the schema validator can't see.
-    #
-    # Non-zero stances missing horizon/target_price/stop_price are caught
-    # earlier by ``TickerStance._require_lifecycle_hints_on_nonzero`` at
-    # schema-validation time.
-    #
-    # We also accumulate the per-action counts here so the success log at the
-    # end of the callback can summarise the tick in one line without a second
-    # pass over the stance list.
+    # ── Pass 2: Intent-based action count tally ──────────────────────────────
+    # Read ``stance.intent`` directly — no more weight-comparison derivation.
+    # Reason-presence checks (close/trim require a reason) are now enforced
+    # inside ``derive_decision_fields`` with a loud raise, so we only need to
+    # tally the per-action counts here for the success summary log below.
     action_counts: dict[str, int] = {
-        "open": 0, "close": 0, "trim": 0, "add": 0, "hold": 0,
+        "open": 0, "close": 0, "trim": 0, "add": 0, "hold": 0, "update": 0,
     }
 
-    for stance in decision.stances:
-        curr = current_weights.get(stance.ticker, 0.0)
-        action = derive_lifecycle_action(curr, stance.preferred_weight)
+    for stance in llm_decision.stances:
+        # Intent-based: read the verb directly rather than inferring it from
+        # current vs preferred weight (the old lifecycle-derived approach).
+        action = stance.intent or "hold"
         action_counts[action] = action_counts.get(action, 0) + 1
 
-        if action == "close" and not stance.close_reason:
-
-            # Full exit requires an explicit close_reason for audit trail.
-            msg = (
-                f"Stance for {stance.ticker} closes a position but is missing "
-                f"close_reason."
-            )
-            _log_offending_decision(str(tick_id), decision, msg)
-            raise StrategistContractViolation(msg)
-
-        if action == "trim" and not stance.trim_reason:
-
-            # Partial reduction requires an explicit trim_reason for audit trail.
-            msg = (
-                f"Stance for {stance.ticker} trims a position but is missing "
-                f"trim_reason."
-            )
-            _log_offending_decision(str(tick_id), decision, msg)
-            raise StrategistContractViolation(msg)
-
-    # ── Pass 3: Derive legacy fields ─────────────────────────────────────────
-    # All validation passed — derive the flat legacy fields from the stances
-    # so downstream consumers (executor, persistence) see the shape they expect.
+    # ── Pass 3: Derive decision fields ───────────────────────────────────────
+    # All validation passed — derive the canonical decision fields from the
+    # stances so downstream consumers (executor, persistence) see the shape
+    # they expect.  Reads intent + weight rather than preferred_weight; raises
+    # loudly if any stance has intent=None (no silent legacy-path fallback).
     #
     # Use state["as_of"] as the derivation timestamp when available (backtest
     # replay path) so PositionThesis.opened_at is deterministic.  Fall back to
@@ -226,15 +210,30 @@ def _strategist_validation_callback(
     )
     ctx = TickContext(
         tick_id=str(tick_id),
-        decision_tag=decision.decision_tag,
+        decision_tag=llm_decision.decision_tag,
         now=derivation_now,
         current_weights=current_weights,
         watchlist=tickers,
     )
-    derived = derive_legacy_fields(decision.stances, ctx)
-    decision.target_weights = derived.target_weights
-    decision.close_reasons = derived.close_reasons
-    decision.trim_reasons = derived.trim_reasons
+
+    # derive_decision_fields reads stance.intent + stance.weight directly.
+    derived = derive_decision_fields(llm_decision.stances, ctx)
+
+    # Construct the full ``StrategistDecision`` that downstream agents
+    # (risk_gate, executor, persistence) consume.  The LLM emits the narrow
+    # ``StrategistLLMDecision``; we join its fields with the derivation output
+    # here.  Single construction site means downstream's contract with
+    # ``StrategistDecision`` stays unchanged from before the two-class split.
+    decision = StrategistDecision(
+        stances        = llm_decision.stances,
+        decision_tag   = llm_decision.decision_tag,
+        reasoning      = llm_decision.reasoning,
+        thesis         = llm_decision.thesis,
+        confidence     = llm_decision.confidence,
+        target_weights = derived.target_weights,
+        close_reasons  = derived.close_reasons,
+        trim_reasons   = derived.trim_reasons,
+    )
 
     # ── Per-tick success summary ─────────────────────────────────────────────
     # One concise INFO line so you can scan a run log and immediately see
@@ -244,14 +243,15 @@ def _strategist_validation_callback(
     # target_weights are still empty post-derivation, this line will say so.
     nonzero_weight_sum = sum(w for w in derived.target_weights.values() if w > 0.0)
     logger.info(
-        "Strategist tick=%s: opens=%d closes=%d trims=%d adds=%d holds=%d "
-        "| nonzero_weight_sum=%.4f decision_tag=%r confidence=%s",
+        "Strategist tick=%s: opens=%d closes=%d trims=%d adds=%d holds=%d updates=%d"
+        " | nonzero_weight_sum=%.4f decision_tag=%r confidence=%s",
         tick_id,
         action_counts["open"],
         action_counts["close"],
         action_counts["trim"],
         action_counts["add"],
         action_counts["hold"],
+        action_counts["update"],
         nonzero_weight_sum,
         decision.decision_tag,
         decision.confidence,
@@ -396,9 +396,92 @@ def build_strategist():
             model=model_name,
         )
 
-    # Chain observability + trace callbacks.
-    before_model = _chain_before(obs_before, trace_before)
-    after_model  = _chain_after(obs_after, trace_after)
+    # ── Local probe (env-gated, off by default) ──────────────────────────────
+    # When STRATEGIST_PROBE_DIR is set, dump rendered prompt, raw response,
+    # and usage_metadata to that directory.  Diagnostic for tracking down
+    # output truncation / verbose-Gemini-budget issues.  Zero-cost when off.
+    probe_before = None
+    probe_after  = None
+
+    probe_dir = os.environ.get("STRATEGIST_PROBE_DIR")
+    if probe_dir:
+        from pathlib import Path
+
+        from observability.trace import _extract_content_text                    # reuse the existing text walker
+
+        _probe_path = Path(probe_dir)
+        _probe_path.mkdir(parents=True, exist_ok=True)
+        _counter = {"n": 0}                                                     # mutable closure state — one prompt/response pair per call
+
+        def _stringify(obj):                                                    # noqa: ANN001, ANN202 — helper closure
+            """Coerce a system_instruction-or-content value to its text.
+
+            Vertex's ``system_instruction`` may arrive as ``str``, ``Content``
+            (with ``.parts``), or ``Part`` directly.  The trace helper only
+            handles the ``Content`` case, so we layer string handling on top.
+            """
+            if obj is None:
+                return ""
+            if isinstance(obj, str):
+                return obj
+            walked = _extract_content_text(obj)
+            if walked:
+                return walked
+            return repr(obj)                                                    # last resort — surfaces unknown shapes for debugging
+
+        def probe_before(callback_context, llm_request):                        # noqa: ANN001 — ADK callback signatures
+            """Dump the full rendered prompt (system + user) plus generation config."""
+            _counter["n"] += 1
+            idx = _counter["n"]
+
+            cfg          = getattr(llm_request, "config", None)
+            system_text  = _stringify(getattr(cfg, "system_instruction", None))
+
+            # Walk contents one-by-one so we can label role + index.
+            chunks: list[str] = []
+            for i, content in enumerate(getattr(llm_request, "contents", None) or []):
+                role = getattr(content, "role", "?")
+                text = _stringify(content)
+                chunks.append(f"## content[{i}] role={role} ({len(text)} chars)\n{text}")
+            user_block = "\n\n".join(chunks) if chunks else "(no contents)"
+
+            # Surface every config field that could plausibly influence
+            # decoding (temperature / top_p / top_k / thinking budget / etc).
+            cfg_dump = "(no config)"
+            if cfg is not None:
+                try:
+                    cfg_dump = cfg.model_dump_json(indent=2, exclude_none=True)
+                except Exception:                                               # noqa: BLE001 — best-effort diagnostic
+                    cfg_dump = repr(cfg)
+
+            payload = (
+                f"# model: {getattr(llm_request, 'model', '?')}\n"
+                f"# config:\n{cfg_dump}\n\n"
+                f"# system_instruction ({len(system_text)} chars)\n{system_text}\n\n"
+                f"# contents:\n{user_block}\n"
+            )
+            (_probe_path / f"call_{idx:02d}_prompt.txt").write_text(payload)
+            return None
+
+        def probe_after(callback_context, llm_response):                        # noqa: ANN001 — ADK callback signatures
+            """Dump raw response text, usage_metadata, and finish_reason."""
+            idx       = _counter["n"]
+            resp_text = _extract_content_text(getattr(llm_response, "content", None))
+            usage     = getattr(llm_response, "usage_metadata", None)
+            finish    = getattr(llm_response, "finish_reason", None)
+            usage_str = repr(usage) if usage else "(no usage_metadata)"
+            payload   = (
+                f"# finish_reason: {finish}\n"
+                f"# usage_metadata: {usage_str}\n"
+                f"# response ({len(resp_text)} chars)\n"
+                f"{resp_text}\n"
+            )
+            (_probe_path / f"call_{idx:02d}_response.txt").write_text(payload)
+            return None
+
+    # Chain observability + trace + probe callbacks.
+    before_model = _chain_before(obs_before, trace_before, probe_before)
+    after_model  = _chain_after(obs_after, trace_after, probe_after)
 
     # The inner LlmAgent — its ``after_agent_callback`` runs the legacy-field
     # derivation + contract validation defined above in this module.  Note:
@@ -410,13 +493,17 @@ def build_strategist():
         name                    = "Strategist",
         model                   = model_name,
         instruction             = STRATEGIST_INSTRUCTION,
-        output_schema           = StrategistDecision,
+        output_schema           = StrategistLLMDecision,
         output_key              = "strategist_decision",
         after_agent_callback    = _strategist_validation_callback,
         before_model_callback   = before_model,
         after_model_callback    = after_model,
         generate_content_config = genai_types.GenerateContentConfig(
-            max_output_tokens = llm_caps.max_output_tokens,
+            max_output_tokens  = llm_caps.max_output_tokens,
+            temperature        = 0.3,                                           # probe: lower temp to discourage rambling / attractor states
+            frequency_penalty  = 0.5,                                           # probe: penalise verbatim token-level repetition
+            presence_penalty   = 0.5,                                           # probe: penalise re-using already-emitted tokens
+            thinking_config    = genai_types.ThinkingConfig(thinking_budget=128), # probe: minimum thinking budget allowed on 2.5-pro
         ),
     )
 

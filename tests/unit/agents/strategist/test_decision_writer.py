@@ -46,11 +46,20 @@ def session(tmp_path):
 def test_writes_one_row_per_stance(session):
     decision = StrategistDecision(
         stances=[
-            TickerStance(ticker="AAPL", preferred_weight=0.08, conviction=0.7,
-                         rationale="open", horizon="swing",
-                         target_price=210.0, stop_price=185.0),
-            TickerStance(ticker="NVDA", preferred_weight=0.0, conviction=0.8,
-                         rationale="exit", close_reason="thesis broken"),
+            TickerStance(
+                ticker="AAPL",
+                intent="open",
+                weight=0.08,
+                rationale="open",
+                horizon="swing",
+                target_price=210.0,
+                stop_price=185.0,
+            ),
+            TickerStance(
+                ticker="NVDA",
+                intent="close",
+                reason="thesis broken",
+            ),
         ],
         target_weights={"AAPL": 0.08, "NVDA": 0.0},
         decision_tag="rotation", reasoning="x", thesis="y", confidence=0.65,
@@ -89,8 +98,7 @@ def test_no_op_without_db_session():
     state = {
         "tick_id": "t",
         "strategist_decision": StrategistDecision(
-            stances=[TickerStance(ticker="AAPL", preferred_weight=0.0,
-                                  conviction=0.5, rationale="hold")],
+            stances=[TickerStance(ticker="AAPL", intent="hold", reason="test hold")],
             target_weights={"AAPL": 0.0},
             decision_tag="x", reasoning="x", thesis="y", confidence=0.5,
         ).model_dump(mode="json"),
@@ -118,9 +126,15 @@ def test_accepts_iso_string_as_of(session):
     iso_as_of = "2026-05-08T14:00:00+00:00"
     decision = StrategistDecision(
         stances=[
-            TickerStance(ticker="AAPL", preferred_weight=0.05, conviction=0.6,
-                         rationale="open", horizon="swing",
-                         target_price=200.0, stop_price=180.0),
+            TickerStance(
+                ticker="AAPL",
+                intent="open",
+                weight=0.05,
+                rationale="open",
+                horizon="swing",
+                target_price=200.0,
+                stop_price=180.0,
+            ),
         ],
         target_weights={"AAPL": 0.05},
         decision_tag="iso_as_of_test", reasoning="x", thesis="y",

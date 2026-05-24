@@ -101,7 +101,6 @@ def test_fresh_deletes_session_sqlite(
     that the original file was deleted — confirmed by the absence of the
     planted rows in the recreated file.
     """
-    import asyncio
     from unittest.mock import MagicMock, patch
 
     from backtest.runner import Runner
@@ -161,15 +160,15 @@ def test_fresh_deletes_session_sqlite(
 
     def _patched_build_strategist():
         from google.adk.agents import LlmAgent, SequentialAgent
+        from google.adk.models import LlmResponse
+        from google.genai import types as genai_types
+
         from agents.strategist.agent import _strategist_validation_callback
         from agents.strategist.context_shim import StrategistContextShim
         from agents.strategist.prompts import STRATEGIST_INSTRUCTION
         from agents.strategist.schema import StrategistDecision
-        from google.adk.models import LlmResponse
-        from google.genai import types as genai_types
 
-        stances = [{"ticker": t, "preferred_weight": 0.0, "conviction": 0.5,
-                    "rationale": "fresh-test stub"} for t in tickers]
+        stances = [{"ticker": t, "intent": "hold", "reason": "fresh-test stub"} for t in tickers]
         decision = {
             "stances": stances, "target_weights": {t: 0.0 for t in tickers},
             "decision_tag": "fresh_test_hold", "reasoning": "stub",
@@ -191,15 +190,17 @@ def test_fresh_deletes_session_sqlite(
         return SequentialAgent(name="StrategistBranch", sub_agents=[StrategistContextShim(), llm])
 
     def _patched_build_analyst_pool(tick_tickers):
+        import json as _json
+
         from google.adk.agents import LlmAgent, ParallelAgent, SequentialAgent
+        from google.adk.models import LlmResponse
+        from google.genai import types as genai_types
+
         from agents.analysts.fundamental.agent import build_fundamental_branch
         from agents.analysts.heuristics import load_heuristics
         from agents.analysts.news.agent import build_news_branch
         from agents.analysts.social.agent import _build_social_analyst
         from agents.analysts.technical.agent import _build_technical_analyst
-        from google.adk.models import LlmResponse
-        from google.genai import types as genai_types
-        import json as _json
 
         h = load_heuristics()
         technical = _build_technical_analyst(h.technical)

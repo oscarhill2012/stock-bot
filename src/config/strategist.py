@@ -91,9 +91,16 @@ class StanceCaps(BaseModel):
     catalyst_max_chars:
         Optional near-term catalyst description.
     close_reason_max_chars:
-        Why the position is being fully closed (``preferred_weight == 0``).
+        DEPRECATED.  Retained as a config field for backwards-compatible
+        ``data.json`` loading only.  Since Spec B Plan 3 (Band 3), the
+        per-stance ``close_reason`` field is gone — ``intent == "close"``
+        stances carry their narrative through ``stance.reason``, which is
+        capped by ``rationale_max_chars``.  Safe to remove once no live
+        config still sets it.
     trim_reason_max_chars:
-        Why the position is being reduced but not fully closed.
+        DEPRECATED.  Same rationale as ``close_reason_max_chars`` — the
+        per-stance ``trim_reason`` field is gone; ``intent == "trim"``
+        stances reuse ``stance.reason``.
     """
 
     rationale_max_chars:    int = Field(ge=50,  le=1000)

@@ -9,9 +9,15 @@ def test_decision_with_stances():
     """StrategistDecision accepts a list of TickerStance objects in the stances field."""
     d = StrategistDecision(
         stances=[
-            TickerStance(ticker="AAPL", preferred_weight=0.08, conviction=0.7,
-                          rationale="open", horizon="swing",
-                          target_price=210.0, stop_price=185.0),
+            TickerStance(
+                ticker="AAPL",
+                intent="open",
+                weight=0.08,
+                rationale="open",
+                horizon="swing",
+                target_price=210.0,
+                stop_price=185.0,
+            ),
         ],
         target_weights={},
         decision_tag="x", reasoning="x", thesis="y",

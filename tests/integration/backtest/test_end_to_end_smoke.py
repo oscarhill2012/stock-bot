@@ -47,7 +47,7 @@ test process.
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -55,8 +55,6 @@ import pytest
 
 from backtest.cache.store import CachedDataStore
 from data.models import CompanyRatios, Filing, NewsArticle, OHLCBar
-from datetime import timedelta
-
 
 # ---------------------------------------------------------------------------
 # Helpers — synthetic LLM response payloads
@@ -85,37 +83,29 @@ def _make_strategist_llm_response(tickers: list[str]):
 
     # Open the first ticker with a small position so the smoke test can assert
     # that user:positions is non-empty after the run.  The remaining tickers
-    # (if any) receive neutral (hold) stances.
+    # (if any) receive hold stances (no trade, weight unchanged).
     #
-    # Note: ``preferred_weight > 0`` is required to trigger an "open" lifecycle
-    # action in ``derive_lifecycle_action`` (current=0, preferred>0 → "open").
-    # Band 6: ``new_positions`` was removed from ``StrategistDecision`` entirely.
-    # The executor now assembles the ``PositionThesis`` from the fill price +
-    # stance using ``apply_stance_to_thesis``.  Do not include it in the payload.
+    # Band 3: preferred_weight / conviction deleted from TickerStance.
+    # The executor reads intent + weight directly.
     first_ticker = tickers[0] if tickers else "AAPL"
     stances = []
     for t in tickers:
         if t == first_ticker:
-            # ``preferred_weight=0.10`` (non-zero) is the trigger for
-            # ``derive_lifecycle_action`` to return "open" (current=0 → new>0).
             stances.append({
-                "ticker":           t,
-                "preferred_weight": 0.10,
-                "conviction":       0.7,
-                "rationale":        "Smoke test open — exercising the full executor path.",
-                "intent":           "open",
-                "weight":           0.10,
-                "horizon":          "swing",
-                "target_price":     170.0,
-                "stop_price":       140.0,
-                "catalyst":         "Smoke-test trigger",
+                "ticker":       t,
+                "intent":       "open",
+                "weight":       0.10,
+                "rationale":    "Smoke test open — exercising the full executor path.",
+                "horizon":      "swing",
+                "target_price": 170.0,
+                "stop_price":   140.0,
+                "catalyst":     "Smoke-test trigger",
             })
         else:
             stances.append({
-                "ticker":          t,
-                "preferred_weight": 0.0,
-                "conviction":       0.5,
-                "rationale":        "Smoke test neutral stance — no real signal.",
+                "ticker": t,
+                "intent": "hold",
+                "reason": "Smoke test neutral stance — no real signal.",
             })
 
     target_weights = {t: (0.10 if t == first_ticker else 0.0) for t in tickers}
@@ -566,7 +556,7 @@ def test_end_to_end_run_produces_full_artefact_tree(
 
     from backtest.providers import _store_handle as _sh
     from backtest.providers import filings_cache as _fc  # noqa: F401 — register
-    from backtest.providers import news_cache as _nc     # noqa: F401 — register
+    from backtest.providers import news_cache as _nc  # noqa: F401 — register
     from data import get_company_filings, get_stock_news
     from data.registry import set_active_provider as _set_p
 
@@ -681,6 +671,7 @@ def test_end_to_end_run_produces_full_artefact_tree(
     # DatabaseSessionService, list sessions for the backtest app_name, and
     # assert the last tick's session carries a non-empty user:positions.
     import asyncio as _asyncio_b5
+
     from google.adk.sessions import DatabaseSessionService as _DSS
 
     _session_sqlite = result.run_dir / "session.sqlite"

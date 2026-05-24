@@ -1,10 +1,10 @@
 """Persist per-ticker stances to ``TickerStanceRow`` after each strategist tick.
 
 The ``StrategistDecisionWriter`` is a lightweight ADK ``BaseAgent`` that reads
-``state["strategist_decision"]`` and ``state["portfolio"]`` from the invocation
-context, derives the lifecycle action for every stance, and calls
-``save_ticker_stance`` once per ticker.  It yields no events — it is a pure
-side-effectful write step wired into the orchestrator pipeline.
+``state["strategist_decision"]`` from the invocation context and calls
+``save_ticker_stance`` once per ticker.  The lifecycle action is read directly
+from ``stance.intent`` — no weight-comparison derivation.  It yields no events
+— it is a pure side-effectful write step wired into the orchestrator pipeline.
 """
 from __future__ import annotations
 
@@ -22,9 +22,9 @@ class StrategistDecisionWriter(BaseAgent):
     """ADK agent that persists per-ticker stances to the ``ticker_stances`` table.
 
     Reads ``state["strategist_decision"]`` (a ``StrategistDecision`` dump or
-    instance) and ``state["portfolio"]`` (a ``Portfolio`` dump, instance, or
-    ``None``) from the invocation context state, then writes one
-    ``TickerStanceRow`` per ticker via ``save_ticker_stance``.
+    instance) from the invocation context state, then writes one
+    ``TickerStanceRow`` per ticker via ``save_ticker_stance``.  The lifecycle
+    action column is populated from ``stance.intent`` directly.
 
     The agent is a no-op (and yields nothing) when either ``db_session`` is
     ``None`` or ``strategist_decision`` is absent/falsy in state.
@@ -58,9 +58,7 @@ class StrategistDecisionWriter(BaseAgent):
 
         # Lazy imports keep the module importable without ADK in test environments
         # and mirror the style used in attribution/writer.py.
-        from agents.strategist.lifecycle import derive_lifecycle_action
         from agents.strategist.schema import StrategistDecision
-        from broker.portfolio import Portfolio
         from orchestrator.persistence import save_ticker_stance
 
         # Accept either an already-validated instance or a raw dict from state.
@@ -68,18 +66,6 @@ class StrategistDecisionWriter(BaseAgent):
             decision = raw_decision
         else:
             decision = StrategistDecision.model_validate(raw_decision)
-
-        # Coerce portfolio: accept instance, raw dict, or absent (default to empty).
-        raw_portfolio = state.get("portfolio")
-        if raw_portfolio is None:
-            portfolio = Portfolio(cash=0.0)
-        elif isinstance(raw_portfolio, Portfolio):
-            portfolio = raw_portfolio
-        else:
-            portfolio = Portfolio.model_validate(raw_portfolio)
-
-        # Current weights map ticker → fraction; missing tickers default to 0.0.
-        current_weights = portfolio.current_weights()
 
         # Timestamp shared across all rows written in this invocation.
         # Prefer state["as_of"] (set by the backtest driver to the historical
@@ -94,8 +80,11 @@ class StrategistDecisionWriter(BaseAgent):
 
         # Loop: one DB row per stance in the decision.
         for stance in decision.stances:
-            curr = current_weights.get(stance.ticker, 0.0)
-            action = derive_lifecycle_action(curr, stance.preferred_weight)
+            # Read intent directly from the stance — no weight-comparison derivation.
+            # Fallback to "hold" only as a safety net; intent=None should have been
+            # rejected upstream by derive_decision_fields, so this branch is unreachable
+            # in production (the derivation already raises on intent=None).
+            action = stance.intent or "hold"
             save_ticker_stance(
                 self.db_session,
                 tick_id=state.get("tick_id", "unknown"),
