@@ -162,12 +162,15 @@ def save_ticker_stance(
             (timezone-aware).
         stance: Dump of a ``TickerStance`` (a dict produced by
             ``TickerStance.model_dump(mode="json")``). Must contain ``ticker``,
-            ``preferred_weight``, ``conviction`` and ``rationale``; remaining
-            lifecycle fields may be missing or ``None``.
-        lifecycle_action: One of ``"open" | "close" | "trim" | "add" | "hold"``
-            — the derived action this stance represents, computed by
-            ``derive_lifecycle_action`` and saved alongside the stance so that
-            downstream analytics can filter without recomputing.
+            ``preferred_weight``, ``conviction`` and ``rationale`` (Band 1 —
+            legacy fields still present on TickerStance; Band 3 will delete them
+            and the DB column rename is user-gated per spec-b-plan-3).
+            Remaining lifecycle fields may be missing or ``None``.
+        lifecycle_action: One of ``"open" | "close" | "trim" | "add" | "hold" | "update"``
+            — the stance intent verb, now sourced from ``stance.intent`` directly
+            (was previously derived via ``derive_lifecycle_action``).  Saved
+            alongside the stance so that downstream analytics can filter without
+            recomputing.
 
     Returns:
         None. The new row is added and flushed but **not** committed; the caller

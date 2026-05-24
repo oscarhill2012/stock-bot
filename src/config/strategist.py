@@ -91,9 +91,12 @@ class StanceCaps(BaseModel):
     catalyst_max_chars:
         Optional near-term catalyst description.
     close_reason_max_chars:
-        Why the position is being fully closed (``preferred_weight == 0``).
+        Why the position is being fully closed (``intent == "close"``).
+        Note: Band 1 routes this through ``stance.reason``; the legacy
+        ``close_reason`` field on ``TickerStance`` is preserved until Band 3.
     trim_reason_max_chars:
-        Why the position is being reduced but not fully closed.
+        Why the position is being reduced but not fully closed (``intent == "trim"``).
+        Note: same as above — routes through ``stance.reason`` from Band 1.
     """
 
     rationale_max_chars:    int = Field(ge=50,  le=1000)
