@@ -146,7 +146,7 @@ def _strategist_validation_callback(
     # ── Pass 1: No off-watchlist tickers ─────────────────────────────────────
     # Prevents the model from inventing tickers not in the current watchlist.
     # No exhaustiveness check — omission is read as an implicit hold by
-    # ``derive_legacy_fields`` (active-stances contract); the strategist only
+    # ``derive_decision_fields`` (active-stances contract); the strategist only
     # emits stances for the tickers it wants to *change*.
     emitted = {s.ticker for s in decision.stances}
     extras = [t for t in emitted if t not in tickers]

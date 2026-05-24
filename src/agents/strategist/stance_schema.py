@@ -1,9 +1,9 @@
 """TickerStance — the strategist's per-ticker decision substrate.
 
 The strategist emits one ``TickerStance`` per watchlist ticker on every tick.
-Downstream derivation helpers (``derive_legacy_fields``) read a list of stances
-and produce the flat ``target_weights``, ``close_reasons``, and ``trim_reasons``
-fields that downstream agents expect.  ``new_positions`` was removed in Band 6
+``derive_decision_fields`` (Band 1) reads a list of stances and produces the
+flat ``target_weights``, ``close_reasons``, and ``trim_reasons`` fields that
+downstream agents expect.  ``new_positions`` was removed in Band 6
 (see module docstring for why).
 
 The stance is *not* a trade instruction. It expresses the strategist's desired
@@ -11,15 +11,14 @@ portfolio position and the reasoning behind it. The executor translates that
 desire into actual orders.
 
 Consumers:
-- ``derive_legacy_fields`` (C4) — flattens stances into the legacy output shape
+- ``derive_decision_fields`` (C4) — flattens stances into the canonical output shape
 - ``StrategistDecision`` (C7) — embeds the stance list in the decision payload
 - The after-callback (C9) — validates stances before persisting
 - ``TickerStanceRow`` (C10) — persists each stance to the database
 
 Verb vocabulary (Spec B — Band 3)
 ----------------------------------
-The ``intent`` field replaces the implicit ``preferred_weight``-derived action
-for the richer vocabulary.  Full verb set:
+The ``intent`` field is the canonical action verb.  Full verb set:
 
     open   — enter flat → held; broker BUY to ``weight``.
     add    — increase existing position; broker BUY delta to ``weight``.
@@ -31,7 +30,8 @@ for the richer vocabulary.  Full verb set:
 
 The legacy ``preferred_weight`` / ``conviction`` / ``close_reason`` /
 ``trim_reason`` fields remain on the model for backward compatibility
-with ``derive_legacy_fields`` and the existing test suite.
+with the existing test suite.  Band 3 will delete them.  ``derive_decision_fields``
+no longer reads ``preferred_weight`` — it reads ``stance.weight`` instead.
 
 ``new_positions`` (the pre-computed ``PositionThesis`` for each ``open``
 stance) was removed from the derivation pipeline in Band 6.  The executor
