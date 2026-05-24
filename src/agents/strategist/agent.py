@@ -1,4 +1,4 @@
-"""Strategist v2 LlmAgent — emits per-ticker TickerStance, derives legacy fields server-side."""
+"""Strategist v2 LlmAgent — emits per-ticker TickerStance, derives decision fields server-side."""
 from __future__ import annotations
 
 import logging
@@ -10,9 +10,8 @@ from google.genai import types as genai_types
 from agents.strategist.derivation import (
     StrategistContractViolation,
     TickContext,
-    derive_legacy_fields,
+    derive_decision_fields,
 )
-from agents.strategist.lifecycle import derive_lifecycle_action
 from agents.strategist.prompts import STRATEGIST_INSTRUCTION
 from agents.strategist.schema import StrategistDecision
 from broker.portfolio import Portfolio
@@ -86,15 +85,12 @@ def _log_offending_decision(
 def _strategist_validation_callback(
     callback_context: CallbackContext,
 ) -> genai_types.Content | None:
-    """Validate per-ticker stances; on success, derive legacy fields and write back.
+    """Validate per-ticker stances; on success, derive decision fields and write back.
 
     Runs the cross-stance checks that the schema can't express on its own
-    (no off-watchlist tickers, and lifecycle-specific reason fields that
-    depend on the current portfolio).  Per-stance discipline (non-zero
-    stances must carry horizon/target_price/stop_price) is enforced at the
-    schema level by ``TickerStance._require_lifecycle_hints_on_nonzero`` —
-    failures there raise during ADK's ``output_schema`` parse and never
-    reach this callback.
+    (off-watchlist tickers; intent=None on any stance).  Verb-conditional
+    reason checks (close/trim must supply a reason) are delegated to
+    ``derive_decision_fields`` which raises loudly on violation.
 
     Active-stances contract (from the 2026-05-21 simplification):
 
@@ -105,8 +101,7 @@ def _strategist_validation_callback(
         (held → keep holding, flat → stay flat).  Derivation pads
         ``target_weights`` accordingly so downstream agents still see an
         exhaustive dict.  This callback therefore does NOT enforce
-        exhaustiveness — only that whatever IS emitted is on-watchlist and
-        carries the required lifecycle reasons.
+        exhaustiveness — only that whatever IS emitted is on-watchlist.
 
     Why every failure raises rather than returning Content:
 
@@ -130,9 +125,8 @@ def _strategist_validation_callback(
 
     Raises:
         StrategistContractViolation: when the decision violates a
-            watchlist-level contract (off-watchlist tickers, or missing
-            close_reason/trim_reason for the lifecycle action implied by
-            current vs preferred weight).
+            watchlist-level contract (off-watchlist tickers, intent=None,
+            or missing reason on close/trim).
     """
     state = callback_context.state
     raw = state.get("strategist_decision")
@@ -165,51 +159,26 @@ def _strategist_validation_callback(
         _log_offending_decision(str(tick_id), decision, msg)
         raise StrategistContractViolation(msg)
 
-    # ── Pass 2: Lifecycle reason enforcement ─────────────────────────────────
-    # The derived action for each stance is computed from current vs preferred
-    # weight.  Closes and trims need an explicit reason in the audit trail —
-    # these checks live here (not in the schema) because they depend on the
-    # current portfolio state, which the schema validator can't see.
-    #
-    # Non-zero stances missing horizon/target_price/stop_price are caught
-    # earlier by ``TickerStance._require_lifecycle_hints_on_nonzero`` at
-    # schema-validation time.
-    #
-    # We also accumulate the per-action counts here so the success log at the
-    # end of the callback can summarise the tick in one line without a second
-    # pass over the stance list.
+    # ── Pass 2: Intent-based action count tally ──────────────────────────────
+    # Read ``stance.intent`` directly — no more weight-comparison derivation.
+    # Reason-presence checks (close/trim require a reason) are now enforced
+    # inside ``derive_decision_fields`` with a loud raise, so we only need to
+    # tally the per-action counts here for the success summary log below.
     action_counts: dict[str, int] = {
-        "open": 0, "close": 0, "trim": 0, "add": 0, "hold": 0,
+        "open": 0, "close": 0, "trim": 0, "add": 0, "hold": 0, "update": 0,
     }
 
     for stance in decision.stances:
-        curr = current_weights.get(stance.ticker, 0.0)
-        action = derive_lifecycle_action(curr, stance.preferred_weight)
+        # Intent-based: read the verb directly rather than inferring it from
+        # current vs preferred weight (the old lifecycle-derived approach).
+        action = stance.intent or "hold"
         action_counts[action] = action_counts.get(action, 0) + 1
 
-        if action == "close" and not stance.close_reason:
-
-            # Full exit requires an explicit close_reason for audit trail.
-            msg = (
-                f"Stance for {stance.ticker} closes a position but is missing "
-                f"close_reason."
-            )
-            _log_offending_decision(str(tick_id), decision, msg)
-            raise StrategistContractViolation(msg)
-
-        if action == "trim" and not stance.trim_reason:
-
-            # Partial reduction requires an explicit trim_reason for audit trail.
-            msg = (
-                f"Stance for {stance.ticker} trims a position but is missing "
-                f"trim_reason."
-            )
-            _log_offending_decision(str(tick_id), decision, msg)
-            raise StrategistContractViolation(msg)
-
-    # ── Pass 3: Derive legacy fields ─────────────────────────────────────────
-    # All validation passed — derive the flat legacy fields from the stances
-    # so downstream consumers (executor, persistence) see the shape they expect.
+    # ── Pass 3: Derive decision fields ───────────────────────────────────────
+    # All validation passed — derive the canonical decision fields from the
+    # stances so downstream consumers (executor, persistence) see the shape
+    # they expect.  Reads intent + weight rather than preferred_weight; raises
+    # loudly if any stance has intent=None (no silent legacy-path fallback).
     #
     # Use state["as_of"] as the derivation timestamp when available (backtest
     # replay path) so PositionThesis.opened_at is deterministic.  Fall back to
@@ -231,7 +200,9 @@ def _strategist_validation_callback(
         current_weights=current_weights,
         watchlist=tickers,
     )
-    derived = derive_legacy_fields(decision.stances, ctx)
+
+    # derive_decision_fields reads stance.intent + stance.weight directly.
+    derived = derive_decision_fields(decision.stances, ctx)
     decision.target_weights = derived.target_weights
     decision.close_reasons = derived.close_reasons
     decision.trim_reasons = derived.trim_reasons
@@ -244,14 +215,15 @@ def _strategist_validation_callback(
     # target_weights are still empty post-derivation, this line will say so.
     nonzero_weight_sum = sum(w for w in derived.target_weights.values() if w > 0.0)
     logger.info(
-        "Strategist tick=%s: opens=%d closes=%d trims=%d adds=%d holds=%d "
-        "| nonzero_weight_sum=%.4f decision_tag=%r confidence=%s",
+        "Strategist tick=%s: opens=%d closes=%d trims=%d adds=%d holds=%d updates=%d"
+        " | nonzero_weight_sum=%.4f decision_tag=%r confidence=%s",
         tick_id,
         action_counts["open"],
         action_counts["close"],
         action_counts["trim"],
         action_counts["add"],
         action_counts["hold"],
+        action_counts["update"],
         nonzero_weight_sum,
         decision.decision_tag,
         decision.confidence,
