@@ -662,3 +662,85 @@ class TestCacheObservabilityComposition:
             if r.name == "stockbot.tick" and r.levelno >= logging.INFO
         ]
         assert len(tick_info) == 0
+
+
+# ---------------------------------------------------------------------------
+# emit_analyst_summary — retries kwarg rendering
+# ---------------------------------------------------------------------------
+
+def test_emit_analyst_summary_no_retries_renders_clean(caplog) -> None:
+    """No retry suffix is rendered when retries is None or empty."""
+
+    import logging
+
+    caplog.set_level(logging.INFO, logger="stockbot.tick")
+
+    emit_analyst_summary(
+        "news",
+        calls         = [{"ticker": "AAPL", "elapsed": 1.0, "prompt_tokens": 1000, "candidate_tokens": 500, "ok": True}],
+        ticker_count  = 1,
+    )
+
+    rows = [r.message for r in caplog.records if "news" in r.message]
+    assert rows, "expected at least one stockbot.tick row mentioning 'news'"
+    assert "retries" not in rows[-1]
+
+
+def test_emit_analyst_summary_renders_retries_suffix(caplog) -> None:
+    """A non-empty retries dict renders a ` · retries <class>×<n>` suffix."""
+
+    import logging
+
+    caplog.set_level(logging.INFO, logger="stockbot.tick")
+
+    emit_analyst_summary(
+        "fundamental",
+        calls         = [{"ticker": "AAPL", "elapsed": 1.0, "prompt_tokens": 1000, "candidate_tokens": 500, "ok": True}],
+        ticker_count  = 1,
+        retries       = {"rate_limit": 2},
+    )
+
+    rows = [r.message for r in caplog.records if "fundamental" in r.message]
+    assert any("retries rate_limit×2" in r for r in rows)
+
+
+def test_emit_analyst_summary_renders_multiple_retry_classes(caplog) -> None:
+    """Multiple non-zero classes all appear in the suffix in fixed order
+    (rate_limit, timeout, schema)."""
+
+    import logging
+
+    caplog.set_level(logging.INFO, logger="stockbot.tick")
+
+    emit_analyst_summary(
+        "strategist",
+        calls         = [{"ticker": "decision", "elapsed": 2.0, "prompt_tokens": 5000, "candidate_tokens": 3000, "ok": True}],
+        ticker_count  = 1,
+        retries       = {"schema": 2, "timeout": 1},      # given out-of-order
+    )
+
+    rows = [r.message for r in caplog.records if "strategist" in r.message]
+    last = rows[-1]
+    # Fixed order: rate_limit then timeout then schema.  rate_limit is zero so it's omitted.
+    assert "retries timeout×1 schema×2" in last
+
+
+def test_emit_analyst_summary_skips_zero_classes(caplog) -> None:
+    """Zero-count classes are omitted from the suffix."""
+
+    import logging
+
+    caplog.set_level(logging.INFO, logger="stockbot.tick")
+
+    emit_analyst_summary(
+        "news",
+        calls         = [{"ticker": "AAPL", "elapsed": 1.0, "prompt_tokens": 1000, "candidate_tokens": 500, "ok": True}],
+        ticker_count  = 1,
+        retries       = {"rate_limit": 0, "timeout": 1, "schema": 0},
+    )
+
+    rows = [r.message for r in caplog.records if "news" in r.message]
+    last = rows[-1]
+    assert "retries timeout×1" in last
+    assert "rate_limit" not in last
+    assert "schema"     not in last
