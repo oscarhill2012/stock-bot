@@ -15,7 +15,6 @@ from pydantic import ValidationError
 
 from agents.strategist.position_thesis import PositionThesis
 
-
 # Path to the frozen V1 wire-shape fixture.  Any new field added to
 # PositionThesis without a default value will break this test — that is
 # the intended gate.

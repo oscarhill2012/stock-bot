@@ -30,7 +30,6 @@ from agents.strategist.prompts import (
 )
 from broker.portfolio import Portfolio
 
-
 pytestmark = pytest.mark.asyncio
 
 

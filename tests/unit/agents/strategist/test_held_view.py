@@ -26,7 +26,6 @@ from agents.strategist.held_view import render_held_positions_view
 from agents.strategist.position_thesis import PositionThesis
 from broker.portfolio import Portfolio, Position
 
-
 # A fixed "current tick" timestamp used as the ``as_of`` argument throughout.
 # Chosen to be 7 days after the fixture's ``opened_at`` so elapsed-time
 # arithmetic in the Evolution block produces a non-zero, human-legible value.

@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from agents.strategist.evidence_view import _format_per_analyst
-from contract.evidence import AnalystEvidence, AnalystReport, AnalystVerdict, ReportDriver
+from contract.evidence import AnalystEvidence, AnalystVerdict
 from contract.ticker_evidence import AggregateVerdict, TickerEvidence
 
 

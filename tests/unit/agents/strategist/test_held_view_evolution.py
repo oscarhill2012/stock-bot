@@ -25,8 +25,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-import pytest
-
 from agents.strategist.held_view import render_held_positions_view
 from agents.strategist.position_thesis import PositionThesis
 from broker.portfolio import Portfolio, Position

@@ -19,8 +19,9 @@ See contract-invariants.md §C-Rule 1 amendment (2026-05-23).
 """
 from __future__ import annotations
 
-import pytest
 from datetime import UTC, datetime
+
+import pytest
 from google.adk import Runner
 from google.adk.sessions import DatabaseSessionService
 from google.genai import types as genai_types

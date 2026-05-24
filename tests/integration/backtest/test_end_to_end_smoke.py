@@ -47,7 +47,7 @@ test process.
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -55,8 +55,6 @@ import pytest
 
 from backtest.cache.store import CachedDataStore
 from data.models import CompanyRatios, Filing, NewsArticle, OHLCBar
-from datetime import timedelta
-
 
 # ---------------------------------------------------------------------------
 # Helpers — synthetic LLM response payloads
@@ -558,7 +556,7 @@ def test_end_to_end_run_produces_full_artefact_tree(
 
     from backtest.providers import _store_handle as _sh
     from backtest.providers import filings_cache as _fc  # noqa: F401 — register
-    from backtest.providers import news_cache as _nc     # noqa: F401 — register
+    from backtest.providers import news_cache as _nc  # noqa: F401 — register
     from data import get_company_filings, get_stock_news
     from data.registry import set_active_provider as _set_p
 
@@ -673,6 +671,7 @@ def test_end_to_end_run_produces_full_artefact_tree(
     # DatabaseSessionService, list sessions for the backtest app_name, and
     # assert the last tick's session carries a non-empty user:positions.
     import asyncio as _asyncio_b5
+
     from google.adk.sessions import DatabaseSessionService as _DSS
 
     _session_sqlite = result.run_dir / "session.sqlite"
