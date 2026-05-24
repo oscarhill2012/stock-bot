@@ -48,7 +48,7 @@ if _RISK.cash_floor_weight <= 0.0:
 else:
     _CASH_FLOOR_STANZA = (
         f"- Watchlist weight sum capped at "
-        f"{100 - _CASH_FLOOR_PCT}% (Cash reserve ≥{_CASH_FLOOR_PCT}%)."
+        f"{100 - _CASH_FLOOR_PCT} percent (Cash reserve at least {_CASH_FLOOR_PCT} percent)."
     )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -134,12 +134,12 @@ WILL reject your response if the field is missing — these are not suggestions.
 
 | Intent | What it means                           | Required fields                            | Optional fields                                      |
 |--------|-----------------------------------------|--------------------------------------------|------------------------------------------------------|
-| open   | enter a flat ticker (current weight 0)  | weight, rationale, horizon, target_price, stop_price | catalyst                                   |
+| open   | enter a flat ticker (current weight 0)  | weight, horizon, target_price, stop_price, rationale | catalyst                                   |
 | add    | grow an existing position               | weight, reason                             | horizon, target_price, stop_price, catalyst (updates)|
 | trim   | reduce an existing position (not to 0)  | weight, reason                             | —                                                    |
 | close  | exit an existing position completely    | reason                                     | —                                                    |
 | hold   | no trade — review only                  | reason                                     | —                                                    |
-| update | no trade — revise the thesis            | reason + ≥1 of target_price/stop_price/horizon/catalyst | the remaining of those four              |
+| update | no trade — revise the thesis            | reason plus one or more of target_price / stop_price / horizon / catalyst | the remaining of those four              |
 
 A missing required field is the most common decision-killer.  If you cannot
 fill every required field for the verb you've picked, pick a different verb
@@ -147,38 +147,69 @@ fill every required field for the verb you've picked, pick a different verb
 
 ### Field constraints (schema-enforced)
 
-- weight: float in (0, 1].  Required on open/add/trim; omit (null) on
-  close/hold/update — emitting a number on those verbs is rejected.
-  Risk gate clamps: single-ticker ≤{{MAX_POSITION_PCT}}%, per-tick delta
-  ≤{{MAX_DELTA_PCT}}%, total turnover ≤{{MAX_TURNOVER_PCT}}%.
+- weight: float greater than 0 and at most 1.  Required on open/add/trim;
+  omit (null) on close/hold/update — emitting a number on those verbs is
+  rejected.  Risk gate clamps: single-ticker at most {{MAX_POSITION_PCT}}
+  percent, per-tick delta at most {{MAX_DELTA_PCT}} percent, total turnover
+  at most {{MAX_TURNOVER_PCT}} percent.
   {{CASH_FLOOR_STANZA}}
 - horizon: one of "intraday", "swing", "long_term".
 - target_price / stop_price: floats.  target_price is where your thesis
   pays off; stop_price is where it's invalidated.
-- rationale: 1–3 sentences, ≤{{STANCE_RATIONALE_MAX}} chars (hard cap).
-  FROZEN at open — you cannot revise it later.  Treat the cap as a
-  paragraph budget, not a target.
-- reason: 1–3 sentences, ≤{{STANCE_RATIONALE_MAX}} chars (hard cap, same
-  budget as rationale).
-- catalyst: a single phrase or sentence, ≤{{STANCE_CATALYST_MAX}} chars.
-- confidence (decision-level): float in [0.0, 1.0].
-- reasoning (decision-level): ≤{{DECISION_REASONING_MAX}} chars.
+- rationale: as brief as you like — one short sentence is fine.  There is
+  NO minimum length.  Hard upper limit of {{STANCE_RATIONALE_MAX}}
+  characters.  Do not pad; do not repeat yourself.  FROZEN at open — you
+  cannot revise it later.
+- reason: as brief as you like — one short sentence is fine.  There is
+  NO minimum length.  Hard upper limit of {{STANCE_RATIONALE_MAX}}
+  characters.  Do not pad.
+- catalyst: a single phrase or short sentence.  Hard upper limit of
+  {{STANCE_CATALYST_MAX}} characters.
+- confidence (decision-level): float between 0.0 and 1.0 inclusive.
+- reasoning (decision-level): brief.  Hard upper limit of
+  {{DECISION_REASONING_MAX}} characters.  No minimum.
 - thesis (decision-level, optional — null carries the prior thesis
-  forward): ≤{{DECISION_THESIS_MAX}} chars.
-- decision_tag (decision-level): snake_case label, ≤40 chars.
+  forward): hard upper limit of {{DECISION_THESIS_MAX}} characters.
+- decision_tag (decision-level): snake_case label, hard upper limit of
+  40 characters.
 - Off-watchlist tickers are rejected.
 
-## Two worked examples
+## How to submit your output
 
-OPEN (currently flat, opening at 0.05):
-{{"ticker": "XYZ", "intent": "open", "weight": 0.05,
-"rationale": "Strong fundamentals, bullish technical setup",
-"horizon": "swing", "target_price": 215.0, "stop_price": 180.0,
-"catalyst": "earnings beat expected next week"}}
+Emit ONE JSON object with this exact top-level shape — nothing else:
 
-CLOSE (held at 0.05, exiting):
-{{"ticker": "XYZ", "intent": "close",
-"reason": "guidance cut invalidates thesis"}}
+{{
+  "stances": [ ... one stance per ticker you are acting on ... ],
+  "decision_tag": "snake_case_label",
+  "reasoning": "One short paragraph on the tick as a whole.",
+  "thesis": null,
+  "confidence": 0.7
+}}
+
+Keep every text field short.  One sentence is usually enough; two if
+needed.  Do NOT pad, repeat yourself, or restate the field's other
+values inside its text.  Stop writing as soon as the point is made.
+
+Worked example — complete output for a 2-ticker tick (one open, one hold):
+
+{{
+  "stances": [
+    {{
+      "ticker": "XYZ", "intent": "open", "weight": 0.05,
+      "horizon": "swing", "target_price": 215.0, "stop_price": 180.0,
+      "catalyst": "earnings beat expected next week",
+      "rationale": "Strong fundamentals and bullish technical setup."
+    }},
+    {{
+      "ticker": "ABC", "intent": "hold",
+      "reason": "Thesis intact; no material change since open."
+    }}
+  ],
+  "decision_tag": "ai_momentum_add",
+  "reasoning": "Adding XYZ on AI catalyst; ABC carries forward on unchanged thesis.",
+  "thesis": null,
+  "confidence": 0.7
+}}
 """
 
 # Build-time substitution of the cap markers.  ``str.replace`` is used rather

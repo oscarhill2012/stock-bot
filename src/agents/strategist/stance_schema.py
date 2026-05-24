@@ -117,6 +117,24 @@ class TickerStance(BaseModel):
     )
 
     # ── Verb-conditional fields ───────────────────────────────────────────────
+    #
+    # **Field order matters** (Band 3 fix, 2026-05-24):
+    #
+    # Pydantic v2 emits JSON Schema ``properties`` in declaration order, and
+    # Vertex's constrained decoder honours that order when generating output.
+    # Previously the long free-text fields (``rationale`` / ``reason``) sat
+    # before the structured commitment fields (``horizon`` / ``target_price``
+    # / ``stop_price``).  The model would write a clean stance head, then
+    # spiral into a repetition attractor inside ``rationale`` (e.g. 7000+
+    # chars of " - - - - "), never reaching the required commitment fields
+    # — so the per-stance ``model_validator`` rejected the stance for
+    # missing ``horizon`` / ``target_price`` / ``stop_price`` despite
+    # ``finish_reason=STOP`` and a syntactically clean JSON wrapper.
+    #
+    # Putting the cheap, well-bounded fields first means the model commits
+    # to them while still on-task, and the prose fields come last where
+    # any decoder spiral cannot strand a required commitment.
+    # ─────────────────────────────────────────────────────────────────────────
 
     # Target portfolio weight — required on open/add/trim; forbidden on
     # close/hold/update.  The validator below enforces these constraints.
@@ -130,40 +148,37 @@ class TickerStance(BaseModel):
         ),
     )
 
-    # Narrative for hold/trim/close/update — "what has changed since open".
-    # Capped at ``rationale_max_chars`` because the field carries the same
-    # paragraph-sized narrative on every verb that uses it; no operational
-    # reason to make it tighter than the open-rationale budget.
-    reason: str | None = Field(
-        default=None,
-        max_length=_schema_cap(_STANCE.rationale_max_chars),
-        description=(
-            "Required for trim / close / hold / update — articulates "
-            "what has changed since the position was opened."
-        ),
-    )
-
-    # Open-specific commitment fields (also mutable on add/update).
+    # Open-specific commitment fields (also mutable on add/update).  Emitted
+    # BEFORE the long prose fields below so the model commits to them before
+    # any rationale-spiral can derail the rest of the stance.
     horizon: Literal["intraday", "swing", "long_term"] | None = None
     target_price: float | None = None
     stop_price:   float | None = None
 
-    # Optional context fields accepted on open/add/update.
-    catalyst: str | None = Field(
-        default=None,
-        max_length=_schema_cap(_STANCE.catalyst_max_chars),
-    )
+    # Optional context field accepted on open/add/update.  Kept near the
+    # structured fields rather than alongside the prose fields for the same
+    # reason — it is short and structured.
+    catalyst: str | None = Field(default=None)
 
-    # Brief justification — required on ``open`` (FROZEN at entry per
-    # Invariant 3); not used on other verbs.
-    rationale: str | None = Field(
-        default=None,
-        max_length=_schema_cap(_STANCE.rationale_max_chars),
-        description=(
-            "Required on open (FROZEN at entry — Invariant 3).  "
-            "Not used on add/trim/close/hold/update."
-        ),
-    )
+    # ── Free-text prose fields (declared last on purpose) ────────────────────
+    #
+    # ``reason`` and ``rationale`` are the long, unbounded fields where
+    # Vertex's constrained decoder is most prone to repetition spirals.
+    # Declaring them after the structured fields above means a spiral here
+    # can only truncate the stance's own prose — it cannot strand
+    # ``horizon`` / ``target_price`` / ``stop_price`` unwritten.
+    #
+    # max_length intentionally NOT set: Vertex's constrained decoder treats
+    # schema-level maxLength as a fill target and pads strings (verbatim
+    # repetition, hallucinated padding text) toward the cap.  The prompt
+    # tells the model the upper bound in words; we trust the model to
+    # honour it.
+
+    # Narrative for hold/trim/close/update — "what has changed since open".
+    reason: str | None = Field(default=None)
+
+    # Brief justification — required on ``open``; not used on other verbs.
+    rationale: str | None = Field(default=None)
 
     # ── Verb-conditional validator ────────────────────────────────────────────
 

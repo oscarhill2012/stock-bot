@@ -68,12 +68,53 @@ class PositionThesis(BaseModel):
     opened_tick_id: str = ""                                                                   # tick_id that opened this position; populated by the executor on BUY (C13); empty for legacy/pre-tick positions
 
 
-class StrategistDecision(BaseModel):
-    """Output from one Strategist LLM call.
+class StrategistLLMDecision(BaseModel):
+    """Narrow schema the LLM is asked to emit — derived fields excluded.
 
-    The LLM emits ``stances`` (per-ticker).  The after-callback fills in
-    ``target_weights`` / ``close_reasons`` / ``trim_reasons`` by deriving them
-    from the stances so downstream consumers see an exhaustive dict.
+    Two-class split (introduced after the 2026-05-24 degenerate-decoding
+    investigation): the LLM's ``response_schema`` must be a narrow shape that
+    matches what the prompt actually instructs the model to produce.  The
+    previous monolithic ``StrategistDecision`` exposed
+    ``target_weights`` / ``close_reasons`` / ``trim_reasons`` to the model via
+    the JSON Schema even though those fields are filled in by the after-callback
+    — the prompt never mentioned them, so the model was constrained to emit
+    three top-level fields with zero guidance.  That ambiguity correlated with
+    repetition-attractor failures during structured-output decoding (responses
+    starting clean then dropping into ``\\n\\n\\n`` or ``"I am. I am."`` loops).
+
+    Field rationale:
+        stances:      The substantive per-ticker output.
+        decision_tag: Snake_case label naming this tick's decision.
+        reasoning:    Overall narrative for the tick.
+        confidence:   Float [0,1] over the whole decision.
+        thesis:       Optional standing-thesis update (null = carry forward).
+
+    All other downstream fields live on ``StrategistDecision`` and are
+    constructed by the strategist's after-callback once the model output has
+    been parsed and the derivation pass has run.
+    """
+
+    stances: list[TickerStance] = Field(default_factory=list)
+
+    # decision_tag, reasoning, thesis: max_length intentionally NOT set —
+    # Vertex's constrained decoder pads string fields toward schema-level
+    # maxLength.  The prompt states the upper bound in words; trust the
+    # model to honour it.
+    decision_tag: str
+    reasoning: str
+
+    thesis: str | None = None
+
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
+class StrategistDecision(BaseModel):
+    """Full strategist output — LLM-emitted fields plus derived dicts.
+
+    The LLM emits a ``StrategistLLMDecision`` (the narrow shape above).  The
+    after-callback runs ``derive_decision_fields`` on the stance list and
+    constructs this richer object, which is what downstream agents
+    (``risk_gate``, executor, persistence, decision_logger) consume.
 
     ``new_positions`` was removed in Band 6.  The executor now assembles the
     ``PositionThesis`` for each ``open`` stance itself from the fill price +
