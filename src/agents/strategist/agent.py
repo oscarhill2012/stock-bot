@@ -330,14 +330,21 @@ def build_strategist():
     # docstring for why.  The retry budgets (timeout_retries, schema_retries)
     # come from the same strategist.llm config section as the token budget.
     wrapped_llm = RetryingAgentWrapper(
-        name            = "StrategistLlmRetrying",
-        inner           = llm,
-        timeout_seconds = llm_caps.timeout_seconds,
-        policies        = build_retry_policies(
+        name                   = "StrategistLlmRetrying",
+        inner                  = llm,
+        timeout_seconds        = llm_caps.timeout_seconds,
+        policies               = build_retry_policies(
             timeout_retries = llm_caps.timeout_retries,
             schema_retries  = llm_caps.schema_retries,
         ),
-        retry_state_key = "temp:_obs_strategist_retries",
+        retry_state_key        = "temp:_obs_strategist_retries",
+        # Pipe Pydantic ValidationError text back to the LLM via the
+        # ``{temp:_last_schema_error}`` placeholder in the strategist
+        # instruction.  The empty default is seeded by
+        # :class:`StrategistContextShim` so the first attempt's template
+        # substitution still resolves; the wrapper overwrites this slot
+        # before each schema retry so the model sees what it got wrong.
+        schema_error_state_key = "temp:_last_schema_error",
     )
 
     return SequentialAgent(

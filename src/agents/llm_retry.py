@@ -182,6 +182,134 @@ def _is_schema_error(exc: BaseException) -> bool:
     return False
 
 
+def _find_validation_error(exc: BaseException) -> BaseException | None:
+    """Walk the ``__cause__`` chain to find the underlying Pydantic
+    ``ValidationError`` instance — the one that actually carries the
+    structured ``.errors()`` payload.
+
+    ADK may re-raise a ``ValidationError`` wrapped via ``raise X from ve``,
+    so the schema-error predicate already tolerates the cause chain.  This
+    helper exists so the retry wrapper can format the *original* error for
+    feedback to the LLM, not the wrapper exception.
+
+    Parameters
+    ----------
+    exc:
+        The exception classified as a schema error by :func:`_is_schema_error`.
+
+    Returns
+    -------
+    BaseException | None
+        The Pydantic ``ValidationError`` instance if found, else ``None``
+        (defensive — should not happen when ``_is_schema_error`` returned True).
+    """
+
+    try:
+        from pydantic import ValidationError
+
+    except ImportError:
+        return None
+
+    if isinstance(exc, ValidationError):
+        return exc
+
+    cause = exc.__cause__
+
+    if cause is not None and cause is not exc:
+        return _find_validation_error(cause)
+
+    return None
+
+
+def _format_schema_error_for_llm(exc: BaseException) -> str:
+    """Render a schema validation error as a compact, LLM-readable message.
+
+    The Pydantic ``__str__`` includes ``input_value`` dumps, the ``type=``
+    discriminator, and a ``pydantic.dev`` URL — none of which help the LLM
+    correct its output.  We extract just the human-readable ``msg`` and
+    ``loc`` from each error so the model sees the actual rule it broke.
+
+    Parameters
+    ----------
+    exc:
+        Any exception in the schema-error class.  Usually a Pydantic
+        ``ValidationError`` directly; may be wrapped via ``raise X from ve``.
+
+    Returns
+    -------
+    str
+        A markdown stanza ready to drop into the next prompt under a
+        ``## Schema validator feedback`` header.  Falls back to ``str(exc)``
+        if the underlying ``ValidationError`` cannot be located or if
+        ``.errors()`` fails for any reason.
+    """
+
+    ve = _find_validation_error(exc)
+
+    # Common preamble — framed as a hard correction directive so the
+    # model treats this as a system override on the next attempt, not as
+    # commentary it can dismiss.  Wording matters less than position
+    # (this stanza is injected at the very top of the prompt by the
+    # strategist template), but the imperative tone is what tips a
+    # stubborn retry into actually changing its output.
+    header = (
+        "## ⚠️ CORRECTION REQUIRED — your previous response was rejected\n\n"
+        "The JSON you emitted on the previous attempt failed the output-schema "
+        "validator and was discarded.  You are now being re-prompted.  Read "
+        "the validator's complaints below and emit a NEW response that fixes "
+        "every one of them.  Do NOT re-emit the same shape — if you do, this "
+        "attempt will be rejected as well.\n"
+    )
+
+    if ve is None:
+        return (
+            header
+            + "\nValidator output:\n\n"
+            + f"    {exc!s}\n\n"
+            + "End of correction directive — the rest of this prompt is the "
+              "normal task definition.  Apply the correction above to your "
+              "next response.\n"
+        )
+
+    try:
+        error_lines: list[str] = []
+
+        # Each entry is a dict with ``loc`` (tuple of path components),
+        # ``msg`` (human-readable rule), and ``type``.  ``msg`` carries
+        # the most actionable text (it contains our custom validator
+        # messages from stance_schema's _require_intent_fields).
+        for err in ve.errors():
+            loc = ".".join(str(part) for part in err.get("loc", ()))
+            msg = err.get("msg", "(no message)")
+
+            # Pydantic prefixes custom ValueError messages with
+            # "Value error, " — strip the prefix for readability.
+            if msg.startswith("Value error, "):
+                msg = msg[len("Value error, "):]
+
+            # ``loc`` is empty for root-level (model-wide) validators
+            # like ``@model_validator(mode="after")``; suppress the
+            # empty-backticks prefix so the bullet reads cleanly.
+            if loc:
+                error_lines.append(f"- ``{loc}``: {msg}")
+            else:
+                error_lines.append(f"- {msg}")
+
+        joined = "\n".join(error_lines) if error_lines else f"- {ve!s}"
+
+    except Exception:                                                              # noqa: BLE001 — last-resort fallback for malformed errors
+        joined = f"- {ve!s}"
+
+    return (
+        header
+        + "\nValidator complaints (fix every one):\n\n"
+        + f"{joined}\n\n"
+        + "End of correction directive — the rest of this prompt is the "
+          "normal task definition.  Apply the correction above to your "
+          "next response.\n"
+    )
+
+
 def _classify(exc: BaseException) -> str | None:
     """Top-level retry classifier — dispatches to the per-class predicates.
 
@@ -529,21 +657,23 @@ class RetryingAgentWrapper(BaseAgent):
         the per-tick retry suffix on the analyst summary rows.
     """
 
-    inner:           Any
-    timeout_seconds: float
-    policies:        dict[str, RetryPolicy]
-    retry_state_key: str
+    inner:                  Any
+    timeout_seconds:        float
+    policies:               dict[str, RetryPolicy]
+    retry_state_key:        str
+    schema_error_state_key: str | None = None
 
     model_config = {"arbitrary_types_allowed": True}
 
     def __init__(
         self,
         *,
-        name:            str | None = None,
-        inner:           Any,
-        timeout_seconds: float,
-        policies:        dict[str, RetryPolicy],
-        retry_state_key: str,
+        name:                   str | None = None,
+        inner:                  Any,
+        timeout_seconds:        float,
+        policies:               dict[str, RetryPolicy],
+        retry_state_key:        str,
+        schema_error_state_key: str | None = None,
     ) -> None:
         """Initialise the wrapper.
 
@@ -563,6 +693,17 @@ class RetryingAgentWrapper(BaseAgent):
             to compose.
         retry_state_key:
             Session-state key for the per-tick retry-counter accumulator.
+        schema_error_state_key:
+            Optional session-state key into which the wrapper writes the
+            formatted Pydantic ``ValidationError`` text **before** the
+            next schema-class retry attempt.  When the inner agent's
+            instruction template references that key as a ``{temp:...}``
+            placeholder, the LLM sees the validator's complaint on the
+            re-prompt and can self-correct.  ``None`` (the default)
+            preserves the legacy "reroll the dice" retry behaviour —
+            callers must seed the state key with an empty default
+            elsewhere (e.g. in a context shim) so the first attempt's
+            template substitution still resolves.
         """
 
         # Derive a meaningful wrapper name from the inner agent if the
@@ -572,11 +713,12 @@ class RetryingAgentWrapper(BaseAgent):
         # Pass every field through super().__init__() so Pydantic sets
         # them via its normal validated path.
         super().__init__(
-            name            = resolved_name,
-            inner           = inner,
-            timeout_seconds = timeout_seconds,
-            policies        = policies,
-            retry_state_key = retry_state_key,
+            name                   = resolved_name,
+            inner                  = inner,
+            timeout_seconds        = timeout_seconds,
+            policies               = policies,
+            retry_state_key        = retry_state_key,
+            schema_error_state_key = schema_error_state_key,
         )
 
     async def _run_async_impl(
@@ -666,6 +808,29 @@ class RetryingAgentWrapper(BaseAgent):
                 if remaining[cls] <= 0:
                     _log_exhausted(self.inner.name, cls, exc, self.policies, remaining)
                     raise
+
+                # Before the next attempt fires, hand the LLM a structured
+                # description of what it got wrong on this attempt — but
+                # only on the schema class, and only when the caller wired
+                # a feedback slot via ``schema_error_state_key``.  This
+                # turns schema retries from "reroll the dice" into actual
+                # error recovery: the inner LlmAgent re-renders its
+                # instruction on the next ``run_async`` call, and the
+                # template substitutes the freshly-written feedback into
+                # the prompt.  Other retry classes (rate_limit, timeout)
+                # are not the model's fault, so we do not pollute the
+                # prompt with feedback for them.
+                if cls == "schema" and self.schema_error_state_key is not None:
+                    feedback = _format_schema_error_for_llm(exc)
+                    yield Event(
+                        author  = self.name,
+                        content = None,
+                        actions = EventActions(
+                            state_delta = {
+                                self.schema_error_state_key: feedback,
+                            },
+                        ),
+                    )
 
                 _log_retry(self.inner.name, cls, exc, remaining)
 

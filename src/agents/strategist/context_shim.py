@@ -230,5 +230,12 @@ class StrategistContextShim(BaseAgent):
                 # LlmAgent call.  Written here (not as a seed) so the value
                 # is always fresh from the user-scoped namespace.
                 "thesis":                       thesis,
+                # Schema-error feedback slot — empty on the first attempt;
+                # the RetryingAgentWrapper overwrites it with the formatted
+                # Pydantic validation error before each schema retry so the
+                # LLM sees what it got wrong on the previous turn.  The
+                # prompt template renders the placeholder verbatim; an empty
+                # string yields a blank line that LLMs ignore.
+                "temp:_last_schema_error":      "",
             }),
         )

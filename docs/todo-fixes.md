@@ -1414,6 +1414,97 @@ fate alongside the other deployment plumbing.
 
 ---
 
+#### 5.3 — Investigate weight-based vs value-based portfolio accounting (MED — before live)
+
+**Goal.**  Decide whether the portfolio layer should continue tracking
+positions as **weights** (fractions of total NAV) or move to **shares +
+cost basis** as the primitive, with weights derived on demand.  Today's
+weight-first model compounds floating-point error on every multiply /
+divide / sum that crosses the tick boundary; a share-quantity primitive
+would round only at the broker edge.
+
+**Non-goals.**
+
+- Do **not** rewrite the broker layer as part of this item — first
+  decide whether weights or shares are the right primitive, then size
+  the migration.
+- Do **not** raise ``ORDER_EPSILON`` to "patch over" specific
+  symptoms — that's the workaround in
+  ``src/agents/strategist/derivation.py:314-322`` and it's correct
+  *given* a weight-first design.  The question here is whether the
+  design itself is right.
+
+**Current state — symptom log so far.**
+
+- 2026-05-25 backtest abort on AMD: ``FakeBroker`` reported a
+  ``quantity=3.552713678800501e-15`` (i.e. ``2 ** -48``-ish) residue on
+  a position the strategist had just fully closed.  At
+  ``last_price=$157`` this is a sub-femtocent dollar value, but the
+  weight derivation in ``src/broker/`` and the strategist's
+  ``ctx.current_weights`` consumer in
+  ``src/agents/strategist/derivation.py:314`` both saw it as a
+  *positive* weight under strict ``> 0.0`` comparison.  That tripped
+  ``StrategistContractViolation`` because the shim's ``user:positions``
+  view (thesis-registry) had already removed AMD, so the prompt's
+  mode header said "4 held positions" while derivation counted 5.
+- The fix landed on 2026-05-25 was a one-line change to filter by
+  ``ORDER_EPSILON`` (1e-6) in derivation — see the inline comment at
+  ``src/agents/strategist/derivation.py:308-322``.  It aligns the two
+  layers but does not address the underlying numeric drift: the
+  ``FakeBroker`` should have zeroed the quantity exactly when closing
+  the position, and the fact that it did not is symptomatic of the
+  multiplication chain in weight-based execution.
+
+**Key questions for the investigation (not the spec yet).**
+
+- **Where does the dust originate?**  Walk the trade path: strategist
+  emits ``target_weight`` → risk gate clamps → executor translates to
+  shares.  Is the float quantity coming from a ``target_value /
+  price`` step inside ``src/broker/`` or
+  ``src/agents/executor/agent.py``?  If yes, switching the executor to
+  emit exact ``shares: int`` (or fractional shares as a quantised
+  ``Decimal``) is the surgical move.
+- **What does Trading 212 actually accept?**  The live broker takes
+  share quantities, not portfolio weights.  Any weight ↔ share
+  translation has to happen somewhere; the question is whether that
+  happens once at the executor edge or repeatedly through the
+  pipeline.
+- **Is ``Decimal`` warranted?**  Money + share quantities are the
+  canonical "do not use float" use cases.  Backtest could stay float
+  for performance; live should arguably use ``Decimal`` end-to-end.
+  Mixed-mode introduces its own edge cases — the spec must decide.
+- **How wide is the blast radius?**  ``portfolio.current_weights()``
+  is consumed by the strategist prompt, the risk gate, derivation,
+  the snapshot writer, and the reporting layer.  If shares become the
+  primitive, each of those derives weights on the fly — cheap, but
+  every call site needs an audit.
+- **Compounding scenarios.**  Over a 60-tick backtest, does the dust
+  grow?  Stay constant?  Cancel out?  Worth running a probe before
+  any redesign — if the dust is bounded by machine-epsilon and never
+  compounds, the ``ORDER_EPSILON`` filter is structurally sufficient
+  and this item closes as "investigated; no further action".
+
+**Effort.**  One investigation phase (probe + decision) before any
+fix is sized.  If the answer is "shares + Decimal at the executor",
+that is medium-to-large — touches broker, executor, and every
+``current_weights()`` consumer.
+
+**Trigger.**  Before paper-or-live deployment.  Pre-live is the
+moment this matters — backtest can run on the ``ORDER_EPSILON``
+filter without consequence, but a real Trading 212 account will
+reject share orders that don't round to the broker's lot size, and
+silent rounding accumulation against real money is exactly the
+"silent failures" class
+(``memory/feedback_silent_failures_loud_tests.md``).
+
+**Origin.**  2026-05-25 — backtest abort during full-window run;
+user flag: *"fine for now but will bite in live"*.  Logged here
+rather than chased immediately because the surgical filter unblocks
+the backtest and the deeper question deserves an empirical look at
+how dust behaves across long runs.
+
+---
+
 ## Backlog items to remove
 
 These five backlog entries are fully captured above and can be removed from

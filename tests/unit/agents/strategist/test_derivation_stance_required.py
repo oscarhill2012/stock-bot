@@ -95,6 +95,61 @@ def test_held_ticker_without_stance_raises_validation_error() -> None:
     assert "Held position(s)" in str(excinfo.value)
 
 
+def test_dust_position_below_order_epsilon_is_treated_as_flat() -> None:
+    """A position whose weight is below ``ORDER_EPSILON`` is *flat*, not held.
+
+    Regression test for the 2026-05-25 backtest abort on AMD: the broker
+    fully closed AMD but left a 3.55e-15 share residue, producing a
+    sub-epsilon positive weight.  Strict ``> 0.0`` classified AMD as
+    held, while the shim's thesis-registry view (``user:positions``)
+    already considered it closed and produced a mode header of "4 held
+    positions" rather than 5.  The LLM emitted four stances; derivation
+    then raised ``StrategistContractViolation`` for the missing AMD
+    stance.
+
+    The fix aligns derivation with the shim by filtering out any
+    position whose weight is below the canonical ``ORDER_EPSILON``
+    threshold (1e-6) — the same threshold the rest of derivation
+    already uses for prior/new-zero arithmetic.
+
+    See also ``docs/todo-fixes.md`` §5.3 — the deeper question is
+    whether weight-based portfolio maths is the right primitive at all
+    when share-level dust can accumulate this kind of floating-point
+    rounding.
+    """
+
+    # No stance for AMD — the LLM has no reason to emit one because the
+    # shim's "4 held positions" header excluded it.  Derivation must
+    # agree (dust is operationally flat) rather than reject.
+    stances = [
+        TickerStance(
+            intent = "hold",
+            ticker = "AVGO",
+            reason = "Position intact; no new evidence.",
+        ),
+    ]
+
+    derived = derive_decision_fields(
+        stances,
+        _ctx(
+            current_weights = {
+                "AVGO": 0.05,
+                # Sub-epsilon dust quantity — the exact value observed in
+                # the 2026-05-25 backtest probe was 3.55e-15 shares; the
+                # corresponding weight is well below ORDER_EPSILON (1e-6).
+                "AMD":  1e-12,
+            },
+            watchlist       = ["AVGO", "AMD", "MSFT"],
+        ),
+    )
+
+    # Derivation must succeed (no StrategistContractViolation raised) and
+    # the dust ticker must not appear with a held-style weight.  Carry-
+    # forward pads it to 0.0 like any other flat watchlist ticker.
+    assert derived.target_weights["AMD"]  == 0.0
+    assert derived.target_weights["AVGO"] == 0.0
+
+
 def test_flat_ticker_without_stance_is_ok() -> None:
     """Omitting a flat watchlist ticker is the active-stances model — legal.
 

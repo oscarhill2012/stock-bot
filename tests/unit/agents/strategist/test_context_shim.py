@@ -79,6 +79,9 @@ def test_shim_yields_one_event_with_temp_prefixed_keys(populated_state: dict) ->
         "temp:ticker_evidence_objects",
         # Spec B Band 2: shim bridges user:thesis → thesis for the prompt placeholder.
         "thesis",
+        # Seeded empty so the RetryingAgentWrapper's schema-error feedback
+        # slot resolves on the first attempt (overwritten on schema retry).
+        "temp:_last_schema_error",
     }
     assert set(delta.keys()) == expected_keys, (
         f"state_delta keys mismatch: {set(delta.keys())} vs {expected_keys}"

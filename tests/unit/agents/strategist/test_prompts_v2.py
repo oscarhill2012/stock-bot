@@ -129,6 +129,10 @@ def test_template_renders_with_all_required_slots():
         .replace("{temp:strategist_mode}",     "Cold start — your portfolio is empty.")
         .replace("{temp:held_positions_view}", "(No held positions — portfolio is flat.)")
         .replace("{temp:ticker_evidence}",     "AAPL\n  Aggregate: bullish (magnitude 0.42)")
+        # Schema-retry feedback slot — empty on first attempt; populated by
+        # the RetryingAgentWrapper before each schema retry.  Substitute as
+        # an empty string here so .format() does not stumble on the colon.
+        .replace("{temp:_last_schema_error}",  "")
     )
     rendered = template.format(
         portfolio="cash=100, positions={}",

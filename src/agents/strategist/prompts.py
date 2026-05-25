@@ -80,7 +80,16 @@ INCREMENTAL_MODE_TEMPLATE: str = (
 # Raw template — uses ``{{NAME}}`` markers for the build-time cap substitution
 # below so that runtime ``{portfolio}``/``{tickers}`` placeholders survive
 # untouched for ADK's ``.format()`` pass.
+#
+# The ``{temp:_last_schema_error}`` placeholder sits at the very top of the
+# prompt by design.  On the first attempt it resolves to an empty string and
+# adds nothing.  On a schema-retry attempt the ``RetryingAgentWrapper`` has
+# written a full correction directive into that key, and it becomes the first
+# thing the model reads — placement matters more than wording when steering a
+# model away from a repeated failure mode, so we put the correction *before*
+# the role framing rather than buried mid-prompt next to "OUTPUT CONTRACT".
 _RAW_INSTRUCTION = """
+{temp:_last_schema_error}
 You are the portfolio strategist for an algorithmic trading bot. You decide a
 per-ticker stance for the next trading hour.
 
@@ -145,6 +154,16 @@ WILL reject your response if the field is missing — these are not suggestions.
 A missing required field is the most common decision-killer.  If you cannot
 fill every required field for the verb you've picked, pick a different verb
 (e.g. ``hold`` to pass on a trade you cannot fully thesize this tick).
+
+**Choosing between ``hold`` and ``update``** — both are no-trade verbs, but
+they are NOT interchangeable.  Use ``update`` ONLY when you are actually
+changing at least one of ``target_price`` / ``stop_price`` / ``horizon`` /
+``catalyst`` this tick.  If your view has shifted but you are not changing
+any of those four numeric/structured fields, the correct verb is ``hold``
+(put the shift in the ``reason`` field).  An ``update`` with no field
+changes is rejected by the schema — there is nothing for the executor to
+mutate, so it is semantically identical to ``hold`` and must be emitted as
+``hold``.
 
 ### Field constraints (schema-enforced)
 

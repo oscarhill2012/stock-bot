@@ -32,6 +32,7 @@ from agents.llm_retry import (
     build_retry_policies,
     _classify,
     _compute_exp_jitter,
+    _format_schema_error_for_llm,
     _is_rate_limit,
     _is_schema_error,
     _is_timeout,
@@ -743,3 +744,161 @@ async def test_retry_exhausted_log_carries_inner_agent_name(caplog) -> None:
     exhausted = [r for r in caplog.records if getattr(r, "kind", None) == "llm_retry_exhausted"]
     assert len(exhausted) == 1
     assert exhausted[0].agent == "TestAnalyst"
+
+
+# ---------------------------------------------------------------------------
+# Schema-error feedback path
+# ---------------------------------------------------------------------------
+
+
+def test_format_schema_error_extracts_msg_and_strips_pydantic_prefix() -> None:
+    """``_format_schema_error_for_llm`` should render the validator's
+    human-readable ``msg`` text and strip Pydantic's ``Value error, ``
+    discriminator so the LLM sees just the actionable rule.
+    """
+
+    ve = _make_validation_error()
+    rendered = _format_schema_error_for_llm(ve)
+
+    # Header and the underlying msg are present.  The header was strengthened
+    # from "Schema validator feedback" to a hard "CORRECTION REQUIRED" directive
+    # when the placeholder moved to the top of the strategist prompt — the
+    # imperative tone steers stubborn retries that ignored the gentler wording.
+    assert "CORRECTION REQUIRED" in rendered
+    assert "Input should be a valid string" in rendered
+
+    # The Pydantic-internal ``[type=...]`` discriminator and the docs URL
+    # must NOT leak into the prompt (they are noise for the model).
+    assert "pydantic.dev" not in rendered
+    assert "[type=" not in rendered
+
+
+def test_format_schema_error_walks_cause_chain() -> None:
+    """A ValidationError wrapped via ``raise X from ve`` must still
+    produce a feedback message — the wrapper relies on this to feed
+    LLM-output-validation failures back even when ADK has re-raised
+    them as a different exception type.
+    """
+
+    ve = _make_validation_error()
+
+    try:
+        raise RuntimeError("wrapper") from ve
+    except RuntimeError as outer:
+        rendered = _format_schema_error_for_llm(outer)
+
+    assert "Input should be a valid string" in rendered
+
+
+@pytest.mark.asyncio
+async def test_schema_retry_writes_feedback_to_state_key_when_configured() -> None:
+    """When ``schema_error_state_key`` is configured, the wrapper must
+    yield a ``state_delta`` event populating that key with formatted
+    validator feedback BEFORE the next attempt — turning schema retries
+    from blind rerolls into actual error-correction loops.
+    """
+
+    ev_success = Event(author="X", content=None, actions=EventActions())
+
+    # Script: one schema error → success.  Need budgets ≥ 2 so the
+    # schema retry actually proceeds (single attempt would exhaust).
+    inner = _FakeInner(
+        name   = "X",
+        script = [_make_validation_error(), [ev_success]],
+    )
+
+    wrapper = RetryingAgentWrapper(
+        inner                  = inner,
+        timeout_seconds        = 5.0,
+        policies               = _fast_policies(schema_attempts=3),
+        retry_state_key        = "temp:_obs_test_retries",
+        schema_error_state_key = "temp:_last_schema_error",
+    )
+
+    events: list[Event] = []
+    async for e in wrapper._run_async_impl(_ctx_with_state()):
+        events.append(e)
+
+    # Locate the feedback event by inspecting state_delta keys.
+    feedback_events = [
+        e for e in events
+        if e.actions is not None
+        and e.actions.state_delta is not None
+        and "temp:_last_schema_error" in e.actions.state_delta
+    ]
+
+    assert len(feedback_events) == 1, (
+        f"expected exactly one feedback state_delta event; got {len(feedback_events)}"
+    )
+
+    payload = feedback_events[0].actions.state_delta["temp:_last_schema_error"]
+    assert isinstance(payload, str)
+    assert "CORRECTION REQUIRED" in payload
+    # The successful retry's event must still flush to the outer pipeline.
+    assert ev_success in events
+
+
+@pytest.mark.asyncio
+async def test_schema_retry_omits_feedback_when_key_not_configured() -> None:
+    """Default behaviour (no ``schema_error_state_key``) must preserve
+    the legacy "reroll the dice" retry — no extra state_delta events,
+    no contract change for callers that have not opted in.
+    """
+
+    ev_success = Event(author="X", content=None, actions=EventActions())
+
+    inner = _FakeInner(
+        name   = "X",
+        script = [_make_validation_error(), [ev_success]],
+    )
+
+    wrapper = RetryingAgentWrapper(
+        inner           = inner,
+        timeout_seconds = 5.0,
+        policies        = _fast_policies(schema_attempts=3),
+        retry_state_key = "temp:_obs_test_retries",
+        # schema_error_state_key intentionally omitted — default None.
+    )
+
+    events: list[Event] = []
+    async for e in wrapper._run_async_impl(_ctx_with_state()):
+        events.append(e)
+
+    # No event should carry a "temp:_last_schema_error" state_delta key
+    # because the wrapper was not asked to write one.
+    for e in events:
+        delta = (e.actions.state_delta or {}) if e.actions is not None else {}
+        assert "temp:_last_schema_error" not in delta
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_retry_does_not_emit_schema_feedback() -> None:
+    """Schema-feedback emission is scoped to the schema retry class —
+    a rate-limit retry must not write to the schema-error state key
+    (a 429 is not the model's fault).
+    """
+
+    err_429 = ClientError(
+        code            = 429,
+        response_json   = {"error": {"status": "RESOURCE_EXHAUSTED"}},
+        response        = MagicMock(),
+    )
+    ev_success = Event(author="X", content=None, actions=EventActions())
+
+    inner = _FakeInner(name="X", script=[err_429, [ev_success]])
+
+    wrapper = RetryingAgentWrapper(
+        inner                  = inner,
+        timeout_seconds        = 5.0,
+        policies               = _fast_policies(rate_limit_attempts=3),
+        retry_state_key        = "temp:_obs_test_retries",
+        schema_error_state_key = "temp:_last_schema_error",
+    )
+
+    events: list[Event] = []
+    async for e in wrapper._run_async_impl(_ctx_with_state()):
+        events.append(e)
+
+    for e in events:
+        delta = (e.actions.state_delta or {}) if e.actions is not None else {}
+        assert "temp:_last_schema_error" not in delta

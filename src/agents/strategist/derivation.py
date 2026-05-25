@@ -311,8 +311,19 @@ def derive_decision_fields(
     # strategist must explicitly engage with each held position on every
     # tick (Principle 3 of the spec).  Flat tickers remain optional (the
     # active-stances model survives for them — Pass 2 below).
+    #
+    # The threshold is ``ORDER_EPSILON`` (1e-6), not strict ``> 0.0``: a
+    # broker-side close can leave a sub-epsilon dust quantity (e.g. 3.55e-15
+    # observed on AMD post-close 2026-05-25) whose weight reads as positive
+    # under strict comparison but is operationally flat.  The shim's
+    # ``user:positions`` thesis-registry view of "held" already implicitly
+    # filters dust by removing closed theses, so without this epsilon the
+    # two layers disagree and the strategist is rejected for missing a
+    # stance on a ticker the prompt never asked it to engage with.  See
+    # ``docs/todo-fixes.md`` §5.3 for the broader open question on whether
+    # weight-based portfolio maths is the right primitive at all.
     held_tickers = {
-        t for t, w in ctx.current_weights.items() if w > 0.0
+        t for t, w in ctx.current_weights.items() if w >= ORDER_EPSILON
     }
     uncovered_held = held_tickers - emitted
 
