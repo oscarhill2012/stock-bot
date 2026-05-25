@@ -62,10 +62,11 @@ else:
 # ``inject_session_state`` resolves at runtime.
 
 COLD_START_MODE_TEMPLATE: str = (
-    "Cold start — your portfolio is empty.  No prior open positions to evaluate.  "
-    "Build an initial portfolio by scanning the watchlist evidence below.  Open "
-    "1-3 high-conviction entries.  You may also write or revise the standing "
-    "market thesis if you have a view."
+    "Cold start — first tick of the run; portfolio is empty. Begin building a "
+    "diversified portfolio. Larger position sizes are reasonable while capital "
+    "is plentiful, but there is no rush — opening fewer this tick and adding on "
+    "subsequent ticks is equally valid. You may also write or revise the "
+    "standing market thesis if you have a view."
 )
 
 INCREMENTAL_MODE_TEMPLATE: str = (
@@ -175,40 +176,33 @@ fill every required field for the verb you've picked, pick a different verb
 
 ## How to submit your output
 
-Emit ONE JSON object with this exact top-level shape — nothing else:
-
-{{
-  "stances": [ ... one stance per ticker you are acting on ... ],
-  "decision_tag": "snake_case_label",
-  "reasoning": "One short paragraph on the tick as a whole.",
-  "thesis": null,
-  "confidence": 0.7
-}}
-
-Keep every text field short.  One sentence is usually enough; two if
-needed.  Do NOT pad, repeat yourself, or restate the field's other
-values inside its text.  Stop writing as soon as the point is made.
-
-Worked example — complete output for a 2-ticker tick (one open, one hold):
+Emit ONE JSON object with this exact shape — nothing else. Placeholders
+only; open + hold shown to illustrate verb-conditional fields. Fill
+values from the evidence:
 
 {{
   "stances": [
     {{
-      "ticker": "XYZ", "intent": "open", "weight": 0.05,
-      "horizon": "swing", "target_price": 215.0, "stop_price": 180.0,
-      "catalyst": "earnings beat expected next week",
-      "rationale": "Strong fundamentals and bullish technical setup."
+      "ticker": "<ticker>", "intent": "open", "weight": <0.0-1.0>,
+      "horizon": "<intraday|swing|long_term>",
+      "target_price": <float>, "stop_price": <float>,
+      "catalyst": "<short phrase>",
+      "rationale": "<one short sentence>"
     }},
     {{
-      "ticker": "ABC", "intent": "hold",
-      "reason": "Thesis intact; no material change since open."
+      "ticker": "<ticker>", "intent": "hold",
+      "reason": "<what has changed since open, in one sentence>"
     }}
   ],
-  "decision_tag": "ai_momentum_add",
-  "reasoning": "Adding XYZ on AI catalyst; ABC carries forward on unchanged thesis.",
+  "decision_tag": "<snake_case_label>",
+  "reasoning": "<one short paragraph on the tick as a whole>",
   "thesis": null,
-  "confidence": 0.7
+  "confidence": <0.0-1.0>
 }}
+
+Keep every text field short. One sentence is usually enough; two if
+needed. Do NOT pad, repeat yourself, or restate the field's other
+values inside its text. Stop writing as soon as the point is made.
 """
 
 # Build-time substitution of the cap markers.  ``str.replace`` is used rather

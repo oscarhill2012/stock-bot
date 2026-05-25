@@ -102,24 +102,21 @@ Report schema:
 The report is your reasoning; the verdict is your conclusion. They must be
 consistent — the lean and direction-weighted driver mix should agree.
 
-OUTPUT EXAMPLE (shape only — your content must reflect the actual filings + insider data)
------------------------------------------------------------------------------------------
+SHAPE EXAMPLE (placeholders only — fill from the actual filings + insider data):
 {{
   "ticker": "{ticker}",
-  "lean": "bearish",
-  "magnitude": 0.5,
-  "confidence": 0.7,
+  "lean": "<bullish|bearish|neutral>",
+  "magnitude": <0.0-1.0>,
+  "confidence": <0.0-1.0>,
   "is_no_data": false,
-  "key_factors": ["insider:cluster_selling", "risk:macro_added", "tone:cautious"],
+  "key_factors": ["<closed-vocab tag>", "..."],
   "report": {{
-    "summary": "Recent 10-Q adds a macro-risk paragraph and softens forward tone; insider activity shows a cluster of discretionary executive sales over the last 30 days.",
+    "summary": "<one short paragraph arguing the lean from the filings + insider data>",
     "drivers": [
-      {{ "name": "Insider cluster sells", "direction": "bear",    "weight": 0.5,
-         "body": "Net Form-4 dollars -$18M with 6 discretionary sells from C-suite; planned-sale ratio 0.10 so the bulk is open-market." }},
-      {{ "name": "Macro risk added",      "direction": "bear",    "weight": 0.3,
-         "body": "New paragraph in Risk Factors flags FX + interest-rate exposure not present in the prior filing." }},
-      {{ "name": "Stable guidance",       "direction": "neutral", "weight": 0.2,
-         "body": "No change to revenue / EPS guidance; offsets but does not erase the negative tone shift." }}
+      {{ "name": "<short label>", "direction": "<bull|bear|neutral>",
+         "weight": <0.0-1.0>, "body": "<prose; cite the evidence>" }},
+      {{ "name": "<short label>", "direction": "<bull|bear|neutral>",
+         "weight": <0.0-1.0>, "body": "<prose; cite the evidence>" }}
     ]
   }}
 }}

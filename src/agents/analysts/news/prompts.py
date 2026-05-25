@@ -85,24 +85,21 @@ Report schema:
 The report is your reasoning; the verdict is your conclusion. They must be
 consistent — the lean and direction-weighted driver mix should agree.
 
-OUTPUT EXAMPLE (shape only — your content must reflect the actual headlines)
----------------------------------------------------------------------------
+SHAPE EXAMPLE (placeholders only — fill from the actual headlines):
 {{
   "ticker": "{ticker}",
-  "lean": "bullish",
-  "magnitude": 0.6,
-  "confidence": 0.7,
+  "lean": "<bullish|bearish|neutral>",
+  "magnitude": <0.0-1.0>,
+  "confidence": <0.0-1.0>,
   "is_no_data": false,
-  "key_factors": ["catalyst:earnings_beat", "novelty:high", "direction:positive", "material:true"],
+  "key_factors": ["<closed-vocab tag>", "..."],
   "report": {{
-    "summary": "Q3 print beat consensus on revenue and EPS, with management raising full-year guidance on AI tailwinds.",
+    "summary": "<one short paragraph arguing the lean from the headlines>",
     "drivers": [
-      {{ "name": "Earnings beat",     "direction": "bull",    "weight": 0.6,
-         "body": "Revenue +8% YoY, EPS $1.42 vs $1.28 consensus; both segments outgrew the market." }},
-      {{ "name": "Guidance raise",    "direction": "bull",    "weight": 0.3,
-         "body": "FY revenue band lifted ~3% at the midpoint citing data-centre demand." }},
-      {{ "name": "Macro uncertainty", "direction": "neutral", "weight": 0.1,
-         "body": "Management flagged FX headwinds and consumer softness as offsetting risk factors." }}
+      {{ "name": "<short label>", "direction": "<bull|bear|neutral>",
+         "weight": <0.0-1.0>, "body": "<prose; cite the evidence>" }},
+      {{ "name": "<short label>", "direction": "<bull|bear|neutral>",
+         "weight": <0.0-1.0>, "body": "<prose; cite the evidence>" }}
     ]
   }}
 }}
