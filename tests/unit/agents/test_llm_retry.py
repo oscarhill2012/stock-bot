@@ -773,6 +773,33 @@ def test_format_schema_error_extracts_msg_and_strips_pydantic_prefix() -> None:
     assert "[type=" not in rendered
 
 
+def test_format_schema_error_includes_prose_vs_field_reminder() -> None:
+    """The correction directive must remind the LLM that the validator
+    checks the structured JSON, not the prose around it.
+
+    Empirical Sep 2025 failure mode: the strategist LLM responded to
+    "missing target_price" complaints by writing more prose about
+    updating the target without ever emitting a literal ``"target_price":
+    <number>`` key.  The reminder disambiguates so the same retry
+    pattern does not recur for any verb (Option A catches the
+    ``update``-specific case via salvage; this reminder is defence in
+    depth for the other verbs).
+    """
+
+    ve = _make_validation_error()
+    rendered = _format_schema_error_for_llm(ve)
+
+    # The reminder must explicitly contrast structured JSON with the
+    # narrative fields.  Both halves of the contrast must be present so
+    # the model cannot read it as a one-sided instruction.
+    assert "structured JSON fields" in rendered
+    assert "Mentioning the value in ``reason``" in rendered or "reason" in rendered
+
+    # Concrete example of the right shape — the JSON key syntax must
+    # appear verbatim so the LLM has a copy-pasteable template.
+    assert '"target_price"' in rendered
+
+
 def test_format_schema_error_walks_cause_chain() -> None:
     """A ValidationError wrapped via ``raise X from ve`` must still
     produce a feedback message — the wrapper relies on this to feed

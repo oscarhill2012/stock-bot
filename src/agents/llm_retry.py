@@ -300,10 +300,39 @@ def _format_schema_error_for_llm(exc: BaseException) -> str:
     except Exception:                                                              # noqa: BLE001 — last-resort fallback for malformed errors
         joined = f"- {ve!s}"
 
+    # ── Prose-vs-field reminder ────────────────────────────────────────────
+    #
+    # Empirical Sep 2025 failure mode: the strategist LLM (Vertex Gemini)
+    # would respond to a "missing target_price" complaint by writing more
+    # prose about updating the target *without* ever emitting a literal
+    # ``"target_price": <number>`` key in the JSON.  Three retry attempts
+    # produced three reworded prose responses with the same gap.  The
+    # paragraph below disambiguates: the validator inspects the structured
+    # JSON, not the surrounding narrative.  Kept generic because the same
+    # disconnect can hit any verb (e.g. ``open`` missing ``stop_price``
+    # while the rationale prose discusses a stop level).
+    #
+    # The Option A salvage shim in ``stance_schema._require_intent_fields``
+    # catches the specific ``update``-without-thesis-fields case before
+    # the validator raises, so this reminder will not fire on that exact
+    # path any more — but it remains in force for the other verbs and as
+    # a defence-in-depth against future model regressions.
+    field_reminder = (
+        "\nReminder — the validator checks the **structured JSON fields**, "
+        "not the prose around them.  If a complaint above says you must "
+        "supply a field like ``target_price`` or ``stop_price``, that means "
+        "literally emitting that key in the JSON object, e.g. "
+        "``\"target_price\": 220.0``.  Mentioning the value in ``reason`` or "
+        "``rationale`` text alone is NOT sufficient — the validator will "
+        "reject the response again.\n"
+    )
+
     return (
         header
         + "\nValidator complaints (fix every one):\n\n"
-        + f"{joined}\n\n"
+        + f"{joined}\n"
+        + field_reminder
+        + "\n"
         + "End of correction directive — the rest of this prompt is the "
           "normal task definition.  Apply the correction above to your "
           "next response.\n"
