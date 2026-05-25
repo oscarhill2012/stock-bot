@@ -156,22 +156,35 @@ def setup_terminal_logging(
     # summary rows (both on ``stockbot.tick``) plus any record at WARNING+ from
     # any logger so real errors stay visible.  Everything else (cache callbacks
     # INFO, ADK chatter, ``agents.isolated_failure`` per-branch WARNINGs that
-    # are already counted in the "N failed" summary column) is dropped on the
-    # terminal but still reaches the buffered ``runs/<id>/obs/logs/<tick>.json``
-    # capture because the underlying loggers and root level stay free.
+    # are already counted in the "N failed" summary column, and per-attempt
+    # ``agents.llm_retry`` WARNINGs that are already counted in the summary's
+    # retry column) is dropped on the terminal but still reaches the buffered
+    # ``runs/<id>/obs/logs/<tick>.json`` capture because the underlying
+    # loggers and root level stay free.
     def _terminal_filter(record: logging.LogRecord) -> bool:
         """Return True if the record should be shown on the terminal.
 
         Two-rule allowlist: anything on the ``stockbot.tick`` logger (our own
-        framed output), or any record at WARNING or above from any logger.
-        The ``agents.isolated_failure`` WARNING is special-cased to DEBUG so
-        it doesn't repeat what the per-analyst "N failed" summary already says.
+        framed output), or any record at WARNING or above from any logger —
+        with two suppressions.  ``agents.isolated_failure`` WARNINGs and the
+        per-attempt ``llm_retry_attempt`` WARNINGs on ``agents.llm_retry`` are
+        both already aggregated into the per-analyst summary row (as the
+        ``N failed`` column and the ``retries=…`` column respectively), so
+        repeating their detail on the terminal would just be noise.  The
+        terminal-exhaustion ``llm_retry_exhausted`` ERROR is *not* suppressed
+        — when a class actually runs out of attempts the operator should see
+        the stacktrace, not just a count.
         """
         if record.name == _TICK_LOGGER:
             return True
         if record.name == "agents.isolated_failure":
             # Per-branch failure noise is already aggregated into the analyst
             # summary row's ``N failed`` column.  Drop from terminal.
+            return False
+        if record.name == "agents.llm_retry" and getattr(record, "kind", None) == "llm_retry_attempt":
+            # Per-attempt retry chatter (429s, pydantic ValidationError detail,
+            # timeout stacktraces) is already counted in the summary row's
+            # ``retries=…`` column.  Drop from terminal; obs/logs still has it.
             return False
         return record.levelno >= logging.WARNING
 
