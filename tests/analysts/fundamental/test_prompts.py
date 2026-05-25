@@ -4,9 +4,10 @@ Verifies that ``build_fundamental_instruction`` produces a prompt that:
 
 - Addresses a SINGLE ticker per call rather than "each ticker in the batch".
 - Describes ONE JSON object output, not a batch array.
-- Preserves the ``output_caps.verdict_rationale_max_chars`` substitution from
-  ``config/analysts.json`` (Phase 9 invariant — config controls LLM output
-  budgets, not hard-coded values in the template).
+- Preserves the prose-cap substitutions from ``config/analysts.json``
+  (``report_summary_max_chars`` / ``report_driver_body_max_chars``) — config
+  still controls LLM output budgets; only the surface they bind to has
+  moved from ``rationale`` to ``report``.
 """
 from __future__ import annotations
 
@@ -64,34 +65,46 @@ def test_instruction_addresses_single_ticker():
 
 
 def test_instruction_describes_single_verdict_output():
-    """Output spec must describe ONE verdict per call, not a batch array."""
+    """Output contract must describe ONE verdict per call with the required fields.
+
+    Mirrors the news prompt test — see ``tests/analysts/news/test_prompts.py``
+    for the full rationale.  ``is_no_data`` and ``report`` are now REQUIRED
+    on every emit; the contract block in the prompt is the LLM-facing mirror
+    of ``LlmTickerVerdict``.
+    """
 
     instruction = build_fundamental_instruction(_vocab())
 
-    assert "Output ONE JSON object" in instruction or \
-           "single verdict" in instruction.lower()
+    assert "OUTPUT CONTRACT" in instruction
+    assert "REQUIRED"        in instruction
+    assert "is_no_data"      in instruction
+    assert "report"          in instruction
 
 
 def test_instruction_honours_output_caps_from_config():
-    """`config/analysts.json::output_caps.verdict_rationale_max_chars`
-    must still be substituted into the rendered instruction — the per-
-    ticker rewrite must NOT bypass the config-driven character cap that
-    bounds each analyst's free-text output.
+    """Prose-only caps from ``config/analysts.json::output_caps`` must still
+    be substituted into the rendered instruction — mirror of the news test.
+
+    After the 2026-05-25 schema split the prose budget moved from the
+    ``rationale`` field to ``AnalystReport.summary`` + per-driver bodies;
+    both are bound from config and must reach the rendered prompt or the
+    config-driven budget contract is silently broken.
     """
 
     from config.analysts import get_analysts_config
 
     instruction = build_fundamental_instruction(_vocab())
 
-    # H4 (Spec A): the prompt now carries the *derived* prompt budget
-    # (verdict_rationale_prompt_budget = max_chars − headroom), not the raw
-    # schema cap (verdict_rationale_max_chars).  The config path is still
-    # exercised — we just assert the right derived value.
-    cap = get_analysts_config().output_caps.verdict_rationale_prompt_budget
+    out_caps = get_analysts_config().output_caps
 
-    assert f"≤{cap} chars" in instruction or f"{cap} chars" in instruction, (
-        f"rendered prompt does not contain configured rationale prompt budget {cap}; "
-        "the per-ticker rewrite must preserve the config/analysts.json "
-        "output_caps substitution path (see Phase 9 spec — config control "
-        "of analyst output budgets is an invariant)."
+    assert str(out_caps.report_summary_max_chars) in instruction, (
+        "rendered prompt does not contain the configured "
+        "report_summary_max_chars value — the output_caps substitution path "
+        "is broken in build_fundamental_instruction()."
+    )
+
+    assert str(out_caps.report_driver_body_max_chars) in instruction, (
+        "rendered prompt does not contain the configured "
+        "report_driver_body_max_chars value — the output_caps substitution "
+        "path is broken in build_fundamental_instruction()."
     )

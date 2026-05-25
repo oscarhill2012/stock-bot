@@ -1,9 +1,15 @@
-"""D1.2 — news prompt requires `report` whenever `is_no_data=false`.
+"""News prompt requires ``report`` on every emit.
 
-The prompt previously said ``omit only when is_no_data=true``; the LLM
-violated the instruction at 30.7 % across the baseline-2025-09 run.
-D1.1 closes the loophole at the schema; D1.2 strengthens the wording
-the LLM sees so the prompt and the schema sing in unison.
+History: the prompt previously said ``omit only when is_no_data=true`` and
+later ``REQUIRED whenever is_no_data=false``; the LLM violated both forms
+(30.7 % on baseline-2025-09; the audit on post-mem-test-5 showed the same
+pattern persisting because the LLM was treating optionality on the JSON
+schema side as "ok to omit").  The 2026-05-25 schema split closes the
+loophole at three layers — ``LlmTickerVerdict`` makes ``report`` required
+(no Optional, no default), the prompt instructs the LLM that ``report`` is
+``REQUIRED on every call`` (even when ``is_no_data=true`` — the no-data
+case carries a one-line "no data" summary), and ``extra="forbid"`` fails
+loudly on drift.  These tests pin the prompt-side guarantee.
 """
 from __future__ import annotations
 
@@ -20,16 +26,30 @@ def _vocab() -> NewsVocabulary:
 
 
 def test_report_required_wording_present() -> None:
-    """The strengthened wording must appear in the rendered prompt."""
+    """The unconditional-required wording must appear in the rendered prompt."""
 
     rendered = build_news_instruction(_vocab())
-    assert "REQUIRED whenever is_no_data=false" in rendered
-    assert "Omit ONLY when" in rendered
-    assert "summary plus 2 drivers" in rendered
+
+    # ``is_no_data`` and ``report`` are both required on every emit — the
+    # prompt names them explicitly in the OUTPUT CONTRACT block.
+    assert "REQUIRED on every call" in rendered
+
+    # The contract block must also state that ``report`` is emitted in the
+    # is_no_data=true branch (with a "no data" summary) so the LLM cannot
+    # treat ``is_no_data=true`` as a licence to omit the report.
+    assert "including when is_no_data=true" in rendered
 
 
-def test_legacy_omit_only_wording_absent() -> None:
-    """The old softer wording must not coexist with the new hard rule."""
+def test_legacy_conditional_wording_absent() -> None:
+    """The previous softer wordings must not coexist with the new hard rule.
+
+    Both legacy phrasings are checked — the original (``omit only when
+    is_no_data=true``) and its intermediate strengthening (``REQUIRED
+    whenever is_no_data=false``) — because either one would leave room for
+    the LLM to omit ``report`` in the no-data branch and re-open the
+    failure mode the schema split was designed to close.
+    """
 
     rendered = build_news_instruction(_vocab())
-    assert "omit only when is_no_data=true" not in rendered
+    assert "omit only when is_no_data=true"    not in rendered
+    assert "REQUIRED whenever is_no_data=false" not in rendered

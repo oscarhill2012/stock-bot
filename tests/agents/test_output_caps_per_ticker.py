@@ -1,21 +1,26 @@
 """Per-ticker analysts honour ``config/analysts.json::output_caps``.
 
-Two assertions per analyst:
+After the 2026-05-25 schema split the contract surface changed:
 
-1. **Prompt-facing** — the literal ``verdict_rationale_max_chars`` value from
-   ``config/analysts.json`` is substituted into the rendered single-ticker
-   instruction string.  If a future prompt rewrite bypasses the
-   ``out_caps`` substitution path, the LLM receives no explicit cap and
-   the invariant silently breaks.
+1. **Prompt-facing** — the prose-cap values (``report_summary_max_chars`` and
+   ``report_driver_body_max_chars``) from ``config/analysts.json`` are
+   substituted into the rendered single-ticker instruction string.  The
+   previous ``verdict_rationale_max_chars`` substitution was removed
+   because ``rationale`` is no longer on the LLM emit-schema — Vertex's
+   constrained decoder treated ``maxLength`` as a fill target.  If a future
+   prompt rewrite bypasses the ``out_caps`` substitution path the LLM
+   receives no explicit budget and the invariant silently breaks.
 
 2. **Schema-facing** — the per-ticker LlmAgent's ``output_schema`` is
-   ``TickerVerdict`` (or a subclass) and therefore inherits the Pydantic
-   ``max_length`` enforced on the ``rationale`` field in ``AnalystVerdict``.
-   The schema-side cap survives as long as no task accidentally substitutes
-   an ad-hoc schema that does not extend ``AnalystVerdict``.
+   ``LlmTickerVerdict`` (the narrow LLM emit-class).  Two structural
+   guarantees flow from that: ``is_no_data`` and ``report`` are required
+   (no defaults, no Optional), and ``extra="forbid"`` rejects drift
+   between the prompt and the schema.  Substituting any other class would
+   silently re-open the failure mode the split was designed to close.
 
-Both paths are required: the prompt-side cap nudges the LLM; the schema-
-side cap enforces the contract on the validated output.
+Both paths are required: the prompt-side caps nudge the LLM; the
+schema-side class enforces the required-fields contract on the validated
+output.
 """
 from __future__ import annotations
 
@@ -23,7 +28,7 @@ from agents.analysts.fundamental.per_ticker import build_fundamental_branch_for_
 from agents.analysts.heuristics import load_heuristics
 from agents.analysts.news.per_ticker import build_news_branch_for_ticker
 from config.analysts import get_analysts_config
-from contract.evidence import AnalystVerdict, TickerVerdict
+from contract.evidence import LlmTickerVerdict
 
 # ---------------------------------------------------------------------------
 # Helper
@@ -65,63 +70,76 @@ def _walk_to_llm_agent(branch):
 # Prompt-side cap tests
 # ---------------------------------------------------------------------------
 
-def test_news_per_ticker_prompt_contains_config_rationale_cap():
-    """Rendered News instruction substitutes ``verdict_rationale_max_chars``.
+def test_news_per_ticker_prompt_contains_config_prose_caps():
+    """Rendered News instruction substitutes the configured prose caps.
 
-    Asserts that the string representation of the configured cap appears
-    somewhere in the rendered single-ticker news instruction so the LLM
-    knows the character budget for the ``rationale`` field.
+    The post-split prose budget is expressed via two caps on the
+    ``AnalystReport`` block — ``report_summary_max_chars`` and
+    ``report_driver_body_max_chars``.  Both flow from ``output_caps`` in
+    ``config/analysts.json`` through ``build_news_instruction``.  If a
+    future prompt rewrite drops either substitution, the LLM receives no
+    explicit prose budget and the config-driven invariant silently breaks.
     """
     h = load_heuristics()
     branch = build_news_branch_for_ticker("AAPL", h.news_vocabulary)
     llm = _walk_to_llm_agent(branch)
 
-    # H4 (Spec A): the prompt now carries the *derived* prompt budget
-    # (verdict_rationale_prompt_budget = max_chars − headroom), not the raw
-    # schema cap.  Assert the budget value, not verdict_rationale_max_chars.
-    cap = get_analysts_config().output_caps.verdict_rationale_prompt_budget
+    out_caps = get_analysts_config().output_caps
 
-    assert str(cap) in llm.instruction, (
-        f"News per-ticker instruction does not carry the configured rationale "
-        f"prompt budget ({cap} chars).  The output_caps config path is broken — check "
-        f"build_news_instruction() in src/agents/analysts/news/prompts.py."
+    assert str(out_caps.report_summary_max_chars) in llm.instruction, (
+        "News per-ticker instruction does not carry the configured "
+        "report_summary_max_chars value — the output_caps config path is "
+        "broken; check build_news_instruction()."
+    )
+
+    assert str(out_caps.report_driver_body_max_chars) in llm.instruction, (
+        "News per-ticker instruction does not carry the configured "
+        "report_driver_body_max_chars value — the output_caps config path "
+        "is broken; check build_news_instruction()."
     )
 
 
-def test_fundamental_per_ticker_prompt_contains_config_rationale_cap():
-    """Mirror of the news test — Fundamental instruction must also carry the cap."""
+def test_fundamental_per_ticker_prompt_contains_config_prose_caps():
+    """Mirror of the news test — Fundamental instruction must also carry both caps."""
 
     h = load_heuristics()
     branch = build_fundamental_branch_for_ticker("AAPL", h.fundamental_vocabulary)
     llm = _walk_to_llm_agent(branch)
 
-    # H4 (Spec A): the prompt now carries the *derived* prompt budget
-    # (verdict_rationale_prompt_budget = max_chars − headroom), not the raw
-    # schema cap.  Assert the budget value, not verdict_rationale_max_chars.
-    cap = get_analysts_config().output_caps.verdict_rationale_prompt_budget
+    out_caps = get_analysts_config().output_caps
 
-    assert str(cap) in llm.instruction, (
-        f"Fundamental per-ticker instruction does not carry the configured "
-        f"rationale prompt budget ({cap} chars).  Check "
-        f"build_fundamental_instruction() in "
-        f"src/agents/analysts/fundamental/prompts.py."
+    assert str(out_caps.report_summary_max_chars) in llm.instruction, (
+        "Fundamental per-ticker instruction does not carry the configured "
+        "report_summary_max_chars value — check build_fundamental_instruction()."
+    )
+
+    assert str(out_caps.report_driver_body_max_chars) in llm.instruction, (
+        "Fundamental per-ticker instruction does not carry the configured "
+        "report_driver_body_max_chars value — check build_fundamental_instruction()."
     )
 
 
 # ---------------------------------------------------------------------------
-# Schema-side cap tests
+# Schema-side guard
 # ---------------------------------------------------------------------------
 
-def test_per_ticker_output_schema_inherits_analyst_verdict_caps():
-    """`output_schema` on both per-ticker LlmAgents must be ``TickerVerdict``.
+def test_per_ticker_output_schema_is_llm_ticker_verdict():
+    """`output_schema` on both per-ticker LlmAgents must be ``LlmTickerVerdict``.
 
-    ``TickerVerdict`` inherits from ``AnalystVerdict``, which carries Pydantic
-    ``max_length`` constraints on the ``rationale`` field.  Substituting any
-    other schema would silently drop those constraints.
+    The narrow emit-class encodes the three structural fixes from the
+    2026-05-25 schema split:
 
-    Checks:
-    - ``output_schema`` is a subclass of ``AnalystVerdict`` (inheritance guard).
-    - ``output_schema is TickerVerdict`` (concrete type guard — no ad-hoc variant).
+    1. ``is_no_data`` and ``report`` are required (no defaults, no Optional)
+       — the JSON-Schema sent to Vertex marks them as mandatory, closing the
+       dominant "decoder takes the shortest legal path" failure mode.
+    2. ``extra="forbid"`` — drift between the prompt and the schema (e.g.
+       a re-introduced ``rationale`` emit) fails loudly rather than silently
+       dropping fields.
+    3. ``model_validator`` rejects an empty ``ticker`` string that would
+       otherwise silently break the joiner's per-ticker indexing.
+
+    Substituting any other class for ``output_schema`` would re-open all
+    three regressions, so we pin the concrete type here.
     """
     h = load_heuristics()
 
@@ -133,16 +151,10 @@ def test_per_ticker_output_schema_inherits_analyst_verdict_caps():
     for analyst_name, branch in branches.items():
         llm = _walk_to_llm_agent(branch)
 
-        # Guard 1: must extend AnalystVerdict so Pydantic enforces field caps.
-        assert issubclass(llm.output_schema, AnalystVerdict), (
-            f"{analyst_name} per-ticker LlmAgent ({llm.name!r}) bypassed "
-            f"AnalystVerdict — schema-side output caps are no longer enforced.  "
-            f"Got: {llm.output_schema!r}"
-        )
-
-        # Guard 2: must be exactly TickerVerdict (the canonical per-ticker type).
-        assert llm.output_schema is TickerVerdict, (
+        assert llm.output_schema is LlmTickerVerdict, (
             f"{analyst_name} per-ticker LlmAgent ({llm.name!r}) uses "
-            f"{llm.output_schema!r} instead of TickerVerdict — update the "
-            f"per-ticker factory if the schema type has legitimately changed."
+            f"{llm.output_schema!r} instead of LlmTickerVerdict — the "
+            f"required-fields contract is no longer enforced at the schema "
+            f"level.  Update the per-ticker factory if the emit-schema has "
+            f"legitimately changed."
         )

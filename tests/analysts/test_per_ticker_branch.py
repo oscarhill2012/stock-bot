@@ -3,7 +3,8 @@
 The factory must produce:
   IsolatedFailureWrapper[RetryingAgentWrapper[LlmAgent]]
 with:
-  - output_schema=TickerVerdict
+  - output_schema=LlmTickerVerdict (the narrow LLM emit-schema; the joiner
+    inflates each emit into the canonical downstream ``TickerVerdict``)
   - output_key="temp:news_verdict_<TICKER>"
   - instruction containing the ticker substituted in
   - no after_agent_callback (evidence-build moves to the joiner)
@@ -13,7 +14,7 @@ from __future__ import annotations
 from agents.analysts.heuristics import NewsVocabulary
 from agents.analysts.news.per_ticker import build_news_branch_for_ticker
 from agents.llm_retry import RetryingAgentWrapper
-from contract.evidence import TickerVerdict
+from contract.evidence import LlmTickerVerdict
 from google.adk.agents import LlmAgent
 
 
@@ -39,12 +40,19 @@ def test_news_branch_is_isolated_wrapping_retrying_wrapping_llm():
 
 
 def test_news_branch_output_schema_and_key():
-    """output_schema is TickerVerdict; output_key is temp:news_verdict_<TICKER>."""
+    """output_schema is LlmTickerVerdict; output_key is temp:news_verdict_<TICKER>.
+
+    The narrow emit-schema is required so Vertex's constrained decoder sees
+    ``is_no_data`` and ``report`` as mandatory fields (their previous
+    Optional declarations on ``TickerVerdict`` were the dominant
+    schema-failure mode on baseline-2025-09 / post-mem-test-5).  The joiner
+    inflates each emit into ``TickerVerdict`` downstream.
+    """
 
     branch = build_news_branch_for_ticker("AAPL", _news_vocab())
     llm = branch.inner.inner
 
-    assert llm.output_schema is TickerVerdict
+    assert llm.output_schema is LlmTickerVerdict
     assert llm.output_key == "temp:news_verdict_AAPL"
 
 
@@ -120,7 +128,7 @@ def test_fundamental_branch_composition():
     from agents.analysts.fundamental.per_ticker import build_fundamental_branch_for_ticker
     from agents.isolated_failure import IsolatedFailureWrapper
     from agents.llm_retry import RetryingAgentWrapper
-    from contract.evidence import TickerVerdict
+    from contract.evidence import LlmTickerVerdict
     from google.adk.agents import LlmAgent
 
     branch = build_fundamental_branch_for_ticker("AAPL", _fundamental_vocab())
@@ -130,7 +138,9 @@ def test_fundamental_branch_composition():
 
     llm = branch.inner.inner
     assert isinstance(llm, LlmAgent)
-    assert llm.output_schema is TickerVerdict
+    # Narrow LLM emit-schema (see test_news_branch_output_schema_and_key for
+    # the rationale on the two-class split).
+    assert llm.output_schema is LlmTickerVerdict
     assert llm.output_key   == "temp:fundamental_verdict_AAPL"
     assert llm.before_agent_callback is None
     assert llm.after_agent_callback  is None

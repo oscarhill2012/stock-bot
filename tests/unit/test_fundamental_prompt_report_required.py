@@ -1,8 +1,10 @@
-"""D1.2 — fundamental prompt requires ``report`` whenever ``is_no_data=false``.
+"""Fundamental prompt requires ``report`` on every emit.
 
-Symmetric companion to the news D1.2 test.  Fundamental's missing-report
-rate was lower (3.6 %) but the same loophole — closing it preserves
-schema/prompt alignment.
+Symmetric companion to the news report-required test — see that file for
+the full history.  Fundamental's missing-report rate on baseline-2025-09
+was lower (3.6 %) but the same loophole; the 2026-05-25 schema split
+closes it at the schema (``LlmTickerVerdict``) and at the prompt
+(unconditional REQUIRED) simultaneously.
 """
 from __future__ import annotations
 
@@ -21,14 +23,16 @@ def _fundamental_vocab() -> FundamentalVocabulary:
 
 
 def test_report_required_wording_present() -> None:
-    """The rendered prompt must contain the strengthened D1.2 report-required wording."""
+    """The unconditional-required wording must appear in the rendered prompt."""
+
     rendered = build_fundamental_instruction(vocab=_fundamental_vocab())
-    assert "REQUIRED whenever is_no_data=false" in rendered
-    assert "Omit ONLY when" in rendered
-    assert "summary plus 2 drivers" in rendered
+    assert "REQUIRED on every call"      in rendered
+    assert "including when is_no_data=true" in rendered
 
 
-def test_legacy_omit_only_wording_absent() -> None:
-    """The weaker legacy phrasing (omit only when is_no_data=true) must be removed."""
+def test_legacy_conditional_wording_absent() -> None:
+    """The previous softer wordings must not coexist with the new hard rule."""
+
     rendered = build_fundamental_instruction(vocab=_fundamental_vocab())
-    assert "omit only when is_no_data=true" not in rendered
+    assert "omit only when is_no_data=true"    not in rendered
+    assert "REQUIRED whenever is_no_data=false" not in rendered

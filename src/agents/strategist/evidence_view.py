@@ -86,19 +86,40 @@ def _format_per_analyst(te: TickerEvidence) -> list[str]:
             )
             continue
 
-        # Truncate rationale to keep the per-analyst line compact, but emit a
-        # trailing ellipsis when we actually cut so neither the LLM nor a human
-        # reader is fooled into treating a clipped sentence as complete.
-        rationale = ev.verdict.rationale
-        rationale_display = (
-            rationale if len(rationale) <= 60 else rationale[:57] + "…"
+        # Choose the prose teaser for this analyst's per-analyst line.
+        #
+        # Deterministic extractors (technical, smart_money) populate
+        # ``rationale`` so the strategist sees their computed one-liner.  LLM
+        # analysts (news, fundamental) no longer emit ``rationale`` at all —
+        # the field was removed from ``LlmTickerVerdict`` to defuse Vertex's
+        # pad-toward-cap pathology; their reasoning lives in
+        # ``report.summary`` instead.  Prefer ``rationale`` when present,
+        # fall back to ``report.summary``, and suppress the trailing em-dash
+        # entirely when neither is available so we never render a dangling
+        # "  — " with nothing after it.
+        teaser = ev.verdict.rationale
+        if not teaser and ev.verdict.report is not None:
+            teaser = ev.verdict.report.summary
+
+        # Truncate to keep the per-analyst line compact, but emit a trailing
+        # ellipsis when we actually cut so neither the LLM nor a human reader
+        # is fooled into treating a clipped sentence as complete.
+        teaser_display = (
+            teaser if len(teaser) <= 60 else teaser[:57] + "…"
         )
 
-        lines.append(
+        head = (
             f"  - {analyst:<12} {ev.verdict.lean:<7} mag={ev.verdict.magnitude:.2f} "
             f"conf={ev.verdict.confidence:.2f}  "
-            f"[{_format_features(ev.features)}]  — {rationale_display}"
+            f"[{_format_features(ev.features)}]"
         )
+
+        # Only append the em-dash + teaser when we actually have prose to
+        # show; otherwise the line ends after the feature block.
+        if teaser_display:
+            lines.append(f"{head}  — {teaser_display}")
+        else:
+            lines.append(head)
 
     return lines
 

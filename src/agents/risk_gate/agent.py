@@ -93,8 +93,26 @@ class RiskGateAgent(BaseAgent):
             current_weights = {}
             prices = {}
 
+        # Close intents bypass the per-ticker delta cap — an audited "close"
+        # is a deliberate, reasoned full exit, not a tick-on-tick weight drift,
+        # so it should not be capped at MAX_DELTA_PER_TICKER (which would leave
+        # dust shares behind and diverge the broker's true holdings from
+        # ``user:positions`` on the next tick — Spec B / D3 contract trap).
+        # Snapshot the close tickers BEFORE clamping; restore target=0.0 AFTER
+        # so any incidental clamp rewrite (max_delta / max_turnover) is undone
+        # for closes only.  Trims remain bound by the cap, which is the
+        # intended behaviour for partial size reductions.
+        _close_tickers = {
+            s.ticker for s in (decision.stances or []) if s.intent == "close"
+        }
+
         # Apply all hard constraints in order; returns telemetry for logging.
         clamps = apply_constraints(proposed, current_weights)
+
+        # Restore full exits — close intent always targets 0.0 regardless of
+        # any post-clamp rewrite above.
+        for _t in _close_tickers:
+            proposed[_t] = 0.0
 
         # Lifecycle check — only closing positions need a recorded reason.
         # New-open validation is handled earlier by the Strategist callback.

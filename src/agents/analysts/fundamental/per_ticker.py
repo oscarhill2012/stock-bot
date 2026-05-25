@@ -30,7 +30,7 @@ from agents.isolated_failure import IsolatedFailureWrapper
 from agents.llm_retry import RetryingAgentWrapper, build_retry_policies
 from config.analysts import get_analysts_config
 from config.models import get_models_config
-from contract.evidence import TickerVerdict
+from contract.evidence import LlmTickerVerdict
 from observability.terminal_log import make_observability_callbacks
 from observability.trace import make_llm_trace_callbacks
 
@@ -48,10 +48,13 @@ def build_fundamental_branch_for_ticker(
     wrapping an LlmAgent.  The wrappers' names embed ``ticker`` so traces
     and logs identify each branch unambiguously.
 
-    The returned agent emits exactly one TickerVerdict, written to
-    ``state["temp:fundamental_verdict_<TICKER>"]`` via ADK's output_key
-    mechanism.  No after_agent_callback is set — evidence-build is the
-    joiner's responsibility (see ``FundamentalJoinerAgent``).  No
+    The returned agent emits exactly one ``LlmTickerVerdict`` (the narrow
+    LLM emit-schema), written to ``state["temp:fundamental_verdict_<TICKER>"]``
+    via ADK's output_key mechanism.  The joiner inflates each emit into the
+    canonical downstream ``TickerVerdict`` (``rationale`` defaults to "" —
+    LLM analysts no longer emit it; the field is populated only by the
+    deterministic extractors).  No after_agent_callback is set — evidence-build
+    is the joiner's responsibility (see ``FundamentalJoinerAgent``).  No
     before_agent_callback either — fundamental context is pre-populated by
     ``FundamentalFetchAgent`` which runs once per tick before any per-ticker
     branch.
@@ -106,7 +109,7 @@ def build_fundamental_branch_for_ticker(
         data_state_key     = "temp:fundamental_data",
         verdicts_state_key = f"temp:fundamental_verdict_{ticker}",
         ticker             = ticker,
-        output_schema      = TickerVerdict,
+        output_schema      = LlmTickerVerdict,
         hash_inputs        = lambda d: fundamental_hash_inputs_from_dict(
             ticker=ticker,
             triad=(d or {}),
@@ -169,7 +172,7 @@ def build_fundamental_branch_for_ticker(
         name                    = f"FundamentalAnalyst_{ticker}",
         model                   = model,
         instruction             = instruction,
-        output_schema           = TickerVerdict,
+        output_schema           = LlmTickerVerdict,
         output_key              = f"temp:fundamental_verdict_{ticker}",
         before_model_callback   = before_cb,
         after_model_callback    = after_cb,

@@ -41,38 +41,59 @@ def test_instruction_contains_closed_vocabulary():
 
 
 def test_instruction_describes_single_verdict_output():
-    """Output spec must describe ONE verdict per call, not a list."""
+    """Output contract must describe ONE verdict per call with the required fields.
+
+    The 2026-05-25 schema split rewrote the output spec around an explicit
+    "OUTPUT CONTRACT" block that names ``is_no_data`` and ``report`` as
+    REQUIRED on every emit — these were previously optional and the
+    constrained decoder routinely omitted them.  The prose contract is the
+    LLM-facing mirror of the ``LlmTickerVerdict`` Pydantic class; if either
+    drifts from the other, the rule breaks silently.  Pin both halves.
+    """
 
     instruction = build_news_instruction(_vocab())
 
-    # Output schema directive — single TickerVerdict, not a batch.
-    assert "Output ONE JSON object" in instruction or \
-           "Emit one verdict" in instruction or \
-           "single verdict" in instruction.lower()
+    # The new contract header must be present so the LLM is steered toward
+    # the required-fields branch rather than the old optional-fields branch.
+    assert "OUTPUT CONTRACT" in instruction
+
+    # ``is_no_data`` and ``report`` must be called out as REQUIRED — these
+    # are the two fields the decoder was silently omitting.
+    assert "REQUIRED" in instruction
+    assert "is_no_data" in instruction
+    assert "report"     in instruction
 
 
 def test_instruction_honours_output_caps_from_config():
-    """`config/analysts.json::output_caps.verdict_rationale_max_chars`
-    must still be substituted into the rendered instruction — the per-
-    ticker rewrite must NOT bypass the config-driven character cap that
-    bounds each analyst's free-text output.
+    """Prose-only caps from ``config/analysts.json::output_caps`` must still
+    be substituted into the rendered instruction.
+
+    After the 2026-05-25 schema split, ``rationale`` no longer appears on the
+    LLM emit-schema (Vertex's constrained decoder treats ``maxLength`` as a
+    fill target and was padding toward the cap).  The prose budget is now
+    expressed via the ``AnalystReport`` summary + driver caps, both
+    substituted from config so retuning either still flows through.  This
+    test pins the substitution path — the values must reach the rendered
+    prompt or the config-driven budget contract is silently broken.
     """
 
     from config.analysts import get_analysts_config
 
     instruction = build_news_instruction(_vocab())
 
-    # H4 (Spec A): the prompt now carries the *derived* prompt budget
-    # (verdict_rationale_prompt_budget = max_chars − headroom), not the raw
-    # schema cap (verdict_rationale_max_chars).  The config path is still
-    # exercised — we just assert the right derived value.
-    cap = get_analysts_config().output_caps.verdict_rationale_prompt_budget
+    out_caps = get_analysts_config().output_caps
 
-    # The derived budget value should appear in the prompt (the template
-    # writes "≤{rationale_max} chars" — `str.format` substitutes the int).
-    assert f"≤{cap} chars" in instruction or f"{cap} chars" in instruction, (
-        f"rendered prompt does not contain configured rationale prompt budget {cap}; "
-        "the per-ticker rewrite must preserve the config/analysts.json "
-        "output_caps substitution path (see Phase 9 spec — config control "
-        "of analyst output budgets is an invariant)."
+    # Summary cap is the dominant prose budget — its value must appear in
+    # the rendered prompt (the template writes "{summary_max} characters").
+    assert str(out_caps.report_summary_max_chars) in instruction, (
+        "rendered prompt does not contain the configured "
+        "report_summary_max_chars value — the output_caps substitution path "
+        "is broken in build_news_instruction()."
+    )
+
+    # Driver body cap covers the per-driver prose budget — same contract.
+    assert str(out_caps.report_driver_body_max_chars) in instruction, (
+        "rendered prompt does not contain the configured "
+        "report_driver_body_max_chars value — the output_caps substitution "
+        "path is broken in build_news_instruction()."
     )

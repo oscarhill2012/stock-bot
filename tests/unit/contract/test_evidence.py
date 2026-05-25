@@ -75,20 +75,14 @@ def test_verdict_rejects_magnitude_out_of_range():
         _verdict(magnitude=1.5)
 
 
-def test_verdict_rejects_rationale_over_schema_cap():
-    """The schema cap is the prompt-facing rationale cap from
-    ``config/analysts.json::output_caps.verdict_rationale_max_chars`` plus
-    ``slack_percent`` headroom — see the "two-tier convention" note in
-    ``src/config/strategist.py``.  Reads the live schema cap from config so
-    retuning either the prompt cap or the slack does not silently invalidate
-    this regression."""
-    from config.analysts import get_analysts_config
-
-    cfg        = get_analysts_config()
-    schema_cap = cfg.schema_cap(cfg.output_caps.verdict_rationale_max_chars)
-
-    with pytest.raises(ValidationError):
-        _verdict(rationale="x" * (schema_cap + 1))
+# The previous regression here ("verdict rejects rationale over schema cap")
+# was removed when ``AnalystVerdict.rationale`` lost its ``max_length``
+# constraint as part of the 2026-05-25 schema-split fix.  Vertex's
+# constrained decoder treats schema ``maxLength`` as a fill target and pads
+# strings toward the cap (verbatim repetition, hallucinated padding) — the
+# cap is now stated in the prompt only.  The LLM analysts no longer emit
+# ``rationale`` at all; deterministic extractors that still populate it are
+# trusted to honour the prose budget.
 
 
 def test_evidence_valid():

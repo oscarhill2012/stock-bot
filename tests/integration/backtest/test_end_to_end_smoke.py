@@ -128,12 +128,19 @@ def _make_strategist_llm_response(tickers: list[str]):
 
 
 def _make_per_ticker_analyst_llm_response(agent_name: str):
-    """Return a synthetic ``LlmResponse`` containing a valid ``TickerVerdict``.
+    """Return a synthetic ``LlmResponse`` containing a valid ``LlmTickerVerdict``.
 
-    Used for the per-ticker Fundamental and News ``LlmAgent`` analysts
-    (Phase 9), whose ``output_schema=TickerVerdict``.  The ticker is
-    extracted from the agent name by stripping the well-known prefix
-    (``"NewsAnalyst_"`` or ``"FundamentalAnalyst_"``).
+    Used for the per-ticker Fundamental and News ``LlmAgent`` analysts whose
+    ``output_schema=LlmTickerVerdict`` (the narrow LLM emit-schema introduced
+    by the 2026-05-25 schema split — see ``contract.evidence.LlmTickerVerdict``).
+    The ticker is extracted from the agent name by stripping the well-known
+    prefix (``"NewsAnalyst_"`` or ``"FundamentalAnalyst_"``).
+
+    The payload omits ``rationale`` — that field was dropped from the LLM
+    emit-schema (Vertex was padding it toward the cap), and
+    ``LlmTickerVerdict`` declares ``extra="forbid"`` so including it would
+    raise.  The downstream joiner inflates each emit into ``TickerVerdict``,
+    on which ``rationale`` defaults to ``""``.
 
     Parameters
     ----------
@@ -144,8 +151,8 @@ def _make_per_ticker_analyst_llm_response(agent_name: str):
     Returns
     -------
     google.adk.models.LlmResponse
-        A synthetic response with a ``TickerVerdict`` JSON payload for the
-        single ticker extracted from ``agent_name``.
+        A synthetic response with an ``LlmTickerVerdict`` JSON payload for
+        the single ticker extracted from ``agent_name``.
     """
     from google.adk.models import LlmResponse
     from google.genai import types as genai_types
@@ -157,17 +164,16 @@ def _make_per_ticker_analyst_llm_response(agent_name: str):
             ticker = agent_name[len(prefix):]
             break
 
-    # ``report`` is schema-required whenever ``is_no_data=False`` (the
-    # contract on ``AnalystVerdict._report_required_when_data_present``).
-    # Two drivers is the minimum the AnalystReport schema accepts.
+    # ``report`` is required on every emit on ``LlmTickerVerdict`` (no
+    # default, no Optional).  Two drivers is the minimum the
+    # ``AnalystReport`` schema accepts.
     verdict = {
         "ticker":      ticker,
         "lean":        "neutral",
         "magnitude":   0.0,
         "confidence":  0.5,
-        "rationale":   "Smoke test stub.",
-        "key_factors": [],
         "is_no_data":  False,
+        "key_factors": [],
         "report": {
             "summary": "Smoke-test stub report — verdict is neutral.",
             "drivers": [

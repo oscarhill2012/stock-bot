@@ -50,31 +50,62 @@ Closed vocabulary (use these tags ONLY in key_factors):
   direction:<value>   ∈ {direction_options}
   material:<bool>     when material to a long-only fund
 
-Output ONE JSON object with fields:
-  ticker       string — MUST be exactly "{ticker}"
-  lean         ∈ {{bullish, bearish, neutral}}
-  magnitude    ∈ [0, 1]
-  confidence   ∈ [0, 1]
-  rationale    string ≤{rationale_max} chars naming the dominant catalyst
-  key_factors  list of closed-vocabulary tags (≤8)
-  is_no_data   true if no headlines in the window
-  report       object — see schema below.  REQUIRED whenever is_no_data=false;
-               emit at minimum a summary plus 2 drivers.  Omit ONLY when
-               is_no_data=true.
+OUTPUT CONTRACT
+---------------
+You MUST emit every field listed below.  ``is_no_data`` and ``report`` are
+REQUIRED on every call — there is no shorter legal output.  Emit fields in
+this exact order:
+
+  ticker        string — MUST be exactly "{ticker}"
+  lean          ∈ {{bullish, bearish, neutral}}
+  magnitude     ∈ [0, 1]
+  confidence    ∈ [0, 1]
+  is_no_data    boolean — true ONLY if the headlines block is empty for this
+                ticker; false in every other case (including ambiguous data).
+  key_factors   list of closed-vocabulary tags — at least 1, at most 8.
+  report        object with summary + drivers (schema below).  REQUIRED on
+                every emit, including when is_no_data=true (then summary is
+                "no news in window" and drivers describe the absence).
 
 Report schema:
-  summary  string ≤{summary_max} chars of connective tissue covering the
-           gestalt this tick — not a bullet list. Argue your lean.
-  drivers  2-4 entries. Each driver:
-    name       string ≤{driver_name_max} chars — short label for the driver
+  summary  string — connective tissue covering the gestalt this tick. Argue
+           your lean.  As brief as you like — one short paragraph is fine;
+           there is NO minimum length beyond one sentence.  Hard upper limit
+           of {summary_max} characters; do not pad.
+  drivers  list of 2-4 entries.  Each driver:
+    name       string — short label for the driver, ≤{driver_name_max} chars.
+               Do not pad.
     direction  ∈ {{bull, bear, neutral}}
     weight     ∈ [0, 1] — relative importance vs other drivers; should sum
-               roughly to 1.0 but is not strictly normalised
-    body       string ≤{driver_body_max} chars explaining the driver. Do
-               NOT cite source URLs; synthesise.
+               roughly to 1.0 but is not strictly normalised.
+    body       string — prose explanation. As brief as you like; hard upper
+               limit of {driver_body_max} chars; do not pad. Do NOT cite
+               source URLs; synthesise.
 
 The report is your reasoning; the verdict is your conclusion. They must be
 consistent — the lean and direction-weighted driver mix should agree.
+
+OUTPUT EXAMPLE (shape only — your content must reflect the actual headlines)
+---------------------------------------------------------------------------
+{{
+  "ticker": "{ticker}",
+  "lean": "bullish",
+  "magnitude": 0.6,
+  "confidence": 0.7,
+  "is_no_data": false,
+  "key_factors": ["catalyst:earnings_beat", "novelty:high", "direction:positive", "material:true"],
+  "report": {{
+    "summary": "Q3 print beat consensus on revenue and EPS, with management raising full-year guidance on AI tailwinds.",
+    "drivers": [
+      {{ "name": "Earnings beat",     "direction": "bull",    "weight": 0.6,
+         "body": "Revenue +8% YoY, EPS $1.42 vs $1.28 consensus; both segments outgrew the market." }},
+      {{ "name": "Guidance raise",    "direction": "bull",    "weight": 0.3,
+         "body": "FY revenue band lifted ~3% at the midpoint citing data-centre demand." }},
+      {{ "name": "Macro uncertainty", "direction": "neutral", "weight": 0.1,
+         "body": "Management flagged FX headwinds and consumer softness as offsetting risk factors." }}
+    ]
+  }}
+}}
 
 Decision rule:
 - Lean ← direction: positive → bullish; negative → bearish; mixed/none → neutral.
@@ -117,20 +148,20 @@ def build_news_instruction(vocab: NewsVocabulary) -> str:
         The rendered instruction string.  Contains exactly two remaining
         single-brace tokens: ``{news_context}`` and ``{ticker}``.
     """
-    # Prompt-facing rationale cap — what we tell the LLM.  The schema in
-    # ``contract/evidence.py`` accepts up to ``schema_cap(rationale_max)``
-    # so the LLM's natural 1–5% character overshoot does not crash the
-    # tick — see the "two-tier convention" note in ``src/config/strategist.py``.
+    # Prompt-facing caps — what we tell the LLM.  ``schema_cap()`` no longer
+    # applies on the LLM emit-schema (``LlmTickerVerdict`` / ``AnalystReport``)
+    # because the ``max_length`` constraints were removed there to defuse
+    # Vertex's pad-toward-cap pathology; we now state the bound in prose
+    # only and trust the model to honour it.  The deterministic-extractor
+    # path still uses ``schema_cap()`` for its own caps.
     out_caps = get_analysts_config().output_caps
 
     return _TEMPLATE.format(
         catalyst_options ="{" + " | ".join(vocab.catalysts) + "}",
         novelty_options  ="{" + " | ".join(vocab.novelty)   + "}",
         direction_options="{" + " | ".join(vocab.direction)  + "}",
-        # Char-cap placeholders — kept in sync with the schema's
-        # ``Field(max_length=...)`` via the two-tier ``schema_cap()`` convention
-        # so the value the LLM is told never exceeds what the schema accepts.
-        rationale_max    = out_caps.verdict_rationale_prompt_budget,
+        # Prose-only character bounds for the report block.  The schema no
+        # longer enforces them — the wording in the prompt is the bound.
         summary_max      = out_caps.report_summary_max_chars,
         driver_name_max  = out_caps.report_driver_name_max_chars,
         driver_body_max  = out_caps.report_driver_body_max_chars,
