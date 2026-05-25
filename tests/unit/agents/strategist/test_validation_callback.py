@@ -87,8 +87,12 @@ def test_strategist_validation_callback_passes_retries(monkeypatch) -> None:
         })
 
     monkeypatch.setenv("STOCKBOT_TERMINAL_LOG", "1")
+    # The terminal-summary emit now lives in the StrategistEnricher module,
+    # which the legacy callback shim delegates to.  Patch at the enricher
+    # site so both the new BaseAgent path and the shim-based test wiring
+    # see the fake.
     monkeypatch.setattr(
-        "agents.strategist.agent.emit_analyst_summary",
+        "agents.strategist.enricher.emit_analyst_summary",
         _fake_emit,
     )
 

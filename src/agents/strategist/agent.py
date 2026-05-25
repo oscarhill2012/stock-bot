@@ -1,288 +1,92 @@
-"""Strategist v2 LlmAgent — emits per-ticker TickerStance, derives decision fields server-side."""
+"""Strategist v2 — LlmAgent + sequenced StrategistEnricher.
+
+The strategist branch is now a ``SequentialAgent`` of three sub-agents:
+
+1. :class:`StrategistContextShim` — hydrates ``temp:held_positions_view``,
+   ``temp:ticker_evidence``, and ``temp:ticker_evidence_objects`` via a
+   yielded ``Event(state_delta=…)`` (contract Rule 1).
+2. The wrapped ``LlmAgent`` (inside :class:`RetryingAgentWrapper`) — emits
+   the *narrow* :class:`StrategistLLMDecision` shape via
+   ``output_key="strategist_decision"``.
+3. :class:`StrategistEnricher` — reads the narrow LLM output from state,
+   runs validation + ``derive_decision_fields``, and yields a single
+   ``Event`` whose ``state_delta`` overwrites ``state["strategist_decision"]``
+   with the full enriched :class:`StrategistDecision` dump that downstream
+   agents (RiskGate, Executor, persistence) consume.
+
+Why the enricher is a BaseAgent rather than an ``after_agent_callback``
+----------------------------------------------------------------------
+Pre-2026-05-25 the enrichment lived in the LlmAgent's
+``after_agent_callback``.  That coupling broke under
+:class:`RetryingAgentWrapper`-driven schema-retry: the wrapper buffers
+events from the inner LlmAgent across attempts, and on the successful
+attempt the ``after_agent_callback`` did not re-fire to enrich the
+output.  RiskGate then saw the narrow shape, read
+``decision.target_weights`` as the schema default ``{}``, produced zero
+orders, and the executor's after-callback asserted ``open without fill
+price`` for every open stance on the tick.  See the docstring on
+:class:`StrategistEnricher` for the full incident analysis.
+
+The legacy ``_strategist_validation_callback`` function still exists
+below as a thin shim — it now delegates to
+:func:`agents.strategist.enricher.validate_and_enrich` and writes back
+to ``callback_context.state``.  Production no longer wires it (the
+sequenced enricher does the work), but legacy integration tests that
+build their own LlmAgent with ``after_agent_callback=_strategist_validation_callback``
+continue to exercise the same logic through the shim — no parallel
+implementation to drift.
+"""
 from __future__ import annotations
 
 import logging
 
-from google.adk.agents import LlmAgent
 from google.adk.agents.callback_context import CallbackContext
 from google.genai import types as genai_types
 
-from agents.strategist.derivation import (
-    StrategistContractViolation,
-    TickContext,
-    derive_decision_fields,
-)
-from agents.strategist.prompts import STRATEGIST_INSTRUCTION
-from agents.strategist.schema import StrategistDecision, StrategistLLMDecision
-from broker.portfolio import Portfolio
-from data.timeguard import resolve_as_of
-from observability.terminal_log import emit_analyst_summary
-from observability.trace import _trace_maybe
+from agents.strategist.enricher import validate_and_enrich
 
-# Module-level logger for the validation callback and any future callbacks.
 logger = logging.getLogger(__name__)
 
 
-def _coerce_portfolio(value: Portfolio | dict | None) -> Portfolio:
-    """Return a Portfolio regardless of whether state stores it as an object or a serialised dump.
-
-    Args:
-        value: Either a ``Portfolio`` instance, a dict produced by
-            ``Portfolio.model_dump(mode="json")``, or ``None``.
-
-    Returns:
-        A ``Portfolio`` instance. Returns an empty portfolio (cash=0.0, no positions)
-        when ``value`` is ``None``.
-    """
-    if isinstance(value, Portfolio):
-        return value
-    if value is None:
-        return Portfolio(cash=0.0)
-    return Portfolio.model_validate(value)
-
-
-# NOTE — A2.1 removed the two strategist before_agent_callbacks
-# (``_held_view_before_callback`` and ``_evidence_view_before_callback``).  Their
-# work now lives in ``agents.strategist.context_shim.StrategistContextShim``,
-# which yields a single ``Event(state_delta=...)`` rather than mutating state in
-# place from a callback — see Rule 1 of ``docs/contract-invariants.md``.
-
-
-def _log_offending_decision(
-    tick_id: str,
-    decision: StrategistDecision | StrategistLLMDecision,
-    violation: str,
-) -> None:
-    """Emit a structured error log capturing the strategist's offending output.
-
-    Called immediately before every ``StrategistContractViolation`` raise so
-    that the LLM's own reasoning / decision_tag survives in the run log even
-    when ``STOCKBOT_TRACE=1`` is not set.  Without this, the raised exception
-    carries only the bad ticker(s) and the rest of the decision context
-    (decision_tag, reasoning, thesis) is lost when the tick aborts.
-
-    Args:
-        tick_id: The tick identifier from state (or ``"unknown"`` fallback).
-        decision: The parsed ``StrategistDecision`` that failed validation.
-        violation: A short human-readable description of which contract was
-            broken — included verbatim in the log message so the line is
-            self-contained when grepping run logs.
-    """
-
-    logger.error(
-        "Strategist contract violation on tick=%s: %s | decision_tag=%r "
-        "reasoning=%r thesis=%r confidence=%s n_stances=%d",
-        tick_id,
-        violation,
-        decision.decision_tag,
-        decision.reasoning,
-        decision.thesis,
-        decision.confidence,
-        len(decision.stances),
-    )
+# ── Legacy callback shim ──────────────────────────────────────────────────────
 
 
 def _strategist_validation_callback(
     callback_context: CallbackContext,
 ) -> genai_types.Content | None:
-    """Validate per-ticker stances; on success, derive decision fields and write back.
+    """Legacy ``after_agent_callback`` shim — delegates to the enricher.
 
-    Runs the cross-stance checks that the schema can't express on its own
-    (off-watchlist tickers; intent=None on any stance).  Verb-conditional
-    reason checks (close/trim must supply a reason) are delegated to
-    ``derive_decision_fields`` which raises loudly on violation.
+    The production strategist branch sequences a :class:`StrategistEnricher`
+    BaseAgent after the wrapped LlmAgent, so this callback is **no longer
+    wired into the production pipeline**.  It remains here purely as a thin
+    shim for legacy integration tests
+    (``tests/integration/test_strategist_minimal_schema_no_retry.py``,
+    ``tests/integration/backtest/test_end_to_end_smoke.py``,
+    ``tests/integration/backtest/test_fresh_run_starts_clean.py``) that build
+    their own LlmAgent and wire ``after_agent_callback=_strategist_validation_callback``
+    explicitly.  Those tests now exercise the same derivation pipeline as the
+    enricher does, so there is no parallel-logic-drift risk.
 
-    Active-stances contract (from the 2026-05-21 simplification):
+    On success: writes the enriched ``StrategistDecision`` dump back to
+    ``callback_context.state["strategist_decision"]`` and returns ``None``.
 
-        The strategist no longer needs to emit a stance for *every*
-        watchlist ticker.  It emits stances only for tickers it wants to
-        *change* (open / add / trim / close); any watchlist ticker the
-        strategist does NOT emit a stance for is treated as a carry-forward
-        (held → keep holding, flat → stay flat).  Derivation pads
-        ``target_weights`` accordingly so downstream agents still see an
-        exhaustive dict.  This callback therefore does NOT enforce
-        exhaustiveness — only that whatever IS emitted is on-watchlist.
-
-    Why every failure raises rather than returning Content:
-
-        Returning a ``genai_types.Content`` from an ``after_agent_callback``
-        does NOT re-prompt the LLM in ADK — it replaces the agent's final
-        response and ends the agent.  The original implementation returned
-        ``_reprompt(...)`` Content intending to round-trip the validation
-        error back to the model, but ADK never did so.  The result was a
-        silent partial decision: stances persisted to the database, but
-        the after-callback's derivation step never ran, so
-        ``target_weights`` stayed at the schema default ``{}`` and the
-        RiskGate produced zero orders for every tick.  Raising
-        ``StrategistContractViolation`` instead makes the failure abort
-        the tick loudly so we can see the LLM misbehaving.
-
-    Args:
-        callback_context: ADK callback context carrying the mutable pipeline state.
-
-    Returns:
-        ``None`` on success; never returns a value otherwise — failures raise.
-
-    Raises:
-        StrategistContractViolation: when the decision violates a
-            watchlist-level contract (off-watchlist tickers, intent=None,
-            or missing reason on close/trim).
+    On contract violation: re-raises :class:`StrategistContractViolation`
+    (or :class:`pydantic.ValidationError`) so the offending tick aborts
+    loudly rather than degrading silently.
     """
+
     state = callback_context.state
-    raw = state.get("strategist_decision")
-    if not raw:
+    enriched = validate_and_enrich(state)
+    if enriched is None:
+        # No decision in state — cold-start tick or strategist did not run.
         return None
 
-    # The LLM now emits the narrow ``StrategistLLMDecision`` shape; the full
-    # ``StrategistDecision`` (with derived dicts) is constructed below.  Accept
-    # either form here so test fixtures and replays that hand-craft full
-    # decisions still parse — ``StrategistLLMDecision`` is a strict prefix of
-    # ``StrategistDecision``, so any dict that validates as the full shape will
-    # also validate as the narrow one (Pydantic ignores extras by default).
-    if isinstance(raw, dict):
-        llm_decision = StrategistLLMDecision.model_validate(raw)
-    elif isinstance(raw, StrategistDecision):
-        # Replay path — extract the LLM-emitted subset.
-        llm_decision = StrategistLLMDecision(
-            stances      = raw.stances,
-            decision_tag = raw.decision_tag,
-            reasoning    = raw.reasoning,
-            thesis       = raw.thesis,
-            confidence   = raw.confidence,
-        )
-    else:
-        llm_decision = raw                                                     # already StrategistLLMDecision
-
-    tickers: list[str] = state.get("tickers", []) or []
-    portfolio = _coerce_portfolio(state.get("portfolio"))
-    current_weights = portfolio.current_weights()
-    tick_id: str = state.get("tick_id") or state.get("recorded_at", "unknown")
-
-    # ── Pass 1: No off-watchlist tickers ─────────────────────────────────────
-    # Prevents the model from inventing tickers not in the current watchlist.
-    # No exhaustiveness check — omission is read as an implicit hold by
-    # ``derive_decision_fields`` (active-stances contract); the strategist only
-    # emits stances for the tickers it wants to *change*.
-    emitted = {s.ticker for s in llm_decision.stances}
-    extras = [t for t in emitted if t not in tickers]
-    if extras:
-
-        msg = (
-            f"Strategist included off-watchlist tickers: {extras}.  "
-            f"Only emit stances for the watchlist."
-        )
-        _log_offending_decision(str(tick_id), llm_decision, msg)
-        raise StrategistContractViolation(msg)
-
-    # ── Pass 2: Intent-based action count tally ──────────────────────────────
-    # Read ``stance.intent`` directly — no more weight-comparison derivation.
-    # Reason-presence checks (close/trim require a reason) are now enforced
-    # inside ``derive_decision_fields`` with a loud raise, so we only need to
-    # tally the per-action counts here for the success summary log below.
-    action_counts: dict[str, int] = {
-        "open": 0, "close": 0, "trim": 0, "add": 0, "hold": 0, "update": 0,
-    }
-
-    for stance in llm_decision.stances:
-        # Intent-based: read the verb directly rather than inferring it from
-        # current vs preferred weight (the old lifecycle-derived approach).
-        action = stance.intent or "hold"
-        action_counts[action] = action_counts.get(action, 0) + 1
-
-    # ── Pass 3: Derive decision fields ───────────────────────────────────────
-    # All validation passed — derive the canonical decision fields from the
-    # stances so downstream consumers (executor, persistence) see the shape
-    # they expect.  Reads intent + weight rather than preferred_weight; raises
-    # loudly if any stance has intent=None (no silent legacy-path fallback).
-    #
-    # Use state["as_of"] as the derivation timestamp when available (backtest
-    # replay path) so PositionThesis.opened_at is deterministic.  Fall back to
-    # wall-clock on live runs where as_of is absent.
-    #
-    # ``watchlist`` is passed through so the derivation's carry-forward pass
-    # can pad ``target_weights`` for tickers the strategist did not emit a
-    # stance for (active-stances contract).
-    raw_as_of = state.get("as_of")
-    derivation_now = resolve_as_of(
-        raw_as_of,
-        allow_wallclock=True,
-        site="strategist/agent._after_validation",
-    )
-    ctx = TickContext(
-        tick_id=str(tick_id),
-        decision_tag=llm_decision.decision_tag,
-        now=derivation_now,
-        current_weights=current_weights,
-        watchlist=tickers,
-    )
-
-    # derive_decision_fields reads stance.intent + stance.weight directly.
-    derived = derive_decision_fields(llm_decision.stances, ctx)
-
-    # Construct the full ``StrategistDecision`` that downstream agents
-    # (risk_gate, executor, persistence) consume.  The LLM emits the narrow
-    # ``StrategistLLMDecision``; we join its fields with the derivation output
-    # here.  Single construction site means downstream's contract with
-    # ``StrategistDecision`` stays unchanged from before the two-class split.
-    decision = StrategistDecision(
-        stances        = llm_decision.stances,
-        decision_tag   = llm_decision.decision_tag,
-        reasoning      = llm_decision.reasoning,
-        thesis         = llm_decision.thesis,
-        confidence     = llm_decision.confidence,
-        target_weights = derived.target_weights,
-        close_reasons  = derived.close_reasons,
-        trim_reasons   = derived.trim_reasons,
-    )
-
-    # ── Per-tick success summary ─────────────────────────────────────────────
-    # One concise INFO line so you can scan a run log and immediately see
-    # whether the strategist is actually committing capital or just
-    # hold-flat-ing the entire watchlist.  Useful sanity check after the
-    # silent-zero-orders bug fixed in this same change — if the new
-    # target_weights are still empty post-derivation, this line will say so.
-    nonzero_weight_sum = sum(w for w in derived.target_weights.values() if w > 0.0)
-    logger.info(
-        "Strategist tick=%s: opens=%d closes=%d trims=%d adds=%d holds=%d updates=%d"
-        " | nonzero_weight_sum=%.4f decision_tag=%r confidence=%s",
-        tick_id,
-        action_counts["open"],
-        action_counts["close"],
-        action_counts["trim"],
-        action_counts["add"],
-        action_counts["hold"],
-        action_counts["update"],
-        nonzero_weight_sum,
-        decision.decision_tag,
-        decision.confidence,
-    )
-
-    # Write the enriched decision (with legacy fields populated) back to state.
-    decision_dump = decision.model_dump(mode="json")
-    state["strategist_decision"] = decision_dump
-
-    # Surface the strategist decision on the per-tick trace so downstream
-    # inspection (decisions/, report/) and ad-hoc trace forensics can see
-    # the full stance set, decision_tag, reasoning, and derived weights.
-    # No-op unless state["temp:_trace"] is set by the backtest driver.
-    _trace_maybe(state, "03_strategist", decision_dump)
-
-    # ── Terminal summary row ──────────────────────────────────────────────────
-    # Emit one singleton summary row ("strategist: 1/1 ✓ · 2.1s · 8.4k tok")
-    # using the accumulator written by the after_model_callback.  This mirrors
-    # the same pattern used in news/joiner.py and fundamental/joiner.py, keeping
-    # all three analysts' summary rows visually consistent.
-    import os
-    if os.environ.get("STOCKBOT_TERMINAL_LOG") == "1":
-        _strat_calls:   list[dict]     = state.get("temp:_obs_strategist_calls")   or []
-        _strat_retries: dict[str, int] = state.get("temp:_obs_strategist_retries") or {}
-        emit_analyst_summary(
-            "strategist",
-            calls        = _strat_calls,
-            ticker_count = 1,
-            retries      = _strat_retries,
-        )
-
+    # Write through the CallbackContext's state.  In real ADK this is a
+    # tracked mutation that the SessionService will persist; in the test
+    # shims it's a plain dict write.  Per contract Rule 1, production
+    # writes go through ``StrategistEnricher``'s ``state_delta`` Event
+    # instead — this shim is the carve-out for the legacy callback path.
+    state["strategist_decision"] = enriched
     return None
 
 
@@ -290,7 +94,8 @@ def _strategist_validation_callback(
 
 
 def build_strategist():
-    """Construct the production Strategist branch — ``SequentialAgent[ContextShim, RetryingAgentWrapper[LlmAgent]]``.
+    """Construct the production Strategist branch — SequentialAgent of
+    ``[StrategistContextShim, RetryingAgentWrapper[LlmAgent], StrategistEnricher]``.
 
     This factory is the **single construction path** for the strategist.  Both
     the live pipeline (``orchestrator.pipeline._build_strategist``) and any
@@ -304,12 +109,28 @@ def build_strategist():
 
     The branch shape:
 
-    - ``StrategistContextShim`` runs first and hydrates ``temp:held_positions_view``,
-      ``temp:ticker_evidence``, and ``temp:ticker_evidence_objects`` via a
-      yielded ``Event(state_delta=…)`` (contract Rule 1).
-    - The downstream ``LlmAgent`` (wrapped in ``RetryingAgentWrapper``)
-      resolves those keys via ADK's instruction-variable substitution and
-      emits its ``StrategistDecision``.
+    - ``StrategistContextShim`` runs first and hydrates
+      ``temp:held_positions_view``, ``temp:ticker_evidence``, and
+      ``temp:ticker_evidence_objects`` via a yielded
+      ``Event(state_delta=…)`` (contract Rule 1).
+    - The wrapped ``LlmAgent`` resolves those keys via ADK's
+      instruction-variable substitution and emits its narrow
+      :class:`StrategistLLMDecision` via ``output_key="strategist_decision"``.
+    - :class:`StrategistEnricher` reads the narrow LLM output from state,
+      runs validation + ``derive_decision_fields``, and yields a single
+      ``Event(state_delta=…)`` that overwrites ``strategist_decision``
+      with the full enriched dump.
+
+    Why the enricher is sequenced as a BaseAgent rather than an
+    ``after_agent_callback``
+    -----------------------------------------------------------
+    See :class:`agents.strategist.enricher.StrategistEnricher` for the full
+    incident analysis.  Summary: ``after_agent_callback`` is lifecycle-coupled
+    to the LlmAgent call and silently misfires under
+    :class:`RetryingAgentWrapper`-driven schema-retry.  Sequencing the
+    enricher as its own BaseAgent makes the enrichment run unconditionally
+    once the wrapper has produced a successful LLM response — regardless of
+    how many retries were needed inside.
 
     Why the retry wrap is **inside** the SequentialAgent
     ----------------------------------------------------
@@ -320,20 +141,13 @@ def build_strategist():
     event the inner yields, then forwards them only on success.  When the
     inner is a SequentialAgent, ContextShim's ``state_delta`` event is
     buffered — the ADK Runner never sees it, never applies it to
-    ``ctx.session.state``, and the LlmAgent's
-    ``inject_session_state`` step fails before any 429 risk even
-    materialises.
+    ``ctx.session.state``, and the LlmAgent's ``inject_session_state`` step
+    fails before any 429 risk even materialises.
 
     The fix: wrap only the ``LlmAgent`` (the unit that can actually 429).
-    ContextShim runs unwrapped — its ``state_delta`` event flows to the
-    outer Runner via the SequentialAgent, the Runner applies it, and the
-    wrapped LlmAgent then reads it from a hydrated session state.  See
+    ContextShim runs unwrapped, and the enricher runs unwrapped — both yield
+    ``state_delta`` events that the outer Runner applies.  See
     :mod:`agents.llm_retry` for the wrap's invariants.
-
-    The model identifier is read from ``config/models.json::strategist`` via
-    :func:`src.config.models.get_models_config`.  Trace callbacks are wired
-    only when the ``STOCKBOT_TRACE=1`` environment variable is set — a
-    zero-cost gate that keeps prod hot-path free of trace overhead.
 
     Returns
     -------
@@ -343,16 +157,20 @@ def build_strategist():
         ``RetryingAgentWrapper``; the inner ``LlmAgent`` is at
         ``branch.sub_agents[1].inner`` for tests that need to inspect
         LlmAgent attributes (model, callbacks, output_key, etc.).
+        ``branch.sub_agents[2]`` is the :class:`StrategistEnricher`.
     """
 
     import os
 
-    from google.adk.agents import SequentialAgent
+    from google.adk.agents import LlmAgent, SequentialAgent
     from google.genai import types as genai_types
 
     from agents.analysts._common import _chain_after, _chain_before
     from agents.llm_retry import RetryingAgentWrapper, build_retry_policies
     from agents.strategist.context_shim import StrategistContextShim
+    from agents.strategist.enricher import StrategistEnricher
+    from agents.strategist.prompts import STRATEGIST_INSTRUCTION
+    from agents.strategist.schema import StrategistLLMDecision
     from config.models import get_models_config
     from config.strategist import get_strategist_config
     from observability.terminal_log import make_observability_callbacks
@@ -363,12 +181,12 @@ def build_strategist():
     model_name = get_models_config().strategist
 
     # Read the per-call runtime caps from config/strategist.json.  These drive
-    # the LlmAgent's token budget and the RetryingAgentWrapper's timeout + retry
-    # budgets — the single source of truth so tuning one JSON key takes effect
-    # everywhere.
+    # the LlmAgent's token budget and the RetryingAgentWrapper's timeout +
+    # retry budgets — the single source of truth so tuning one JSON key takes
+    # effect everywhere.
     llm_caps = get_strategist_config().llm
 
-    # Observability callbacks — emit one terminal log row for the strategist
+    # Observability callbacks — emit one terminal-log row for the strategist
     # LLM call.  Only wired when STOCKBOT_TERMINAL_LOG=1 so backtest replays
     # and unit tests add zero overhead.  The strategist has no per-ticker
     # progress counter (it makes one call per tick), so ticker_index=1 /
@@ -483,19 +301,17 @@ def build_strategist():
     before_model = _chain_before(obs_before, trace_before, probe_before)
     after_model  = _chain_after(obs_after, trace_after, probe_after)
 
-    # The inner LlmAgent — its ``after_agent_callback`` runs the legacy-field
-    # derivation + contract validation defined above in this module.  Note:
-    # no ``after_model_callback`` beyond the optional trace hook (the legacy
-    # ``_strategist_after_model_composite`` clamp was deleted in A2.3 because
-    # the prompt itself forbids negative weights — see
-    # ``tests/unit/agents/strategist/test_after_model_unwired.py``).
+    # The inner LlmAgent — emits the *narrow* StrategistLLMDecision shape
+    # via output_key.  No ``after_agent_callback`` here: enrichment lives in
+    # the sequenced :class:`StrategistEnricher` so it survives schema-retry
+    # inside :class:`RetryingAgentWrapper` (see module docstring + the
+    # enricher class docstring for the incident this design fixes).
     llm = LlmAgent(
         name                    = "Strategist",
         model                   = model_name,
         instruction             = STRATEGIST_INSTRUCTION,
         output_schema           = StrategistLLMDecision,
         output_key              = "strategist_decision",
-        after_agent_callback    = _strategist_validation_callback,
         before_model_callback   = before_model,
         after_model_callback    = after_model,
         generate_content_config = genai_types.GenerateContentConfig(
@@ -526,5 +342,9 @@ def build_strategist():
 
     return SequentialAgent(
         name       = "StrategistBranch",
-        sub_agents = [StrategistContextShim(), wrapped_llm],
+        sub_agents = [
+            StrategistContextShim(),
+            wrapped_llm,
+            StrategistEnricher(),
+        ],
     )
