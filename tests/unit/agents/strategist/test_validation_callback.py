@@ -102,11 +102,19 @@ def test_strategist_validation_callback_passes_retries(monkeypatch) -> None:
         portfolio            = _portfolio().model_dump(mode="json"),
         tick_id              = "t-retry",
         strategist_decision  = _valid_decision(),
+        # Strategist is a singleton with synthetic ticker="decision";  the
+        # observability callback writes one scalar record under
+        # ``temp:_obs_strategist_call_decision`` (disjoint per-ticker key
+        # shape that replaces the old shared list — see
+        # ``make_observability_callbacks`` for rationale).
+        **{"temp:_obs_strategist_call_decision": {
+            "ticker":           "decision",
+            "elapsed":          2.1,
+            "prompt_tokens":    8000,
+            "candidate_tokens": 400,
+            "ok":               True,
+        }},
         # Retry counter: one schema-validation retry fired.
-        **{"temp:_obs_strategist_calls": [
-            {"ticker": "strategist", "elapsed": 2.1, "prompt_tokens": 8000,
-             "candidate_tokens": 400, "ok": True},
-        ]},
         **{"temp:_obs_strategist_retries": {"schema": 1}},
     )
 

@@ -208,10 +208,16 @@ async def test_news_joiner_passes_retries_to_summary(monkeypatch) -> None:
 
     # InMemorySessionService strips temp: keys; inject them directly onto the
     # state dict after creation so the joiner can read them.
-    session.state["temp:_obs_news_calls"]   = [
-        {"ticker": "AAPL", "elapsed": 1.0, "prompt_tokens": 1000,
-         "candidate_tokens": 500, "ok": True},
-    ]
+    # Per-ticker observability key — one scalar dict per branch, written by
+    # ``make_observability_callbacks`` in the live pipeline.  Disjoint keys
+    # avoid the shared-list race that ParallelAgent fan-out otherwise causes.
+    session.state["temp:_obs_news_call_AAPL"] = {
+        "ticker":           "AAPL",
+        "elapsed":          1.0,
+        "prompt_tokens":    1000,
+        "candidate_tokens": 500,
+        "ok":               True,
+    }
     session.state["temp:_obs_news_retries"] = {"rate_limit": 2}
 
     agent = NewsJoinerAgent(name="NewsJoiner")

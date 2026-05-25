@@ -276,10 +276,16 @@ async def test_fundamental_joiner_passes_retries_to_summary(monkeypatch) -> None
 
     # InMemorySessionService strips temp: keys; inject them directly onto the
     # state dict after creation so the joiner can read them.
-    session.state["temp:_obs_fundamental_calls"]   = [
-        {"ticker": "AAPL", "elapsed": 1.2, "prompt_tokens": 1200,
-         "candidate_tokens": 600, "ok": True},
-    ]
+    # Per-ticker observability key — one scalar dict per branch, written by
+    # ``make_observability_callbacks`` in the live pipeline.  Disjoint keys
+    # avoid the shared-list race that ParallelAgent fan-out otherwise causes.
+    session.state["temp:_obs_fundamental_call_AAPL"] = {
+        "ticker":           "AAPL",
+        "elapsed":          1.2,
+        "prompt_tokens":    1200,
+        "candidate_tokens": 600,
+        "ok":               True,
+    }
     session.state["temp:_obs_fundamental_retries"] = {"timeout": 1}
 
     agent = FundamentalJoinerAgent(name="FundamentalJoiner")

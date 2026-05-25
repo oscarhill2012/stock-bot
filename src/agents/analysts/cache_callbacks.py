@@ -267,27 +267,27 @@ def make_report_cache_callbacks(
         # Record this branch in the terminal-summary accumulator.  ADK skips
         # ``after_model_callback`` whenever ``before_model_callback`` returns an
         # LlmResponse (documented in ``_after`` below), so the observability
-        # after-callback never runs on cache hits — if we don't append here,
-        # the joiner sees an empty accumulator and emits the misleading
-        # ``"0/N ✓ N failed · no timing data · 0 tok total"`` row.  Tag the
-        # record with ``cache_hit=True`` so ``emit_analyst_summary`` can render
-        # it as a cached row rather than a (zero-token, zero-latency) success.
+        # after-callback never runs on cache hits — if we don't write here,
+        # the joiner sees a missing per-ticker record and emits the
+        # misleading ``"N failed"`` row.  Tag the record with
+        # ``cache_hit=True`` so ``emit_analyst_summary`` can render it as a
+        # cached row rather than a (zero-token, zero-latency) success.
         #
-        # Key shape mirrors ``observability.terminal_log.make_observability_callbacks``
-        # (``temp:_obs_<analyst>_calls``) so the same joiner read path picks it up.
-        _accum_key = f"temp:_obs_{analyst_name}_calls"
-        existing = state.get(_accum_key)
-        if not isinstance(existing, list):
-            existing = []
-        existing.append({
+        # Key shape mirrors
+        # ``observability.terminal_log.make_observability_callbacks``
+        # (``temp:_obs_<analyst>_call_<TICKER>``) so the same joiner read
+        # path picks it up.  Per-ticker scalar (not a shared list) so
+        # parallel fan-out has no race to lose records to — see the
+        # ``make_observability_callbacks`` docstring for the full
+        # rationale.
+        state[f"temp:_obs_{analyst_name}_call_{ticker}"] = {
             "ticker":           ticker,
             "elapsed":          None,   # no LLM latency — served from disk
             "prompt_tokens":    0,
             "candidate_tokens": 0,
             "ok":               True,
             "cache_hit":        True,
-        })
-        state[_accum_key] = existing
+        }
 
         # Short-circuit the model call.  Two constraints on the return value:
         #

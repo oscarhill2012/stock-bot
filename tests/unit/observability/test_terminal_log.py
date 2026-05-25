@@ -162,8 +162,12 @@ class TestMakeObservabilityCallbacks:
 
     The key behavioural change (post-parallelism refactor):
     - ``after_cb`` must NOT emit an INFO row on ``stockbot.tick``.
-    - ``after_cb`` must append a structured record to the accumulator list
-      at ``state["temp:_obs_<analyst>_calls"]``.
+    - ``after_cb`` must write a single structured record to a disjoint
+      per-ticker key at ``state["temp:_obs_<analyst>_call_<TICKER>"]``.
+      The per-ticker key replaces the previous shared list, which raced
+      under ADK's ParallelAgent fan-out (last-writer-wins on the merged
+      state_delta either lost records → false "N failed", or stacked
+      retry residue → false over-count like 22/20).
     - ``after_cb`` MUST emit at DEBUG level on ``stockbot.tick.calls`` so the
       buffered obs/ capture still gets fine-grained per-call detail.
     """
@@ -247,8 +251,8 @@ class TestMakeObservabilityCallbacks:
         assert "news" in msg
         assert "AAPL" in msg
 
-    def test_after_cb_appends_to_accumulator(self):
-        """``after_cb`` must append a record to ``state["temp:_obs_<analyst>_calls"]``."""
+    def test_after_cb_writes_per_ticker_record(self):
+        """``after_cb`` must write a record to ``state["temp:_obs_<analyst>_call_<TICKER>"]``."""
         before_cb, after_cb = make_observability_callbacks(
             analyst="news",
             ticker="AAPL",
@@ -262,11 +266,8 @@ class TestMakeObservabilityCallbacks:
 
         after_cb(callback_context=ctx, llm_response=resp)
 
-        accum = ctx.state.get("temp:_obs_news_calls")
-        assert isinstance(accum, list)
-        assert len(accum) == 1
-
-        record = accum[0]
+        record = ctx.state.get("temp:_obs_news_call_AAPL")
+        assert isinstance(record, dict)
         assert record["ticker"] == "AAPL"
         assert record["ok"] is True
         # Elapsed should be a small positive float (we just ran before_cb).
@@ -275,8 +276,13 @@ class TestMakeObservabilityCallbacks:
         assert record["prompt_tokens"] == 8500
         assert record["candidate_tokens"] == 1100
 
-    def test_after_cb_accumulates_multiple_calls(self):
-        """Multiple after_cb calls must append to the same accumulator list."""
+    def test_after_cb_writes_disjoint_keys_per_ticker(self):
+        """Multiple after_cb calls for different tickers must use disjoint keys.
+
+        This is the key invariant that eliminates the parallel-fan-out race:
+        each branch owns its own key, so there is no shared mutable state for
+        sibling ParallelAgent children to clobber.
+        """
         _, after_cb_aapl = make_observability_callbacks(
             analyst="news", ticker="AAPL",
             ticker_index=1, ticker_count=3, model_name="gemini-test",
@@ -292,10 +298,14 @@ class TestMakeObservabilityCallbacks:
         after_cb_aapl(callback_context=ctx, llm_response=_make_fake_llm_response(1000, 100))
         after_cb_msft(callback_context=ctx, llm_response=_make_fake_llm_response(2000, 200))
 
-        accum = ctx.state.get("temp:_obs_news_calls")
-        assert len(accum) == 2
-        tickers_in_accum = {r["ticker"] for r in accum}
-        assert tickers_in_accum == {"AAPL", "MSFT"}
+        # Two disjoint keys, one record each.
+        rec_aapl = ctx.state.get("temp:_obs_news_call_AAPL")
+        rec_msft = ctx.state.get("temp:_obs_news_call_MSFT")
+        assert rec_aapl is not None and rec_aapl["ticker"] == "AAPL"
+        assert rec_msft is not None and rec_msft["ticker"] == "MSFT"
+
+        # No shared "calls" list should exist any more.
+        assert ctx.state.get("temp:_obs_news_calls") is None
 
     def test_after_cb_handles_missing_usage_metadata(self):
         """``after_cb`` must not crash when ``usage_metadata`` is ``None``."""
@@ -313,11 +323,11 @@ class TestMakeObservabilityCallbacks:
         result = after_cb(callback_context=ctx, llm_response=resp)
 
         assert result is None
-        # Record still appended — token fields will be None.
-        accum = ctx.state.get("temp:_obs_fundamental_calls")
-        assert len(accum) == 1
-        assert accum[0]["prompt_tokens"] is None
-        assert accum[0]["candidate_tokens"] is None
+        # Record still written — token fields will be None.
+        record = ctx.state.get("temp:_obs_fundamental_call_MSFT")
+        assert record is not None
+        assert record["prompt_tokens"] is None
+        assert record["candidate_tokens"] is None
 
     def test_after_cb_handles_missing_start_stamp(self):
         """``after_cb`` must not crash when the start stamp is absent."""
@@ -334,10 +344,10 @@ class TestMakeObservabilityCallbacks:
         result = after_cb(callback_context=ctx, llm_response=resp)
 
         assert result is None
-        # Record appended with elapsed=None.
-        accum = ctx.state.get("temp:_obs_news_calls")
-        assert len(accum) == 1
-        assert accum[0]["elapsed"] is None
+        # Record written with elapsed=None.
+        record = ctx.state.get("temp:_obs_news_call_TSLA")
+        assert record is not None
+        assert record["elapsed"] is None
 
     def test_after_cb_handles_none_token_fields(self):
         """``after_cb`` must not crash when token count fields are ``None``."""
@@ -354,13 +364,13 @@ class TestMakeObservabilityCallbacks:
 
         after_cb(callback_context=ctx, llm_response=resp)
 
-        accum = ctx.state.get("temp:_obs_news_calls")
-        assert len(accum) == 1
-        assert accum[0]["prompt_tokens"] is None
-        assert accum[0]["candidate_tokens"] is None
+        record = ctx.state.get("temp:_obs_news_call_GOOG")
+        assert record is not None
+        assert record["prompt_tokens"] is None
+        assert record["candidate_tokens"] is None
 
-    def test_accumulator_key_uses_temp_prefix(self):
-        """The accumulator state key must start with ``temp:`` so ADK strips it."""
+    def test_call_record_key_uses_temp_prefix(self):
+        """The per-ticker call record key must start with ``temp:`` so ADK strips it."""
         before_cb, after_cb = make_observability_callbacks(
             analyst="fundamental",
             ticker="NVDA",
@@ -372,10 +382,10 @@ class TestMakeObservabilityCallbacks:
         before_cb(callback_context=ctx, llm_request=None)
         after_cb(callback_context=ctx, llm_response=_make_fake_llm_response())
 
-        # Accumulator must live under a temp: key.
-        accum_keys = [k for k in ctx.state if k.startswith("temp:_obs_")]
-        assert len(accum_keys) == 1
-        assert accum_keys[0] == "temp:_obs_fundamental_calls"
+        # Exactly one observability key, on the per-ticker shape.
+        obs_keys = [k for k in ctx.state if k.startswith("temp:_obs_")]
+        assert len(obs_keys) == 1
+        assert obs_keys[0] == "temp:_obs_fundamental_call_NVDA"
 
 
 # ---------------------------------------------------------------------------
@@ -650,11 +660,10 @@ class TestCacheObservabilityComposition:
         resp = _make_fake_llm_response(prompt_tokens=5000, candidate_tokens=800)
         chained_after(callback_context=ctx, llm_response=resp)
 
-        # Accumulator must have one record with correct ticker.
-        accum = ctx.state.get("temp:_obs_news_calls")
-        assert isinstance(accum, list)
-        assert len(accum) == 1
-        assert accum[0]["ticker"] == "AAPL"
+        # Per-ticker call record must have been written for AAPL.
+        record = ctx.state.get("temp:_obs_news_call_AAPL")
+        assert isinstance(record, dict)
+        assert record["ticker"] == "AAPL"
 
         # No INFO records on stockbot.tick — per-call row has been removed.
         tick_info = [

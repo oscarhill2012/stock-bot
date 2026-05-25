@@ -259,9 +259,16 @@ def validate_and_enrich(state: dict) -> dict | None:
     # ── Terminal summary row ──────────────────────────────────────────────────
     # Mirrors the pattern used by news/joiner.py and fundamental/joiner.py —
     # emit one singleton summary row ("strategist: 1/1 ✓ · 2.1s · 8.4k tok")
-    # using the accumulator written by the LlmAgent's after_model_callback.
+    # using the per-ticker call record written by the LlmAgent's
+    # after_model_callback.  Strategist is a singleton agent — it passes
+    # ``ticker="decision"`` (synthetic) to ``make_observability_callbacks``
+    # — so we read exactly one key here.
     if os.environ.get("STOCKBOT_TERMINAL_LOG") == "1":
-        _strat_calls:   list[dict]     = state.get("temp:_obs_strategist_calls")   or []
+        _strat_calls: list[dict] = []
+        _rec = state.get("temp:_obs_strategist_call_decision")
+        if _rec is not None:
+            _strat_calls.append(_rec)
+
         _strat_retries: dict[str, int] = state.get("temp:_obs_strategist_retries") or {}
         emit_analyst_summary(
             "strategist",

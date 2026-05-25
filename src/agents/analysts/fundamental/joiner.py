@@ -118,14 +118,23 @@ class FundamentalJoinerAgent(BaseAgent):
         batch = VerdictBatch(verdicts=verdicts_list)
 
         # ── Terminal summary row ──────────────────────────────────────────────
-        # Read the accumulator written by the per-ticker after_model callbacks.
-        # Each record was appended by ``make_observability_callbacks``'s after_cb
-        # when a branch completed successfully.  Branches that crashed never
-        # appended — they are counted as failures via the difference between
-        # ticker_count and len(calls).
+        # Collect per-ticker call records written by
+        # ``make_observability_callbacks``'s after_cb (on LLM success) and
+        # by ``cache_callbacks._before`` (on cache hit).  Each branch writes
+        # to its own disjoint key ``temp:_obs_fundamental_call_<TICKER>``
+        # so the parallel fan-out has no shared mutable state to race on
+        # (see ``make_observability_callbacks`` docstring for the prior
+        # shared-list bug this replaces).  Branches that crashed never
+        # wrote — they are counted as failures via the difference between
+        # ticker_count and len(_obs_calls).
         #
-        # Only emit when STOCKBOT_TERMINAL_LOG=1 (accumulator key present).
-        _obs_calls:   list[dict]     = state.get("temp:_obs_fundamental_calls")   or []
+        # Only emit when STOCKBOT_TERMINAL_LOG=1.
+        _obs_calls: list[dict] = []
+        for t in tickers:
+            rec = state.get(f"temp:_obs_fundamental_call_{t}")
+            if rec is not None:
+                _obs_calls.append(rec)
+
         _obs_retries: dict[str, int] = state.get("temp:_obs_fundamental_retries") or {}
         if _obs_calls or tickers:
             # Always emit the summary when there are tickers — even if all failed

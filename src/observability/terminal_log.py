@@ -281,19 +281,40 @@ def make_observability_callbacks(
     The ``before_cb`` stamps a high-resolution start time into session state
     via ``callback_context.state``.  The ``after_cb`` reads it, computes the
     elapsed time, extracts token counts from ``llm_response.usage_metadata``,
-    and appends a record to the analyst's call accumulator list in session state.
+    and writes a single record to a *per-ticker* state key.
 
     The per-call detail is *also* emitted at DEBUG level on ``stockbot.tick.calls``
     so the buffered obs/ capture still gets it.  The terminal stderr handler
     is clamped to INFO, so the DEBUG records do not appear on screen.
 
-    The accumulator list is stored at ``state["temp:_obs_<analyst>_calls"]``.
+    The record is stored at ``state["temp:_obs_<analyst>_call_<TICKER>"]``.
     The ``temp:`` prefix ensures ADK strips it at the invocation boundary so
     stale records from a previous tick never bleed into the next.
 
+    Why per-ticker keys (not a shared list)
+    --------------------------------------
+    The original design used one shared list key per analyst
+    (``temp:_obs_<analyst>_calls``) that every branch appended to.  Under
+    ADK's ``ParallelAgent`` fan-out that pattern is a textbook
+    read-modify-write race: each sibling branch reads a snapshot of the
+    list, appends its own record, and writes the list back as part of its
+    state_delta.  ADK merges sibling state_deltas with last-writer-wins
+    semantics on a given key, so
+
+      - records from "losing" branches silently vanish → false ``N
+        failed`` count in the analyst summary row (e.g. ``16/20 ✓ 4
+        failed`` when in fact all 20 verdicts landed); and
+      - on retry, a discarded buffered event's append can occasionally
+        re-surface when the merge picks a stale snapshot → false
+        over-count (e.g. ``22/20 ✓``).
+
+    Disjoint per-ticker keys eliminate both: there is at most one writer
+    per key and exactly one record per ticker.  The joiner aggregates by
+    iterating the watchlist and reading each ticker's key.
+
     After all per-ticker LLM branches for an analyst finish, the joiner
-    (or strategist) reads this accumulator and passes it to
-    ``emit_analyst_summary`` to produce one tidy terminal row.
+    (or strategist enricher) collects the per-ticker records and passes
+    them to ``emit_analyst_summary`` to produce one tidy terminal row.
 
     The two callbacks are designed to be chained with the existing cache
     callbacks via ``agents.analysts._common._chain_before`` /
@@ -327,10 +348,11 @@ def make_observability_callbacks(
     # ADK strips these ephemeral values at the invocation boundary.
     _start_key = f"temp:_llm_start_{analyst}_{ticker}"
 
-    # State key for the per-analyst accumulator list.  All per-ticker branches
-    # for the same analyst append to the same list; the joiner reads it once
-    # all branches have completed.
-    _accum_key = f"temp:_obs_{analyst}_calls"
+    # Per-ticker state key — each branch writes its single record to its own
+    # key, so there is no race when sibling branches run in parallel.  The
+    # joiner aggregates by iterating the watchlist and reading each ticker's
+    # key.  See the function docstring for the full rationale.
+    _call_key = f"temp:_obs_{analyst}_call_{ticker}"
 
     # Logger that the formatter treats as verbatim (no timestamp prefix).
     _tick_log   = logging.getLogger(_TICK_LOGGER)
@@ -409,9 +431,10 @@ def make_observability_callbacks(
             # Defensive — never crash the pipeline on observability code.
             pass
 
-        # Append a structured record to the analyst accumulator.  The joiner
-        # reads this list once all per-ticker branches have completed and passes
-        # it to ``emit_analyst_summary`` to build the terminal summary row.
+        # Write this branch's single record to its disjoint per-ticker key.
+        # No read-modify-write — each branch owns its own key, so there is
+        # nothing to race on under parallel fan-out.  The joiner aggregates
+        # by iterating the watchlist after all branches have completed.
         record: dict = {
             "ticker":           ticker,
             "elapsed":          elapsed,
@@ -419,13 +442,7 @@ def make_observability_callbacks(
             "candidate_tokens": candidate_tokens,
             "ok":               True,
         }
-
-        # Safely initialise the accumulator if this is the first branch to finish.
-        existing = state.get(_accum_key)
-        if not isinstance(existing, list):
-            existing = []
-        existing.append(record)
-        state[_accum_key] = existing
+        state[_call_key] = record
 
         # Emit per-call detail at DEBUG level on the calls sub-logger so the
         # buffered obs/ capture still has the fine-grained data.  The terminal
@@ -488,11 +505,14 @@ def emit_analyst_summary(
         Human-readable analyst name used as the row label, e.g. ``"news"``,
         ``"fundamental"``, or ``"strategist"``.
     calls:
-        List of per-call records accumulated by ``make_observability_callbacks``
-        and stored at ``state["temp:_obs_<analyst>_calls"]``.  Each record is a
-        dict with keys ``ticker``, ``elapsed``, ``prompt_tokens``,
-        ``candidate_tokens``, and ``ok``.  Pass an empty list when no calls
-        completed (all branches failed).
+        List of per-call records.  The joiner builds this list by iterating
+        the watchlist and reading each ticker's per-ticker scalar key
+        ``state["temp:_obs_<analyst>_call_<TICKER>"]`` (written by
+        ``make_observability_callbacks`` on LLM success and by
+        ``cache_callbacks._before`` on cache hit).  Each record is a dict
+        with keys ``ticker``, ``elapsed``, ``prompt_tokens``,
+        ``candidate_tokens``, and ``ok``.  Pass an empty list when no
+        branches completed (all failed).
     ticker_count:
         Total number of tickers that were *attempted* for this analyst.  Used
         to compute the failed count: ``failed = ticker_count - len(calls)``.
