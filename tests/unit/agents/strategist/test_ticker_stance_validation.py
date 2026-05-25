@@ -260,8 +260,18 @@ def test_update_missing_reason():
     assert "update" in msg
 
 
-def test_update_missing_all_commitment_fields():
-    """update with reason but no mutable fields raises ValidationError."""
+def test_update_missing_all_commitment_fields_coerces_to_hold():
+    """update with reason but no mutable fields salvages to ``hold``.
+
+    Updated 2026-05-25: the validator used to raise here, but empirically
+    Vertex Gemini occasionally emits ``intent='update'`` with prose that
+    talks about updating a target without ever populating ``target_price``
+    (or any other thesis field).  The shape is structurally equivalent to
+    a valid ``hold`` — reason present, no commitment fields, no weight —
+    and the executor would do nothing either way, so the validator coerces
+    rather than aborting the tick.  See ``test_stance_schema`` for the
+    paired observability assertion (WARN log on every coercion).
+    """
     data = dict(
         ticker="AAPL",
         intent="update",
@@ -269,13 +279,12 @@ def test_update_missing_all_commitment_fields():
         # target_price, stop_price, catalyst, horizon all absent/null
     )
 
-    with pytest.raises(ValidationError) as exc_info:
-        TickerStance.model_validate(data)
+    stance = TickerStance.model_validate(data)
 
-    msg = str(exc_info.value)
-    assert "update" in msg
-    # Should suggest the alternative verb.
-    assert "hold" in msg
+    # The validator rewrote the intent — downstream sees a clean hold.
+    assert stance.intent == "hold"
+    assert stance.ticker == "AAPL"
+    assert stance.reason == "I have a reason but nothing to change."
 
 
 # ---------------------------------------------------------------------------

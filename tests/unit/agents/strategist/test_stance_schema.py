@@ -203,10 +203,49 @@ class TestRequireIntentFields:
         with pytest.raises(ValidationError, match="reason"):
             TickerStance(ticker="AAPL", intent="update", target_price=220.0)
 
-    def test_update_missing_all_thesis_fields_raises(self):
-        """update without at least one thesis field is meaningless — raise."""
-        with pytest.raises(ValidationError, match="target_price"):
-            TickerStance(ticker="AAPL", intent="update", reason="nothing changed")
+    def test_update_missing_all_thesis_fields_coerces_to_hold(self, caplog):
+        """update with reason but no thesis fields salvages to hold + WARN.
+
+        Empirically (Sep 2025 baseline backtest) Vertex Gemini occasionally
+        emits ``intent='update'`` while writing prose like *"Updating target
+        to reflect the new catalyst"* yet never populates ``target_price`` /
+        ``stop_price`` / ``horizon`` / ``catalyst``.  The structural shape
+        is identical to a valid ``hold`` (reason present, no commitment
+        fields, no weight) and the executor would do nothing either way,
+        so the validator coerces rather than aborting the tick.
+
+        The WARN log is the loud part of the otherwise-quiet salvage: a
+        spike in the rate signals that the prompt or verb set needs work.
+        """
+        import logging
+        with caplog.at_level(logging.WARNING, logger="agents.strategist.stance_schema"):
+            s = TickerStance(
+                ticker = "AAPL",
+                intent = "update",
+                reason = "Updating target to reflect the new acquisition catalyst.",
+            )
+
+        # Intent has been silently rewritten to ``hold`` — downstream code
+        # sees a clean hold stance, no special-casing required.
+        assert s.intent == "hold"
+        assert s.ticker == "AAPL"
+        assert s.reason == "Updating target to reflect the new acquisition catalyst."
+
+        # The salvage MUST be observable in logs — silent coercion would
+        # mask a real prompt/model failure mode if the rate ever spiked.
+        warn_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("stance_update_coerced_to_hold" in r.getMessage() for r in warn_records), (
+            f"Expected WARN with 'stance_update_coerced_to_hold'; got: {[r.getMessage() for r in warn_records]}"
+        )
+        assert any("ticker=AAPL" in r.getMessage() for r in warn_records)
+
+    def test_update_missing_all_thesis_fields_and_reason_still_raises(self):
+        """If BOTH reason and thesis fields are missing, the salvage path
+        does not apply — the LLM has emitted something that is not even a
+        valid hold.  Surface the real bug rather than silently dropping it.
+        """
+        with pytest.raises(ValidationError, match="reason"):
+            TickerStance(ticker="AAPL", intent="update")
 
     def test_update_with_weight_raises(self):
         """weight is forbidden on update — no trade occurs."""

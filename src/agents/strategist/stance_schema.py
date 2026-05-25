@@ -52,11 +52,15 @@ stance.  Verb-conditional field requirements:
 """
 from __future__ import annotations
 
+import logging
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from config.strategist import get_strategist_config
+
+
+logger = logging.getLogger(__name__)
 
 # Char caps sourced from ``config/strategist.json`` — see ``src/config/
 # strategist.py`` for the rationale and the "more is not always better"
@@ -310,6 +314,76 @@ class TickerStance(BaseModel):
                     )
 
             case "update":
+                # ── Salvage shim: update-without-thesis-fields → hold ─────
+                #
+                # Empirically (Sep 2025 baseline backtest, ticker=GOOGL then
+                # JNJ) Vertex Gemini sometimes selects ``intent='update'``
+                # while writing prose like *"Updating target to reflect the
+                # new acquisition catalyst"* — yet never populates any of
+                # ``target_price`` / ``stop_price`` / ``horizon`` /
+                # ``catalyst``.  The shape it emits is structurally
+                # identical to a valid ``hold`` (reason present, no
+                # commitment fields, no weight), so the executor would do
+                # nothing either way.  Three retries of the strict raise
+                # path produced three reworded prose responses with the
+                # same missing fields — the model believes it is updating.
+                #
+                # Coerce here rather than raise so a single mislabel does
+                # not abort the tick.  A WARN log keeps the behaviour
+                # observable: if the salvage rate spikes, the prompt or
+                # verb set needs revisiting.  Project rule: silent
+                # failures are the recurring bug class — the log is the
+                # "loud" part of an otherwise quiet salvage.
+                #
+                # Only coerce when the emitted shape would itself be a
+                # valid ``hold`` (reason present, weight not set).  If
+                # the stance is malformed in other ways (no reason, or
+                # weight set), fall through to the strict validator so
+                # the genuine bug surfaces.
+                has_update_field = any(
+                    v is not None for v in (
+                        self.target_price,
+                        self.stop_price,
+                        self.catalyst,
+                        self.horizon,
+                    )
+                )
+                if (
+                    not has_update_field
+                    and self.reason is not None
+                    and self.weight is None
+                ):
+
+                    # Truncate the reason for the log line — full text can be
+                    # several sentences and would flood structured-log fields.
+                    short_reason = (
+                        self.reason[:120] + "..."
+                        if len(self.reason) > 120
+                        else self.reason
+                    )
+
+                    logger.warning(
+                        "stance_update_coerced_to_hold ticker=%s reason=%r — "
+                        "LLM emitted intent='update' with no thesis fields; "
+                        "treating as 'hold' since the executor would do nothing "
+                        "either way.  Spike in this rate means the prompt or "
+                        "verb set needs revisiting.",
+                        self.ticker,
+                        short_reason,
+                    )
+
+                    # Mutate in place — Pydantic v2 allows ``after`` validators
+                    # to return a modified instance.  The downstream pipeline
+                    # (derivation, executor) sees intent='hold' from this point on.
+                    self.intent = "hold"
+                    return self
+
+                # ── Original strict validation (genuine bug paths) ────────
+                #
+                # Reached when the salvage above did NOT match — i.e. the
+                # stance has thesis fields (could be valid update), or is
+                # missing reason, or sets weight.  Surface the real bug.
+
                 # ``update`` mutates thesis fields with no trade.  reason is
                 # required; at least one field to actually update is required;
                 # weight is forbidden (no trade = no sizing change).
@@ -322,15 +396,10 @@ class TickerStance(BaseModel):
                     )
 
                 # Require at least one of the mutable commitment fields.
-                has_update = any(
-                    v is not None for v in (
-                        self.target_price,
-                        self.stop_price,
-                        self.catalyst,
-                        self.horizon,
-                    )
-                )
-                if not has_update:
+                # (Redundant with the salvage gate above when reason is
+                # present, but kept so the error fires if reason is None
+                # and we fell through.)
+                if not has_update_field:
                     errors.append(
                         "at least one of target_price / stop_price / catalyst / "
                         "horizon must be supplied so the update has something to "
