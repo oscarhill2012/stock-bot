@@ -239,13 +239,33 @@ class TestRequireIntentFields:
         )
         assert any("ticker=AAPL" in r.getMessage() for r in warn_records)
 
-    def test_update_missing_all_thesis_fields_and_reason_still_raises(self):
-        """If BOTH reason and thesis fields are missing, the salvage path
-        does not apply — the LLM has emitted something that is not even a
-        valid hold.  Surface the real bug rather than silently dropping it.
+    def test_update_missing_all_thesis_fields_and_reason_coerces_to_hold(self, caplog):
+        """A structurally-empty update (no thesis fields, no reason, no weight)
+        is still coerced to ``hold`` — the executor would do nothing either
+        way, and the prior strict-raise behaviour was aborting JNJ ticks in
+        the 2025-09 baseline backtest with no actionable downstream effect.
+
+        The salvage synthesises a placeholder reason so the downstream hold
+        shape (which requires reason ≠ None) stays valid, and emits the WARN
+        so a spike in this rate is observable.
         """
-        with pytest.raises(ValidationError, match="reason"):
-            TickerStance(ticker="AAPL", intent="update")
+        import logging
+        with caplog.at_level(logging.WARNING, logger="agents.strategist.stance_schema"):
+            s = TickerStance(ticker="AAPL", intent="update")
+
+        # Coerced to hold — downstream code sees a clean hold stance.
+        assert s.intent == "hold"
+        assert s.ticker == "AAPL"
+
+        # A synthetic reason was filled in so the hold shape is valid.
+        assert s.reason is not None
+        assert "coerced" in s.reason.lower()
+
+        # The salvage MUST be observable in logs.
+        warn_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("stance_update_coerced_to_hold" in r.getMessage() for r in warn_records), (
+            f"Expected WARN with 'stance_update_coerced_to_hold'; got: {[r.getMessage() for r in warn_records]}"
+        )
 
     def test_update_with_weight_raises(self):
         """weight is forbidden on update — no trade occurs."""

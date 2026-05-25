@@ -217,6 +217,15 @@ class StrategistContextShim(BaseAgent):
         # this bridge — for now we keep the placeholder name unchanged.
         thesis: str = state.get("user:thesis") or ""
 
+        # ── Recent round-trips view ──────────────────────────────────────
+        # Render the rolling log written by the Executor on every close.
+        # One line per closed trade, capped at the most recent 8 so the
+        # prompt block stays bounded.  Empty-state copy is explicit so the
+        # LLM can distinguish "no trades closed yet" from a missing key.
+        recent_trades_view = _render_recent_trades(
+            state.get("user:closed_trades_log") or [],
+        )
+
         # ── Yield exactly one Event carrying all required keys ────────────
         yield Event(
             author        = self.name,
@@ -226,6 +235,7 @@ class StrategistContextShim(BaseAgent):
                 "temp:held_positions_view":     held_view,
                 "temp:ticker_evidence":         ticker_evidence_rendered,
                 "temp:ticker_evidence_objects": ticker_evidence_objects,
+                "temp:recent_trades_view":      recent_trades_view,
                 # Bridge user:thesis → {thesis} placeholder for this tick's
                 # LlmAgent call.  Written here (not as a seed) so the value
                 # is always fresh from the user-scoped namespace.
@@ -239,3 +249,33 @@ class StrategistContextShim(BaseAgent):
                 "temp:_last_schema_error":      "",
             }),
         )
+
+
+def _render_recent_trades(closed_log: list[dict]) -> str:
+    """Render the rolling closed-trade log as a compact text block.
+
+    Parameters
+    ----------
+    closed_log:
+        The list maintained by ``ExecutorAgent`` under
+        ``state["user:closed_trades_log"]``.  Each entry has keys
+        ``ticker``, ``closed_at``, ``pnl_pct``, ``holding_hours``,
+        ``close_reason``.  May be empty.
+
+    Returns
+    -------
+    str
+        One line per trade (last 8 only), or a single explicit
+        empty-state line when no trades have closed yet this run.
+    """
+    if not closed_log:
+        return "(No closed positions yet this run.)"
+
+    lines: list[str] = []
+    for t in closed_log[-8:]:
+        lines.append(
+            f"  {t['ticker']:<6} {t['pnl_pct']:+6.2f}%  "
+            f"held {t['holding_hours']}h  "
+            f"closed: {t['close_reason'] or '(no reason given)'}"
+        )
+    return "\n".join(lines)

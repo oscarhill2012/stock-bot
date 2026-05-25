@@ -352,29 +352,50 @@ class TestWriteMetricsNewFields:
 # ── _compute_vs_spy_delta ────────────────────────────────────────────────────
 
 class TestComputeVsSpyDelta:
-    """Unit tests for the _compute_vs_spy_delta helper."""
+    """Unit tests for the _compute_vs_spy_delta helper.
 
+    Post-refactor: ``_compute_vs_spy_delta`` delegates SPY valuation to
+    ``_spy_benchmark_series`` and now requires a ``starting_cash`` arg so
+    the SPY "position" is sized against the same $-zero as the portfolio.
+    Both equity ticks here use hour 0 (< 17 UTC) so the open-phase
+    classifier reads ``bar.open`` — that's why the fixtures only populate
+    ``bar.open`` and skip ``bar.close``.
+    """
+
+    # Two equity ticks at hour 0 — open phase by the 17 UTC classifier.
     _EQUITY = [
         (datetime(2023, 3, 6, tzinfo=UTC), 10_000.0),
         (datetime(2023, 3, 8, tzinfo=UTC), 10_500.0),   # +5% bot return
     ]
 
     def test_delta_computed_when_spy_present(self) -> None:
-        """When SPY bars are in the cache, the delta is bot_return − spy_return."""
+        """When SPY bars are in the cache, the delta is bot_return − spy_return.
+
+        Mock setup: one SPY bar per equity-tick date.  Both equity ticks
+        are in the open phase (hour 0), so the classifier reads
+        ``bar.open``.  ``bar.timestamp.date()`` must match the equity
+        tick's date for the per-date lookup to succeed.
+        """
         from unittest.mock import MagicMock
 
         from data.models import OHLCBar
 
-        spy_open = MagicMock(spec=OHLCBar)
-        spy_open.open = 400.0
-        spy_close = MagicMock(spec=OHLCBar)
-        spy_close.close = 404.0  # +1% SPY
+        # Bar for 2023-03-06: anchors the SPY "position" at $10,000.
+        bar1 = MagicMock(spec=OHLCBar)
+        bar1.open      = 400.0
+        bar1.timestamp = datetime(2023, 3, 6, tzinfo=UTC)
+
+        # Bar for 2023-03-08: +1% SPY (400 → 404).
+        bar2 = MagicMock(spec=OHLCBar)
+        bar2.open      = 404.0
+        bar2.timestamp = datetime(2023, 3, 8, tzinfo=UTC)
 
         mock_cache = MagicMock()
-        # read_ohlcv returns a list: first bar for open, last bar for close.
-        mock_cache.read_ohlcv.return_value = [spy_open, spy_close]
+        mock_cache.read_ohlcv.return_value = [bar1, bar2]
 
-        delta = _compute_vs_spy_delta(self._EQUITY, mock_cache)
+        delta = _compute_vs_spy_delta(
+            self._EQUITY, mock_cache, starting_cash=self._EQUITY[0][1],
+        )
 
         # bot +5%, SPY +1% → delta = +4 pp = 0.04
         assert isinstance(delta, float), f"Expected float, got {type(delta)}"
@@ -387,7 +408,9 @@ class TestComputeVsSpyDelta:
         mock_cache = MagicMock()
         mock_cache.read_ohlcv.return_value = []  # SPY not in cache
 
-        delta = _compute_vs_spy_delta(self._EQUITY, mock_cache)
+        delta = _compute_vs_spy_delta(
+            self._EQUITY, mock_cache, starting_cash=self._EQUITY[0][1],
+        )
 
         assert isinstance(delta, str), f"Expected str N/A, got {type(delta)}"
         assert "SPY" in delta, f"Expected SPY mention in N/A message: {delta}"
@@ -399,7 +422,9 @@ class TestComputeVsSpyDelta:
         mock_cache = MagicMock()
         mock_cache.read_ohlcv.side_effect = RuntimeError("db locked")
 
-        delta = _compute_vs_spy_delta(self._EQUITY, mock_cache)
+        delta = _compute_vs_spy_delta(
+            self._EQUITY, mock_cache, starting_cash=self._EQUITY[0][1],
+        )
 
         assert isinstance(delta, str), f"Expected str N/A on error, got {type(delta)}"
 
@@ -408,7 +433,7 @@ class TestComputeVsSpyDelta:
         from unittest.mock import MagicMock
 
         mock_cache = MagicMock()
-        delta = _compute_vs_spy_delta([], mock_cache)
+        delta = _compute_vs_spy_delta([], mock_cache, starting_cash=10_000.0)
 
         assert isinstance(delta, str)
         mock_cache.read_ohlcv.assert_not_called()
@@ -417,14 +442,19 @@ class TestComputeVsSpyDelta:
 # ── _build_equity_figure ─────────────────────────────────────────────────────
 
 class TestBuildEquityFigure:
-    """Unit tests for the equity-curve Figure builder (portfolio + SPY + initial-funds)."""
+    """Unit tests for the equity-curve Figure builder (portfolio + SPY + initial-funds).
 
-    # Simple two-tick portfolio series shared across all tests in this class.
+    Equity ticks use the standard NYSE UTC schedule (13:30 open, 20:00
+    close) so the ``_spy_benchmark_series`` open/close-phase classifier
+    routes each tick to the correct OHLCV field.
+    """
+
+    # Two trading days × two ticks per day — matches the live tick schedule.
     _SERIES = [
-        (datetime(2026, 2, 2,  9, 30, tzinfo=UTC), 100_000.0),
-        (datetime(2026, 2, 2, 16,  0, tzinfo=UTC), 101_000.0),
-        (datetime(2026, 2, 3,  9, 30, tzinfo=UTC),  99_500.0),
-        (datetime(2026, 2, 3, 16,  0, tzinfo=UTC), 100_200.0),
+        (datetime(2026, 2, 2, 13, 30, tzinfo=UTC), 100_000.0),  # day-1 open
+        (datetime(2026, 2, 2, 20,  0, tzinfo=UTC), 101_000.0),  # day-1 close
+        (datetime(2026, 2, 3, 13, 30, tzinfo=UTC),  99_500.0),  # day-2 open
+        (datetime(2026, 2, 3, 20,  0, tzinfo=UTC), 100_200.0),  # day-2 close
     ]
 
     @staticmethod
@@ -433,20 +463,32 @@ class TestBuildEquityFigure:
         return [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
 
     def test_three_lines_when_spy_present(self) -> None:
-        """With SPY bars in the cache, legend contains all three labels in order."""
+        """With SPY bars in the cache, the chart consumes the same tick-aligned
+        benchmark series as ``_compute_vs_spy_delta``.
+
+        With two SPY bars (one per date) and four equity ticks, the new
+        helper emits four (timestamp, $-value) pairs — one per equity
+        tick — switching between ``bar.open`` and ``bar.close`` based on
+        each tick's intraday phase.  The anchor is the first tick's price
+        (bar1.open), and ``starting_cash`` sizes the SPY "position".
+        """
         from unittest.mock import MagicMock
 
         import matplotlib.pyplot as plt
 
         from data.models import OHLCBar
 
-        # Two SPY bars: first close anchors the rebase, second moves +5%.
+        # Two SPY bars, one per date.  Both ``open`` and ``close`` are set
+        # so the open- and close-phase ticks both have a price to read.
         bar1 = MagicMock(spec=OHLCBar)
         bar1.timestamp = datetime(2026, 2, 2, tzinfo=UTC)
-        bar1.close     = 400.0
+        bar1.open      = 400.0     # anchor — first equity tick is open phase
+        bar1.close     = 405.0     # day-1 close-phase reading
+
         bar2 = MagicMock(spec=OHLCBar)
         bar2.timestamp = datetime(2026, 2, 3, tzinfo=UTC)
-        bar2.close     = 420.0     # +5%
+        bar2.open      = 410.0
+        bar2.close     = 420.0
 
         cache = MagicMock()
         cache.read_ohlcv.return_value = [bar1, bar2]
@@ -456,11 +498,20 @@ class TestBuildEquityFigure:
             assert self._legend_texts(fig) == [
                 "Portfolio", "SPY (rebased)", "Initial funds",
             ]
-            # SPY line is the second plotted Line2D; first y-value equals starting_cash.
+
+            # SPY line is the second plotted Line2D — one point per equity tick.
             spy_line = fig.axes[0].lines[1]
-            assert spy_line.get_ydata()[0] == pytest.approx(100_000.0, rel=1e-9)
-            # Second SPY point grew +5% from the anchor.
-            assert spy_line.get_ydata()[1] == pytest.approx(105_000.0, rel=1e-9)
+            spy_ys   = list(spy_line.get_ydata())
+            assert len(spy_ys) == 4, (
+                f"SPY series must align tick-for-tick with the portfolio "
+                f"(4 ticks expected); got {len(spy_ys)} points"
+            )
+
+            # spy_shares = 100_000 / 400 = 250.  Each tick: spy_shares × price.
+            assert spy_ys[0] == pytest.approx(250 * 400.0, rel=1e-9)  # day-1 open
+            assert spy_ys[1] == pytest.approx(250 * 405.0, rel=1e-9)  # day-1 close
+            assert spy_ys[2] == pytest.approx(250 * 410.0, rel=1e-9)  # day-2 open
+            assert spy_ys[3] == pytest.approx(250 * 420.0, rel=1e-9)  # day-2 close
         finally:
             plt.close(fig)
 

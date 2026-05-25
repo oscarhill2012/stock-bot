@@ -102,6 +102,9 @@ Memory Buffer (last 8 ticks): {memory_buffer}
 Day Digest:   {day_digest}
 Thesis:       {thesis}
 
+## Recent Round-trips (your last closed positions — outcomes you should weigh before re-entering the same tickers)
+{temp:recent_trades_view}
+
 ## Held Positions (your prior decisions, with evolution since open)
 {temp:held_positions_view}
 
@@ -164,6 +167,16 @@ any of those four numeric/structured fields, the correct verb is ``hold``
 changes is rejected by the schema — there is nothing for the executor to
 mutate, so it is semantically identical to ``hold`` and must be emitted as
 ``hold``.
+
+**Choosing between ``open`` and ``add``, and how to size** — ``open``
+enters a flat ticker; ``add`` grows one you already hold.  The
+{{MAX_POSITION_PCT}}% per-ticker cap is a ceiling, not a default — scale
+the weight to your conviction in the evidence.  Building over multiple
+ticks (small ``open`` → ``add`` as the thesis confirms) is valid when
+entry timing is uncertain; committing closer to the cap up front is
+equally valid when the evidence is decisive.  Before any open, weigh the
+recent price history in the technical evidence: how much of the run
+would you be chasing?
 
 ### Field constraints (schema-enforced)
 

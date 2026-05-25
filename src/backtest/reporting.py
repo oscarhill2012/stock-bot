@@ -103,7 +103,10 @@ def report(run_dir: Path, settings: BacktestSettings, *, window: str) -> None:
     # Per-window golden cache — derived from ``backtests_root`` + window.
     from backtest.settings import cache_path_for_window
     cache          = CachedDataStore(cache_path_for_window(settings, window))
-    vs_spy_delta   = _compute_vs_spy_delta(equity, cache)
+    # Pass ``starting_cash`` so the SPY benchmark series (shared by both the
+    # vs-SPY metric and the chart overlay) is sized against the same $-zero
+    # as the portfolio — apples-to-apples by construction.
+    vs_spy_delta   = _compute_vs_spy_delta(equity, cache, starting_cash=equity[0][1])
 
     _write_equity_curve(
         equity,
@@ -188,10 +191,13 @@ def _build_equity_figure(
     Renders three lines on a single ``$`` axis:
 
     - **Portfolio** — solid blue, the raw ``series`` values.
-    - **SPY (rebased)** — solid orange, SPY buy-and-hold rebased so the
-      first point equals ``starting_cash``.  Skipped silently if SPY is
-      absent from the cache or the read raises (a descriptive ``N/A`` row
-      is already written into ``metrics.md`` by ``_compute_vs_spy_delta``).
+    - **SPY (rebased)** — solid orange, the tick-aligned buy-and-hold
+      benchmark produced by ``_spy_benchmark_series``.  Skipped silently if
+      SPY is absent from the cache or the read raises (a descriptive
+      ``N/A`` row is already written into ``metrics.md`` by
+      ``_compute_vs_spy_delta``).  Critically, the chart and the metric
+      now consume the **same** benchmark series, so they cannot drift
+      apart on methodology (anchor price, intraday phase, tick cadence).
     - **Initial funds** — grey dashed horizontal at ``starting_cash``, so
       the "above the line / below the line" signal is immediate.
 
@@ -222,28 +228,19 @@ def _build_equity_figure(
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.plot(xs, ys, label="Portfolio", color="tab:blue")
 
-    # ── SPY overlay (rebased to starting_cash) ───────────────────────────────
-    # Best-effort: missing or broken SPY data must not abort the report — the
-    # metrics file already surfaces "SPY not in cache" so a noisy chart
-    # annotation would add clutter without conveying anything new.
-    start_date = xs[0].date()
-    end_date   = xs[-1].date()
-    try:
-        spy_bars = cache.read_ohlcv("SPY", start_date, end_date)
-    except Exception:
-        logger.exception("Failed to read SPY OHLCV for equity-curve overlay")
-        spy_bars = []
-
-    if spy_bars:
-        # Rebase so the first plotted SPY point sits exactly at starting_cash.
-        # Using close-of-every-bar (including the first) anchors both lines
-        # visually at (t0, starting_cash) — intentionally different from
-        # _compute_vs_spy_delta which uses open-of-first-bar for its metric.
-        spy_anchor = spy_bars[0].close
-        if spy_anchor > 0:
-            spy_xs = [b.timestamp for b in spy_bars]
-            spy_ys = [starting_cash * b.close / spy_anchor for b in spy_bars]
-            ax.plot(spy_xs, spy_ys, label="SPY (rebased)", color="tab:orange")
+    # ── SPY overlay — shares its series with the vs-SPY metric ──────────────
+    # Single source of truth: ``_spy_benchmark_series`` produces the same
+    # tick-aligned, ``starting_cash``-anchored series that
+    # ``_compute_vs_spy_delta`` consumes, so the chart's last orange point
+    # always equals the metric's SPY ending value.  The helper returns a
+    # descriptive string when SPY is missing — that branch is dropped
+    # silently here since the metrics file already surfaces the reason in
+    # human-readable form.
+    spy_series = _spy_benchmark_series(series, cache, starting_cash)
+    if isinstance(spy_series, list) and spy_series:
+        spy_xs = [t for t, _ in spy_series]
+        spy_ys = [v for _, v in spy_series]
+        ax.plot(spy_xs, spy_ys, label="SPY (rebased)", color="tab:orange")
 
     # ── Initial-funds reference line ─────────────────────────────────────────
     ax.axhline(
@@ -372,40 +369,53 @@ def _write_metrics(
     )
 
 
-def _compute_vs_spy_delta(
+def _spy_benchmark_series(
     equity: list[tuple[datetime, float]],
     cache: CachedDataStore,
-) -> float | str:
-    """Compute the bot's outperformance vs SPY buy-and-hold over the same window.
+    starting_cash: float,
+) -> list[tuple[datetime, float]] | str:
+    """Build a tick-aligned SPY buy-and-hold benchmark series.
 
-    Reads SPY OHLCV from the golden cache and computes SPY total return over the
-    window spanned by ``equity``.  Returns ``bot_total_return − spy_total_return``
-    as a fraction (e.g. ``0.05`` = 5 pp outperformance).
+    Models SPY as a single position the bot would have opened at the very
+    first equity tick: ``spy_shares = starting_cash / spy_price_at_first_tick``.
+    Every subsequent tick is then valued at ``spy_shares × spy_price_at_tick``,
+    where the price is sampled at the **same intraday phase as the portfolio
+    snapshot** — open-phase ticks read ``bar.open``, close-phase ticks read
+    ``bar.close``.
 
-    If SPY is not in the cache, returns a descriptive string rather than crashing
-    so the metrics file is still written and the run is not aborted.  The string
-    instructs the user to re-run the fetcher with SPY in the watchlist.
+    This is the single source of truth for both the equity-curve chart
+    overlay (``_build_equity_figure``) and the vs-SPY metric
+    (``_compute_vs_spy_delta``).  Both call this helper directly so they
+    cannot drift apart on anchor price, intraday phase, or tick cadence —
+    eliminating the apples-to-oranges bug where the chart was anchored on
+    bar-close while the metric used bar-open.
 
     Parameters
     ----------
     equity:
-        Ordered list of (timestamp, portfolio_value) pairs covering the run window.
+        Ordered list of (timestamp, portfolio_value) pairs.  Used both for
+        the window boundaries and for per-tick alignment.
     cache:
-        The golden ``CachedDataStore`` to query for SPY OHLCV data.
+        Golden ``CachedDataStore`` to read SPY OHLCV bars from.
+    starting_cash:
+        Anchor value used to size the SPY "position".  Must equal the
+        portfolio's starting equity so the two series share a $-zero.
 
     Returns
     -------
-    float | str
-        A float delta when SPY data is available; a descriptive string otherwise.
+    list[(datetime, float)] | str
+        A tick-aligned list of (timestamp, benchmark_value) pairs when
+        SPY data overlaps the equity window, or a descriptive ``N/A``
+        string when it does not.  Callers must ``isinstance``-check the
+        result before consuming it as a series.
     """
+
     if not equity:
         return "N/A — no portfolio snapshots"
 
-    # Derive the window from the equity series timestamps.
-    start_dt, start_v = equity[0]
-    end_dt,   end_v   = equity[-1]
-    start_date = start_dt.date() if hasattr(start_dt, "date") else date.fromisoformat(str(start_dt)[:10])
-    end_date   = end_dt.date()   if hasattr(end_dt,   "date") else date.fromisoformat(str(end_dt)[:10])
+    # Derive the SPY-read window from the equity series timestamps.
+    start_date = equity[0][0].date()
+    end_date   = equity[-1][0].date()
 
     try:
         spy_bars = cache.read_ohlcv("SPY", start_date, end_date)
@@ -416,15 +426,115 @@ def _compute_vs_spy_delta(
     if not spy_bars:
         return "N/A — SPY not in cache (run backtest_fetch with SPY)"
 
-    # SPY buy-and-hold return: use first bar's open and last bar's close.
-    spy_start_price = spy_bars[0].open
-    spy_end_price   = spy_bars[-1].close
+    # Index bars by calendar date for O(1) per-tick lookup.  OHLCV bars
+    # carry a single per-day timestamp; we pick open vs close at read time.
+    bars_by_date = {b.timestamp.date(): b for b in spy_bars}
 
-    if spy_start_price <= 0:
-        return "N/A — SPY start price is zero"
+    def _spy_price_for_tick(tick_ts: datetime) -> float | None:
+        """Return SPY price at ``tick_ts`` matching its intraday phase.
 
-    spy_total_return = (spy_end_price - spy_start_price) / spy_start_price
-    bot_total_return = (end_v - start_v) / start_v if start_v else 0.0
+        Ticks scheduled at or before 17:00 UTC are treated as open-phase
+        (standard NYSE open is 13:30 UTC; DST shifts move it earlier).
+        Later ticks are close-phase (standard close 20:00 UTC; early-close
+        half-days at 17:00 / 18:00 UTC also fall on this side).  The
+        17:00 UTC threshold sits comfortably between the two cohorts so
+        the classifier is robust to DST shifts and half-day schedules.
+
+        Returns ``None`` when no SPY bar exists for this calendar date —
+        weekend, holiday, or a tick that fell outside cached coverage.
+        """
+
+        bar = bars_by_date.get(tick_ts.date())
+        if bar is None:
+            return None
+        return bar.open if tick_ts.hour < 17 else bar.close
+
+    # Anchor at the first tick that has a matching SPY price.  Leading
+    # mismatches are rare (the runner usually aligns the window) but
+    # skipping them keeps the series usable rather than failing the whole
+    # report on a single bad timestamp.
+    anchor_price: float | None = None
+    for tick_ts, _ in equity:
+        anchor_price = _spy_price_for_tick(tick_ts)
+        if anchor_price is not None and anchor_price > 0:
+            break
+
+    if anchor_price is None or anchor_price <= 0:
+        return "N/A — no SPY bar overlaps the equity series"
+
+    spy_shares = starting_cash / anchor_price
+
+    # Walk every tick; emit (timestamp, $-value) for ticks with a bar.
+    series: list[tuple[datetime, float]] = []
+    for tick_ts, _ in equity:
+        price = _spy_price_for_tick(tick_ts)
+        if price is None:
+            continue
+        series.append((tick_ts, spy_shares * price))
+
+    return series
+
+
+def _compute_vs_spy_delta(
+    equity: list[tuple[datetime, float]],
+    cache: CachedDataStore,
+    starting_cash: float,
+) -> float | str:
+    """Compute the bot's outperformance vs a tick-aligned SPY buy-and-hold.
+
+    Delegates SPY valuation to ``_spy_benchmark_series`` — the same helper
+    the equity-curve chart consumes — so the metric and the chart cannot
+    disagree on methodology.  Returns
+    ``bot_total_return − spy_total_return`` as a fraction (e.g. ``0.05`` =
+    5 pp outperformance).
+
+    Falls back to a descriptive string if SPY is missing from the cache,
+    so the metrics file still writes and the run does not abort.
+
+    Parameters
+    ----------
+    equity:
+        Ordered list of (timestamp, portfolio_value) pairs covering the
+        run window.
+    cache:
+        The golden ``CachedDataStore`` to query for SPY OHLCV data.
+    starting_cash:
+        Starting equity — forwarded to ``_spy_benchmark_series`` so the
+        SPY "position" is sized against the same $-zero as the portfolio.
+
+    Returns
+    -------
+    float | str
+        A float delta when SPY data is available; a descriptive string
+        otherwise.
+    """
+
+    if not equity:
+        return "N/A — no portfolio snapshots"
+
+    spy_series = _spy_benchmark_series(equity, cache, starting_cash)
+
+    # _spy_benchmark_series already produced a descriptive N/A string when
+    # SPY data was unusable — surface it verbatim so the metrics file
+    # carries the exact reason rather than a generic fallback.
+    if isinstance(spy_series, str):
+        return spy_series
+
+    if not spy_series:
+        return "N/A — empty SPY series"
+
+    # Apples-to-apples: identical starting cash, identical tick cadence,
+    # identical intraday phase at each tick.
+    spy_start = spy_series[0][1]
+    spy_end   = spy_series[-1][1]
+    bot_start = equity[0][1]
+    bot_end   = equity[-1][1]
+
+    if spy_start <= 0:
+        return "N/A — SPY start value is zero"
+
+    spy_total_return = (spy_end - spy_start) / spy_start
+    bot_total_return = (bot_end - bot_start) / bot_start if bot_start else 0.0
 
     return bot_total_return - spy_total_return
 

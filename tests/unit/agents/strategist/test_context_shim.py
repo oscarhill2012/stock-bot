@@ -77,6 +77,9 @@ def test_shim_yields_one_event_with_temp_prefixed_keys(populated_state: dict) ->
         "temp:held_positions_view",
         "temp:ticker_evidence",
         "temp:ticker_evidence_objects",
+        # Past-trades memory addition — rendered from user:closed_trades_log
+        # (empty-state copy when no closes have happened yet this run).
+        "temp:recent_trades_view",
         # Spec B Band 2: shim bridges user:thesis → thesis for the prompt placeholder.
         "thesis",
         # Seeded empty so the RetryingAgentWrapper's schema-error feedback
@@ -92,6 +95,9 @@ def test_shim_yields_one_event_with_temp_prefixed_keys(populated_state: dict) ->
     # still serialised as a list/string pair.
     assert isinstance(delta["temp:ticker_evidence"], str)
     assert isinstance(delta["temp:ticker_evidence_objects"], list)
+    # recent-trades view is always a string — explicit empty-state copy when
+    # no closes have happened yet.
+    assert isinstance(delta["temp:recent_trades_view"], str)
 
 
 def test_shim_accepts_iso_string_as_of(populated_state: dict) -> None:

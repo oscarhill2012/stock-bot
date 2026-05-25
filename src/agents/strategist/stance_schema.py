@@ -314,32 +314,31 @@ class TickerStance(BaseModel):
                     )
 
             case "update":
-                # ── Salvage shim: update-without-thesis-fields → hold ─────
+                # ── Salvage shim: structurally-empty update → hold ─────────
                 #
                 # Empirically (Sep 2025 baseline backtest, ticker=GOOGL then
                 # JNJ) Vertex Gemini sometimes selects ``intent='update'``
                 # while writing prose like *"Updating target to reflect the
                 # new acquisition catalyst"* — yet never populates any of
                 # ``target_price`` / ``stop_price`` / ``horizon`` /
-                # ``catalyst``.  The shape it emits is structurally
-                # identical to a valid ``hold`` (reason present, no
-                # commitment fields, no weight), so the executor would do
-                # nothing either way.  Three retries of the strict raise
-                # path produced three reworded prose responses with the
-                # same missing fields — the model believes it is updating.
+                # ``catalyst``.  The executor would do nothing in either
+                # case, so coerce here rather than abort the tick.  A WARN
+                # log keeps the behaviour observable: if the salvage rate
+                # spikes, the prompt or verb set needs revisiting.
+                # Project rule: silent failures are the recurring bug
+                # class — the log is the "loud" part of an otherwise quiet
+                # salvage.
                 #
-                # Coerce here rather than raise so a single mislabel does
-                # not abort the tick.  A WARN log keeps the behaviour
-                # observable: if the salvage rate spikes, the prompt or
-                # verb set needs revisiting.  Project rule: silent
-                # failures are the recurring bug class — the log is the
-                # "loud" part of an otherwise quiet salvage.
-                #
-                # Only coerce when the emitted shape would itself be a
-                # valid ``hold`` (reason present, weight not set).  If
-                # the stance is malformed in other ways (no reason, or
-                # weight set), fall through to the strict validator so
-                # the genuine bug surfaces.
+                # Widened (2026-05-25): the prior gate required
+                # ``reason is not None``, which left two JNJ ticks
+                # (Oct 10 close, Oct 13 close) aborting when the LLM
+                # emitted an empty ``update`` with no reason either.
+                # The executor would still do nothing, so we now coerce
+                # whenever there is no thesis field AND no weight,
+                # synthesising a placeholder reason when the model
+                # omitted one.  The strict path below still fires for
+                # the genuine bug shapes (weight set, or thesis fields
+                # with missing reason).
                 has_update_field = any(
                     v is not None for v in (
                         self.target_price,
@@ -348,11 +347,17 @@ class TickerStance(BaseModel):
                         self.horizon,
                     )
                 )
-                if (
-                    not has_update_field
-                    and self.reason is not None
-                    and self.weight is None
-                ):
+                if not has_update_field and self.weight is None:
+
+                    # Synthesise a reason when the LLM omitted one — the
+                    # downstream ``hold`` shape requires reason ≠ None and
+                    # the consumer pipeline reads it for trace logging.
+                    if self.reason is None:
+                        self.reason = (
+                            "stance coerced from structurally-empty update "
+                            "— no thesis fields and no reason supplied; "
+                            "treated as hold."
+                        )
 
                     # Truncate the reason for the log line — full text can be
                     # several sentences and would flood structured-log fields.

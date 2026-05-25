@@ -205,9 +205,12 @@ class ExecutorAgent(BaseAgent):
                     if remaining_qty <= 0.0:
                         # True close — persist the trade log and clear the slot.
                         thesis = positions.get(order.ticker)
-                        if thesis and self.db_session:
-                            from orchestrator.persistence import save_trade_log_entry
-
+                        if thesis:
+                            # ── Compute close-trade details once ──────────
+                            # Hoisted out of the prior ``if self.db_session``
+                            # block so the rolling in-memory log below is
+                            # written even when no DB session is wired (the
+                            # strategist's context render does not need one).
                             opened_price = (
                                 thesis.get("opened_price") if isinstance(thesis, dict)
                                 else thesis.opened_price
@@ -235,30 +238,58 @@ class ExecutorAgent(BaseAgent):
                                 (closed_at - opened_at_dt).total_seconds() / 3600
                             )
                             pnl_pct = (fill.price - opened_price) / opened_price * 100
+                            close_reason = (
+                                state.get("strategist_decision", {})
+                                     .get("close_reasons", {})
+                                     .get(order.ticker, "")
+                            )
 
-                            save_trade_log_entry(self.db_session, {
-                                "ticker":              order.ticker,
-                                "opened_at":           opened_at_dt,
-                                "closed_at":           closed_at,
-                                "opened_price":        opened_price,
-                                "closed_price":        fill.price,
-                                "pnl_dollar":          (fill.price - opened_price) * fill.quantity,
-                                "pnl_pct":             pnl_pct,
-                                "holding_period_hours": holding_hours,
-                                "horizon_intent":      thesis.get("horizon") if isinstance(thesis, dict) else thesis.horizon,
-                                "opened_tag":          thesis.get("opened_tag") if isinstance(thesis, dict) else thesis.opened_tag,
-                                "closed_tag":          state.get("strategist_decision", {}).get("decision_tag", "unknown"),
-                                "opened_rationale":    thesis.get("rationale") if isinstance(thesis, dict) else thesis.rationale,
-                                "close_reason":        state.get("strategist_decision", {}).get("close_reasons", {}).get(order.ticker, ""),
-                                "catalyst_realised":   False,
-                                # FK columns linking this trade back to the deliberation ticks
-                                # that opened and closed the position (added in Plan C, task C11).
-                                "opening_tick_id": (
-                                    thesis.get("opened_tick_id") if isinstance(thesis, dict)
-                                    else getattr(thesis, "opened_tick_id", None)
-                                ) or None,
-                                "closing_tick_id": state.get("tick_id"),
+                            if self.db_session:
+                                from orchestrator.persistence import save_trade_log_entry
+
+                                save_trade_log_entry(self.db_session, {
+                                    "ticker":              order.ticker,
+                                    "opened_at":           opened_at_dt,
+                                    "closed_at":           closed_at,
+                                    "opened_price":        opened_price,
+                                    "closed_price":        fill.price,
+                                    "pnl_dollar":          (fill.price - opened_price) * fill.quantity,
+                                    "pnl_pct":             pnl_pct,
+                                    "holding_period_hours": holding_hours,
+                                    "horizon_intent":      thesis.get("horizon") if isinstance(thesis, dict) else thesis.horizon,
+                                    "opened_tag":          thesis.get("opened_tag") if isinstance(thesis, dict) else thesis.opened_tag,
+                                    "closed_tag":          state.get("strategist_decision", {}).get("decision_tag", "unknown"),
+                                    "opened_rationale":    thesis.get("rationale") if isinstance(thesis, dict) else thesis.rationale,
+                                    "close_reason":        close_reason,
+                                    "catalyst_realised":   False,
+                                    # FK columns linking this trade back to the deliberation ticks
+                                    # that opened and closed the position (added in Plan C, task C11).
+                                    "opening_tick_id": (
+                                        thesis.get("opened_tick_id") if isinstance(thesis, dict)
+                                        else getattr(thesis, "opened_tick_id", None)
+                                    ) or None,
+                                    "closing_tick_id": state.get("tick_id"),
+                                })
+
+                            # ── Rolling closed-trades log ────────────────────
+                            # A compact in-memory mirror of the DB trade_log,
+                            # capped at the last 10 closes.  Read by
+                            # ``StrategistContextShim`` next tick to render a
+                            # "Recent round-trips" block in the strategist's
+                            # prompt — gives the LLM visibility of its own
+                            # outcome history (P&L, hold time, close reason)
+                            # without paying an extra DB round-trip per tick.
+                            # Lives under the ``user:`` namespace so it
+                            # persists across ticks via ADK's session service.
+                            closed_log = list(state.get("user:closed_trades_log") or [])
+                            closed_log.append({
+                                "ticker":        order.ticker,
+                                "closed_at":     closed_at.isoformat(),
+                                "pnl_pct":       round(pnl_pct, 2),
+                                "holding_hours": holding_hours,
+                                "close_reason":  close_reason or "",
                             })
+                            state["user:closed_trades_log"] = closed_log[-10:]
 
                         # Remove from the live position book.
                         del positions[order.ticker]
@@ -333,14 +364,24 @@ class ExecutorAgent(BaseAgent):
         # that violates the Band 4 writer-of-record split.
         #
         # ``"positions"`` is the Band 4 bare-key BUY→SELL bridge — kept intentionally.
+        # Include ``user:closed_trades_log`` in the delta only when this tick
+        # actually mutated it (i.e. at least one close happened).  Writing
+        # the key unconditionally would clobber the persisted value with the
+        # current in-memory snapshot on every tick, but since the snapshot
+        # IS the source of truth after the in-tick mutation above this is
+        # safe — kept conditional purely to keep the delta minimal.
+        delta = {
+            "executions":            executions,
+            "last_executed_tick_id": tick_id,
+            "positions":             positions,    # Band 4 bare-key BUY→SELL bridge
+        }
+        if "user:closed_trades_log" in state:
+            delta["user:closed_trades_log"] = state["user:closed_trades_log"]
+
         yield Event(
             author        = self.name,
             invocation_id = ctx.invocation_id,
-            actions       = EventActions(state_delta={
-                "executions":            executions,
-                "last_executed_tick_id": tick_id,
-                "positions":             positions,    # Band 4 bare-key BUY→SELL bridge
-            }),
+            actions       = EventActions(state_delta=delta),
         )
 
 
