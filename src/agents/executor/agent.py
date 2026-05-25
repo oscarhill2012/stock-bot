@@ -1,7 +1,7 @@
 """Executor BaseAgent — submits orders via Broker, manages position book."""
 from __future__ import annotations
 
-import contextlib
+import logging
 from collections.abc import AsyncGenerator
 from datetime import datetime
 from typing import Any
@@ -17,6 +17,11 @@ from broker.protocol import Broker, BrokerRejection
 from data.timeguard import resolve_as_of
 from observability.trace import _trace_maybe
 from orchestrator.state import Execution, Order
+
+# Module-level logger used by the DecisionLogger hook and the
+# after-agent thesis-writer.  Named after the module so log lines route
+# to ``agents.executor.agent`` for grep-ability.
+logger = logging.getLogger(__name__)
 
 
 class ExecutorAgent(BaseAgent):
@@ -295,9 +300,22 @@ class ExecutorAgent(BaseAgent):
         # will continuously grow the RAG-seed corpus.
         dl = state.get("temp:_decision_logger")
         if dl is not None:
-            # Defensive: a logger failure must never abort the tick.
-            with contextlib.suppress(Exception):
+            # Defensive: a logger failure must never abort the tick — but it
+            # must NOT be silent either.  The previous
+            # ``contextlib.suppress(Exception)`` here meant any serialisation
+            # bug in the strict snapshot serialiser would skip the decision
+            # write with zero log output, leaving the ``decisions/`` directory
+            # empty across an entire run.  We now log loudly with the full
+            # traceback so a regression surfaces on the very first tick.
+            try:
                 dl.on_executions(dict(state))
+            except Exception:
+                logger.warning(
+                    "decision_logger: on_executions raised for tick=%s — "
+                    "snapshot NOT written; tick continues",
+                    tick_id,
+                    exc_info = True,
+                )
 
         # Cross-tick propagation — ADK's session service only merges mutations
         # into storage via an Event whose ``actions.state_delta`` carries them.

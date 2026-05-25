@@ -30,6 +30,7 @@ from google.genai import types as genai_types
 from backtest.schedule import Tick
 from data.timeguard import drain_wallclock_fallback_count
 from observability.drain import drain_tick
+from observability.handle_injector_plugin import HandleInjectorPlugin
 from observability.otel_setup import install_observability
 from observability.trace import TraceWriter
 from orchestrator.persistence import make_session_service
@@ -470,10 +471,26 @@ class Driver:
         # user:thesis) persists across ticks within this run.
         session_service = make_session_service(db_url=self._session_db_url)
 
+        # Per-invocation observability handles (TraceWriter, DecisionLogger)
+        # are NOT installed by mutating ``adk_session.state`` after
+        # ``create_session`` — ADK's ``Runner.run_async`` calls
+        # ``session_service.get_session`` for every invocation, which
+        # rebuilds session state from persisted storage and discards any
+        # in-memory mutation made by the driver (temp:-prefixed keys are
+        # stripped from persistence by design).  The correct hook is the
+        # plugin manager's ``before_run_callback``, which fires AFTER the
+        # session is resolved and BEFORE the root agent runs, with access
+        # to the live invocation state dict every sub-agent will read from.
+        handle_injector = HandleInjectorPlugin(
+            trace_writer    = tw,
+            decision_logger = self._dl,
+        )
+
         runner = Runner(
-            agent=pipeline,
-            app_name=app_name,
-            session_service=session_service,
+            agent           = pipeline,
+            app_name        = app_name,
+            session_service = session_service,
+            plugins         = [handle_injector],
         )
 
         # Use a UUID suffix to guarantee session uniqueness even if the
@@ -483,8 +500,9 @@ class Driver:
 
         # Build the seed dict for ADK's create_session.  Rules:
         # 1. Strip temp:-prefixed keys — ADK's extract_state_delta discards
-        #    them anyway and they must be injected onto the live session object
-        #    directly after create_session (see temp:_trace injection below).
+        #    them at persistence time anyway; per-invocation handles like
+        #    ``temp:_trace`` / ``temp:_decision_logger`` are injected by the
+        #    HandleInjectorPlugin's before_run_callback (see Runner above).
         # 2. Coerce datetime objects to ISO strings — DatabaseSessionService
         #    serialises state via json.dumps, which cannot handle native
         #    datetime objects.  The live path's ``state["as_of"]`` and the
@@ -498,19 +516,16 @@ class Driver:
             if not k.startswith("temp:")
         }
 
+        # Create the session up-front so ``runner.run_async`` can locate it
+        # by ``session_id``.  We only need the returned session's ``.id`` —
+        # observability handles are injected by :class:`HandleInjectorPlugin`
+        # at ``before_run_callback`` time (see Runner construction above).
         adk_session = await session_service.create_session(
-            app_name=app_name,
-            user_id="stockbot",
-            state=seed_state,
-            session_id=session_id,
+            app_name   = app_name,
+            user_id    = "stockbot",
+            state      = seed_state,
+            session_id = session_id,
         )
-
-        # Inject runtime observability handles directly onto the live session
-        # state.  ADK keeps them addressable for the duration of this
-        # invocation, but extract_state_delta / _trim_temp_delta_state strip
-        # them from any persisted event delta — they never reach the DB.
-        adk_session.state["temp:_trace"]           = tw
-        adk_session.state["temp:_decision_logger"] = self._dl
 
         message = genai_types.Content(
             parts=[genai_types.Part(
