@@ -37,7 +37,7 @@ from contract.evidence import (
     AnalystVerdict,
     ReportDriver,
 )
-from contract.strategist_prompt import render_ticker_block
+from contract.strategist_prompt import _planned_sale_band, render_ticker_block
 from contract.ticker_evidence import AggregateVerdict, TickerEvidence
 
 # ---------------------------------------------------------------------------
@@ -510,3 +510,66 @@ def test_lean_and_confidence_in_header():
     assert "bearish" in out
     # Confidence value from the default fixture.
     assert "0.7" in out or "0.70" in out
+
+
+# ---------------------------------------------------------------------------
+# Tests — _planned_sale_band helper (Bug #16b)
+# ---------------------------------------------------------------------------
+#
+# Annotates ``insider_planned_sale_ratio`` so the strategist sees an explicit
+# neutralisation hint next to a 10b5-1-dominated raw number, instead of just
+# the bare ratio (which the strategist had been mis-reading as bearish).
+# ---------------------------------------------------------------------------
+
+def test_planned_sale_band_all_threshold():
+    """A ratio at or above 0.9 must annotate as the 'all 10b5-1' neutral band."""
+    assert _planned_sale_band(0.95) == "(all 10b5-1 — neutral)"
+
+
+def test_planned_sale_band_mostly_threshold():
+    """A ratio in [0.7, 0.9) must annotate as the 'mostly 10b5-1' neutral band."""
+    assert _planned_sale_band(0.75) == "(mostly 10b5-1 — neutral)"
+
+
+def test_planned_sale_band_below_mostly_returns_empty():
+    """A ratio below 0.7 must emit no annotation (empty string)."""
+    assert _planned_sale_band(0.5) == ""
+
+
+def test_planned_sale_band_zero_returns_empty():
+    """A ratio of exactly zero must emit no annotation."""
+    assert _planned_sale_band(0.0) == ""
+
+
+def test_planned_sale_band_lower_bound_inclusive_at_0_9():
+    """The 0.9 boundary itself must qualify for the 'all' band (>= comparison)."""
+    # The audit fix specifies a >= threshold, so 0.9 exactly is in the 'all' band,
+    # not the 'mostly' band.
+    assert _planned_sale_band(0.9) == "(all 10b5-1 — neutral)"
+
+
+def test_planned_sale_band_lower_bound_inclusive_at_0_7():
+    """The 0.7 boundary itself must qualify for the 'mostly' band (>= comparison)."""
+    assert _planned_sale_band(0.7) == "(mostly 10b5-1 — neutral)"
+
+
+def test_planned_sale_ratio_bullet_renders_annotation():
+    """An ``insider_planned_sale_ratio`` of 1.0 must show the 'all 10b5-1' annotation.
+
+    Integration test: feeds a fundamental feature dict containing the
+    ``insider_planned_sale_ratio`` key through the full ticker-block renderer
+    and asserts that the strategist-facing string carries the neutralisation
+    annotation.  This guards the wiring in FUNDAMENTAL_BULLETS (4th tuple
+    element) so a future refactor cannot quietly drop the helper.
+    """
+    # Build a ticker-evidence object where the fundamental analyst's feature
+    # dict explicitly carries insider_planned_sale_ratio = 1.0 — the CVX-style
+    # scenario from Bug #16: a 100 %-10b5-1 sale that the strategist was
+    # mis-weighing as bearish.
+    te = _make_ticker_evidence()
+    te.per_analyst["fundamental"].features["insider_planned_sale_ratio"] = 1.0
+
+    out = render_ticker_block(te)
+
+    # The literal annotation string — with em-dash (U+2014) — must appear.
+    assert "(all 10b5-1 — neutral)" in out

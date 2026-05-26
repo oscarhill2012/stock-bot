@@ -208,6 +208,42 @@ def _cluster_buy_band(v: float) -> str:
     return "(cluster buy)" if v >= 1.0 else ""
 
 
+def _planned_sale_band(v: float) -> str:
+    """Return a neutralisation annotation for 10b5-1 planned-sale ratios.
+
+    Rule 10b5-1 sales are pre-scheduled and disclosed in advance — they are a
+    neutral signal, not a bearish one. The fundamental analyst's prompt is
+    explicit about this, but the strategist downstream was reading the raw
+    ``Planned sale ratio: 1.0`` number with no neutralisation hint and
+    pattern-completing on it as bearish (Bug #16 in the 2025-09 baseline
+    audit). Surfacing an inline annotation here gives the strategist the same
+    cue the analyst prompt provides.
+
+    Parameters
+    ----------
+    v:
+        ``insider_planned_sale_ratio`` feature value — fraction in the range
+        ``0.0`` to ``1.0`` representing the share of recent insider sales that
+        were 10b5-1 planned.
+
+    Returns
+    -------
+    str
+        ``"(all 10b5-1 — neutral)"`` at or above 0.9,
+        ``"(mostly 10b5-1 — neutral)"`` at or above 0.7,
+        otherwise ``""`` (no annotation).
+    """
+    # Check the stricter "all" threshold first; the 0.9 boundary is inclusive
+    # so an exact 0.9 ratio reads as "all", not "mostly".
+    if v >= 0.9:
+        return "(all 10b5-1 — neutral)"
+
+    if v >= 0.7:
+        return "(mostly 10b5-1 — neutral)"
+
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Feature-bullet registries
 # ---------------------------------------------------------------------------
@@ -260,7 +296,7 @@ FUNDAMENTAL_BULLETS: list[_BulletEntry] = [
     ("insider_n_sells_30d",            "Insider sells 30d:",     _plain,        None),
     ("insider_cluster_sell_flag",      "Cluster sell flag:",     _plain,        _cluster_sell_band),
     ("insider_cluster_buy_flag",       "Cluster buy flag:",      _plain,        _cluster_buy_band),
-    ("insider_planned_sale_ratio",     "Planned sale ratio:",    _plain,        None),
+    ("insider_planned_sale_ratio",     "Planned sale ratio:",    _plain,        _planned_sale_band),
     ("insider_max_filer_role_rank",    "Top filer role rank:",   _plain,        None),
     # Derivative-security disclosures.
     ("insider_derivative_exercise_count", "Derivative exercises:", _plain,      None),
