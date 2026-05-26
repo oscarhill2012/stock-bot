@@ -48,7 +48,6 @@ def _make_buy_stance(ticker: str, weight: float):
         intent="buy",
         weight=weight,
         rationale="test bypass — validators skipped intentionally",
-        reason=None,
         catalyst=None,
     )
 
@@ -123,8 +122,8 @@ def test_sell_and_update_stances_are_not_clamped():
     cfg = load_risk_gate_config()
 
     # Sell with explicit partial weight (within sell range).
-    sell_stance = TickerStance(ticker="MSFT", intent="sell", weight=0.10, reason="exit")
-    update_stance = TickerStance(ticker="GOOG", intent="update", reason="thesis revision")
+    sell_stance = TickerStance(ticker="MSFT", intent="sell", weight=0.10, rationale="exit")
+    update_stance = TickerStance(ticker="GOOG", intent="update", rationale="thesis revision")
 
     clamps = apply_buy_delta_clamp([sell_stance, update_stance], cfg)
 

@@ -91,7 +91,6 @@ def _open_stance(ticker: str = "AVGO", weight: float = 0.04) -> TickerStance:
         ticker    = ticker,
         intent    = "buy",
         weight    = weight,
-        catalyst  = "Q3 earnings",
         rationale = "AI capex thesis intact",
     )
 
@@ -205,7 +204,7 @@ def test_callback_sell_stance_deletes_ticker():
     sell_stance = TickerStance(
         ticker = "NVDA",
         intent = "sell",
-        reason = "test sell",
+        rationale = "test sell",
     )
 
     state = _minimal_state(
@@ -240,7 +239,7 @@ def test_callback_update_stance_refreshes_rationale_no_trade():
     update_stance = TickerStance(
         ticker = "MSFT",
         intent = "update",
-        reason = "No new information; thesis intact",
+        rationale = "No new information; thesis intact",
     )
 
     state = _minimal_state(

@@ -97,7 +97,6 @@ class TradeLogRow(Base):
     closed_tag: Mapped[str] = mapped_column(String)
     opened_rationale: Mapped[str] = mapped_column(String)
     close_reason: Mapped[str] = mapped_column(String)
-    catalyst_realised: Mapped[bool] = mapped_column(Boolean)
 
     # Nullable FK-style references linking a trade back to the originating tick.
     # opening_tick_id: copied from PositionThesis.opened_tick_id when executor.BUY
@@ -136,7 +135,6 @@ class TickerStanceRow(Base):
     # downstream (Bug #9, docs/backtest-audits/baseline-window-2025-09-iter-2.md).
     # close_reason / trim_reason also dropped in iter-3: the split-reason design
     # was replaced by the unified ``sell_reasons`` dict on ``StrategistDecision``.
-    catalyst: Mapped[str | None]    = mapped_column(String, nullable=True)
     lifecycle_action: Mapped[str]   = mapped_column(String, index=True)
     decision_tag: Mapped[str]       = mapped_column(String, index=True)
 
@@ -192,7 +190,6 @@ def save_ticker_stance(
         preferred_weight=stance.get("preferred_weight", 0.0),
         conviction=stance.get("conviction", 0.0),
         rationale=stance.get("rationale") or "",  # only populated on buy stances
-        catalyst=stance.get("catalyst"),
         lifecycle_action=lifecycle_action,
         decision_tag=decision_tag,
     )

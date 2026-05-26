@@ -229,7 +229,6 @@ def apply_stance_to_thesis(
                     opened_tick_id            = tick_id,
                     opened_price              = fill_price,
                     weight                    = stance.weight,
-                    catalyst                  = stance.catalyst,
                     rationale                 = stance.rationale,
                     last_reviewed_at          = as_of,
                     last_reviewed_decision    = "buy",
@@ -239,14 +238,13 @@ def apply_stance_to_thesis(
 
             else:
                 # ── Add to a live position ──────────────────────────────────
-                # Bump weight, refresh catalyst if supplied, refresh rationale
-                # (accountability: the agent justifies each add), reset
-                # staleness counter.  ``opened_at`` / ``opened_tick_id`` /
-                # ``opened_price`` stay frozen at their first-entry values —
-                # they record the original open, not the most recent add.
+                # Bump weight, refresh rationale (accountability: the agent
+                # justifies each add), reset staleness counter.  ``opened_at`` /
+                # ``opened_tick_id`` / ``opened_price`` stay frozen at their
+                # first-entry values — they record the original open, not the
+                # most recent add.
                 return prior_row.model_copy(update={
                     "weight":                    stance.weight,
-                    "catalyst":                  stance.catalyst if stance.catalyst is not None else prior_row.catalyst,
                     "rationale":                 stance.rationale,
                     "last_reviewed_at":          as_of,
                     "last_reviewed_decision":    "buy",
@@ -290,7 +288,7 @@ def apply_stance_to_thesis(
                     "weight":                 stance.weight,
                     "last_reviewed_at":       as_of,
                     "last_reviewed_decision": "sell",
-                    "last_reviewed_reason":   stance.reason or "",
+                    "last_reviewed_reason":   stance.rationale or "",
                 })
 
         case "update":
@@ -307,10 +305,10 @@ def apply_stance_to_thesis(
                 # ── Seed a no-position thesis row ────────────────────────────
                 return PositionThesis(
                     ticker                    = stance.ticker,
-                    rationale                 = stance.reason or "",
+                    rationale                 = stance.rationale or "",
                     last_reviewed_at          = as_of,
                     last_reviewed_decision    = "update",
-                    last_reviewed_reason      = stance.reason or "",
+                    last_reviewed_reason      = stance.rationale or "",
                     thesis_last_updated_tick  = current_tick_index,
                 )
 
@@ -319,10 +317,10 @@ def apply_stance_to_thesis(
                 # Works whether or not the agent owns the underlying ticker —
                 # rationale is mutable across the board.
                 return prior_row.model_copy(update={
-                    "rationale":                 stance.reason or "",
+                    "rationale":                 stance.rationale or "",
                     "last_reviewed_at":          as_of,
                     "last_reviewed_decision":    "update",
-                    "last_reviewed_reason":      stance.reason or "",
+                    "last_reviewed_reason":      stance.rationale or "",
                     "thesis_last_updated_tick":  current_tick_index,
                 })
 

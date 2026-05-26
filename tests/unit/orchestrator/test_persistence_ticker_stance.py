@@ -33,7 +33,7 @@ def test_round_trip(session):
         recorded_at=datetime(2026, 5, 8, 14, tzinfo=UTC),
         stance={
             "ticker": "AAPL", "preferred_weight": 0.05, "conviction": 0.7,
-            "rationale": "FCF + insider", "catalyst": "Q3 earnings beat",
+            "rationale": "FCF + insider",
         },
         lifecycle_action="buy",
     )
@@ -55,20 +55,20 @@ def test_round_trip(session):
 
 
 def test_nullable_lifecycle_fields(session):
-    """An update stance leaves catalyst as NULL; close_reason/trim_reason no longer exist."""
+    """An update stance persists with minimal fields; legacy lifecycle columns are gone."""
     save_ticker_stance(
         session, tick_id="tick_X", decision_tag="update_msft",
         recorded_at=datetime(2026, 5, 8, 14, tzinfo=UTC),
         stance={
             "ticker": "MSFT", "preferred_weight": 0.05, "conviction": 0.6,
-            "rationale": "still cheap", "catalyst": None,
+            "rationale": "still cheap",
         },
         lifecycle_action="update",
     )
     session.commit()
     r = session.query(TickerStanceRow).first()
-    assert r.catalyst is None
-    # iter-3: close_reason and trim_reason dropped from TickerStanceRow.
+    # iter-3: catalyst, close_reason and trim_reason dropped from TickerStanceRow.
+    assert not hasattr(r, "catalyst")
     assert not hasattr(r, "close_reason")
     assert not hasattr(r, "trim_reason")
     assert r.lifecycle_action == "update"
@@ -89,7 +89,6 @@ def test_unique_constraint_tick_id_ticker():
         "preferred_weight": 0.05,
         "conviction": 0.7,
         "rationale": "test",
-        "catalyst": None,
     }
     _recorded = datetime(2026, 5, 8, 14, tzinfo=UTC)
 

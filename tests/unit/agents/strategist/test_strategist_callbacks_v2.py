@@ -85,7 +85,7 @@ def test_after_requires_explicit_stance_for_held_tickers():
                 TickerStance(
                     ticker="MSFT",
                     intent="update",
-                    reason="thesis intact, no new evidence",
+                    rationale="thesis intact, no new evidence",
                 ),
             ],
             decision_tag="x", reasoning="x", thesis="y", confidence=0.5,
@@ -110,7 +110,7 @@ def test_after_raises_on_extras():
         positions={}, portfolio=_portfolio().model_dump(mode="json"), tick_id="t",
         strategist_decision=StrategistDecision(
             stances=[
-                TickerStance(ticker="AAPL", intent="update", reason="test update"),
+                TickerStance(ticker="AAPL", intent="update", rationale="test update"),
                 TickerStance(
                     ticker="GOOG",
                     intent="buy",
@@ -145,7 +145,7 @@ def test_buy_stance_missing_rationale_fails_at_schema():
     assert "rationale" in msg
 
 
-def test_after_raises_on_sell_without_reason():
+def test_after_raises_on_sell_without_rationale():
     """Full sells (closes) missing reason abort the tick at schema re-validation.
 
     Post-7590ba1 the strategist callback re-validates the decision through
@@ -155,7 +155,7 @@ def test_after_raises_on_sell_without_reason():
     before derivation runs — schema is now the source of truth.
 
     We bypass Pydantic via ``model_construct`` to simulate a payload that
-    somehow reaches the callback with ``reason=None``.
+    somehow reaches the callback with ``rationale=None``.
     """
     thesis = PositionThesis(
         ticker="AAPL", opened_at=datetime.now(tz=UTC),
@@ -169,7 +169,7 @@ def test_after_raises_on_sell_without_reason():
     bad_stance = TickerStance.model_construct(
         ticker="AAPL",
         intent="sell",
-        reason=None,
+        rationale=None,
     )
     decision = StrategistDecision.model_construct(
         stances=[bad_stance],
@@ -188,14 +188,14 @@ def test_after_raises_on_sell_without_reason():
         tick_id="t",
         strategist_decision=decision,  # already a model instance — not a dict
     )
-    with pytest.raises(ValidationError, match="reason"):
+    with pytest.raises(ValidationError, match="rationale"):
         _strategist_validation_callback(_Ctx(state))
 
 
-def test_after_raises_on_update_without_reason():
+def test_after_raises_on_update_without_rationale():
     """Update stances missing reason abort the tick at schema re-validation.
 
-    Same path as ``test_after_raises_on_sell_without_reason``:
+    Same path as ``test_after_raises_on_sell_without_rationale``:
     ``TickerStance``'s verb-conditional validator rejects a ``reason``-less
     update with ``pydantic.ValidationError`` as soon as the callback
     re-validates the LLM payload.
@@ -210,7 +210,7 @@ def test_after_raises_on_update_without_reason():
     bad_stance = TickerStance.model_construct(
         ticker="MSFT",
         intent="update",
-        reason=None,
+        rationale=None,
     )
     decision = StrategistDecision.model_construct(
         stances=[bad_stance],
@@ -229,7 +229,7 @@ def test_after_raises_on_update_without_reason():
         tick_id="t",
         strategist_decision=decision,  # already a model instance — not a dict
     )
-    with pytest.raises(ValidationError, match="reason"):
+    with pytest.raises(ValidationError, match="rationale"):
         _strategist_validation_callback(_Ctx(state))
 
 

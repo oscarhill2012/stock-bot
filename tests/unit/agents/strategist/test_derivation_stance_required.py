@@ -85,7 +85,7 @@ def test_dust_position_below_order_epsilon_is_treated_as_flat() -> None:
         TickerStance(
             intent = "update",
             ticker = "AVGO",
-            reason = "Position intact; no new evidence.",
+            rationale = "Position intact; no new evidence.",
         ),
     ]
 
@@ -128,7 +128,7 @@ def test_flat_ticker_without_stance_is_ok() -> None:
             # ``reason`` satisfies the verb-conditional validator.
             intent = "update",
             ticker = "AVGO",
-            reason = "No new evidence; commitments unchanged.",
+            rationale = "No new evidence; commitments unchanged.",
         ),
     ]
 

@@ -29,11 +29,10 @@ def test_round_trip_trade_log_entry():
         "closed_tag": "profit_target_hit",
         "opened_rationale": "Technical breakout",
         "close_reason": "Target reached",
-        "catalyst_realised": True,
     }
     save_trade_log_entry(session, entry)
     session.commit()
     rows = session.query(TradeLogRow).all()
     assert len(rows) == 1
     assert rows[0].ticker == "AAPL"
-    assert rows[0].catalyst_realised is True
+    assert rows[0].close_reason == "Target reached"

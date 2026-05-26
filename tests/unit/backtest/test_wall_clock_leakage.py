@@ -79,7 +79,7 @@ def test_decision_writer_uses_as_of(db_session) -> None:
             TickerStance(
                 ticker="AAPL",
                 intent="update",
-                reason="test update — no trade",
+                rationale="test update — no trade",
             ),
         ],
         target_weights={"AAPL": 0.0},

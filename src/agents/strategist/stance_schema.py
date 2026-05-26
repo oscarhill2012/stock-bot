@@ -7,29 +7,41 @@ There is no "silence is hold" rule: every ticker gets an explicit verb so
 the audit trail records what the agent considered, not just what it acted
 on.  ``no_action`` is the explicit "considered, no change" stance.
 
+Single prose field
+------------------
+Every verb except ``no_action`` carries its prose in ONE field:
+``rationale``.  The earlier split between ``rationale`` (for entries) and
+``reason`` (for exits / revisions) was redundant — the words are
+synonymous and the dual vocabulary tripped the model up at parse time
+(see the iter-3 backtest where the model emitted ``reason`` on a ``buy``
+stance and the schema rejected it).  One field, one name.
+
 Verb vocabulary
 ---------------
     buy       — enter a position on a thesis or increase an existing one.
                 Required: ticker, intent, weight (0 < w ≤ 0.05), rationale.
-                Optional: catalyst.
-                Refreshes the thesis row's rationale — the agent is on the
-                record justifying every entry and every add.
+                ``rationale`` is rewritten onto the row — the agent is on
+                the record justifying every entry and every add.
 
     sell      — reduce or fully close an existing position.
-                Required: ticker, intent, reason.
-                Optional: weight (0 < w ≤ 1.0).  Absent weight ⇒ full close;
-                the thesis row is removed and the trade lands in the trade
-                log.
+                Required: ticker, intent, rationale (here documenting why
+                the position is being trimmed / closed).
+                Optional: weight (0 < w ≤ 1.0).  Absent weight ⇒ full
+                close; the thesis row is removed and the trade lands in
+                the trade log.  The standing thesis prose on the row is
+                NOT overwritten — sell is a sizing change, use ``update``
+                to revise the view.  The sell ``rationale`` is captured
+                in ``last_reviewed_reason`` for the audit trail.
 
-    update    — revise the prose thesis without trading.  Works whether or
-                not the agent holds a position; if no thesis row exists yet
-                the update seeds one.
-                Required: ticker, intent, reason.
+    update    — revise the prose thesis without trading.  Works whether
+                or not the agent holds a position; if no thesis row exists
+                yet the update seeds one.
+                Required: ticker, intent, rationale (the revised thesis).
 
     no_action — explicit "considered, no change."  No trade, no prose
                 revision.  Used when the agent reviewed the ticker and
                 chose to hold its current view and (if any) position.
-                Required: ticker, intent.
+                Required: ticker, intent only — no other fields permitted.
 
 Field surface deliberately narrow: no horizon / target_price / stop_price.
 The iter-2 audit found those were hallucinated 80 % of the time and
@@ -55,7 +67,8 @@ class TickerStance(BaseModel):
 
     ``extra="forbid"`` rejects stale callers passing deleted fields
     (target_price / stop_price / horizon / preferred_weight / conviction
-    / close_reason / trim_reason) with a loud ``ValidationError``.
+    / close_reason / trim_reason / reason / catalyst) with a loud
+    ``ValidationError``.
 
     Args:
         ticker:    The stock ticker symbol (e.g. ``"AAPL"``).
@@ -67,17 +80,15 @@ class TickerStance(BaseModel):
                                  Absent means full close.
                      update    → forbidden (no trade occurs).
                      no_action → forbidden (no trade occurs).
-        catalyst:  Optional short description of the near-term catalyst.
-                   Accepted on buy stances only.
-        rationale: Entry / add thesis.  Required on buy; forbidden on the
-                   other verbs.
-        reason:    Exit or revision rationale.  Required on sell and update;
-                   forbidden on buy and no_action.
+        rationale: The prose for this stance.  Required on buy, sell, and
+                   update; forbidden on no_action.  See module docstring
+                   for how the prose is consumed by each verb.
     """
 
     # Forbid extra kwargs — deleted fields (target_price, stop_price,
-    # horizon, preferred_weight, conviction, close_reason, trim_reason)
-    # will raise ValidationError rather than being silently ignored.
+    # horizon, preferred_weight, conviction, close_reason, trim_reason,
+    # the now-dropped ``reason`` and ``catalyst`` fields) will raise
+    # ValidationError rather than being silently ignored.
     model_config = ConfigDict(extra="forbid")
 
     ticker: str
@@ -95,9 +106,9 @@ class TickerStance(BaseModel):
     #   no_action → forbidden
     weight: float | None = Field(default=None, ge=0.0, le=1.0)
 
-    catalyst: str | None = Field(default=None)
+    # ``rationale`` is the single prose field.  Required on buy / sell /
+    # update; forbidden on no_action.  See module docstring.
     rationale: str | None = Field(default=None)
-    reason: str | None = Field(default=None)
 
     # ── Verb-conditional validator ────────────────────────────────────────────
 
@@ -118,7 +129,7 @@ class TickerStance(BaseModel):
         match self.intent:
 
             case "buy":
-                # Collect missing required fields.
+                # buy needs weight + rationale.
                 missing = [
                     name for name, value in (
                         ("weight",    self.weight),
@@ -144,19 +155,13 @@ class TickerStance(BaseModel):
                         f"clamp tighter."
                     )
 
-                # reason is semantically wrong on a buy — use rationale.
-                if self.reason is not None:
-                    raise ValueError(
-                        f"Stance for {self.ticker!r}: 'reason' is forbidden on "
-                        f"buy — use 'rationale' for the entry thesis."
-                    )
-
             case "sell":
-                # reason documents why the position is being reduced/closed.
-                if self.reason is None:
+                # sell documents why the position is being reduced/closed
+                # via the shared rationale field.
+                if self.rationale is None:
                     raise ValueError(
                         f"Stance for {self.ticker!r} has intent='sell' but "
-                        f"reason is missing — document why."
+                        f"rationale is missing — document why."
                     )
 
                 # Partial-sell weight must be strictly positive (> 0).
@@ -167,44 +172,19 @@ class TickerStance(BaseModel):
                         f"(or absent for a full close)."
                     )
 
-                # rationale is semantically wrong on a sell — use reason.
-                if self.rationale is not None:
-                    raise ValueError(
-                        f"Stance for {self.ticker!r}: 'rationale' is forbidden "
-                        f"on sell — use 'reason'."
-                    )
-
-                # catalyst is accepted on buy stances only (module docstring).
-                # A sell that carries a catalyst field is almost certainly an
-                # LLM copy-paste error from a prior buy stance — reject loudly.
-                if self.catalyst is not None:
-                    raise ValueError(
-                        f"Stance for {self.ticker!r}: 'catalyst' is forbidden "
-                        f"on sell — catalyst is accepted on buy stances only."
-                    )
-
             case "update":
-                # reason articulates what has changed in the prose thesis.
-                if self.reason is None:
+                # update needs a rationale (the revised thesis prose).
+                if self.rationale is None:
                     raise ValueError(
                         f"Stance for {self.ticker!r} has intent='update' but "
-                        f"reason is missing — update requires prose."
+                        f"rationale is missing — update requires prose."
                     )
 
-                # update is prose-only; weight, rationale, and catalyst are
-                # forbidden (no trade occurs, no entry thesis restatement).
-                forbidden = [
-                    name for name, value in (
-                        ("weight",    self.weight),
-                        ("rationale", self.rationale),
-                        ("catalyst",  self.catalyst),
-                    )
-                    if value is not None
-                ]
-                if forbidden:
+                # update is prose-only; weight is forbidden (no trade occurs).
+                if self.weight is not None:
                     raise ValueError(
                         f"Stance for {self.ticker!r}: update accepts only "
-                        f"'reason'; forbidden fields present: {forbidden}."
+                        f"'rationale'; 'weight' is forbidden on update."
                     )
 
             case "no_action":
@@ -216,8 +196,6 @@ class TickerStance(BaseModel):
                     name for name, value in (
                         ("weight",    self.weight),
                         ("rationale", self.rationale),
-                        ("reason",    self.reason),
-                        ("catalyst",  self.catalyst),
                     )
                     if value is not None
                 ]

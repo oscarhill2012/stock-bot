@@ -1,14 +1,14 @@
-"""``TickerStance`` intent-based field-validation tests — iter-3 three-verb schema.
+"""``TickerStance`` intent-based field-validation tests — four-verb schema.
 
-Rewrote for the iter-3 schema rewrite (buy / sell / update vocabulary).
-The pre-iter-3 tests for the old six-verb set (open / add / trim / close /
-hold / update-with-thesis-fields) were deleted — those verbs are now
-rejected at the schema level.
+Verb rules (current schema):
+    buy:       weight (0 < w ≤ 0.05) + rationale required.
+    sell:      rationale required; weight optional (absent = full close).
+    update:    rationale required; no weight, no catalyst.
+    no_action: only ticker + intent.
 
-Verb rules (iter-3 schema):
-    buy:    weight (0 < w ≤ 0.05) + rationale required.
-    sell:   reason required; weight optional (absent = full close).
-    update: reason required; no weight, no rationale, no catalyst.
+There is a single prose field — ``rationale`` — used by buy / sell /
+update.  The older ``reason`` field was collapsed into ``rationale`` so
+the model only ever has one prose-field name to learn.
 """
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ def _sell(**overrides) -> dict:
     base = dict(
         ticker="AAPL",
         intent="sell",
-        reason="Guidance cut invalidates thesis.",
+        rationale="Guidance cut invalidates thesis.",
     )
     base.update(overrides)
     return base
@@ -51,7 +51,7 @@ def _update(**overrides) -> dict:
     base = dict(
         ticker="AAPL",
         intent="update",
-        reason="Raising my Q4 revenue estimate after data-centre capex read.",
+        rationale="Raising my Q4 revenue estimate after data-centre capex read.",
     )
     base.update(overrides)
     return base
@@ -71,11 +71,11 @@ def test_buy_minimal_valid():
 
 
 def test_sell_minimal_valid():
-    """A sell stance (full close) requires only reason."""
+    """A sell stance (full close) requires only rationale."""
     stance = TickerStance.model_validate(_sell())
     assert stance.intent == "sell"
     assert stance.weight is None
-    assert stance.reason is not None
+    assert stance.rationale is not None
 
 
 def test_sell_partial_with_weight():
@@ -86,10 +86,10 @@ def test_sell_partial_with_weight():
 
 
 def test_update_minimal_valid():
-    """An update stance requires only reason."""
+    """An update stance requires only rationale."""
     stance = TickerStance.model_validate(_update())
     assert stance.intent == "update"
-    assert stance.reason is not None
+    assert stance.rationale is not None
 
 
 # ---------------------------------------------------------------------------
@@ -121,26 +121,26 @@ def test_buy_weight_above_cap_raises():
     assert "buy" in msg
 
 
-def test_sell_missing_reason_raises():
-    """sell without reason raises ValidationError — silent exits are forbidden."""
-    data = _sell(reason=None)
+def test_sell_missing_rationale_raises():
+    """sell without rationale raises ValidationError — silent exits are forbidden."""
+    data = _sell(rationale=None)
 
     with pytest.raises(ValidationError) as exc_info:
         TickerStance.model_validate(data)
 
     msg = str(exc_info.value)
-    assert "reason" in msg.lower() or "sell" in msg
+    assert "rationale" in msg.lower() or "sell" in msg
 
 
-def test_update_missing_reason_raises():
-    """update without reason raises ValidationError."""
-    data = _update(reason=None)
+def test_update_missing_rationale_raises():
+    """update without rationale raises ValidationError."""
+    data = _update(rationale=None)
 
     with pytest.raises(ValidationError) as exc_info:
         TickerStance.model_validate(data)
 
     msg = str(exc_info.value)
-    assert "reason" in msg.lower() or "update" in msg
+    assert "rationale" in msg.lower() or "update" in msg
 
 
 def test_update_with_weight_raises():
@@ -178,9 +178,9 @@ def test_buy_stance_missing_rationale():
     """A buy stance missing rationale must fail at the schema level.
 
     Regression guard: rationale is required on buy because it seeds the
-    PositionThesis row (Invariant 3 — frozen at entry).  Omitting it must
-    raise early at parse time with a message that names 'rationale', so the
-    LLM's re-prompt includes the correct field.
+    PositionThesis row.  Omitting it must raise early at parse time with
+    a message that names 'rationale', so the LLM's re-prompt includes
+    the correct field.
     """
     data = dict(
         ticker="MSFT",
@@ -194,3 +194,25 @@ def test_buy_stance_missing_rationale():
 
     msg = str(exc_info.value)
     assert "rationale" in msg
+
+
+# ---------------------------------------------------------------------------
+# Schema-level guard: ``reason`` field no longer exists
+# ---------------------------------------------------------------------------
+
+
+def test_legacy_reason_field_rejected_as_extra():
+    """The collapsed ``reason`` field must be rejected by ``extra="forbid"``.
+
+    Single prose field — ``rationale``.  A stance carrying ``reason``
+    (the old field name) is a stale caller and must fail loudly so the
+    bug surfaces immediately rather than silently dropping the prose.
+    """
+    with pytest.raises(ValidationError) as exc_info:
+        TickerStance(
+            ticker="AAPL",
+            intent="sell",
+            reason="should be rejected — use rationale",
+        )
+
+    assert "reason" in str(exc_info.value).lower()

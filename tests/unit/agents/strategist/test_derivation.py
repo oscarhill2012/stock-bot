@@ -53,7 +53,7 @@ def test_derivation_dispatches_sell_full_close():
     from agents.strategist.stance_schema import TickerStance
 
     ctx = TickContext(watchlist=["AAPL"], held_tickers={"AAPL"}, current_weights={"AAPL": 0.08})
-    stances = [TickerStance(ticker="AAPL", intent="sell", reason="thesis invalidated")]
+    stances = [TickerStance(ticker="AAPL", intent="sell", rationale="thesis invalidated")]
     derived = derive_decision_fields(stances, ctx)
     assert derived.target_weights["AAPL"] == 0.0
     assert derived.sell_reasons["AAPL"] == "thesis invalidated"
@@ -65,7 +65,7 @@ def test_derivation_dispatches_sell_partial():
     from agents.strategist.stance_schema import TickerStance
 
     ctx = TickContext(watchlist=["AAPL"], held_tickers={"AAPL"}, current_weights={"AAPL": 0.08})
-    stances = [TickerStance(ticker="AAPL", intent="sell", weight=0.03, reason="trimming on overbought")]
+    stances = [TickerStance(ticker="AAPL", intent="sell", weight=0.03, rationale="trimming on overbought")]
     derived = derive_decision_fields(stances, ctx)
     assert derived.target_weights["AAPL"] == 0.05
     assert derived.sell_reasons["AAPL"] == "trimming on overbought"
@@ -77,7 +77,7 @@ def test_derivation_update_does_not_change_weight():
     from agents.strategist.stance_schema import TickerStance
 
     ctx = TickContext(watchlist=["AAPL"], held_tickers={"AAPL"}, current_weights={"AAPL": 0.08})
-    stances = [TickerStance(ticker="AAPL", intent="update", reason="revising AI catalyst timeline downward but still holding")]
+    stances = [TickerStance(ticker="AAPL", intent="update", rationale="revising AI catalyst timeline downward but still holding")]
     derived = derive_decision_fields(stances, ctx)
     assert derived.target_weights["AAPL"] == 0.08
     assert "AAPL" not in derived.sell_reasons

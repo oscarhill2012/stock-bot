@@ -120,7 +120,7 @@ class StrategistContextShim(BaseAgent):
           ``"False"`` thereafter.  The prompt uses this flag to decide whether
           to emit a full baseline stance set or an incremental update.
         - ``temp:held_positions_view`` — the lightweight held-positions block
-          showing rationale, opened-at, catalyst, and thesis staleness in ticks.
+          showing rationale, opened-at, and thesis staleness in ticks.
           Intentionally omits ``horizon``, ``target_price``, ``stop_price``
           (removed in iter-3).
 
@@ -174,7 +174,7 @@ class StrategistContextShim(BaseAgent):
 
         The ``temp:held_positions_view`` value is produced by ``render()``
         via the ``_render_positions_shim`` helper below — the lightweight
-        thesis-book renderer that shows position state, rationale, catalyst
+        thesis-book renderer that shows position state and rationale
         and thesis staleness, and omits horizon/target/stop.
 
         Args:
@@ -389,7 +389,6 @@ def _render_positions_shim(
         state_tag    = "[POSITION]" if has_position else "[NO POSITION]"
 
         rationale    = data.get("rationale") or "(no rationale recorded)"
-        catalyst     = data.get("catalyst")
         last_updated = data.get("thesis_last_updated_tick") or 0
         stale_ticks  = max(current_tick_index - last_updated, 0)
 
@@ -406,9 +405,6 @@ def _render_positions_shim(
             )
 
         block_lines.append(f"  Rationale:  {rationale}")
-
-        if catalyst:
-            block_lines.append(f"  Catalyst:   {catalyst}")
 
         block_lines.append(
             f"  Thesis staleness:  {stale_ticks} ticks since last update"

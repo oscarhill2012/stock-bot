@@ -72,20 +72,28 @@ class TestLegacyFieldRejection:
             )
 
     def test_legacy_close_reason_kwarg_rejected(self):
-        """close_reason no longer exists — sell uses reason instead."""
+        """close_reason no longer exists — sell uses rationale instead."""
         with pytest.raises(ValidationError):
             TickerStance(
                 ticker="X", intent="sell",
-                reason="exit", close_reason="exit",
+                rationale="exit", close_reason="exit",
             )
 
     def test_legacy_trim_reason_kwarg_rejected(self):
-        """trim_reason no longer exists — sell (partial) uses reason instead."""
+        """trim_reason no longer exists — sell (partial) uses rationale instead."""
         with pytest.raises(ValidationError):
             TickerStance(
                 ticker="X", intent="sell",
-                weight=0.03, reason="partial exit",
+                weight=0.03, rationale="partial exit",
                 trim_reason="partial exit",
+            )
+
+    def test_legacy_reason_kwarg_rejected(self):
+        """``reason`` was collapsed into ``rationale`` — passing it must raise."""
+        with pytest.raises(ValidationError):
+            TickerStance(
+                ticker="X", intent="sell",
+                reason="legacy field — should be rejected as extra",
             )
 
 
@@ -161,16 +169,16 @@ def test_buy_requires_ticker_weight_rationale():
 
 
 def test_sell_full_close_when_weight_absent():
-    """sell stance with no weight is a full close.  Reason required."""
+    """sell stance with no weight is a full close.  Rationale required."""
     from agents.strategist.stance_schema import TickerStance
 
-    s = TickerStance(ticker="AAPL", intent="sell", reason="thesis invalidated")
+    s = TickerStance(ticker="AAPL", intent="sell", rationale="thesis invalidated")
     assert s.intent == "sell"
     assert s.weight is None
 
     import pytest
     from pydantic import ValidationError
-    with pytest.raises(ValidationError, match="reason"):
+    with pytest.raises(ValidationError, match="rationale"):
         TickerStance(ticker="AAPL", intent="sell")
 
 
@@ -178,26 +186,26 @@ def test_sell_partial_with_weight_in_unit_interval():
     """sell with weight is a partial trim.  Weight must be in (0, 1.0]."""
     from agents.strategist.stance_schema import TickerStance
 
-    s = TickerStance(ticker="AAPL", intent="sell", weight=0.03, reason="taking partial profit")
+    s = TickerStance(ticker="AAPL", intent="sell", weight=0.03, rationale="taking partial profit")
     assert s.weight == 0.03
 
     import pytest
     from pydantic import ValidationError
     with pytest.raises(ValidationError):
-        TickerStance(ticker="AAPL", intent="sell", weight=1.5, reason="x")
+        TickerStance(ticker="AAPL", intent="sell", weight=1.5, rationale="x")
 
 
 def test_update_prose_only():
-    """update stance carries only a reason — no weight, no rationale."""
+    """update stance carries only a rationale — no weight, no catalyst."""
     from agents.strategist.stance_schema import TickerStance
 
-    s = TickerStance(ticker="AAPL", intent="update", reason="revising the AI catalyst timeline downward")
+    s = TickerStance(ticker="AAPL", intent="update", rationale="revising the AI catalyst timeline downward")
     assert s.intent == "update"
 
     import pytest
     from pydantic import ValidationError
     with pytest.raises(ValidationError):
-        TickerStance(ticker="AAPL", intent="update", weight=0.03, reason="x")
+        TickerStance(ticker="AAPL", intent="update", weight=0.03, rationale="x")
 
 
 def test_old_verbs_rejected_with_clear_message():
@@ -219,4 +227,4 @@ def test_sell_rejects_catalyst():
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError, match="catalyst"):
-        TickerStance(ticker="AAPL", intent="sell", reason="x", catalyst="earnings beat")
+        TickerStance(ticker="AAPL", intent="sell", rationale="x", catalyst="earnings beat")

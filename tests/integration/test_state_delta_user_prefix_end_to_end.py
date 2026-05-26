@@ -75,7 +75,6 @@ async def test_user_positions_and_thesis_written_after_executor_tick():
                         "intent":    "buy",
                         "weight":    0.04,
                         "rationale": "Strong FCF + insider buying",
-                        "catalyst":  "Q3 earnings beat",
                     },
                 ],
                 "target_weights": {"AAPL": 0.04},

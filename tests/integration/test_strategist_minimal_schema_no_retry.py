@@ -55,12 +55,11 @@ def _build_clean_decision() -> dict:
                 intent    = "buy",
                 weight    = 0.04,
                 rationale = "Strong earnings momentum and AI-tailwind.",
-                catalyst  = "Q3 beat + raised guidance",
             ),
             TickerStance(
                 ticker = "MSFT",
                 intent = "update",
-                reason = "No new evidence; prior thesis intact.",
+                rationale = "No new evidence; prior thesis intact.",
             ),
         ],
         decision_tag = "buy_aapl_update_msft",

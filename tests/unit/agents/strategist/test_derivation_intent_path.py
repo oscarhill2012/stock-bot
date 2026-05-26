@@ -73,7 +73,7 @@ class TestSellReasonFromIntent:
     def test_sell_with_reason_populates_sell_reasons(self):
         """A full sell with a reason must populate sell_reasons[ticker]."""
         stances = [TickerStance(
-            ticker="AVGO", intent="sell", reason="guidance cut invalidates thesis",
+            ticker="AVGO", intent="sell", rationale="guidance cut invalidates thesis",
         )]
         ctx = _ctx(current_weights={"AVGO": 0.05}, watchlist=("AVGO",))
         result = derive_decision_fields(stances, ctx)
@@ -84,7 +84,7 @@ class TestSellReasonFromIntent:
         """A partial sell (sell + weight) reduces current weight by the stated delta."""
         stances = [TickerStance(
             ticker="AVGO", intent="sell", weight=0.02,
-            reason="taking partial profits at 50% to target",
+            rationale="taking partial profits at 50% to target",
         )]
         ctx = _ctx(current_weights={"AVGO": 0.05}, watchlist=("AVGO",))
         result = derive_decision_fields(stances, ctx)
@@ -103,7 +103,7 @@ class TestUpdateCarryForward:
     def test_update_carries_weight_forward(self):
         """An update stance must not alter the ticker's weight."""
         stances = [TickerStance(
-            ticker="AVGO", intent="update", reason="raising my Q4 revenue estimate",
+            ticker="AVGO", intent="update", rationale="raising my Q4 revenue estimate",
         )]
         ctx = _ctx(current_weights={"AVGO": 0.05}, watchlist=("AVGO",))
         result = derive_decision_fields(stances, ctx)

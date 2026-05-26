@@ -56,7 +56,7 @@ def test_writes_one_row_per_stance(session):
             TickerStance(
                 ticker="NVDA",
                 intent="sell",
-                reason="thesis broken",
+                rationale="thesis broken",
             ),
         ],
         target_weights={"AAPL": 0.04, "NVDA": 0.0},
@@ -97,7 +97,7 @@ def test_no_op_without_db_session():
     state = {
         "tick_id": "t",
         "strategist_decision": StrategistDecision(
-            stances=[TickerStance(ticker="AAPL", intent="update", reason="test update")],
+            stances=[TickerStance(ticker="AAPL", intent="update", rationale="test update")],
             target_weights={"AAPL": 0.0},
             decision_tag="x", reasoning="x", thesis="y", confidence=0.5,
         ).model_dump(mode="json"),

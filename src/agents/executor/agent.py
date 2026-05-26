@@ -270,7 +270,6 @@ class ExecutorAgent(BaseAgent):
                                     "closed_tag":          state.get("strategist_decision", {}).get("decision_tag", "unknown"),
                                     "opened_rationale":    thesis.get("rationale") if isinstance(thesis, dict) else thesis.rationale,
                                     "close_reason":        close_reason,
-                                    "catalyst_realised":   False,
                                     # FK columns linking this trade back to the deliberation ticks
                                     # that opened and closed the position (added in Plan C, task C11).
                                     "opening_tick_id": (

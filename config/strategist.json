@@ -5,12 +5,10 @@
     "thesis_max_chars":     800
   },
   "stance_caps": {
-    "rationale_max_chars":    400,
-    "catalyst_max_chars":     200
+    "rationale_max_chars":    400
   },
   "position_thesis_caps": {
     "rationale_max_chars":         400,
-    "catalyst_max_chars":          100,
     "last_review_note_max_chars":  200
   },
   "llm": {

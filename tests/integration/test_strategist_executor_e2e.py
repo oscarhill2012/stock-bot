@@ -146,19 +146,18 @@ def _build_decision() -> dict:
                 ticker = "AAPL",
                 intent = "sell",
                 # No weight → full close.
-                reason = "test exit",
+                rationale = "test exit",
             ),
             TickerStance(
                 ticker    = "MSFT",
                 intent    = "buy",
                 weight    = 0.03,
                 rationale = "test entry",
-                catalyst  = "earnings beat",
             ),
             TickerStance(
                 ticker = "GOOGL",
                 intent = "update",
-                reason = "still bullish",
+                rationale = "still bullish",
             ),
         ],
         decision_tag = "smoke_sell_buy_update",
@@ -188,7 +187,6 @@ def _build_prior_positions() -> dict:
         opened_tick_id          = "tick-earlier",
         opened_price            = _AAPL_ENTRY_PRICE,
         weight                  = 0.05,    # current weight (5 %)
-        catalyst                = "Q3 earnings",
         rationale               = "strong momentum entering earnings",
         last_reviewed_at        = datetime(2026, 5, 24, 9, 30, 0, tzinfo=UTC),
         last_reviewed_decision  = "buy",
@@ -203,7 +201,6 @@ def _build_prior_positions() -> dict:
         opened_tick_id          = "tick-old",
         opened_price            = _GOOGL_ENTRY_PRICE,
         weight                  = 0.04,    # current weight (4 %)
-        catalyst                = "Cloud market share expansion",
         rationale               = "secular AI capex beneficiary",
         last_reviewed_at        = datetime(2026, 5, 23, 9, 30, 0, tzinfo=UTC),
         last_reviewed_decision  = "buy",

@@ -183,7 +183,8 @@ def test_template_drops_old_six_verb_vocabulary():
 
 def test_template_requires_stance_per_ticker():
     """The prompt must instruct the model to emit one stance per watchlist ticker."""
-    text = STRATEGIST_INSTRUCTION
+    # Collapse whitespace so word-wrapped phrases match cleanly.
+    text = " ".join(STRATEGIST_INSTRUCTION.split())
     assert "exactly one stance per watchlist ticker" in text
     # And explicitly steer toward no_action for the "no change" case.
     assert "no_action" in text
@@ -193,7 +194,7 @@ def test_template_silence_is_not_an_option():
     """The prompt must reject the old 'silence means hold' rule outright —
     every watchlist ticker requires an explicit verb so the audit trail
     captures non-actions."""
-    text = STRATEGIST_INSTRUCTION
+    text = " ".join(STRATEGIST_INSTRUCTION.split()).lower()
     assert "silence is not an option" in text
 
 

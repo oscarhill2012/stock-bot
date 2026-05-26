@@ -107,7 +107,6 @@ async def test_buy_writes_thesis_to_state_positions():
                     "intent":    "buy",
                     "weight":    0.04,
                     "rationale": "strong momentum",
-                    "catalyst":  "earnings beat",
                 },
             ],
         },

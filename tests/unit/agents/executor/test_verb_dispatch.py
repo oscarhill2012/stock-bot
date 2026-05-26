@@ -29,8 +29,8 @@ def _make_stance(**kwargs) -> TickerStance:
     """Build a minimal valid ``TickerStance`` with sensible defaults.
 
     Intent is required on every stance; callers must supply it via kwargs.
-    Additional verb-conditional fields (weight, reason, rationale, catalyst)
-    are passed through as needed for each test.
+    Additional verb-conditional fields (weight, rationale) are passed
+    through as needed for each test.
     """
 
     defaults = {
@@ -78,7 +78,6 @@ def test_resolve_broker_call_buy_returns_buy_to_weight():
     stance = _make_stance(
         intent    = "buy",
         weight    = 0.05,
-        catalyst  = "Q4 earnings",
         rationale = "Strong momentum",
     )
     result = resolve_broker_call(stance, prior_row=None)
@@ -92,7 +91,7 @@ def test_resolve_broker_call_sell_full_close_returns_sell_zero():
     """``sell`` with no weight (full close) must return a SELL to weight=0.0."""
 
     prior = _make_prior_row()
-    stance = _make_stance(intent="sell", reason="thesis invalidated")
+    stance = _make_stance(intent="sell", rationale="thesis invalidated")
     result = resolve_broker_call(stance, prior_row=prior)
 
     assert result is not None
@@ -107,7 +106,7 @@ def test_resolve_broker_call_sell_partial_returns_sell_with_weight():
     stance = _make_stance(
         intent = "sell",
         weight = 0.07,
-        reason = "Taking some profit after 20 % move",
+        rationale = "Taking some profit after 20 % move",
     )
     result = resolve_broker_call(stance, prior_row=prior)
 
@@ -122,7 +121,7 @@ def test_resolve_broker_call_update_returns_none():
     prior = _make_prior_row()
     stance = _make_stance(
         intent  = "update",
-        reason  = "Revised view following macro data",
+        rationale  = "Revised view following macro data",
     )
     result = resolve_broker_call(stance, prior_row=prior)
 
@@ -140,7 +139,6 @@ def test_apply_stance_buy_entry_seeds_new_position_with_fill_price():
     stance = _make_stance(
         intent    = "buy",
         weight    = 0.05,
-        catalyst  = "Q4 earnings",
         rationale = "Strong momentum",
     )
     result = apply_stance_to_thesis(
@@ -156,7 +154,6 @@ def test_apply_stance_buy_entry_seeds_new_position_with_fill_price():
     assert result.opened_price == 155.75
     assert result.ticker == "AAPL"
     assert result.rationale == "Strong momentum"
-    assert result.catalyst == "Q4 earnings"
     assert result.last_reviewed_decision == "buy"
     # iter-3: no horizon / target_price / stop_price on the thesis.
     assert not hasattr(result, "horizon")
@@ -222,50 +219,6 @@ def test_apply_stance_buy_add_updates_weight_and_refreshes_rationale():
     assert result.last_reviewed_decision == "buy"
 
 
-def test_apply_stance_buy_add_refreshes_catalyst_when_supplied():
-    """``buy`` add with a catalyst must update the catalyst field."""
-
-    prior = _make_prior_row(catalyst="Old catalyst")
-    stance = _make_stance(
-        intent   = "buy",
-        weight   = 0.05,
-        catalyst = "New catalyst event",
-        rationale = "More upside",
-    )
-    result = apply_stance_to_thesis(
-        stance,
-        prior_row  = prior,
-        fill_price = 155.0,
-        tick_id    = _TICK_ID,
-        as_of      = _TS,
-    )
-
-    assert result is not None
-    assert result.catalyst == "New catalyst event"
-
-
-def test_apply_stance_buy_add_preserves_catalyst_when_none():
-    """``buy`` add without a catalyst must preserve the existing catalyst."""
-
-    prior = _make_prior_row(catalyst="Original catalyst")
-    stance = _make_stance(
-        intent    = "buy",
-        weight    = 0.05,
-        # No catalyst supplied on this add stance.
-        rationale = "Adding to winner",
-    )
-    result = apply_stance_to_thesis(
-        stance,
-        prior_row  = prior,
-        fill_price = 155.0,
-        tick_id    = _TICK_ID,
-        as_of      = _TS,
-    )
-
-    assert result is not None
-    assert result.catalyst == "Original catalyst"
-
-
 # ---------------------------------------------------------------------------
 # apply_stance_to_thesis tests — sell (partial trim)
 # ---------------------------------------------------------------------------
@@ -286,7 +239,7 @@ def test_apply_stance_sell_trim_updates_weight_preserves_rationale():
     stance = _make_stance(
         intent  = "sell",
         weight  = 0.05,
-        reason  = "Partial profit-take",
+        rationale  = "Partial profit-take",
     )
     result = apply_stance_to_thesis(
         stance,
@@ -315,7 +268,7 @@ def test_apply_stance_sell_full_close_returns_none():
     """``sell`` without weight (full close) must return ``None`` so the caller drops the ticker."""
 
     prior = _make_prior_row()
-    stance = _make_stance(intent="sell", reason="thesis invalidated")
+    stance = _make_stance(intent="sell", rationale="thesis invalidated")
 
     result = apply_stance_to_thesis(
         stance,
@@ -336,21 +289,19 @@ def test_apply_stance_sell_full_close_returns_none():
 def test_apply_stance_update_refreshes_rationale_and_review_trail():
     """``update`` refreshes the rationale (the prose view) and the review trail.
 
-    Sizing fields (weight, opened_price, opened_at) and catalyst stay
-    pinned to the original entry — update revises the view, not the
-    commitment.
+    Sizing fields (weight, opened_price, opened_at) stay pinned to the
+    original entry — update revises the view, not the commitment.
     """
 
     prior = _make_prior_row(
         weight    = 0.10,
-        catalyst  = "Q4 earnings",
         rationale = "Original rationale at open",
     )
     new_ts = datetime(2026, 5, 24, tzinfo=UTC)
 
     stance = _make_stance(
         intent  = "update",
-        reason  = "Revised macro view",
+        rationale  = "Revised macro view",
     )
     result = apply_stance_to_thesis(
         stance,
@@ -370,9 +321,8 @@ def test_apply_stance_update_refreshes_rationale_and_review_trail():
     # is what we record going forward.
     assert result.rationale == "Revised macro view"
 
-    # Sizing + catalyst preserved:
+    # Sizing preserved:
     assert result.weight       == prior.weight
-    assert result.catalyst     == prior.catalyst
     assert result.opened_price == prior.opened_price
     assert result.opened_at    == prior.opened_at
 
@@ -382,27 +332,27 @@ def test_apply_stance_update_refreshes_rationale_and_review_trail():
 # ---------------------------------------------------------------------------
 
 
-def test_apply_stance_to_thesis_buy_only_reads_rationale_and_catalyst():
-    """apply_stance_to_thesis on a buy stance produces a thesis with rationale + catalyst,
-    no horizon/target/stop fields."""
+def test_apply_stance_to_thesis_buy_only_reads_rationale():
+    """apply_stance_to_thesis on a buy stance produces a thesis with rationale,
+    no horizon/target/stop/catalyst fields."""
     from datetime import datetime, timezone
     from agents.executor._verb_dispatch import apply_stance_to_thesis
     from agents.strategist.stance_schema import TickerStance
 
     stance = TickerStance(
         ticker="AAPL", intent="buy", weight=0.03,
-        rationale="iPhone launch", catalyst="iPhone 17 launch event",
+        rationale="iPhone launch",
     )
     thesis = apply_stance_to_thesis(
         stance, prior_row=None, fill_price=210.0,
         tick_id="tick-1", as_of=datetime.now(timezone.utc),
     )
     assert thesis.rationale == "iPhone launch"
-    assert thesis.catalyst == "iPhone 17 launch event"
     assert thesis.opened_price == 210.0
     assert not hasattr(thesis, "horizon")
     assert not hasattr(thesis, "target_price")
     assert not hasattr(thesis, "stop_price")
+    assert not hasattr(thesis, "catalyst")
 
 
 # ---------------------------------------------------------------------------
@@ -471,7 +421,7 @@ def test_update_stance_writes_thesis_last_updated_tick():
 
     prior = _make_prior_row(weight=0.08)
     stance = TickerStance(
-        ticker="AAPL", intent="update", reason="Revised macro backdrop"
+        ticker="AAPL", intent="update", rationale="Revised macro backdrop"
     )
     thesis = apply_stance_to_thesis(
         stance,
@@ -504,7 +454,7 @@ def test_sell_trim_does_not_update_thesis_last_updated_tick():
     # written at tick 3 that has not been updated since).
     prior = _make_prior_row(weight=0.10, thesis_last_updated_tick=3)
 
-    stance = TickerStance(ticker="AAPL", intent="sell", weight=0.05, reason="Profit take")
+    stance = TickerStance(ticker="AAPL", intent="sell", weight=0.05, rationale="Profit take")
     thesis = apply_stance_to_thesis(
         stance,
         prior_row          = prior,

@@ -38,7 +38,6 @@ def _make_trade_log_row(**kwargs) -> TradeLogRow:
         holding_period_hours=504,
         opened_tag="buy_aapl", closed_tag="close_aapl",
         opened_rationale="x", close_reason="target",
-        catalyst_realised=False,
         opening_tick_id=None, closing_tick_id=None,
     )
     defaults.update(kwargs)
@@ -66,7 +65,6 @@ def test_trade_log_join_to_ticker_stance(session):
     session.add(TickerStanceRow(
         tick_id="tick_OPEN", recorded_at=datetime(2026, 4, 1, 14, tzinfo=UTC),
         ticker="AAPL", preferred_weight=0.05, conviction=0.7, rationale="x",
-        catalyst=None,
         lifecycle_action="buy", decision_tag="buy_aapl",
     ))
     session.add(_make_trade_log_row(

@@ -100,7 +100,7 @@ async def test_risk_gate_passes_hold_through_unchanged():
     hold_stance = TickerStance(
         ticker = "MSFT",
         intent = "update",
-        reason = "No new information",
+        rationale = "No new information",
     )
     decision = _decision_with_stances([hold_stance])
 
@@ -133,7 +133,7 @@ async def test_risk_gate_passes_update_through_unchanged():
     update_stance = TickerStance(
         ticker = "NVDA",
         intent = "update",
-        reason = "Raising view after earnings beat — no trade",
+        rationale = "Raising view after earnings beat — no trade",
     )
     decision = _decision_with_stances([update_stance])
 
@@ -177,7 +177,6 @@ async def test_risk_gate_caps_open_at_max_position_weight():
         weight    = overweight,
         rationale = "Strong product cycle",
         catalyst  = "iPhone supercycle",
-        reason    = None,
     )
     # Use model_construct on StrategistDecision as well — the schema validates
     # stances at construction time, which would reject the overweight buy stance
@@ -222,7 +221,6 @@ async def test_risk_gate_caps_add_at_max_delta_per_ticker():
         intent    = "buy",
         weight    = requested_weight,
         rationale = "adding to strong position",
-        reason    = None,
         catalyst  = None,
     )
 

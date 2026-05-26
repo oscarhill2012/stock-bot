@@ -205,7 +205,7 @@ def derive_decision_fields(
     - ``sell``      — reductive delta.  Absent weight ⇒ full close
                       (target 0.0); present weight ⇒ reduce current by
                       that delta, clamped ≥ 0.  Populates ``sell_reasons``
-                      with ``stance.reason``.
+                      with ``stance.rationale``.
     - ``update``    — prose-only revision.  No trade; current weight
                       carries forward verbatim.  Populates
                       ``update_reasons``.
@@ -288,14 +288,14 @@ def derive_decision_fields(
                     target_weights[stance.ticker] = 0.0
                 else:
                     target_weights[stance.ticker] = max(0.0, current - stance.weight)
-                sell_reasons[stance.ticker] = stance.reason
+                sell_reasons[stance.ticker] = stance.rationale
 
             case "update":
-                # No trade — current weight carries forward verbatim.  Reason
-                # is captured separately for the trace; not surfaced in
-                # target_weights or sell_reasons.
+                # No trade — current weight carries forward verbatim.  The
+                # revised thesis prose is captured separately for the trace;
+                # not surfaced in target_weights or sell_reasons.
                 target_weights[stance.ticker] = current
-                update_reasons[stance.ticker] = stance.reason
+                update_reasons[stance.ticker] = stance.rationale
 
             case "no_action":
                 # Explicit "considered, no change" — carry the current weight

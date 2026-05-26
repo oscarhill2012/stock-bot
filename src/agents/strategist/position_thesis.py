@@ -64,7 +64,6 @@ class PositionThesis(BaseModel):
       together describe the live position.  They are ``None`` until the
       first ``buy`` stance lands; populated thereafter.  A full close
       removes the row outright.
-    - ``catalyst`` is mutable via ``buy`` and ``update`` stances.
     - ``rationale`` is mutable on every ``buy`` (entry or add) and every
       ``update``.  The agent is accountable for the prose: each change of
       view must be justified in the rationale, which lands in the audit
@@ -82,8 +81,9 @@ class PositionThesis(BaseModel):
     -------------
     ``target_price``, ``stop_price``, and ``horizon`` were removed in
     iter-3.  The schema is now prose-only: entry context is captured
-    by ``rationale`` and ``catalyst``; price targets live exclusively
-    in the strategist's free-text reasoning, not the schema.
+    by ``rationale``; price targets live exclusively in the strategist's
+    free-text reasoning, not the schema.  ``catalyst`` was also removed
+    (basically duplicative of ``rationale``).
     """
 
     # Extra fields from stale callers are rejected loudly rather than silently
@@ -125,12 +125,6 @@ class PositionThesis(BaseModel):
             "Current portfolio weight in [0, 1].  Mutated on every buy/sell "
             "stance.  None when the agent holds a view but no position."
         ),
-    )
-
-    # ---- Commitments (mutable via 'buy' and 'update') ------------------
-    catalyst: str | None = Field(
-        None,
-        description="Free-form text describing the event that would confirm the thesis.",
     )
 
     # ---- Rationale (mutable) -------------------------------------------

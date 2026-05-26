@@ -96,13 +96,12 @@ def _make_strategist_llm_response(tickers: list[str]):
                 "intent":    "buy",
                 "weight":    0.04,
                 "rationale": "Smoke test buy — exercising the full executor path.",
-                "catalyst":  "Smoke-test trigger",
             })
         else:
             stances.append({
                 "ticker": t,
-                "intent": "update",
-                "reason": "Smoke test neutral stance — no real signal.",
+                "intent":    "update",
+                "rationale": "Smoke test neutral stance — no real signal.",
             })
 
     target_weights = {t: (0.04 if t == first_ticker else 0.0) for t in tickers}

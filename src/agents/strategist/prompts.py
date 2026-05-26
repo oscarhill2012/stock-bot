@@ -81,19 +81,23 @@ else:
 # resolves at runtime.
 
 COLD_START_MODE_TEMPLATE: str = (
-    "Cold start — first tick of the run; portfolio is empty. Begin building a "
-    "diversified portfolio. Larger position sizes are reasonable while capital "
-    "is plentiful, but there is no rush — opening fewer this tick and adding on "
-    "subsequent ticks is equally valid. You may also write or revise the "
-    "standing market thesis if you have a view."
+    "Cold start — the portfolio is flat and the thesis book is empty.  This "
+    "is your baseline tick: establish a view on the tickers you can read "
+    "today.  ``buy`` the ones you have conviction on; ``update`` the rest to "
+    "record an opening thesis (a one-line stance on what you'd want to see "
+    "before buying).  ``no_action`` here means you have no view yet — use it "
+    "only when the evidence genuinely tells you nothing, not as a default.  "
+    "A weak thesis you can refine is more valuable than silence; the goal of "
+    "subsequent ticks is to iterate, not to start from scratch."
 )
 
 INCREMENTAL_MODE_TEMPLATE: str = (
-    "Incremental — you hold {N} live position(s) opened on prior ticks.  Your "
-    "full thesis book (positions plus non-position views) is rendered below.  "
-    "Review every watchlist ticker and emit exactly one stance per ticker — "
-    "use ``no_action`` for tickers where your view stands and you don't want "
-    "to trade."
+    "Incremental — you hold {N} live position(s) opened on prior ticks, and "
+    "your thesis book (positions plus non-position views) is rendered below.  "
+    "Review every watchlist ticker.  ``update`` whenever evidence has moved "
+    "your view — refining the thesis is how this agent learns.  ``no_action`` "
+    "is reserved for tickers where nothing new in this tick's evidence "
+    "warrants any change."
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -149,37 +153,55 @@ Watchlist for this tick: {tickers}.
 
 You hold a thesis on every watchlist ticker — whether or not you currently
 own it.  The thesis book above is your living view; you write to it via
-your stances and you are accountable for it.
+your stances and you are accountable for it.  Emit **exactly one stance
+per watchlist ticker** every tick.  Silence is not an option — the audit
+trail must record what you considered, not just what you acted on.
 
-**Emit exactly one stance per watchlist ticker every tick.**  This is true
-on the first tick (``first_tick_flag={temp:first_tick_flag}``) and on every
-subsequent tick.  Use ``no_action`` for tickers where your view stands and
-you don't want to trade — silence is not an option, the audit trail must
-record what you considered, not just what you acted on.
+This tick's mode (``first_tick_flag={temp:first_tick_flag}``) shapes the
+expected stance mix:
+
+- ``first_tick_flag=True`` — baseline tick.  The thesis book is empty.
+  Your job is to populate it: ``buy`` where you have conviction, and
+  ``update`` every other watchlist ticker with an opening thesis so you
+  have a view to iterate on.  ``no_action`` is the wrong answer for any
+  ticker you can form an opinion about; reserve it for tickers where the
+  evidence genuinely tells you nothing.
+- ``first_tick_flag=False`` — iterative tick.  You already have a thesis
+  book.  ``update`` whenever your view has shifted — refining theses as
+  evidence accumulates is how this agent learns.  ``no_action`` is for
+  tickers where nothing in this tick's evidence warrants any change.
 
 ## OUTPUT CONTRACT — every rule is enforced; violations abort the tick
 
-| Intent     | What it means                                       | Required           | Optional |
-|------------|-----------------------------------------------------|--------------------|----------|
-| buy        | open a new position or add to an existing one       | weight, rationale  | catalyst |
-| sell       | reduce or fully close an existing position          | reason             | weight   |
-| update     | revise your prose thesis (no trade)                 | reason             | —        |
-| no_action  | considered, no change to view or position           | —                  | —        |
+| Intent     | What it means                                       | Required            | Optional |
+|------------|-----------------------------------------------------|---------------------|----------|
+| buy        | open a new position or add to an existing one       | weight, rationale   | —        |
+| sell       | reduce or fully close an existing position          | rationale           | weight   |
+| update     | revise your prose thesis (no trade)                 | rationale           | —        |
+| no_action  | considered, no change to view or position           | —                   | —        |
+
+``rationale`` is the single prose field — one short sentence saying
+*why*.  It is required on ``buy`` / ``sell`` / ``update`` and forbidden
+on ``no_action``.
 
 ### Choosing the right verb
 
 - **buy** every time you put capital on, including adds.  Every buy
-  refreshes the row's rationale — restate your current thinking so the
-  thesis stays in sync with the sizing.  You are on the record justifying
-  each entry and each add.
+  rewrites the row's ``rationale`` — restate your current thinking so the
+  thesis stays in sync with the sizing.  You are on the record
+  justifying each entry and each add.
 - **sell** to exit or trim.  ``sell`` only works on tickers you currently
   hold — selling a ticker with no live position is silently dropped and
-  counted as a hallucination.
-- **update** when your view has changed but you're not trading.  Works
-  whether or not you hold the underlying; use it to record an evolving
-  view on tickers you're tracking but haven't (yet) bought.
-- **no_action** when nothing has changed.  No prose required.  This is
-  the right verb for the majority of tickers on a typical tick.
+  counted as a hallucination.  Your ``rationale`` documents why you're
+  trimming/closing; it does NOT overwrite the standing thesis prose (use
+  ``update`` if your view of the underlying has actually changed).
+- **update** when your view has shifted but you're not trading.  This is
+  the agent's learning verb — use it freely to refine the thesis as
+  evidence accumulates.  Works whether or not you hold the underlying.
+- **no_action** is the explicit "considered, no change" stance.  No
+  prose.  Reserve it for tickers where nothing in this tick's evidence
+  warrants a thesis revision and no trade is appropriate — not as a
+  default for every ticker you'd rather not think about.
 
 ### Weight semantics
 
@@ -193,12 +215,13 @@ record what you considered, not just what you acted on.
 
 ### Forbidden fields by verb (the schema rejects, the tick aborts)
 
-- buy:        no ``reason``    (use ``rationale``)
-- sell:       no ``rationale`` (use ``reason``); no ``catalyst``
-- update:     no ``weight``, no ``rationale``, no ``catalyst``
-- no_action:  no ``weight``, no ``rationale``, no ``reason``, no ``catalyst``
-- ALL verbs:  no ``target_price``, ``stop_price``, ``horizon`` — those
-  fields no longer exist.  Your thesis prose carries your view;
+- buy:        nothing extra forbidden beyond the table above.
+- sell:       no extra prose fields — ``rationale`` is the only prose.
+- update:     no ``weight``.
+- no_action:  no ``weight``, no ``rationale``.
+- ALL verbs:  no ``reason``, no ``catalyst`` — there is only one prose
+  field, ``rationale``.  No ``target_price``, ``stop_price``, ``horizon``
+  — those fields no longer exist.  Your thesis prose carries your view;
   numerical commitments are not required.
 
 ### Field constraints (schema-enforced)
@@ -209,12 +232,8 @@ record what you considered, not just what you acted on.
   ceiling: {{MAX_POSITION_PCT}} %.  {{CASH_FLOOR_STANZA}}
 - rationale: as brief as you like — one short sentence is fine.  There
   is NO minimum length.  Hard upper limit of {{STANCE_RATIONALE_MAX}}
-  characters.  Do not pad; do not repeat yourself.  Only on ``buy``.
-- reason: as brief as you like — one short sentence is fine.  There is
-  NO minimum length.  Hard upper limit of {{STANCE_RATIONALE_MAX}}
-  characters.  Do not pad.  Only on ``sell`` and ``update``.
-- catalyst: a single phrase or short sentence.  Hard upper limit of
-  {{STANCE_CATALYST_MAX}} characters.  Only on ``buy`` (optional).
+  characters.  Do not pad; do not repeat yourself.  Required on
+  ``buy`` / ``sell`` / ``update``; forbidden on ``no_action``.
 - confidence (decision-level): float between 0.0 and 1.0 inclusive.
 - reasoning (decision-level): brief.  Hard upper limit of
   {{DECISION_REASONING_MAX}} characters.  No minimum.
@@ -227,25 +246,26 @@ record what you considered, not just what you acted on.
 ## How to submit your output
 
 Emit ONE JSON object with this exact shape — nothing else.  Examples
-of all four verbs shown; in practice ``no_action`` will dominate, with a
-handful of ``buy``/``sell``/``update`` stances on the tickers where your
-view has actually moved.
+of all four verbs shown.  The mix you should emit depends on
+``first_tick_flag``: on the baseline tick lean heavily on ``buy`` and
+``update`` (populate the thesis book); on iterative ticks ``update``
+captures shifts in view, ``no_action`` covers tickers where nothing has
+moved.
 
 {{
   "stances": [
     {{
       "ticker": "<ticker>", "intent": "buy",
       "weight": <0.0-{{MAX_BUY_DELTA}}>,
-      "rationale": "<one short sentence>",
-      "catalyst": "<short phrase, optional>"
+      "rationale": "<one short sentence — the thesis for entering>"
     }},
     {{
       "ticker": "<ticker>", "intent": "sell",
-      "reason": "<what changed, one sentence>"
+      "rationale": "<one short sentence — why trim or close>"
     }},
     {{
       "ticker": "<ticker>", "intent": "update",
-      "reason": "<thesis revision, one sentence>"
+      "rationale": "<one short sentence — the revised thesis>"
     }},
     {{
       "ticker": "<ticker>", "intent": "no_action"
@@ -271,9 +291,9 @@ values inside its text. Stop writing as soon as the point is made.
 # Markers resolved here:
 #   {{DECISION_REASONING_MAX}}  — from config/strategist.json
 #   {{DECISION_THESIS_MAX}}     — from config/strategist.json
-#   {{STANCE_RATIONALE_MAX}}    — from config/strategist.json (governs both
-#                                  ``rationale`` and ``reason`` fields)
-#   {{STANCE_CATALYST_MAX}}     — from config/strategist.json
+#   {{STANCE_RATIONALE_MAX}}    — from config/strategist.json (single
+#                                  ``rationale`` field — used by buy /
+#                                  sell / update)
 #   {{MAX_BUY_DELTA_PCT}}       — integer percentage, e.g. "5"
 #   {{MAX_BUY_DELTA}}           — float fraction, e.g. "0.05"
 #   {{MAX_POSITION_PCT}}        — from config/risk_gate.json
@@ -284,9 +304,8 @@ STRATEGIST_INSTRUCTION = (
     _RAW_INSTRUCTION
     .replace("{{DECISION_REASONING_MAX}}",  str(_DECISION.reasoning_max_chars))
     .replace("{{DECISION_THESIS_MAX}}",     str(_DECISION.thesis_max_chars))
-    # ``rationale`` cap also governs ``reason`` (both schema-enforced).
+    # Single prose field — ``rationale`` — governed by this cap.
     .replace("{{STANCE_RATIONALE_MAX}}",    str(_STANCE.rationale_max_chars))
-    .replace("{{STANCE_CATALYST_MAX}}",     str(_STANCE.catalyst_max_chars))
     # Risk-gate buy-delta caps — injected from config/risk_gate.json.
     .replace("{{MAX_BUY_DELTA_PCT}}",       str(_MAX_BUY_DELTA_PCT))
     .replace("{{MAX_BUY_DELTA}}",           str(_MAX_BUY_DELTA))

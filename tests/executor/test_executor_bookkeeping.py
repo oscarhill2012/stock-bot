@@ -46,7 +46,6 @@ _THESIS: dict = {
     "horizon":          "swing",
     "target_price":     120.0,
     "stop_price":       90.0,
-    "catalyst":         "test catalyst",
     "last_reviewed_at": _OPEN_AT.isoformat(),
     "last_review_note": "",
     "opened_tick_id":   "tick-open",
@@ -126,8 +125,6 @@ async def test_buy_stance_populates_bare_key_bridge(session):
                     "intent":    "buy",
                     "weight":    0.05,
                     "rationale": "Strong momentum breakout",
-                    "catalyst":  "Earnings beat",
-                    "reason":    None,
                 }
             ],
         },
@@ -153,7 +150,6 @@ async def test_buy_stance_populates_bare_key_bridge(session):
     assert thesis["opened_price"] == pytest.approx(_OPEN_PRICE)
     assert thesis["weight"]       == pytest.approx(0.05)
     assert thesis["rationale"]    == "Strong momentum breakout"
-    assert thesis["catalyst"]     == "Earnings beat"
 
     # ``user:positions`` must be absent — it belongs to the after-callback only.
     assert "user:positions" not in delta, (

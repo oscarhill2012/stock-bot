@@ -1,8 +1,7 @@
 """Loader for ``config/strategist.json`` — character caps on strategist LLM fields.
 
 The strategist produces free-text fields (``reasoning``, ``thesis``,
-per-stance ``rationale``, ``catalyst``, ``close_reason``, ``trim_reason``, and
-``PositionThesis`` rationale/notes).  Each is capped via ``pydantic.Field
+per-stance ``rationale``, and ``PositionThesis`` rationale/notes).  Each is capped via ``pydantic.Field
 (max_length=...)`` to keep prompts and persistence rows bounded.  The caps used
 to live as magic numbers in the schemas themselves; centralising them here
 makes them tunable without a code change.
@@ -96,12 +95,9 @@ class StanceCaps(BaseModel):
         pick its strongest reason rather than waffle.  Also covers the sell
         narrative (formerly a separate ``close_reason`` / ``trim_reason``
         field pair, removed in iter-3).
-    catalyst_max_chars:
-        Optional near-term catalyst description.
     """
 
     rationale_max_chars:    int = Field(ge=50,  le=1000)
-    catalyst_max_chars:     int = Field(ge=20,  le=500)
 
 
 class PositionThesisCaps(BaseModel):
@@ -113,15 +109,12 @@ class PositionThesisCaps(BaseModel):
         Why we entered the position — written once at open and carried
         forward.  Longer than the per-tick stance rationale because it must
         survive across many ticks of context drift.
-    catalyst_max_chars:
-        Optional named catalyst for the position.
     last_review_note_max_chars:
         Short note appended each tick we review (but do not close) the
         position.
     """
 
     rationale_max_chars:        int = Field(ge=50,  le=2000)
-    catalyst_max_chars:         int = Field(ge=20,  le=500)
     last_review_note_max_chars: int = Field(ge=20,  le=1000)
 
 
