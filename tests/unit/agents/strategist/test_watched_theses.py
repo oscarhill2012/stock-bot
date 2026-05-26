@@ -411,12 +411,14 @@ def test_render_positions_shim_mixed_shows_both_sections():
 # ---------------------------------------------------------------------------
 
 
-def test_render_positions_shim_watched_only_shows_flat_sentinel_and_watched_section():
-    """_render_positions_shim with watched-only → flat sentinel + watched section.
+def test_render_positions_shim_watched_only_shows_no_exposure_sentinel_and_watched_section():
+    """_render_positions_shim with watched-only → no-exposure sentinel + watched section.
 
-    When there are no held positions, "Currently Held" shows the flat
-    sentinel.  The "Watched theses" section is still rendered for the
-    watched tickers.
+    When there are no held positions but watched theses exist, the
+    "Currently Held" section shows the tighter "no exposure" sentinel
+    rather than the "portfolio is flat" string (which is reserved for
+    the truly-empty positions case — the bot has live views, just no
+    open exposure).  The "Watched theses" section is still rendered.
     """
     positions = {
         "MSFT": _make_watched_thesis(ticker="MSFT").model_dump(mode="json"),
@@ -424,9 +426,12 @@ def test_render_positions_shim_watched_only_shows_flat_sentinel_and_watched_sect
 
     rendered = _render_positions_shim(positions, current_tick_index=2)
 
-    # Currently Held section must show the flat sentinel.
+    # Currently Held section uses the tighter sentinel.
     assert "## Currently Held"                  in rendered
-    assert "(No held positions"                 in rendered
+    assert "(None — no exposure currently.)"    in rendered
+    # The "portfolio is flat" claim is reserved for the truly-empty case
+    # and must NOT appear when watched theses exist.
+    assert "portfolio is flat" not in rendered
 
     # Watched section must appear.
     assert "## Watched theses (not in book)"    in rendered

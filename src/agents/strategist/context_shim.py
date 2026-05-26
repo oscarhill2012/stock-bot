@@ -173,8 +173,9 @@ class StrategistContextShim(BaseAgent):
         ``temp:ticker_evidence_objects``.
 
         The ``temp:held_positions_view`` value is produced by ``render()``
-        via the ``_render_held_positions_shim`` helper below — the lightweight
-        renderer that shows thesis staleness and omits horizon/target/stop.
+        via the ``_render_positions_shim`` helper below — the lightweight
+        renderer that shows thesis staleness, splits held vs watched theses,
+        and omits horizon/target/stop.
 
         Args:
             ctx: ADK invocation context; ``ctx.session.state`` is the
@@ -406,7 +407,12 @@ def _render_positions_shim(
     held_lines: list[str] = ["## Currently Held"]
 
     if not held_items:
-        held_lines.append("(No held positions — portfolio is flat.)")
+        # Use a tighter sentinel here — the "portfolio is flat" claim is
+        # reserved for the empty-positions early return above, because when
+        # watched theses exist alongside an empty held book the portfolio
+        # is not strictly "flat" from the strategist's mental-model point
+        # of view (it has live views, just no exposure).
+        held_lines.append("(None — no exposure currently.)")
     else:
         for ticker, data in held_items:
             rationale    = data.get("rationale") or "(no rationale recorded)"
@@ -463,16 +469,6 @@ def _render_positions_shim(
 
     # ── Combine both sections with a blank line separator ─────────────────
     return f"{held_section}\n\n{watched_section}"
-
-
-# ---------------------------------------------------------------------------
-# Backward-compatibility alias.
-#
-# Older tests that import or mock ``_render_held_positions_shim`` directly
-# will continue to work.  New code should call ``_render_positions_shim``.
-# ---------------------------------------------------------------------------
-
-_render_held_positions_shim = _render_positions_shim
 
 
 def _render_recent_trades(closed_log: list[dict]) -> str:

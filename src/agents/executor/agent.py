@@ -326,7 +326,7 @@ class ExecutorAgent(BaseAgent):
         # to the after_agent_callback (_executor_thesis_writer_callback), which
         # reads ``user:positions`` to obtain the *prior* held book.  If the
         # in-tick BUY result is already in the delta, the callback would see
-        # an open stance against a ticker it thinks is already held — assertion
+        # a buy stance against a ticker it thinks is already held — assertion
         # failure.  Instead, ``user:positions`` is written only by the callback
         # (via ADK's delta-tracked state writes) and propagated cross-tick via
         # the state_delta key in the yielded Event below.

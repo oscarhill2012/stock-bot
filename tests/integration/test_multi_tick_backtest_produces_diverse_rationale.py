@@ -211,10 +211,9 @@ async def test_multi_tick_backtest_produces_diverse_rationale() -> None:
 
         # Thesis-staleness line — proves the context_shim renderer
         # was actually invoked and injected held-position data.
-        # (context_shim uses _render_held_positions_shim which shows
-        # "Thesis staleness: N ticks since last update" rather than the
-        # full held_view.py Evolution block — the shim is the authoritative
-        # live-pipeline path as of iter-3 Task 9.)
+        # (context_shim uses _render_positions_shim which shows
+        # "Thesis staleness: N ticks since last update" and splits held vs
+        # watched theses into two labelled sections.)
         assert "Thesis staleness" in prompt, (
             f"Tick {i} prompt is missing the Thesis staleness line"
         )

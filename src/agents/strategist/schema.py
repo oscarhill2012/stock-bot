@@ -78,7 +78,7 @@ class StrategistDecision(BaseModel):
     (``risk_gate``, executor, persistence, decision_logger) consume.
 
     ``new_positions`` was removed in Band 6.  The executor now assembles the
-    ``PositionThesis`` for each ``open`` stance itself from the fill price +
+    ``PositionThesis`` for each ``buy`` stance itself from the fill price +
     stance, using ``apply_stance_to_thesis`` in ``executor._verb_dispatch``.
     """
 
