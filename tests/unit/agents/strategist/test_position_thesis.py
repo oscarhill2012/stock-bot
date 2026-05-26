@@ -1,8 +1,15 @@
 """``PositionThesis`` model tests — schema evolution gate + round-trip.
 
-Three tests, per Spec B Plan 1 §Task 3.4:
+Updated for iter-3: ``target_price``, ``stop_price``, and ``horizon`` were
+removed from ``PositionThesis`` in Task 3.  The V1 frozen fixture (tests/
+fixtures/position_thesis_v1.json) was updated accordingly, and the
+``test_position_thesis_horizon_validates_enum`` test was replaced with
+``test_position_thesis_rejects_extra_fields`` which pins the iter-3
+``extra="forbid"`` contract.
+
+Tests:
     1. Round-trip through model_dump_json → model_validate_json.
-    2. Bad horizon value raises ValidationError.
+    2. Extra fields (stale horizon / target_price) are rejected loudly.
     3. V1 frozen fixture deserialises with the current code (schema-evolution gate).
 """
 from __future__ import annotations
@@ -15,9 +22,10 @@ from pydantic import ValidationError
 
 from agents.strategist.position_thesis import PositionThesis
 
-# Path to the frozen V1 wire-shape fixture.  Any new field added to
-# PositionThesis without a default value will break this test — that is
-# the intended gate.
+# Path to the frozen V1 wire-shape fixture.  Any new required field added to
+# PositionThesis without a default will break this test — that is the gate.
+# The fixture was updated in iter-3 to remove target_price / stop_price /
+# horizon and to set last_reviewed_decision to "buy" (the new iter-3 Literal).
 FIXTURE_PATH = (
     Path(__file__).parents[3]
     / "fixtures" / "position_thesis_v1.json"
@@ -34,11 +42,14 @@ def test_position_thesis_round_trips_through_json():
     assert restored == thesis
 
 
-def test_position_thesis_horizon_validates_enum():
-    """A bad horizon value must raise ValidationError."""
+def test_position_thesis_rejects_extra_fields():
+    """Stale fields (horizon, target_price, stop_price) must raise ValidationError.
 
+    ``extra="forbid"`` on PositionThesis ensures any caller still writing
+    the iter-2 fields gets a loud failure rather than silent truncation.
+    """
     fixture = json.loads(FIXTURE_PATH.read_text())
-    fixture["horizon"] = "bogus"
+    fixture["horizon"] = "swing"        # removed in iter-3 — must reject
 
     with pytest.raises(ValidationError):
         PositionThesis.model_validate(fixture)

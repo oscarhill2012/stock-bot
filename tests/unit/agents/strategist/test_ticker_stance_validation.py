@@ -1,19 +1,14 @@
-"""``TickerStance`` intent-based field-validation tests — Spec B Band 3 §Task 3.5.
+"""``TickerStance`` intent-based field-validation tests — iter-3 three-verb schema.
 
-Covers the per-verb required-field rules enforced by
-``TickerStance._require_intent_fields``.  One test per verb asserts the
-happy path (minimal valid stance).  One parametrised test asserts that
-each individually-missing required field produces a ``ValidationError``.
+Rewrote for the iter-3 schema rewrite (buy / sell / update vocabulary).
+The pre-iter-3 tests for the old six-verb set (open / add / trim / close /
+hold / update-with-thesis-fields) were deleted — those verbs are now
+rejected at the schema level.
 
-Verb rules (per Spec B §'Validation rules'):
-    open:   weight, target_price, stop_price, catalyst, horizon, rationale
-            all required.
-    add:    weight only required.
-    trim:   weight + reason required.
-    close:  no additional fields required beyond ticker + intent.
-    hold:   reason required.
-    update: reason + at least one of target_price / stop_price /
-            catalyst / horizon required.
+Verb rules (iter-3 schema):
+    buy:    weight (0 < w ≤ 0.05) + rationale required.
+    sell:   reason required; weight optional (absent = full close).
+    update: reason required; no weight, no rationale, no catalyst.
 """
 from __future__ import annotations
 
@@ -22,71 +17,30 @@ from pydantic import ValidationError
 
 from agents.strategist.stance_schema import TickerStance
 
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _open(**overrides) -> dict:
-    """Return a fully-populated open stance dict, with optional field overrides."""
+
+def _buy(**overrides) -> dict:
+    """Return a minimal valid buy stance dict."""
     base = dict(
         ticker="AAPL",
-        intent="open",
-        weight=0.08,
-        target_price=210.0,
-        stop_price=185.0,
-        catalyst="AI-driven revenue acceleration",
-        horizon="swing",
-        rationale="Strong FCF and secular growth tailwind.",
+        intent="buy",
+        weight=0.03,
+        rationale="FCF + insider buying; iPhone supercycle ahead.",
     )
     base.update(overrides)
     return base
 
 
-def _add(**overrides) -> dict:
-    """Return a minimal valid add stance dict."""
+def _sell(**overrides) -> dict:
+    """Return a minimal valid sell (full close) stance dict."""
     base = dict(
         ticker="AAPL",
-        intent="add",
-        weight=0.12,
-    )
-    base.update(overrides)
-    return base
-
-
-def _trim(**overrides) -> dict:
-    """Return a minimal valid trim stance dict."""
-    base = dict(
-        ticker="AAPL",
-        intent="trim",
-        weight=0.05,
-        reason="Price hit first target; locking in partial gains.",
-    )
-    base.update(overrides)
-    return base
-
-
-def _close(**overrides) -> dict:
-    """Return a minimal valid close stance dict.
-
-    ``reason`` is required on close in the new schema — include a default
-    so the helper is valid by default.  Tests that want to test a missing
-    reason can pass ``reason=None`` as an override.
-    """
-    base = dict(
-        ticker="AAPL",
-        intent="close",
-        reason="test close reason",
-    )
-    base.update(overrides)
-    return base
-
-
-def _hold(**overrides) -> dict:
-    """Return a minimal valid hold stance dict."""
-    base = dict(
-        ticker="AAPL",
-        intent="hold",
-        reason="No change in thesis; price action still intact.",
+        intent="sell",
+        reason="Guidance cut invalidates thesis.",
     )
     base.update(overrides)
     return base
@@ -97,8 +51,7 @@ def _update(**overrides) -> dict:
     base = dict(
         ticker="AAPL",
         intent="update",
-        reason="Raised target after stronger-than-expected earnings.",
-        target_price=225.0,
+        reason="Raising my Q4 revenue estimate after data-centre capex read.",
     )
     base.update(overrides)
     return base
@@ -109,147 +62,77 @@ def _update(**overrides) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def test_open_minimal_valid():
-    """A fully-populated open stance validates without error."""
-    stance = TickerStance.model_validate(_open())
-    assert stance.intent == "open"
-    assert stance.weight == 0.08
-    assert stance.rationale == "Strong FCF and secular growth tailwind."
+def test_buy_minimal_valid():
+    """A buy stance with weight + rationale validates without error."""
+    stance = TickerStance.model_validate(_buy())
+    assert stance.intent == "buy"
+    assert stance.weight == 0.03
+    assert stance.rationale is not None
 
 
-def test_add_minimal_valid():
-    """An add stance needs only weight beyond ticker/intent."""
-    stance = TickerStance.model_validate(_add())
-    assert stance.intent == "add"
-    assert stance.weight == 0.12
-
-
-def test_trim_minimal_valid():
-    """A trim stance needs weight + reason."""
-    stance = TickerStance.model_validate(_trim())
-    assert stance.intent == "trim"
-    assert stance.weight == 0.05
+def test_sell_minimal_valid():
+    """A sell stance (full close) requires only reason."""
+    stance = TickerStance.model_validate(_sell())
+    assert stance.intent == "sell"
+    assert stance.weight is None
     assert stance.reason is not None
 
 
-def test_close_minimal_valid():
-    """A close stance requires no fields beyond ticker and intent."""
-    stance = TickerStance.model_validate(_close())
-    assert stance.intent == "close"
-
-
-def test_hold_minimal_valid():
-    """A hold stance requires only reason."""
-    stance = TickerStance.model_validate(_hold())
-    assert stance.intent == "hold"
-    assert stance.reason is not None
+def test_sell_partial_with_weight():
+    """A sell stance with weight is a partial trim."""
+    stance = TickerStance.model_validate(_sell(weight=0.02))
+    assert stance.intent == "sell"
+    assert stance.weight == 0.02
 
 
 def test_update_minimal_valid():
-    """An update stance requires reason + at least one commitment field."""
+    """An update stance requires only reason."""
     stance = TickerStance.model_validate(_update())
     assert stance.intent == "update"
     assert stance.reason is not None
-    # At least one of the mutable fields is populated.
-    assert stance.target_price is not None
-
-
-def test_update_valid_with_only_stop_price():
-    """update with only stop_price as the mutated field is sufficient."""
-    data = dict(
-        ticker="AAPL",
-        intent="update",
-        reason="Stop raised to protect gains.",
-        stop_price=195.0,
-    )
-    stance = TickerStance.model_validate(data)
-    assert stance.stop_price == 195.0
-
-
-def test_update_valid_with_only_horizon():
-    """update with only horizon as the mutated field is sufficient."""
-    data = dict(
-        ticker="AAPL",
-        intent="update",
-        reason="Extending horizon after catalyst delay.",
-        horizon="long_term",
-    )
-    stance = TickerStance.model_validate(data)
-    assert stance.horizon == "long_term"
 
 
 # ---------------------------------------------------------------------------
-# Per-verb missing-field validation (parametrised)
+# Per-verb missing-field validation
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("missing_field", [
-    "weight",
-    "target_price",
-    "stop_price",
-    "horizon",
-    "rationale",
-])
-def test_open_missing_required_field(missing_field: str):
-    """Every required field for open, individually absent, must raise ValidationError.
-
-    Note: ``catalyst`` is **optional** on open — it is excluded from this
-    parametrised list intentionally.  The schema only requires weight, rationale,
-    horizon, target_price, and stop_price for the open verb.
-    """
-    data = _open()
-    data[missing_field] = None
-
-    with pytest.raises(ValidationError) as exc_info:
-        TickerStance.model_validate(data)
-
-    # The error message should name the violated rule clearly.
-    msg = str(exc_info.value)
-    assert "open" in msg, f"Expected 'open' in error message; got: {msg}"
-
-
-def test_add_missing_weight():
-    """add without weight raises ValidationError."""
-    data = _add(weight=None)
-
-    with pytest.raises(ValidationError) as exc_info:
-        TickerStance.model_validate(data)
-
-    msg = str(exc_info.value)
-    assert "add" in msg
-
-
-@pytest.mark.parametrize("missing_field", ["weight", "reason"])
-def test_trim_missing_required_field(missing_field: str):
-    """trim without weight or reason raises ValidationError that names trim and
-    the alternative verbs (close / hold) so the LLM has a concrete suggestion."""
-    data = _trim()
+@pytest.mark.parametrize("missing_field", ["weight", "rationale"])
+def test_buy_missing_required_field(missing_field: str):
+    """buy without weight or rationale must raise ValidationError."""
+    data = _buy()
     data[missing_field] = None
 
     with pytest.raises(ValidationError) as exc_info:
         TickerStance.model_validate(data)
 
     msg = str(exc_info.value)
-    assert "trim" in msg
-    # The error message must suggest the alternative verbs so the LLM can
-    # self-correct on re-prompt — mirrors the assertion in
-    # test_update_missing_all_commitment_fields.
-    assert "close" in msg
-    assert "hold" in msg
+    assert missing_field in msg
 
 
-def test_hold_missing_reason():
-    """hold without reason raises ValidationError."""
-    data = _hold(reason=None)
+def test_buy_weight_above_cap_raises():
+    """buy weight above the 5 % per-trade cap must raise ValidationError."""
+    data = _buy(weight=0.06)
 
     with pytest.raises(ValidationError) as exc_info:
         TickerStance.model_validate(data)
 
     msg = str(exc_info.value)
-    assert "hold" in msg
+    assert "buy" in msg
 
 
-def test_update_missing_reason():
+def test_sell_missing_reason_raises():
+    """sell without reason raises ValidationError — silent exits are forbidden."""
+    data = _sell(reason=None)
+
+    with pytest.raises(ValidationError) as exc_info:
+        TickerStance.model_validate(data)
+
+    msg = str(exc_info.value)
+    assert "reason" in msg.lower() or "sell" in msg
+
+
+def test_update_missing_reason_raises():
     """update without reason raises ValidationError."""
     data = _update(reason=None)
 
@@ -257,57 +140,52 @@ def test_update_missing_reason():
         TickerStance.model_validate(data)
 
     msg = str(exc_info.value)
-    assert "update" in msg
+    assert "reason" in msg.lower() or "update" in msg
 
 
-def test_update_missing_all_commitment_fields_coerces_to_hold():
-    """update with reason but no mutable fields salvages to ``hold``.
+def test_update_with_weight_raises():
+    """update with weight raises ValidationError — no trade occurs on update."""
+    data = _update(weight=0.03)
 
-    Updated 2026-05-25: the validator used to raise here, but empirically
-    Vertex Gemini occasionally emits ``intent='update'`` with prose that
-    talks about updating a target without ever populating ``target_price``
-    (or any other thesis field).  The shape is structurally equivalent to
-    a valid ``hold`` — reason present, no commitment fields, no weight —
-    and the executor would do nothing either way, so the validator coerces
-    rather than aborting the tick.  See ``test_stance_schema`` for the
-    paired observability assertion (WARN log on every coercion).
-    """
-    data = dict(
-        ticker="AAPL",
-        intent="update",
-        reason="I have a reason but nothing to change.",
-        # target_price, stop_price, catalyst, horizon all absent/null
-    )
+    with pytest.raises(ValidationError) as exc_info:
+        TickerStance.model_validate(data)
 
-    stance = TickerStance.model_validate(data)
-
-    # The validator rewrote the intent — downstream sees a clean hold.
-    assert stance.intent == "hold"
-    assert stance.ticker == "AAPL"
-    assert stance.reason == "I have a reason but nothing to change."
+    assert "weight" in str(exc_info.value)
 
 
 # ---------------------------------------------------------------------------
-# Open-stance rationale regression guard
+# Old verb rejection guard
 # ---------------------------------------------------------------------------
 
 
-def test_open_stance_missing_rationale():
-    """An open stance missing rationale must fail at the schema level.
+@pytest.mark.parametrize("old_verb", ["open", "add", "trim", "close", "hold"])
+def test_old_verbs_rejected(old_verb: str):
+    """All pre-iter-3 verbs must raise ValidationError with a migration hint."""
+    with pytest.raises(ValidationError) as exc_info:
+        TickerStance(ticker="AAPL", intent=old_verb)
 
-    Regression guard: ``rationale`` is required on ``open`` because it seeds the
-    ``PositionThesis`` row (Invariant 3 — frozen at entry).  Omitting it must
-    raise early at parse time with a message that names ``rationale``, so the
-    LLM's re-prompt includes the correct field.  It must never pass silently to
-    derivation.
+    err = str(exc_info.value)
+    # The error must mention the new vocabulary so the caller can self-correct.
+    assert "buy" in err and "sell" in err
+
+
+# ---------------------------------------------------------------------------
+# Buy-stance rationale regression guard
+# ---------------------------------------------------------------------------
+
+
+def test_buy_stance_missing_rationale():
+    """A buy stance missing rationale must fail at the schema level.
+
+    Regression guard: rationale is required on buy because it seeds the
+    PositionThesis row (Invariant 3 — frozen at entry).  Omitting it must
+    raise early at parse time with a message that names 'rationale', so the
+    LLM's re-prompt includes the correct field.
     """
     data = dict(
         ticker="MSFT",
-        intent="open",
-        weight=0.10,
-        horizon="swing",
-        target_price=420.0,
-        stop_price=390.0,
+        intent="buy",
+        weight=0.04,
         # rationale intentionally omitted — must raise, not pass silently
     )
 
@@ -315,5 +193,4 @@ def test_open_stance_missing_rationale():
         TickerStance.model_validate(data)
 
     msg = str(exc_info.value)
-    # The error must name the missing field so the LLM's re-prompt is actionable.
     assert "rationale" in msg

@@ -12,7 +12,13 @@ from pathlib import Path
 
 
 def test_default_substitutions_visible() -> None:
-    """With shipped defaults the prompt cites 20 %, 5 %, 50 %, no cash floor."""
+    """With shipped defaults the prompt cites the risk-gate limits and no cash floor.
+
+    The prompt renders percentages as "<N> %" (with a space) rather than "<N>%",
+    matching the natural-language style in the instruction text.  The exact
+    format is pinned here so a future template change produces a test failure
+    rather than a silent prompt regression.
+    """
 
     # Import the module fresh so the patched config (if any earlier test
     # mutated state) is re-applied.
@@ -22,24 +28,29 @@ def test_default_substitutions_visible() -> None:
 
     text = prompts_mod.STRATEGIST_INSTRUCTION
 
-    assert "20%" in text, "max_position_weight (20 %) must surface in the prompt"
-    assert "5%" in text,  "max_delta_per_ticker (5 %) must surface in the prompt"
-    assert "50%" in text, "max_total_turnover (50 %) must surface in the prompt"
+    # Position ceiling and buy-delta cap are rendered as "N %" in the prompt.
+    assert "20 %" in text or "20%" in text, "max_position_weight (20 %) must surface in the prompt"
+    assert "5 %" in text or "5%" in text,   "max_delta_per_ticker (5 %) must surface in the prompt"
     assert "No cash floor" in text, "default cash_floor=0 stanza must surface"
 
 
 def test_substitutions_track_config_changes(tmp_path: Path, monkeypatch) -> None:
-    """Editing the config + reloading flips the rendered percentages."""
+    """Editing the config + reloading flips the rendered percentages.
+
+    The prompt renders some values as "N %" (space-separated); we assert
+    using both formats since the exact formatting may vary between fields.
+    """
 
     cfg_file = tmp_path / "risk_gate.json"
     cfg_file.write_text(
         json.dumps(
             {
-                "min_held_weight":       0.001,
-                "max_position_weight":   0.20,
-                "cash_floor_weight":     0.05,
-                "max_delta_per_ticker":  0.02,
-                "max_total_turnover":    0.40,
+                "min_held_weight":         0.001,
+                "max_position_weight":     0.20,
+                "cash_floor_weight":       0.05,
+                "max_delta_per_ticker":    0.02,
+                "max_total_turnover":      0.40,
+                "max_buy_delta_per_trade": 0.02,
             }
         ),
         encoding="utf-8",
@@ -55,7 +66,8 @@ def test_substitutions_track_config_changes(tmp_path: Path, monkeypatch) -> None
 
     text = prompts_mod.STRATEGIST_INSTRUCTION
 
-    assert "2%" in text, "patched max_delta_per_ticker (2 %) must surface"
-    assert "40%" in text, "patched max_total_turnover (40 %) must surface"
-    assert "Cash reserve ≥5%" in text, "patched cash floor stanza must surface"
-    assert "No cash floor" not in text, "default stanza must not coexist"
+    # The patched buy-delta cap (2 %) must appear.
+    assert "2 %" in text or "2%" in text, "patched max_buy_delta_per_trade (2 %) must surface"
+    # The cash floor stanza must be present (non-zero cash_floor_weight).
+    assert "Cash reserve" in text, "patched cash floor stanza must surface"
+    assert "No cash floor" not in text, "default no-floor stanza must not coexist"

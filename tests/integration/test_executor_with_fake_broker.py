@@ -91,20 +91,18 @@ async def test_executor_stamps_opened_price_on_buy():
         ],
         "positions": {},   # Band 4 bare-key bridge (starts empty)
         "strategist_decision": {
-            "decision_tag":  "morning_sweep",
+            "decision_tag": "morning_sweep",
+            # iter-3: buy stance — no horizon / target_price / stop_price.
             "stances": [
                 {
-                    "ticker":       "AAPL",
-                    "intent":       "open",
-                    "weight":       0.10,
-                    "horizon":      "swing",
-                    "rationale":    "earnings beat + insider buying",
-                    "target_price": 230.0,
-                    "stop_price":   200.0,
-                    "catalyst":     "Q3 earnings",
+                    "ticker":    "AAPL",
+                    "intent":    "buy",
+                    "weight":    0.04,
+                    "rationale": "earnings beat + insider buying",
+                    "catalyst":  "Q3 earnings",
                 },
             ],
-            "close_reasons": {},
+            "sell_reasons": {},
         },
     }
 
@@ -119,7 +117,7 @@ async def test_executor_stamps_opened_price_on_buy():
     assert len(events) == 1, "executor must yield exactly one state-delta event"
     delta = events[0].actions.state_delta
     assert "AAPL" in delta["positions"], (
-        "BUY must assemble the thesis from the open stance and store it in "
+        "BUY must assemble the thesis from the buy stance and store it in "
         "the bare-key bridge 'positions'"
     )
     stamped = delta["positions"]["AAPL"]
@@ -130,12 +128,13 @@ async def test_executor_stamps_opened_price_on_buy():
         "_run_async_impl must not write user:positions — that belongs to the after-callback"
     )
 
-    # All commitment fields from the stance must appear in the assembled thesis.
-    assert stamped["target_price"] == 230.0
-    assert stamped["stop_price"]   == 200.0
-    assert stamped["horizon"]      == "swing"
-    assert stamped["rationale"]    == "earnings beat + insider buying"
+    # Prose commitment fields from the stance must appear in the assembled thesis.
+    # iter-3: horizon / target_price / stop_price are no longer in PositionThesis.
+    assert stamped["rationale"]      == "earnings beat + insider buying"
     assert stamped["opened_tick_id"] == "tick-1"
+    assert "horizon"      not in stamped
+    assert "target_price" not in stamped
+    assert "stop_price"   not in stamped
 
 
 @pytest.mark.asyncio
@@ -213,22 +212,18 @@ async def test_cross_tick_buy_then_sell_produces_trade_log_row():
         ],
         "positions":          {},   # Band 4 bare-key bridge (starts empty)
         "strategist_decision": {
-            "decision_tag":  "morning_sweep",
-            # Band 6: executor assembles PositionThesis from the open-intent
-            # stance + fill price; ``new_positions`` is no longer needed here.
+            "decision_tag": "morning_sweep",
+            # iter-3: buy stance — no horizon / target_price / stop_price.
             "stances": [
                 {
-                    "ticker":       "AAPL",
-                    "intent":       "open",
-                    "weight":       0.10,
-                    "horizon":      "swing",
-                    "rationale":    "strong_momentum",
-                    "target_price": 230.0,
-                    "stop_price":   190.0,
-                    "catalyst":     "Q3 earnings",
+                    "ticker":    "AAPL",
+                    "intent":    "buy",
+                    "weight":    0.04,
+                    "rationale": "strong_momentum",
+                    "catalyst":  "Q3 earnings",
                 },
             ],
-            "close_reasons": {},
+            "sell_reasons": {},
         },
     }
 
@@ -298,8 +293,8 @@ async def test_cross_tick_buy_then_sell_produces_trade_log_row():
         # Load positions from the reloaded session — exactly what the runner does.
         "positions":          dict(reloaded_positions),   # Band 4 bare-key bridge
         "strategist_decision": {
-            "decision_tag":  "take_profit",
-            "close_reasons": {"AAPL": "target reached"},
+            "decision_tag": "take_profit",
+            "sell_reasons": {"AAPL": "target reached"},
         },
     }
 

@@ -48,11 +48,11 @@ async def test_user_positions_and_thesis_written_after_executor_tick():
 
     open_ts   = datetime(2026, 5, 23, 9, 30, tzinfo=UTC).isoformat()
 
-    # ── Seed session: BUY order + strategist decision with an open stance ────
-    # The strategist_decision must carry a TickerStance with intent="open"
+    # ── Seed session: BUY order + strategist decision with a buy stance ────
+    # The strategist_decision must carry a TickerStance with intent="buy"
     # so both the executor BUY-path (assembling the bare-key bridge thesis)
     # and the after-callback's apply_stance_to_thesis (writing user:positions)
-    # fire correctly.  Band 6: new_positions is no longer needed here.
+    # fire correctly.  iter-3: no horizon / target_price / stop_price.
     session = await svc.create_session(
         app_name = "test-e2e",
         user_id  = "stockbot",
@@ -65,24 +65,21 @@ async def test_user_positions_and_thesis_written_after_executor_tick():
                 {"ticker": "AAPL", "action": "BUY", "quantity": 5.0, "est_price": 200.0},
             ],
             "strategist_decision": {
-                "decision_tag": "open_aapl",
+                "decision_tag": "buy_aapl",
                 "reasoning":    "Strong FCF + insider buying",
                 "confidence":   0.8,
                 "thesis":       "FCF-driven AI infrastructure thesis",
                 "stances": [
                     {
-                        "ticker":       "AAPL",
-                        "intent":       "open",
-                        "weight":       0.10,
-                        "horizon":      "swing",
-                        "rationale":    "Strong FCF + insider buying",
-                        "target_price": 220.0,
-                        "stop_price":   185.0,
-                        "catalyst":     "Q3 earnings beat",
+                        "ticker":    "AAPL",
+                        "intent":    "buy",
+                        "weight":    0.04,
+                        "rationale": "Strong FCF + insider buying",
+                        "catalyst":  "Q3 earnings beat",
                     },
                 ],
-                "target_weights": {"AAPL": 0.10},
-                "close_reasons": {},
+                "target_weights": {"AAPL": 0.04},
+                "sell_reasons":   {},
             },
         },
     )
@@ -126,8 +123,11 @@ async def test_user_positions_and_thesis_written_after_executor_tick():
     assert aapl_thesis["opened_price"] == pytest.approx(200.0), (
         "opened_price must match the FakeBroker fill price"
     )
-    assert aapl_thesis["weight"] == pytest.approx(0.10)
-    assert aapl_thesis["horizon"] == "swing"
+    assert aapl_thesis["weight"] == pytest.approx(0.04)
+    # iter-3: horizon / target_price / stop_price no longer exist in PositionThesis.
+    assert "horizon"      not in aapl_thesis
+    assert "target_price" not in aapl_thesis
+    assert "stop_price"   not in aapl_thesis
 
     # user:thesis must contain the standing thesis string from the decision.
     user_thesis = reloaded.state.get("user:thesis")

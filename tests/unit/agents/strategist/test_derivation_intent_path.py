@@ -1,16 +1,14 @@
-"""Band 1 — derive_decision_fields reads intent+weight, not preferred_weight.
+"""iter-3 derivation path tests — three-verb contract (buy / sell / update).
 
-These tests verify that the rewritten derivation pipeline:
-  - Populates target_weights from stance.weight (not preferred_weight).
-  - Populates close_reasons from stance.reason when intent=='close'.
-  - Populates trim_reasons from stance.reason when intent=='trim'.
-  - Raises StrategistContractViolation when intent is None.
-  - Raises StrategistContractViolation when a close has no reason.
-  - Preserves the Spec B / D3 held-coverage invariant (uncovered held ticker → raise).
+NOTE: The pre-iter-3 test classes (TestTargetWeightsReadIntentPath,
+TestCloseReasonFromIntent, TestTrimReasonFromIntent, TestHeldCoverageInvariantPreserved)
+that exercised the old open / close / trim / hold verb set were deleted in
+the iter-3 sweep — those verbs no longer exist in the schema.
+
+The coverage they provided is replaced by the equivalent three-verb tests
+below, plus the tests in ``test_derivation.py`` (iter-3 section).
 """
 from __future__ import annotations
-
-from datetime import UTC, datetime
 
 import pytest
 
@@ -30,86 +28,92 @@ def _ctx(current_weights=None, watchlist=("AAPL", "MSFT")) -> TickContext:
         watchlist: Tickers in scope this tick. Defaults to a two-ticker set.
 
     Returns:
-        A ``TickContext`` with deterministic tick_id and timestamp.
+        A ``TickContext`` with default values.
     """
     return TickContext(
-        tick_id="tick_001",
-        decision_tag="test",
-        now=datetime(2026, 5, 24, 14, 0, tzinfo=UTC),
         current_weights=current_weights or {},
         watchlist=list(watchlist),
     )
 
 
-class TestTargetWeightsReadIntentPath:
-    """target_weights must populate from stance.weight, never preferred_weight."""
+# ---------------------------------------------------------------------------
+# Buy path — target_weights populated from stance.weight
+# ---------------------------------------------------------------------------
 
-    def test_open_stance_populates_target_weight_from_weight_field(self):
-        """An open stance at 5% must write 0.05 into target_weights via stance.weight."""
-        # AVGO is flat; strategist opens at 5%.
+
+class TestBuyTargetWeightPath:
+    """buy stances must populate target_weights from stance.weight."""
+
+    def test_buy_stance_populates_target_weight(self):
+        """A buy stance at 4 % must write 0.04 into target_weights."""
         stances = [TickerStance(
-            ticker="AVGO", intent="open", weight=0.05,
-            rationale="Strong setup", horizon="swing",
-            target_price=2100.0, stop_price=1800.0,
-            catalyst="earnings beat expected",
+            ticker="AVGO", intent="buy", weight=0.04,
+            rationale="Strong buy signal",
         )]
         ctx = _ctx(watchlist=("AVGO",))
         result = derive_decision_fields(stances, ctx)
-        assert result.target_weights["AVGO"] == 0.05
+        assert result.target_weights["AVGO"] == 0.04
 
-    def test_close_stance_populates_target_weight_zero(self):
-        """A close stance must write 0.0 into target_weights regardless of prior weight."""
+    def test_buy_stance_not_in_sell_reasons(self):
+        """A buy stance must not add an entry to sell_reasons."""
+        stances = [TickerStance(ticker="AVGO", intent="buy", weight=0.04, rationale="ok")]
+        ctx = _ctx(watchlist=("AVGO",))
+        result = derive_decision_fields(stances, ctx)
+        assert "AVGO" not in result.sell_reasons
+
+
+# ---------------------------------------------------------------------------
+# Sell path — sell_reasons populated from stance.reason
+# ---------------------------------------------------------------------------
+
+
+class TestSellReasonFromIntent:
+    """sell_reasons must be populated from stance.reason on a sell stance."""
+
+    def test_sell_with_reason_populates_sell_reasons(self):
+        """A full sell with a reason must populate sell_reasons[ticker]."""
         stances = [TickerStance(
-            ticker="AVGO", intent="close", reason="thesis broke",
+            ticker="AVGO", intent="sell", reason="guidance cut invalidates thesis",
         )]
         ctx = _ctx(current_weights={"AVGO": 0.05}, watchlist=("AVGO",))
         result = derive_decision_fields(stances, ctx)
+        assert result.sell_reasons["AVGO"] == "guidance cut invalidates thesis"
         assert result.target_weights["AVGO"] == 0.0
 
-
-class TestCloseReasonFromIntent:
-    """close_reasons populates from stance.reason when intent=='close'."""
-
-    def test_close_with_reason_populates_close_reasons(self):
-        """A close with a reason must populate close_reasons[ticker]."""
+    def test_partial_sell_reduces_weight(self):
+        """A partial sell (sell + weight) reduces current weight by the stated delta."""
         stances = [TickerStance(
-            ticker="AVGO", intent="close", reason="guidance cut invalidates thesis",
-        )]
-        ctx = _ctx(current_weights={"AVGO": 0.05}, watchlist=("AVGO",))
-        result = derive_decision_fields(stances, ctx)
-        assert result.close_reasons["AVGO"] == "guidance cut invalidates thesis"
-
-    def test_close_without_reason_raises(self):
-        """A close with no reason must raise — silent exits are forbidden audit failures.
-
-        The schema enforces ``reason`` at parse time for close stances, so we
-        use ``model_construct`` to bypass validation and simulate a payload that
-        somehow arrives at derivation without a reason.  The derivation layer
-        must raise ``StrategistContractViolation`` rather than silently skipping.
-        """
-        # Build a close stance with no reason, bypassing schema validation.
-        bad_stance = TickerStance.model_construct(
-            ticker="AVGO",
-            intent="close",
-            reason=None,
-        )
-        ctx = _ctx(current_weights={"AVGO": 0.05}, watchlist=("AVGO",))
-        with pytest.raises(StrategistContractViolation, match="reason"):
-            derive_decision_fields([bad_stance], ctx)
-
-
-class TestTrimReasonFromIntent:
-    """trim_reasons populates from stance.reason when intent=='trim'."""
-
-    def test_trim_with_reason_populates_trim_reasons(self):
-        """A trim with a reason must populate trim_reasons[ticker]."""
-        stances = [TickerStance(
-            ticker="AVGO", intent="trim", weight=0.02,
+            ticker="AVGO", intent="sell", weight=0.02,
             reason="taking partial profits at 50% to target",
         )]
         ctx = _ctx(current_weights={"AVGO": 0.05}, watchlist=("AVGO",))
         result = derive_decision_fields(stances, ctx)
-        assert result.trim_reasons["AVGO"] == "taking partial profits at 50% to target"
+        assert result.target_weights["AVGO"] == pytest.approx(0.03)
+        assert result.sell_reasons["AVGO"] == "taking partial profits at 50% to target"
+
+
+# ---------------------------------------------------------------------------
+# Update path — weight is carried forward unchanged
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateCarryForward:
+    """update stances must leave target_weights unchanged (weight carried forward)."""
+
+    def test_update_carries_weight_forward(self):
+        """An update stance must not alter the ticker's weight."""
+        stances = [TickerStance(
+            ticker="AVGO", intent="update", reason="raising my Q4 revenue estimate",
+        )]
+        ctx = _ctx(current_weights={"AVGO": 0.05}, watchlist=("AVGO",))
+        result = derive_decision_fields(stances, ctx)
+        assert result.target_weights["AVGO"] == 0.05
+        assert "AVGO" not in result.sell_reasons
+
+
+# ---------------------------------------------------------------------------
+# Intent non-null enforcement
+# ---------------------------------------------------------------------------
 
 
 class TestIntentNonNullEnforced:
@@ -118,13 +122,10 @@ class TestIntentNonNullEnforced:
     def test_intent_none_raises_contract_violation(self):
         """intent=None must raise immediately — no silent legacy-path fallback.
 
-        The schema enforces ``intent`` at parse time, so we use ``model_construct``
-        to bypass validation and simulate a payload arriving at derivation with
-        ``intent=None``.  The derivation layer must raise
-        ``StrategistContractViolation`` rather than silently treating it as a
-        hold-flat.
+        We bypass Pydantic via ``model_construct`` to simulate a payload
+        arriving at derivation with ``intent=None``.  The derivation layer
+        must raise ``StrategistContractViolation``.
         """
-        # Build a stance with intent=None, bypassing schema validation.
         bad_stance = TickerStance.model_construct(
             ticker="AVGO",
             intent=None,
@@ -132,14 +133,3 @@ class TestIntentNonNullEnforced:
         ctx = _ctx(watchlist=("AVGO",))
         with pytest.raises(StrategistContractViolation, match="intent"):
             derive_decision_fields([bad_stance], ctx)
-
-
-class TestHeldCoverageInvariantPreserved:
-    """The Plan 2 / D3 invariant — held tickers MUST have a stance — still raises."""
-
-    def test_uncovered_held_ticker_raises(self):
-        """An empty stance list when AVGO is held must raise with the ticker name."""
-        stances = []  # Strategist returned nothing
-        ctx = _ctx(current_weights={"AVGO": 0.05}, watchlist=("AVGO",))
-        with pytest.raises(StrategistContractViolation, match="AVGO"):
-            derive_decision_fields(stances, ctx)

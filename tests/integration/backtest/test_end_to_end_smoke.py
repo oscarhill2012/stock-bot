@@ -81,34 +81,31 @@ def _make_strategist_llm_response(tickers: list[str]):
     from google.adk.models import LlmResponse
     from google.genai import types as genai_types
 
-    # Open the first ticker with a small position so the smoke test can assert
+    # Buy the first ticker with a small position so the smoke test can assert
     # that user:positions is non-empty after the run.  The remaining tickers
-    # (if any) receive hold stances (no trade, weight unchanged).
+    # (if any) receive update stances (no trade, weight unchanged).
     #
-    # Band 3: preferred_weight / conviction deleted from TickerStance.
-    # The executor reads intent + weight directly.
+    # iter-3: three-verb schema (buy / sell / update).  buy weight capped at
+    # 0.05 per trade; no horizon / target_price / stop_price on TickerStance.
     first_ticker = tickers[0] if tickers else "AAPL"
     stances = []
     for t in tickers:
         if t == first_ticker:
             stances.append({
-                "ticker":       t,
-                "intent":       "open",
-                "weight":       0.10,
-                "rationale":    "Smoke test open — exercising the full executor path.",
-                "horizon":      "swing",
-                "target_price": 170.0,
-                "stop_price":   140.0,
-                "catalyst":     "Smoke-test trigger",
+                "ticker":    t,
+                "intent":    "buy",
+                "weight":    0.04,
+                "rationale": "Smoke test buy — exercising the full executor path.",
+                "catalyst":  "Smoke-test trigger",
             })
         else:
             stances.append({
                 "ticker": t,
-                "intent": "hold",
+                "intent": "update",
                 "reason": "Smoke test neutral stance — no real signal.",
             })
 
-    target_weights = {t: (0.10 if t == first_ticker else 0.0) for t in tickers}
+    target_weights = {t: (0.04 if t == first_ticker else 0.0) for t in tickers}
 
     decision = {
         "stances":        stances,

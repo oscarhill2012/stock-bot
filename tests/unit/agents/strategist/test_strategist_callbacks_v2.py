@@ -60,9 +60,10 @@ def test_after_requires_explicit_stance_for_held_tickers():
 
     This test was originally ``test_after_does_not_require_exhaustive_stances``
     (asserting that MSFT's omission was safe).  It is inverted here: MSFT IS
-    held, so omitting it must now raise.  The fix is to supply an explicit hold
-    stance for MSFT alongside the AAPL open stance.  A flat-ticker omission
-    (e.g. a third ticker with no portfolio weight) would still be permitted.
+    held, so omitting it must now raise.  The fix is to supply an explicit
+    update stance for MSFT alongside the AAPL buy stance.  A flat-ticker
+    omission (e.g. a third ticker with no portfolio weight) would still be
+    permitted.
     """
 
     state = _State(
@@ -74,19 +75,15 @@ def test_after_requires_explicit_stance_for_held_tickers():
             stances=[
                 TickerStance(
                     ticker="AAPL",
-                    intent="open",
+                    intent="buy",
                     weight=0.05,
-                    rationale="open",
-                    horizon="swing",
-                    target_price=210.0,
-                    stop_price=185.0,
+                    rationale="Strong FCF-driven thesis",
                 ),
                 # MSFT is held — must supply an explicit stance (Spec B / D3).
-                # Using a hold stance to indicate "no change, thesis intact";
-                # hold is weight-forbidden, so target_weights["MSFT"] → 0.0.
+                # Using an update stance to indicate "no trade, thesis unchanged".
                 TickerStance(
                     ticker="MSFT",
-                    intent="hold",
+                    intent="update",
                     reason="thesis intact, no new evidence",
                 ),
             ],
@@ -94,53 +91,15 @@ def test_after_requires_explicit_stance_for_held_tickers():
         ).model_dump(mode="json"),
     )
 
-    # Must not raise — both held ticker (MSFT) and new open (AAPL) are covered.
+    # Must not raise — both held ticker (MSFT) and new buy (AAPL) are covered.
     assert _strategist_validation_callback(_Ctx(state)) is None
 
-    # target_weights reflects the derivation output: open writes weight,
-    # hold writes 0.0 (no weight on hold).
+    # target_weights reflects the derivation output: buy writes weight,
+    # update carries the current weight forward (0.0 when no prior weight).
     decided = state["strategist_decision"]
     target_weights = decided["target_weights"]
-    assert target_weights["AAPL"] == 0.05          # new open
-    assert target_weights["MSFT"] == 0.0           # hold carries no weight
+    assert target_weights["AAPL"] == 0.05          # new buy
 
-
-def test_after_held_ticker_omission_raises_contract_violation():
-    """Omitting a held ticker raises StrategistContractViolation (Spec B / D3).
-
-    This is the negative case for ``test_after_requires_explicit_stance_for_held_tickers``
-    — confirms the callback surfaces the violation before the omission propagates
-    downstream.
-    """
-
-    state = _State(
-        tickers=["AAPL", "MSFT"],
-        positions={},
-        portfolio=_portfolio({"MSFT": (5.0, 410.0, 420.0)}, cash=900.0).model_dump(mode="json"),
-        tick_id="t",
-        strategist_decision=StrategistDecision(
-            stances=[
-                TickerStance(
-                    ticker="AAPL",
-                    intent="open",
-                    weight=0.05,
-                    rationale="open",
-                    horizon="swing",
-                    target_price=210.0,
-                    stop_price=185.0,
-                ),
-                # MSFT intentionally omitted — must raise per Spec B / D3.
-            ],
-            decision_tag="x", reasoning="x", thesis="y", confidence=0.5,
-        ).model_dump(mode="json"),
-    )
-
-    with pytest.raises(StrategistContractViolation) as excinfo:
-        _strategist_validation_callback(_Ctx(state))
-
-    # The error must name the uncovered held ticker.
-    assert "MSFT" in str(excinfo.value)
-    assert "Held position(s)" in str(excinfo.value)
 
 
 def test_after_raises_on_extras():
@@ -150,15 +109,12 @@ def test_after_raises_on_extras():
         positions={}, portfolio=_portfolio().model_dump(mode="json"), tick_id="t",
         strategist_decision=StrategistDecision(
             stances=[
-                TickerStance(ticker="AAPL", intent="hold", reason="test hold"),
+                TickerStance(ticker="AAPL", intent="update", reason="test update"),
                 TickerStance(
                     ticker="GOOG",
-                    intent="open",
+                    intent="buy",
                     weight=0.05,
-                    rationale="open",
-                    horizon="swing",
-                    target_price=200.0,
-                    stop_price=170.0,
+                    rationale="off-watchlist buy",
                 ),
             ],
             decision_tag="x", reasoning="x", thesis="y", confidence=0.5,
@@ -168,9 +124,9 @@ def test_after_raises_on_extras():
         _strategist_validation_callback(_Ctx(state))
 
 
-def test_nonzero_stance_without_lifecycle_fields_fails_at_schema():
-    """An open stance missing horizon/target_price/stop_price fails at the
-    schema level — it never reaches the after-callback.
+def test_buy_stance_missing_rationale_fails_at_schema():
+    """A buy stance missing rationale fails at the schema level — it never
+    reaches the after-callback.
 
     The ``_require_intent_fields`` validator on ``TickerStance`` enforces
     this so a malformed LLM response fails ADK's ``output_schema`` parse
@@ -179,43 +135,38 @@ def test_nonzero_stance_without_lifecycle_fields_fails_at_schema():
     with pytest.raises(ValidationError) as excinfo:
         TickerStance(
             ticker="AAPL",
-            intent="open",
+            intent="buy",
             weight=0.05,
-            rationale="open",
-            # horizon, target_price, stop_price intentionally absent
+            # rationale intentionally absent — must fail at schema level
         )
     msg = str(excinfo.value)
     assert "AAPL" in msg
-    assert "horizon" in msg
-    assert "target_price" in msg
-    assert "stop_price" in msg
+    assert "rationale" in msg
 
 
-def test_after_raises_on_close_without_close_reason():
-    """Full closes missing reason abort the tick at schema re-validation.
+def test_after_raises_on_sell_without_reason():
+    """Full sells (closes) missing reason abort the tick at schema re-validation.
 
     Post-7590ba1 the strategist callback re-validates the decision through
     ``StrategistLLMDecision`` (the narrow LLM-emit schema), which in turn
     runs ``TickerStance``'s verb-conditional validator.  A ``reason``-less
-    close stance fails there with a ``pydantic.ValidationError`` long
-    before derivation runs — schema is now the source of truth, derivation
-    only handles cross-stance contract (held-coverage, off-watchlist).
+    sell stance fails there with a ``pydantic.ValidationError`` long
+    before derivation runs — schema is now the source of truth.
 
     We bypass Pydantic via ``model_construct`` to simulate a payload that
-    somehow reaches the callback with ``reason=None`` and pin that the
-    callback STILL aborts loudly.
+    somehow reaches the callback with ``reason=None``.
     """
     thesis = PositionThesis(
         ticker="AAPL", opened_at=datetime.now(tz=UTC),
         opened_price=192.40, opened_tag="x", rationale="x", horizon="swing",
         last_reviewed_at=datetime.now(tz=UTC),
     )
-    # Build a close stance with no reason, bypassing schema validation.
+    # Build a sell stance with no reason, bypassing schema validation.
     # ``model_construct`` sets fields without running validators — this
     # simulates a payload that somehow reached derivation without a reason.
     bad_stance = TickerStance.model_construct(
         ticker="AAPL",
-        intent="close",
+        intent="sell",
         reason=None,
     )
     decision = StrategistDecision.model_construct(
@@ -225,8 +176,8 @@ def test_after_raises_on_close_without_close_reason():
         reasoning="x",
         thesis="y",
         confidence=0.5,
-        close_reasons={},
-        trim_reasons={},
+        sell_reasons={},
+        update_reasons={},
     )
     state = _State(
         tickers=["AAPL"],
@@ -239,24 +190,23 @@ def test_after_raises_on_close_without_close_reason():
         _strategist_validation_callback(_Ctx(state))
 
 
-def test_after_raises_on_trim_without_trim_reason():
-    """Trims missing reason abort the tick at schema re-validation.
+def test_after_raises_on_update_without_reason():
+    """Update stances missing reason abort the tick at schema re-validation.
 
-    See ``test_after_raises_on_close_without_close_reason`` for the full
-    rationale.  Same path: ``TickerStance``'s verb-conditional validator
-    rejects a ``reason``-less trim with ``pydantic.ValidationError`` as
-    soon as the callback re-validates the LLM payload.
+    Same path as ``test_after_raises_on_sell_without_reason``:
+    ``TickerStance``'s verb-conditional validator rejects a ``reason``-less
+    update with ``pydantic.ValidationError`` as soon as the callback
+    re-validates the LLM payload.
     """
     thesis = PositionThesis(
         ticker="MSFT", opened_at=datetime.now(tz=UTC),
         opened_price=410.0, opened_tag="x", rationale="x", horizon="swing",
         last_reviewed_at=datetime.now(tz=UTC),
     )
-    # Build a trim stance with no reason, bypassing schema validation.
+    # Build an update stance with no reason, bypassing schema validation.
     bad_stance = TickerStance.model_construct(
         ticker="MSFT",
-        intent="trim",
-        weight=0.30,
+        intent="update",
         reason=None,
     )
     decision = StrategistDecision.model_construct(
@@ -266,8 +216,8 @@ def test_after_raises_on_trim_without_trim_reason():
         reasoning="x",
         thesis="y",
         confidence=0.5,
-        close_reasons={},
-        trim_reasons={},
+        sell_reasons={},
+        update_reasons={},
     )
     state = _State(
         tickers=["MSFT"],
@@ -281,7 +231,7 @@ def test_after_raises_on_trim_without_trim_reason():
 
 
 def test_after_derives_decision_fields_on_valid_input():
-    """The validation callback derives target_weights / close_reasons / trim_reasons from stances.
+    """The validation callback derives target_weights / sell_reasons / update_reasons from stances.
 
     ``new_positions`` is no longer derived by the strategist callback;
     that assembly was moved to the executor's BUY-path where the real fill
@@ -293,14 +243,11 @@ def test_after_derives_decision_fields_on_valid_input():
         strategist_decision=StrategistDecision(
             stances=[TickerStance(
                 ticker="AAPL",
-                intent="open",
+                intent="buy",
                 weight=0.05,
-                rationale="open",
-                horizon="swing",
-                target_price=210.0,
-                stop_price=185.0,
+                rationale="Strong FCF-driven thesis",
             )],
-            decision_tag="open_aapl", reasoning="x", thesis="y", confidence=0.7,
+            decision_tag="buy_aapl", reasoning="x", thesis="y", confidence=0.7,
         ).model_dump(mode="json"),
     )
     out = _strategist_validation_callback(_Ctx(state))
@@ -310,5 +257,5 @@ def test_after_derives_decision_fields_on_valid_input():
     # new_positions is no longer a field on StrategistDecision; the
     # executor assembles the PositionThesis from the fill price + stance.
     assert "new_positions" not in decided
-    assert decided["close_reasons"] == {}
-    assert decided["trim_reasons"] == {}
+    assert decided["sell_reasons"] == {}
+    assert decided["update_reasons"] == {}

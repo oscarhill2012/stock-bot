@@ -1,18 +1,16 @@
-"""Chunk 5 — D3 derivation tests for the held-stance post-condition.
+"""iter-3 derivation edge-case tests.
 
-Spec B removes the carry-forward block that padded ``target_weights`` for
-un-emitted *held* tickers and replaces it with an explicit post-condition:
-every pre-tick held ticker MUST have a matching stance in the strategist's
-output.
+iter-3 removed the Spec-B / D3 "error on omission" rule — held tickers
+with no matching stance no longer raise ``StrategistContractViolation``;
+they simply carry their current weight forward via Pass 2.
 
-Carry-forward for *flat* watchlist tickers (the active-stances model) stays
-in place — flat tickers carry no implicit commitment, so omitting them remains
-legal.
+The two tests that remain cover edge cases still relevant after that
+removal:
 
-This module pins the two halves of the new contract:
-  * D3-violation case — a held ticker with no stance raises
-    ``StrategistContractViolation``.
-  * D3-compliant case — a flat ticker with no stance is OK.
+  * Dust position (sub-``ORDER_EPSILON``) is treated as flat, NOT held,
+    so its omission is legal and derivation must not raise.
+  * Flat watchlist ticker with no stance is always legal — the
+    active-stances model requires stances only for deliberate trades.
 """
 from __future__ import annotations
 
@@ -21,7 +19,6 @@ from datetime import UTC, datetime
 import pytest
 
 from agents.strategist.derivation import (
-    StrategistContractViolation,
     TickContext,
     derive_decision_fields,
 )
@@ -57,43 +54,6 @@ def _ctx(
     )
 
 
-def test_held_ticker_without_stance_raises_validation_error() -> None:
-    """A pre-tick held ticker with no matching stance must raise.
-
-    AVGO is held at 0.05; the strategist emits a stance only for MSFT
-    (a flat watchlist ticker).  Derivation must refuse — silent
-    carry-forward is no longer permitted on held positions.
-    """
-
-    stances = [
-        TickerStance(
-            # MSFT is flat; the stance merely establishes that derivation ran
-            # far enough to reach Pass 1.5 and encounter the uncovered held ticker.
-            ticker  = "MSFT",
-            intent  = "open",
-            weight  = 0.03,
-            rationale    = "Open on bullish technical setup",
-            horizon      = "swing",
-            target_price = 450.0,
-            stop_price   = 380.0,
-        ),
-    ]
-
-    with pytest.raises(StrategistContractViolation) as excinfo:
-        derive_decision_fields(
-            stances,
-            _ctx(
-                current_weights = {"AVGO": 0.05},
-                watchlist       = ["AVGO", "MSFT", "XOM"],
-            ),
-        )
-
-    # The error message must name the violated ticker so the LLM-facing
-    # log is debuggable.  Assert on the specific message format to pin the
-    # contract more precisely than a substring match.
-    assert "AVGO" in str(excinfo.value)
-    assert "Held position(s)" in str(excinfo.value)
-
 
 def test_dust_position_below_order_epsilon_is_treated_as_flat() -> None:
     """A position whose weight is below ``ORDER_EPSILON`` is *flat*, not held.
@@ -123,7 +83,7 @@ def test_dust_position_below_order_epsilon_is_treated_as_flat() -> None:
     # agree (dust is operationally flat) rather than reject.
     stances = [
         TickerStance(
-            intent = "hold",
+            intent = "update",
             ticker = "AVGO",
             reason = "Position intact; no new evidence.",
         ),
@@ -143,11 +103,14 @@ def test_dust_position_below_order_epsilon_is_treated_as_flat() -> None:
         ),
     )
 
-    # Derivation must succeed (no StrategistContractViolation raised) and
-    # the dust ticker must not appear with a held-style weight.  Carry-
-    # forward pads it to 0.0 like any other flat watchlist ticker.
-    assert derived.target_weights["AMD"]  == 0.0
-    assert derived.target_weights["AVGO"] == 0.0
+    # Derivation must succeed (no StrategistContractViolation raised).
+    # AMD's sub-epsilon dust weight carries forward verbatim (1e-12) — it is
+    # below ORDER_EPSILON so it is not classified as held.  The critical
+    # invariant is that derivation does NOT raise here; the residual dust
+    # value is functionally zero and the risk gate / executor will ignore it.
+    assert derived.target_weights["AMD"]  < 1e-6   # dust — below order epsilon
+    # AVGO at 0.05 with an ``update`` stance carries its current weight forward.
+    assert derived.target_weights["AVGO"] == pytest.approx(0.05)
 
 
 def test_flat_ticker_without_stance_is_ok() -> None:
@@ -161,11 +124,11 @@ def test_flat_ticker_without_stance_is_ok() -> None:
     stances = [
         TickerStance(
             # AVGO is held — the strategist reviews it and decides to hold:
-            # no weight change, thesis intact.  ``intent="hold"`` with
+            # no trade, thesis unchanged.  ``intent="update"`` with
             # ``reason`` satisfies the verb-conditional validator.
-            intent       = "hold",
-            ticker       = "AVGO",
-            reason       = "No new evidence; commitments unchanged.",
+            intent = "update",
+            ticker = "AVGO",
+            reason = "No new evidence; commitments unchanged.",
         ),
     ]
 
@@ -177,8 +140,10 @@ def test_flat_ticker_without_stance_is_ok() -> None:
         ),
     )
 
-    # Held ticker — its emitted weight falls back to 0.0 (hold carries no weight).
-    assert derived.target_weights["AVGO"] == 0.0
-    # Flat tickers — carry-forward pads to 0.0 (their current weight).
+    # Held ticker with ``update`` stance — weight carries forward verbatim.
+    # ``update`` means "no trade; thesis unchanged"; the pre-tick weight is
+    # preserved in target_weights so the risk gate / executor take no action.
+    assert derived.target_weights["AVGO"] == pytest.approx(0.05)
+    # Flat tickers — carry-forward pads to 0.0 (their current weight is 0.0).
     assert derived.target_weights["MSFT"] == 0.0
     assert derived.target_weights["XOM"]  == 0.0

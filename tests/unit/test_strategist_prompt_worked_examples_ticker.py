@@ -15,12 +15,21 @@ from agents.strategist.prompts import STRATEGIST_INSTRUCTION
 def test_shape_example_uses_placeholder_ticker() -> None:
     """The shape example references ``<ticker>`` rather than a real symbol.
 
-    The block is sliced out by its header so the assertion isn't affected
-    by stray references elsewhere in the prompt.
+    The block is sliced out by its header (the start of the JSON shape
+    example) so the assertion isn't affected by stray references elsewhere
+    in the prompt.
+
+    Updated for iter-3: the old header "Placeholders\\nonly; open + hold shown"
+    was replaced by "Examples\\nof all three verbs shown" when the worked
+    examples were rewritten for the buy / sell / update vocabulary.
     """
 
-    header = "Placeholders\nonly; open + hold shown"
-    body   = STRATEGIST_INSTRUCTION.split(header, 1)[1]
+    header = "Examples\nof all three verbs shown"
+    assert header in STRATEGIST_INSTRUCTION, (
+        "Could not find the shape-example header in the prompt — "
+        "update this test if the header text changed again."
+    )
+    body = STRATEGIST_INSTRUCTION.split(header, 1)[1]
 
     # Generic placeholder present; no real or named-placeholder tickers leak in.
     assert "<ticker>" in body

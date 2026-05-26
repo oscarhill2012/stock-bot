@@ -53,10 +53,11 @@ def _decision_with_stances(stances: list[TickerStance]) -> StrategistDecision:
     """Build a minimal ``StrategistDecision`` from a list of stances."""
 
     # Build target_weights from stance weights (only for weight-bearing stances).
+    # update stances carry no weight — they are prose-only.
     target_weights = {
         s.ticker: (s.weight or 0.0)
         for s in stances
-        if s.intent not in ("hold", "update", "close")
+        if s.intent not in ("update",)
     }
 
     return StrategistDecision(
@@ -87,15 +88,18 @@ def test_no_risk_gate_intents_constant_contains_hold_and_update():
 
 @pytest.mark.asyncio
 async def test_risk_gate_passes_hold_through_unchanged():
-    """``hold`` stances must not be touched by the clamping logic.
+    """``update`` stances must not be touched by the clamping logic.
 
-    The ticker for a hold stance should not appear in ``final_orders``
+    (Test name preserved for backwards compatibility with CI history;
+    "hold" was the old verb, "update" is the iter-3 replacement.)
+
+    The ticker for an update stance should not appear in ``final_orders``
     (no broker call) and should not be clipped in any way.
     """
 
     hold_stance = TickerStance(
         ticker = "MSFT",
-        intent = "hold",
+        intent = "update",
         reason = "No new information",
     )
     decision = _decision_with_stances([hold_stance])
@@ -127,10 +131,9 @@ async def test_risk_gate_passes_update_through_unchanged():
     """``update`` stances must not be touched by the clamping logic."""
 
     update_stance = TickerStance(
-        ticker       = "NVDA",
-        intent       = "update",
-        reason       = "Raising target after earnings beat",
-        target_price = 1100.0,
+        ticker = "NVDA",
+        intent = "update",
+        reason = "Raising view after earnings beat — no trade",
     )
     decision = _decision_with_stances([update_stance])
 
@@ -165,24 +168,28 @@ async def test_risk_gate_caps_open_at_max_position_weight():
     # Request a weight well above the single-position cap.
     overweight = MAX_POSITION_WEIGHT + 0.15
 
-    open_stance = TickerStance(
-        ticker       = "AAPL",
-        intent       = "open",
-        weight       = overweight,
-        target_price = 220.0,
-        stop_price   = 180.0,
-        catalyst     = "iPhone supercycle",
-        horizon      = "swing",
-        rationale    = "Strong product cycle",
+    # Note: overweight exceeds the buy delta cap (0.05), so we use
+    # model_construct to bypass Pydantic validation — we're testing
+    # the risk gate clamping logic, not the schema.
+    open_stance = TickerStance.model_construct(
+        ticker    = "AAPL",
+        intent    = "buy",
+        weight    = overweight,
+        rationale = "Strong product cycle",
+        catalyst  = "iPhone supercycle",
+        reason    = None,
     )
-    decision = _decision_with_stances([open_stance])
-    # Also put the weight in target_weights so the risk gate sees it.
-    decision = StrategistDecision(
+    # Use model_construct on StrategistDecision as well — the schema validates
+    # stances at construction time, which would reject the overweight buy stance
+    # even though we are testing the risk gate's clamping logic (not the schema).
+    decision = StrategistDecision.model_construct(
         stances        = [open_stance],
         target_weights = {"AAPL": overweight},
         decision_tag   = "test",
         reasoning      = "test",
         confidence     = 0.5,
+        sell_reasons   = {},
+        update_reasons = {},
     )
 
     agent = RiskGateAgent(broker=None)
@@ -207,10 +214,16 @@ async def test_risk_gate_caps_add_at_max_delta_per_ticker():
     current_weight = 0.10
     requested_weight = current_weight + MAX_DELTA_PER_TICKER + 0.10
 
-    add_stance = TickerStance(
-        ticker = "TSLA",
-        intent = "add",
-        weight = requested_weight,
+    # Use model_construct to bypass Pydantic weight validation (testing the
+    # risk gate clamp, not the schema).  The weight exceeds the buy delta cap
+    # (0.05) intentionally — the risk gate must clamp it.
+    add_stance = TickerStance.model_construct(
+        ticker    = "TSLA",
+        intent    = "buy",
+        weight    = requested_weight,
+        rationale = "adding to strong position",
+        reason    = None,
+        catalyst  = None,
     )
 
     # Build a fake broker that reports TSLA held at current_weight.
@@ -230,12 +243,17 @@ async def test_risk_gate_caps_add_at_max_delta_per_ticker():
     mock_broker = MagicMock()
     mock_broker.get_portfolio  = AsyncMock(return_value=mock_portfolio)
 
-    decision = StrategistDecision(
+    # Use model_construct on StrategistDecision as well — the schema validates
+    # stances at construction time, which would reject the overweight buy stance
+    # even though we are testing the risk gate's clamping logic (not the schema).
+    decision = StrategistDecision.model_construct(
         stances        = [add_stance],
         target_weights = {"TSLA": requested_weight},
         decision_tag   = "test",
         reasoning      = "test",
         confidence     = 0.5,
+        sell_reasons   = {},
+        update_reasons = {},
     )
 
     agent = RiskGateAgent(broker=mock_broker)

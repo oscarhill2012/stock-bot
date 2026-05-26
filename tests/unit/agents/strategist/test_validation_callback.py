@@ -39,24 +39,21 @@ def _portfolio(cash: float = 1000.0) -> Portfolio:
 
 
 def _valid_decision() -> dict:
-    """Return a minimal valid StrategistDecision dict (open AAPL, flat MSFT omitted).
+    """Return a minimal valid StrategistDecision dict (buy AAPL, flat MSFT omitted).
 
     The watchlist is ['AAPL'] so we need a stance for AAPL only.
-    ``intent == "open"`` requires rationale + horizon + target_price + stop_price.
+    ``intent == "buy"`` requires weight (≤ 0.05) and rationale.
     """
     return StrategistDecision(
         stances=[
             TickerStance(
-                ticker       = "AAPL",
-                intent       = "open",
-                weight       = 0.05,
-                rationale    = "open",
-                horizon      = "swing",
-                target_price = 210.0,
-                stop_price   = 185.0,
+                ticker    = "AAPL",
+                intent    = "buy",
+                weight    = 0.05,
+                rationale = "Strong FCF-driven thesis",
             ),
         ],
-        decision_tag = "open_aapl",
+        decision_tag = "buy_aapl",
         reasoning    = "Test",
         thesis       = "Test thesis",
         confidence   = 0.7,

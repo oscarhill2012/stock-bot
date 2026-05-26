@@ -34,12 +34,13 @@ from broker.portfolio import Portfolio
 # ---------------------------------------------------------------------------
 
 def _build_clean_decision() -> dict:
-    """Return a serialised ``StrategistDecision`` using only intent-form fields.
+    """Return a serialised ``StrategistDecision`` using iter-3 three-verb fields.
 
-    Represents a one-ticker tick where AAPL is opened at 5 % weight
-    and MSFT is explicitly held.  No legacy fields (``preferred_weight``,
-    ``conviction``, ``close_reason``, ``trim_reason``) appear anywhere —
-    this is the shape the simplified schema requires.
+    Represents a one-ticker tick where AAPL is bought at 4 % weight
+    (within the 5 % buy-delta cap) and MSFT is explicitly updated
+    (prose-only; no trade).  No legacy fields (``preferred_weight``,
+    ``conviction``, ``close_reason``, ``trim_reason``, ``horizon``,
+    ``target_price``, ``stop_price``) appear anywhere.
 
     Returns
     -------
@@ -50,22 +51,20 @@ def _build_clean_decision() -> dict:
     return StrategistDecision(
         stances=[
             TickerStance(
-                ticker       = "AAPL",
-                intent       = "open",
-                weight       = 0.05,
-                rationale    = "Strong earnings momentum and AI-tailwind.",
-                horizon      = "swing",
-                target_price = 210.0,
-                stop_price   = 185.0,
+                ticker    = "AAPL",
+                intent    = "buy",
+                weight    = 0.04,
+                rationale = "Strong earnings momentum and AI-tailwind.",
+                catalyst  = "Q3 beat + raised guidance",
             ),
             TickerStance(
                 ticker = "MSFT",
-                intent = "hold",
+                intent = "update",
                 reason = "No new evidence; prior thesis intact.",
             ),
         ],
-        decision_tag = "open_aapl_hold_msft",
-        reasoning    = "Initiating AAPL; holding MSFT flat.",
+        decision_tag = "buy_aapl_update_msft",
+        reasoning    = "Initiating AAPL; updating MSFT thesis.",
         thesis       = "Tech names retain secular growth support.",
         confidence   = 0.72,
     ).model_dump(mode="json")
@@ -230,9 +229,9 @@ async def test_clean_intent_form_produces_zero_schema_retries() -> None:
 
     Assertions:
     - No retry-counter events in the wrapper's output stream.
-    - ``target_weights["AAPL"] == 0.05`` (open stance at 5 % weight).
-    - ``target_weights["MSFT"] == 0.0`` (hold stance carries no weight).
-    - ``close_reasons == {}`` and ``trim_reasons == {}`` (no closes / trims).
+    - ``target_weights["AAPL"] == 0.04`` (buy stance at 4 % weight).
+    - ``target_weights["MSFT"] == 0.0`` (update stance on flat ticker).
+    - ``sell_reasons == {}`` (no sells this tick).
     """
     # Construct the initial state — pre-loaded with the clean decision so the
     # stub agent's write is idempotent (the callback reads from state after the
@@ -291,20 +290,18 @@ async def test_clean_intent_form_produces_zero_schema_retries() -> None:
 
     derived = state_for_callback["strategist_decision"]
 
-    # AAPL opened at 5 % — target weight must reflect the open stance.
-    assert derived["target_weights"]["AAPL"] == 0.05, (
-        f"Expected AAPL target_weight=0.05; got {derived['target_weights']}"
+    # AAPL bought at 4 % — target weight must reflect the buy stance.
+    assert derived["target_weights"]["AAPL"] == 0.04, (
+        f"Expected AAPL target_weight=0.04; got {derived['target_weights']}"
     )
 
-    # MSFT held — hold is weight-forbidden; derivation must write 0.0.
+    # MSFT updated — update is prose-only; derivation carries current weight
+    # forward (0.0 since MSFT is flat in this tick, not held from prior state).
     assert derived["target_weights"]["MSFT"] == 0.0, (
-        f"Expected MSFT target_weight=0.0 (hold); got {derived['target_weights']}"
+        f"Expected MSFT target_weight=0.0 (update, flat); got {derived['target_weights']}"
     )
 
-    # No closes or trims in this tick.
-    assert derived["close_reasons"] == {}, (
-        f"Expected no close_reasons; got {derived['close_reasons']}"
-    )
-    assert derived["trim_reasons"] == {}, (
-        f"Expected no trim_reasons; got {derived['trim_reasons']}"
+    # No sells in this tick — sell_reasons must be empty.
+    assert derived["sell_reasons"] == {}, (
+        f"Expected no sell_reasons; got {derived['sell_reasons']}"
     )

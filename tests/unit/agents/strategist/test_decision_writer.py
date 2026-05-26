@@ -44,24 +44,22 @@ def session(tmp_path):
 
 
 def test_writes_one_row_per_stance(session):
+    """One row per stance is written; lifecycle_action is set from intent."""
     decision = StrategistDecision(
         stances=[
             TickerStance(
                 ticker="AAPL",
-                intent="open",
-                weight=0.08,
-                rationale="open",
-                horizon="swing",
-                target_price=210.0,
-                stop_price=185.0,
+                intent="buy",
+                weight=0.04,
+                rationale="FCF-driven thesis",
             ),
             TickerStance(
                 ticker="NVDA",
-                intent="close",
+                intent="sell",
                 reason="thesis broken",
             ),
         ],
-        target_weights={"AAPL": 0.08, "NVDA": 0.0},
+        target_weights={"AAPL": 0.04, "NVDA": 0.0},
         decision_tag="rotation", reasoning="x", thesis="y", confidence=0.65,
     )
     portfolio = Portfolio(
@@ -80,8 +78,8 @@ def test_writes_one_row_per_stance(session):
     rows = session.query(TickerStanceRow).all()
     assert len(rows) == 2
     by_ticker = {r.ticker: r for r in rows}
-    assert by_ticker["AAPL"].lifecycle_action == "open"
-    assert by_ticker["NVDA"].lifecycle_action == "close"
+    assert by_ticker["AAPL"].lifecycle_action == "buy"
+    assert by_ticker["NVDA"].lifecycle_action == "sell"
     assert all(r.decision_tag == "rotation" for r in rows)
 
 
@@ -95,10 +93,11 @@ def test_no_op_without_decision(session):
 
 
 def test_no_op_without_db_session():
+    """Writer with db_session=None must not raise — write is a no-op."""
     state = {
         "tick_id": "t",
         "strategist_decision": StrategistDecision(
-            stances=[TickerStance(ticker="AAPL", intent="hold", reason="test hold")],
+            stances=[TickerStance(ticker="AAPL", intent="update", reason="test update")],
             target_weights={"AAPL": 0.0},
             decision_tag="x", reasoning="x", thesis="y", confidence=0.5,
         ).model_dump(mode="json"),
@@ -128,12 +127,9 @@ def test_accepts_iso_string_as_of(session):
         stances=[
             TickerStance(
                 ticker="AAPL",
-                intent="open",
+                intent="buy",
                 weight=0.05,
-                rationale="open",
-                horizon="swing",
-                target_price=200.0,
-                stop_price=180.0,
+                rationale="Strong FCF-driven thesis",
             ),
         ],
         target_weights={"AAPL": 0.05},

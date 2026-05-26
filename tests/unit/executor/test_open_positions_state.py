@@ -96,20 +96,18 @@ async def test_buy_writes_thesis_to_state_positions():
         ],
         "positions": {},   # bare-key bridge (Band 4); user:positions is after-callback territory
         "strategist_decision": {
-            "decision_tag": "open_aapl",
-            "close_reasons": {},
-            # Band 6: executor assembles PositionThesis from the open-intent
-            # stance + fill price; new_positions is no longer needed here.
+            "decision_tag": "buy_aapl",
+            "sell_reasons": {},
+            # Band 6 / iter-3: executor assembles PositionThesis from the
+            # buy-intent stance + fill price.  No horizon / target_price /
+            # stop_price — those were removed in iter-3.
             "stances": [
                 {
-                    "ticker":       "AAPL",
-                    "intent":       "open",
-                    "weight":       0.10,
-                    "horizon":      "swing",
-                    "rationale":    "strong momentum",
-                    "target_price": 220.0,
-                    "stop_price":   180.0,
-                    "catalyst":     "earnings beat",
+                    "ticker":    "AAPL",
+                    "intent":    "buy",
+                    "weight":    0.04,
+                    "rationale": "strong momentum",
+                    "catalyst":  "earnings beat",
                 },
             ],
         },
@@ -130,8 +128,10 @@ async def test_buy_writes_thesis_to_state_positions():
     )
     assert stored["opened_tick_id"] == "tick_X"
     assert stored["rationale"] == "strong momentum"
-    assert stored["horizon"] == "swing"
-    assert stored["target_price"] == pytest.approx(220.0)
+    # iter-3: horizon / target_price / stop_price no longer exist in PositionThesis.
+    assert "horizon"      not in stored
+    assert "target_price" not in stored
+    assert "stop_price"   not in stored
 
     assert "user:positions" not in delta, (
         "_run_async_impl must not write user:positions — that belongs to the after-callback"

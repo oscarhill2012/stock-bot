@@ -81,18 +81,18 @@ def _minimal_state(
     }
 
 
-def _open_stance(ticker: str = "AVGO", weight: float = 0.10) -> TickerStance:
-    """Return a valid ``open`` stance for ``ticker``."""
+def _open_stance(ticker: str = "AVGO", weight: float = 0.04) -> TickerStance:
+    """Return a valid ``buy`` stance for ``ticker``.
+
+    Weight is capped at 0.04 — the buy per-trade delta cap is 0.05.
+    """
 
     return TickerStance(
-        ticker       = ticker,
-        intent       = "open",
-        weight       = weight,
-        target_price = 1200.0,
-        stop_price   = 950.0,
-        catalyst     = "Q3 earnings",
-        horizon      = "swing",
-        rationale    = "AI capex thesis intact",
+        ticker    = ticker,
+        intent    = "buy",
+        weight    = weight,
+        catalyst  = "Q3 earnings",
+        rationale = "AI capex thesis intact",
     )
 
 
@@ -187,8 +187,8 @@ def test_callback_overwrites_thesis_when_decision_thesis_is_non_null():
     assert ctx.state["user:thesis"] == new_thesis
 
 
-def test_callback_close_stance_deletes_ticker():
-    """A ``close`` stance must remove the ticker from user:positions."""
+def test_callback_sell_stance_deletes_ticker():
+    """A ``sell`` stance (full close) must remove the ticker from user:positions."""
 
     prior_position = PositionThesis(
         ticker                 = "NVDA",
@@ -196,21 +196,20 @@ def test_callback_close_stance_deletes_ticker():
         opened_tick_id         = "t-open",
         opened_price           = 800.0,
         weight                 = 0.08,
-        horizon                = "swing",
         rationale              = "Data-centre demand",
         last_reviewed_at       = datetime(2026, 1, 1, tzinfo=UTC),
-        last_reviewed_decision = "open",
-        last_reviewed_reason   = "opened",
+        last_reviewed_decision = "buy",
+        last_reviewed_reason   = "opened on buy signal",
     ).model_dump(mode="json")
 
-    close_stance = TickerStance(
+    sell_stance = TickerStance(
         ticker = "NVDA",
-        intent = "close",
-        reason = "test close",
+        intent = "sell",
+        reason = "test sell",
     )
 
     state = _minimal_state(
-        stances          = [close_stance],
+        stances          = [sell_stance],
         executions       = [{"order": {"ticker": "NVDA", "action": "SELL"}, "actual_price": 820.0, "status": "filled"}],
         user_positions   = {"NVDA": prior_position},
     )
@@ -218,12 +217,12 @@ def test_callback_close_stance_deletes_ticker():
     _executor_thesis_writer_callback(ctx)
 
     assert "NVDA" not in ctx.state["user:positions"], (
-        "close stance must remove the ticker from user:positions"
+        "sell stance must remove the ticker from user:positions"
     )
 
 
-def test_callback_hold_stance_touches_review_fields_only():
-    """A ``hold`` stance must update only the review fields — no commitment mutation."""
+def test_callback_update_stance_touches_review_fields_only():
+    """An ``update`` stance must update only the review fields — no trade mutation."""
 
     prior_dt = datetime(2026, 1, 1, tzinfo=UTC)
     prior_position = PositionThesis(
@@ -232,23 +231,20 @@ def test_callback_hold_stance_touches_review_fields_only():
         opened_tick_id         = "t-open",
         opened_price           = 400.0,
         weight                 = 0.12,
-        target_price           = 480.0,
-        stop_price             = 370.0,
-        horizon                = "swing",
         rationale              = "Cloud segment margin expansion",
         last_reviewed_at       = prior_dt,
-        last_reviewed_decision = "open",
-        last_reviewed_reason   = "opened",
+        last_reviewed_decision = "buy",
+        last_reviewed_reason   = "opened on buy signal",
     ).model_dump(mode="json")
 
-    hold_stance = TickerStance(
+    update_stance = TickerStance(
         ticker = "MSFT",
-        intent = "hold",
+        intent = "update",
         reason = "No new information; thesis intact",
     )
 
     state = _minimal_state(
-        stances        = [hold_stance],
+        stances        = [update_stance],
         user_positions = {"MSFT": prior_position},
     )
     ctx = _make_callback_context(state)
@@ -258,13 +254,11 @@ def test_callback_hold_stance_touches_review_fields_only():
     row = PositionThesis.model_validate(result_dict)
 
     # Review fields must have been updated:
-    assert row.last_reviewed_decision == "hold"
+    assert row.last_reviewed_decision == "update"
     assert row.last_reviewed_reason   == "No new information; thesis intact"
 
     # Commitment fields must be preserved unchanged:
     assert row.weight        == 0.12
-    assert row.target_price  == 480.0
-    assert row.stop_price    == 370.0
     assert row.rationale     == "Cloud segment margin expansion"
     assert row.opened_price  == 400.0
 
@@ -272,7 +266,7 @@ def test_callback_hold_stance_touches_review_fields_only():
 def test_callback_fill_price_used_as_opened_price():
     """The executor's actual fill price must land in opened_price on the new row."""
 
-    stance = _open_stance("AAPL", weight=0.08)
+    stance = _open_stance("AAPL", weight=0.04)
     fill   = 198.75
 
     state = _minimal_state(
