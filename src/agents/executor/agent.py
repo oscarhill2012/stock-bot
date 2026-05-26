@@ -245,10 +245,14 @@ class ExecutorAgent(BaseAgent):
                                 (closed_at - opened_at_dt).total_seconds() / 3600
                             )
                             pnl_pct = (fill.price - opened_price) / opened_price * 100
+                            # iter-3 rename: ``close_reasons`` → ``sell_reasons``.
+                            # Read ``sell_reasons`` first; fall back to
+                            # ``close_reasons`` for legacy session state that
+                            # was persisted before the rename landed.
+                            _sd = state.get("strategist_decision", {})
                             close_reason = (
-                                state.get("strategist_decision", {})
-                                     .get("close_reasons", {})
-                                     .get(order.ticker, "")
+                                (_sd.get("sell_reasons") or _sd.get("close_reasons") or {})
+                                .get(order.ticker, "")
                             )
 
                             if self.db_session:

@@ -269,7 +269,13 @@ class DecisionLogger:
             (s for s in stances_list if isinstance(s, dict) and s.get("ticker") == ticker),
             {},
         )
-        close_reason  = (decision.get("close_reasons") or {}).get(ticker, "")
+        # iter-3 rename: ``close_reasons`` → ``sell_reasons``.
+        # Read ``sell_reasons`` first; fall back to ``close_reasons`` for
+        # legacy session state that was persisted before the rename landed.
+        close_reason  = (
+            (decision.get("sell_reasons") or decision.get("close_reasons") or {})
+            .get(ticker, "")
+        )
 
         # Risk-gate clamps that concern this ticker specifically.
         all_clamps = state.get("clamps", []) or []
