@@ -628,6 +628,107 @@ def test_no_cross_bullet_omits_annotation():
     assert "(death cross)" not in out
 
 
+# ---------------------------------------------------------------------------
+# Tests — relative-strength + beta-damping bullets (Bug #15a)
+# ---------------------------------------------------------------------------
+#
+# These feature keys already lived in the technical extractor's catalogue
+# (``relative_strength_vs_spy_*``, ``relative_strength_vs_sector_*``,
+# ``beta_confidence_damping``) but never surfaced to the strategist — the
+# bullet registry simply hadn't been extended when the extractor learned
+# them. Wiring them in gives the strategist the "is this ticker beating
+# its index over the lookback?" read a discretionary manager would expect.
+# ---------------------------------------------------------------------------
+
+def test_relative_strength_spy_5d_bullet_rendered():
+    """``relative_strength_vs_spy_5d`` must render as a signed percentage.
+
+    The extractor stores the value as a fraction (e.g. 0.04 = ticker beat SPY
+    by 4 points), so the renderer must multiply by 100 to produce ``+4.0%``.
+    """
+    te = _make_ticker_evidence()
+    te.per_analyst["technical"].features["relative_strength_vs_spy_5d"] = 0.04
+
+    out = render_ticker_block(te)
+
+    assert "Rel str vs SPY 5d:" in out
+    assert "+4.0%" in out
+
+
+def test_relative_strength_spy_20d_bullet_rendered():
+    """``relative_strength_vs_spy_20d`` must render with the SPY 20d label."""
+    te = _make_ticker_evidence()
+    te.per_analyst["technical"].features["relative_strength_vs_spy_20d"] = -0.07
+
+    out = render_ticker_block(te)
+
+    assert "Rel str vs SPY 20d:" in out
+    assert "-7.0%" in out
+
+
+def test_relative_strength_sector_5d_bullet_rendered():
+    """``relative_strength_vs_sector_5d`` must render with the sector 5d label."""
+    te = _make_ticker_evidence()
+    te.per_analyst["technical"].features["relative_strength_vs_sector_5d"] = 0.025
+
+    out = render_ticker_block(te)
+
+    assert "Rel str vs sector 5d:" in out
+    assert "+2.5%" in out
+
+
+def test_relative_strength_sector_20d_bullet_rendered():
+    """``relative_strength_vs_sector_20d`` must render with the sector 20d label."""
+    te = _make_ticker_evidence()
+    te.per_analyst["technical"].features["relative_strength_vs_sector_20d"] = 0.012
+
+    out = render_ticker_block(te)
+
+    assert "Rel str vs sector 20d:" in out
+    assert "+1.2%" in out
+
+
+def test_beta_confidence_damping_bullet_rendered():
+    """``beta_confidence_damping`` must render via the plain one-decimal formatter."""
+    te = _make_ticker_evidence()
+    te.per_analyst["technical"].features["beta_confidence_damping"] = 0.83
+
+    out = render_ticker_block(te)
+
+    assert "Beta confidence damping:" in out
+    # _plain renders to one decimal place.
+    assert "0.8" in out
+
+
+def test_relative_strength_keys_omitted_when_absent():
+    """Bullets for absent relative-strength keys must be skipped, not stubbed.
+
+    Mirrors the renderer's documented behaviour (line 395-397 of
+    ``strategist_prompt.py``): keys not in the feature dict produce no
+    line at all. ``_make_ticker_evidence`` does not populate the
+    relative-strength keys by default, so the bullets must be absent
+    entirely from the rendered output.
+    """
+    te = _make_ticker_evidence()
+    # Belt-and-braces: ensure the keys are not present.
+    for key in (
+        "relative_strength_vs_spy_5d",
+        "relative_strength_vs_spy_20d",
+        "relative_strength_vs_sector_5d",
+        "relative_strength_vs_sector_20d",
+        "beta_confidence_damping",
+    ):
+        te.per_analyst["technical"].features.pop(key, None)
+
+    out = render_ticker_block(te)
+
+    assert "Rel str vs SPY 5d:" not in out
+    assert "Rel str vs SPY 20d:" not in out
+    assert "Rel str vs sector 5d:" not in out
+    assert "Rel str vs sector 20d:" not in out
+    assert "Beta confidence damping:" not in out
+
+
 def test_planned_sale_ratio_bullet_renders_annotation():
     """An ``insider_planned_sale_ratio`` of 1.0 must show the 'all 10b5-1' annotation.
 

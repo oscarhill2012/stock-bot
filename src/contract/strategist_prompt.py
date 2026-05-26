@@ -309,6 +309,16 @@ TECHNICAL_BULLETS: list[_BulletEntry] = [
     # 20-day and 5-day momentum — stored as fractions, rendered as %.
     ("pct_change_20d",         "20d momentum:",            _pct_signed,         None),
     ("pct_change_5d",          "5d momentum:",             _pct_signed,         None),
+    # Relative strength vs SPY / sector ETF (Bug #15a). ``_relative_strength``
+    # in the extractor stores these as differences-of-fractions (e.g. 0.04
+    # means the ticker beat SPY by 4 percentage points over the lookback);
+    # ``_pct_signed`` scales by 100 to match the strategist's percentage idiom.
+    # Grouped here so the strategist reads momentum and relative momentum
+    # together before moving on to position-in-range and volume signals.
+    ("relative_strength_vs_spy_5d",     "Rel str vs SPY 5d:",     _pct_signed, None),
+    ("relative_strength_vs_spy_20d",    "Rel str vs SPY 20d:",    _pct_signed, None),
+    ("relative_strength_vs_sector_5d",  "Rel str vs sector 5d:",  _pct_signed, None),
+    ("relative_strength_vs_sector_20d", "Rel str vs sector 20d:", _pct_signed, None),
     # 52-week distances — already stored as scaled %, e.g. -3.0 = 3% below high.
     ("dist_from_high_52w_pct", "Distance from 52w high:",  _pct_unscaled_signed, _position_band),
     ("dist_from_low_52w_pct",  "Distance from 52w low:",   _pct_unscaled_signed, None),
@@ -322,6 +332,12 @@ TECHNICAL_BULLETS: list[_BulletEntry] = [
     ("vol_ratio_20d",          "Volume vs 20d avg:",       _ratio,              None),
     # ATR as % of close — volatility gauge.
     ("atr_pct_14",             "ATR%(14):",                _plain,              None),
+    # Beta-aware confidence damping factor (Bug #15a). Emitted by the
+    # extractor as ``1.0 / (1.0 + abs(beta - 1.0))`` — peaks at 1.0 for a
+    # beta of exactly 1 and decays symmetrically as the ticker becomes more
+    # or less volatile than the market. Surfaced so the strategist can read
+    # the verdict-level confidence calibration directly.
+    ("beta_confidence_damping", "Beta confidence damping:", _plain,             None),
 ]
 
 FUNDAMENTAL_BULLETS: list[_BulletEntry] = [
