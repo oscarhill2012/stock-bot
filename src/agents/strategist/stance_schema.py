@@ -33,12 +33,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from config.strategist import get_strategist_config
-
-
 logger = logging.getLogger(__name__)
-
-_cfg = get_strategist_config()
 
 # 5 % buy-delta cap is the schema-level hard ceiling — risk gate may
 # clamp tighter.  Defined as a literal so Pydantic accepts it.
