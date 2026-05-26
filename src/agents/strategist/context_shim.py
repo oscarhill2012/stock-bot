@@ -38,7 +38,6 @@ from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event, EventActions
 
-from agents.strategist.held_view import render_held_positions_view
 from agents.strategist.prompts import (
     COLD_START_MODE_TEMPLATE,
     INCREMENTAL_MODE_TEMPLATE,
@@ -174,10 +173,8 @@ class StrategistContextShim(BaseAgent):
         ``temp:ticker_evidence_objects``.
 
         The ``temp:held_positions_view`` value is produced by ``render()``
-        (the lightweight shim renderer that shows thesis staleness and omits
-        horizon/target/stop).  The full portfolio-evolution renderer in
-        ``held_view.py`` is retained for tests / future use but is no longer
-        wired here — the shim renderer is the authoritative path.
+        via the ``_render_held_positions_shim`` helper below — the lightweight
+        renderer that shows thesis staleness and omits horizon/target/stop.
 
         Args:
             ctx: ADK invocation context; ``ctx.session.state`` is the

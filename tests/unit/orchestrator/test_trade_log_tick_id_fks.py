@@ -61,11 +61,12 @@ def test_trade_log_accepts_tick_id_fks(session):
 
 def test_trade_log_join_to_ticker_stance(session):
     """Closed-trade outcomes can be joined back to the deliberation that opened them."""
-    # TickerStanceRow: iter-3 schema — no horizon / target_price / stop_price.
+    # TickerStanceRow: iter-3 schema — no horizon / target_price / stop_price /
+    # close_reason / trim_reason.
     session.add(TickerStanceRow(
         tick_id="tick_OPEN", recorded_at=datetime(2026, 4, 1, 14, tzinfo=UTC),
         ticker="AAPL", preferred_weight=0.05, conviction=0.7, rationale="x",
-        catalyst=None, close_reason=None, trim_reason=None,
+        catalyst=None,
         lifecycle_action="buy", decision_tag="buy_aapl",
     ))
     session.add(_make_trade_log_row(

@@ -7,6 +7,12 @@ per-stance ``rationale``, ``catalyst``, ``close_reason``, ``trim_reason``, and
 to live as magic numbers in the schemas themselves; centralising them here
 makes them tunable without a code change.
 
+The iter-3 rewrite replaced the ``close_reason`` / ``trim_reason`` per-stance
+fields with a unified ``sell_reasons`` dict on ``StrategistDecision``.  The
+``StanceCaps.close_reason_max_chars`` and ``StanceCaps.trim_reason_max_chars``
+fields were removed accordingly — the narrative for a ``sell`` stance travels
+through ``rationale``, which is capped by ``rationale_max_chars``.
+
 A note on philosophy: **more is not always better.**  These caps are summary
 budgets, not space for the LLM to pour its whole chain-of-thought into.  If we
 ever feel the urge to keep raising them, the right move is usually a separate
@@ -87,26 +93,15 @@ class StanceCaps(BaseModel):
     ----------
     rationale_max_chars:
         Brief justification for the stance.  Kept short to force the LLM to
-        pick its strongest reason rather than waffle.
+        pick its strongest reason rather than waffle.  Also covers the sell
+        narrative (formerly a separate ``close_reason`` / ``trim_reason``
+        field pair, removed in iter-3).
     catalyst_max_chars:
         Optional near-term catalyst description.
-    close_reason_max_chars:
-        DEPRECATED.  Retained as a config field for backwards-compatible
-        ``data.json`` loading only.  Since Spec B Plan 3 (Band 3), the
-        per-stance ``close_reason`` field is gone — ``intent == "close"``
-        stances carry their narrative through ``stance.reason``, which is
-        capped by ``rationale_max_chars``.  Safe to remove once no live
-        config still sets it.
-    trim_reason_max_chars:
-        DEPRECATED.  Same rationale as ``close_reason_max_chars`` — the
-        per-stance ``trim_reason`` field is gone; ``intent == "trim"``
-        stances reuse ``stance.reason``.
     """
 
     rationale_max_chars:    int = Field(ge=50,  le=1000)
     catalyst_max_chars:     int = Field(ge=20,  le=500)
-    close_reason_max_chars: int = Field(ge=20,  le=500)
-    trim_reason_max_chars:  int = Field(ge=20,  le=500)
 
 
 class PositionThesisCaps(BaseModel):

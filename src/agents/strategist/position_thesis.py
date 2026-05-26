@@ -18,7 +18,7 @@ written exactly once, at position-open time.  This is documented in the
 but is *not* mechanically enforced by Pydantic (a Pydantic model is mutable
 by default).  The executor is responsible for never overwriting these fields
 after the initial write.  If the underlying thesis changes, the correct action
-is ``close`` + ``open``, not a verbal revision of ``rationale``.
+is ``sell`` + ``buy``, not a verbal revision of ``rationale``.
 
 Schema evolution
 ----------------
@@ -46,11 +46,11 @@ class PositionThesis(BaseModel):
     - ``opened_at``, ``opened_tick_id``, ``opened_price`` are written
       once when the position is opened and are immutable thereafter
       (Invariant 3 — see module docstring).
-    - ``weight`` is mutated by the executor on every ``add``/``trim``.
-    - ``catalyst`` is mutable via the ``hold`` stance (no trade).
+    - ``weight`` is mutated by the executor on every ``buy``/``sell``.
+    - ``catalyst`` is mutable via the ``update`` stance (no trade).
     - ``rationale`` is FROZEN at open.  It captures the entry
       commitment.  If the thesis genuinely changes, the right action
-      is ``close`` then ``open`` — not a verbal revision.
+      is ``sell`` then ``buy`` — not a verbal revision.
     - ``last_reviewed_at`` and ``last_reviewed_decision`` track the
       most recent tick that touched this row.
     - ``last_reviewed_reason`` is persisted for the audit trail but is
@@ -97,13 +97,13 @@ class PositionThesis(BaseModel):
         ),
     )
 
-    # ---- Current sizing (mutated by add/trim) ---------------------------
+    # ---- Current sizing (mutated by buy/sell) ---------------------------
     weight: float = Field(
         ...,
         description="Current portfolio weight in [0, 1].",
     )
 
-    # ---- Commitments (mutable via 'hold' stance) ------------------------
+    # ---- Commitments (mutable via 'update' stance) ----------------------
     catalyst: str | None = Field(
         None,
         description="Free-form text describing the event that would confirm the thesis.",
@@ -115,7 +115,7 @@ class PositionThesis(BaseModel):
         description=(
             "The strategist's reasoning at the moment of opening the position. "
             "IMMUTABLE for the lifetime of the position — if the underlying "
-            "thesis changes, the right action is close + reopen.  "
+            "thesis changes, the right action is sell + buy.  "
             "Invariant 3: executor must never overwrite this field after the "
             "initial open write."
         ),

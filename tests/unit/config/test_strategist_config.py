@@ -34,8 +34,6 @@ def _valid_strategist_json() -> dict:
         "stance_caps": {
             "rationale_max_chars":    250,
             "catalyst_max_chars":     120,
-            "close_reason_max_chars": 120,
-            "trim_reason_max_chars":  120,
         },
         "position_thesis_caps": {
             "rationale_max_chars":          400,

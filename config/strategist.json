@@ -6,9 +6,7 @@
   },
   "stance_caps": {
     "rationale_max_chars":    400,
-    "catalyst_max_chars":     200,
-    "close_reason_max_chars": 200,
-    "trim_reason_max_chars":  200
+    "catalyst_max_chars":     200
   },
   "position_thesis_caps": {
     "rationale_max_chars":         400,

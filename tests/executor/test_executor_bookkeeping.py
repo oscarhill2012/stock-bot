@@ -182,7 +182,7 @@ async def test_trim_preserves_position_thesis(session):
         "positions":           {_TICKER: dict(_THESIS)},   # Band 4 bare-key bridge
         "strategist_decision": {
             "decision_tag":  "trim_tsla",
-            "close_reasons": {_TICKER: "trim only"},
+            "sell_reasons": {_TICKER: "trim only"},
         },
     }
 
@@ -228,7 +228,7 @@ async def test_full_exit_writes_one_trade_log_row_and_deletes(session):
         "positions":           {_TICKER: dict(_THESIS)},   # Band 4 bare-key bridge
         "strategist_decision": {
             "decision_tag":  "close_tsla",
-            "close_reasons": {_TICKER: "target reached"},
+            "sell_reasons": {_TICKER: "target reached"},
         },
     }
 
@@ -283,7 +283,7 @@ async def test_full_exit_appends_to_user_closed_trades_log(session):
         "positions":           {_TICKER: dict(_THESIS)},
         "strategist_decision": {
             "decision_tag":  "close_tsla",
-            "close_reasons": {_TICKER: "target reached"},
+            "sell_reasons": {_TICKER: "target reached"},
         },
     }
 

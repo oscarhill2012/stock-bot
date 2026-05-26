@@ -134,9 +134,9 @@ class TickerStanceRow(Base):
     # horizon / target_price / stop_price dropped in iter-3 — the audit
     # found they were hallucinated 80 % of the time and never consumed
     # downstream (Bug #9, docs/backtest-audits/baseline-window-2025-09-iter-2.md).
+    # close_reason / trim_reason also dropped in iter-3: the split-reason design
+    # was replaced by the unified ``sell_reasons`` dict on ``StrategistDecision``.
     catalyst: Mapped[str | None]    = mapped_column(String, nullable=True)
-    close_reason: Mapped[str | None] = mapped_column(String, nullable=True)
-    trim_reason: Mapped[str | None]  = mapped_column(String, nullable=True)
     lifecycle_action: Mapped[str]   = mapped_column(String, index=True)
     decision_tag: Mapped[str]       = mapped_column(String, index=True)
 
@@ -193,8 +193,6 @@ def save_ticker_stance(
         conviction=stance.get("conviction", 0.0),
         rationale=stance.get("rationale") or "",  # only populated on buy stances
         catalyst=stance.get("catalyst"),
-        close_reason=stance.get("close_reason"),
-        trim_reason=stance.get("trim_reason"),
         lifecycle_action=lifecycle_action,
         decision_tag=decision_tag,
     )

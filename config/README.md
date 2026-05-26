@@ -326,10 +326,8 @@ mechanism that keeps data clean without losing meaning. See the docstring of
 
 | Setting | Type | Meaning |
 |---|---|---|
-| `stance_caps.rationale_max_chars` | int [50–1000] | Cap on `TickerStance.rationale` — brief justification for the stance. Default 200. |
-| `stance_caps.catalyst_max_chars` | int [20–500] | Cap on `TickerStance.catalyst` — optional near-term catalyst. Default 80. |
-| `stance_caps.close_reason_max_chars` | int [20–500] | Cap on `TickerStance.close_reason` — why the position is being fully closed. Default 120. |
-| `stance_caps.trim_reason_max_chars` | int [20–500] | Cap on `TickerStance.trim_reason` — why the position is being reduced but not closed. Default 120. |
+| `stance_caps.rationale_max_chars` | int [50–1000] | Cap on `TickerStance.rationale` — brief justification for the stance; also carries the sell narrative for `sell` stances. Default 400. |
+| `stance_caps.catalyst_max_chars` | int [20–500] | Cap on `TickerStance.catalyst` — optional near-term catalyst. Default 200. |
 
 ### `position_thesis_caps` — persisted `PositionThesis` fields
 

@@ -269,11 +269,9 @@ class DecisionLogger:
             (s for s in stances_list if isinstance(s, dict) and s.get("ticker") == ticker),
             {},
         )
-        # iter-3 rename: ``close_reasons`` → ``sell_reasons``.
-        # Read ``sell_reasons`` first; fall back to ``close_reasons`` for
-        # legacy session state that was persisted before the rename landed.
+        # Retrieve the sell reason from the iter-3 canonical key.
         sell_reason  = (
-            (decision.get("sell_reasons") or decision.get("close_reasons") or {})
+            (decision.get("sell_reasons") or {})
             .get(ticker, "")
         )
 
