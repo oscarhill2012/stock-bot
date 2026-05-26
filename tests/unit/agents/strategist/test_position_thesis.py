@@ -59,3 +59,34 @@ def test_position_thesis_v1_frozen_payload_deserialises():
     # Spot-check immutable fields survived round-trip.
     assert thesis.opened_price > 0
     assert thesis.rationale != ""
+
+
+def test_position_thesis_has_no_horizon_target_stop():
+    """PositionThesis after iter-3 carries only prose + opened context."""
+    from agents.strategist.position_thesis import PositionThesis
+
+    fields = set(PositionThesis.model_fields.keys())
+    assert "target_price" not in fields
+    assert "stop_price" not in fields
+    assert "horizon" not in fields
+
+    assert "rationale" in fields
+    assert "opened_price" in fields
+    assert "opened_at" in fields
+
+
+def test_extra_field_target_price_rejected():
+    """Stale callers passing target_price get a loud ValidationError."""
+    from agents.strategist.position_thesis import PositionThesis
+    from datetime import datetime, timezone
+
+    import pytest
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        PositionThesis(
+            ticker="AAPL",
+            opened_at=datetime.now(timezone.utc),
+            opened_price=100.0,
+            rationale="x",
+            target_price=120.0,
+        )

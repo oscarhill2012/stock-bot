@@ -31,7 +31,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class PositionThesis(BaseModel):
@@ -47,9 +47,7 @@ class PositionThesis(BaseModel):
       once when the position is opened and are immutable thereafter
       (Invariant 3 — see module docstring).
     - ``weight`` is mutated by the executor on every ``add``/``trim``.
-    - ``target_price``, ``stop_price``, ``catalyst``, ``horizon`` are
-      mutable via the ``update`` stance (no trade) or any other
-      stance that supplies them.
+    - ``catalyst`` is mutable via the ``hold`` stance (no trade).
     - ``rationale`` is FROZEN at open.  It captures the entry
       commitment.  If the thesis genuinely changes, the right action
       is ``close`` then ``open`` — not a verbal revision.
@@ -57,7 +55,19 @@ class PositionThesis(BaseModel):
       most recent tick that touched this row.
     - ``last_reviewed_reason`` is persisted for the audit trail but is
       NOT rendered into the next tick's prompt (Principle 2).
+
+    Note (iter-3)
+    -------------
+    ``target_price``, ``stop_price``, and ``horizon`` were removed in
+    iter-3.  The schema is now prose-only: entry context is captured
+    by ``rationale`` and ``catalyst``; price targets live exclusively
+    in the strategist's free-text reasoning, not the schema.
     """
+
+    # Extra fields from stale callers are rejected loudly rather than silently
+    # ignored.  This catches any code that still writes target_price / stop_price
+    # / horizon and surfaces the regression at construction time.
+    model_config = ConfigDict(extra="forbid")
 
     # ---- Identity -------------------------------------------------------
     ticker: str = Field(..., description="Ticker symbol, e.g. 'AVGO'.")
@@ -93,22 +103,10 @@ class PositionThesis(BaseModel):
         description="Current portfolio weight in [0, 1].",
     )
 
-    # ---- Commitments (mutable via 'update' stance) ----------------------
-    target_price: float | None = Field(
-        None,
-        description="Optional price level at which the thesis would be confirmed.",
-    )
-    stop_price: float | None = Field(
-        None,
-        description="Optional price level below which the thesis is invalidated.",
-    )
+    # ---- Commitments (mutable via 'hold' stance) ------------------------
     catalyst: str | None = Field(
         None,
         description="Free-form text describing the event that would confirm the thesis.",
-    )
-    horizon: Literal["intraday", "swing", "long_term"] = Field(
-        ...,
-        description="Time horizon over which the thesis is expected to play out.",
     )
 
     # ---- Entry rationale (FROZEN at open — Invariant 3) -----------------
