@@ -1,4 +1,9 @@
-"""TickerStanceRow tests — Tier 1, no LLM."""
+"""TickerStanceRow tests — Tier 1, no LLM.
+
+Updated for iter-3 schema: horizon / target_price / stop_price removed from
+``TickerStanceRow``.  The three-verb lifecycle_action vocabulary (buy / sell /
+update) replaces the old six-verb set.
+"""
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -23,15 +28,14 @@ def session(tmp_path):
 def test_round_trip(session):
     """A fully-populated stance round-trips via save_ticker_stance → query."""
     save_ticker_stance(
-        session, tick_id="tick_X", decision_tag="open_aapl",
+        session, tick_id="tick_X", decision_tag="buy_aapl",
         recorded_at=datetime(2026, 5, 8, 14, tzinfo=UTC),
         stance={
-            "ticker": "AAPL", "preferred_weight": 0.08, "conviction": 0.7,
-            "rationale": "FCF + insider", "horizon": "swing",
-            "target_price": 210.0, "stop_price": 185.0,
-            "catalyst": "Q3", "close_reason": None, "trim_reason": None,
+            "ticker": "AAPL", "preferred_weight": 0.05, "conviction": 0.7,
+            "rationale": "FCF + insider", "catalyst": "Q3 earnings beat",
+            "close_reason": None, "trim_reason": None,
         },
-        lifecycle_action="open",
+        lifecycle_action="buy",
     )
     session.commit()
     rows = session.query(TickerStanceRow).all()
@@ -39,33 +43,33 @@ def test_round_trip(session):
     r = rows[0]
     assert r.tick_id == "tick_X"
     assert r.ticker == "AAPL"
-    assert r.preferred_weight == 0.08
-    assert r.lifecycle_action == "open"
-    assert r.decision_tag == "open_aapl"
+    assert r.preferred_weight == 0.05
+    assert r.lifecycle_action == "buy"
+    assert r.decision_tag == "buy_aapl"
+    # iter-3: dropped columns must not appear on the ORM model.
+    assert not hasattr(r, "horizon")
+    assert not hasattr(r, "target_price")
+    assert not hasattr(r, "stop_price")
 
 
 def test_nullable_lifecycle_fields(session):
-    """A hold stance leaves horizon / target / stop / catalyst / close / trim as NULL."""
+    """An update stance leaves catalyst / close_reason / trim_reason as NULL."""
     save_ticker_stance(
-        session, tick_id="tick_X", decision_tag="hold_msft",
+        session, tick_id="tick_X", decision_tag="update_msft",
         recorded_at=datetime(2026, 5, 8, 14, tzinfo=UTC),
         stance={
             "ticker": "MSFT", "preferred_weight": 0.05, "conviction": 0.6,
-            "rationale": "still cheap", "horizon": None,
-            "target_price": None, "stop_price": None,
-            "catalyst": None, "close_reason": None, "trim_reason": None,
+            "rationale": "still cheap", "catalyst": None,
+            "close_reason": None, "trim_reason": None,
         },
-        lifecycle_action="hold",
+        lifecycle_action="update",
     )
     session.commit()
     r = session.query(TickerStanceRow).first()
-    assert r.horizon is None
-    assert r.target_price is None
-    assert r.stop_price is None
     assert r.catalyst is None
     assert r.close_reason is None
     assert r.trim_reason is None
-    assert r.lifecycle_action == "hold"
+    assert r.lifecycle_action == "update"
 
 
 def test_unique_constraint_tick_id_ticker():
@@ -80,12 +84,9 @@ def test_unique_constraint_tick_id_ticker():
 
     _stance = {
         "ticker": "AAPL",
-        "preferred_weight": 0.08,
+        "preferred_weight": 0.05,
         "conviction": 0.7,
         "rationale": "test",
-        "horizon": "swing",
-        "target_price": 210.0,
-        "stop_price": 185.0,
         "catalyst": None,
         "close_reason": None,
         "trim_reason": None,
@@ -95,8 +96,8 @@ def test_unique_constraint_tick_id_ticker():
     # First write: should succeed.
     with Session(bind=engine) as s1:
         save_ticker_stance(
-            s1, tick_id="tick_DUP", decision_tag="open_aapl",
-            recorded_at=_recorded, stance=_stance, lifecycle_action="open",
+            s1, tick_id="tick_DUP", decision_tag="buy_aapl",
+            recorded_at=_recorded, stance=_stance, lifecycle_action="buy",
         )
         s1.commit()
 
@@ -105,7 +106,7 @@ def test_unique_constraint_tick_id_ticker():
     # driver's deferral behaviour; pytest.raises covers both call sites.
     with pytest.raises(sqlalchemy.exc.IntegrityError), Session(bind=engine) as s2:
         save_ticker_stance(
-            s2, tick_id="tick_DUP", decision_tag="open_aapl_again",
-            recorded_at=_recorded, stance=_stance, lifecycle_action="hold",
+            s2, tick_id="tick_DUP", decision_tag="update_aapl",
+            recorded_at=_recorded, stance=_stance, lifecycle_action="update",
         )
         s2.commit()

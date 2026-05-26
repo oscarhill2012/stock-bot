@@ -24,7 +24,7 @@ def test_round_trip_trade_log_entry():
         "pnl_dollar": 50.0,
         "pnl_pct": 2.56,
         "holding_period_hours": 4,
-        "horizon_intent": "swing",
+        # ``horizon_intent`` removed in iter-3 — dropped from TradeLogRow.
         "opened_tag": "breakout_buy",
         "closed_tag": "profit_target_hit",
         "opened_rationale": "Technical breakout",

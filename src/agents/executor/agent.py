@@ -256,8 +256,9 @@ class ExecutorAgent(BaseAgent):
                                     "pnl_dollar":          (fill.price - opened_price) * fill.quantity,
                                     "pnl_pct":             pnl_pct,
                                     "holding_period_hours": holding_hours,
-                                    "horizon_intent":      thesis.get("horizon") if isinstance(thesis, dict) else thesis.horizon,
-                                    "opened_tag":          thesis.get("opened_tag") if isinstance(thesis, dict) else thesis.opened_tag,
+                                    # ``horizon_intent`` dropped in iter-3 — the field was removed
+                                    # from ``TradeLogRow`` (Bug #9: hallucinated 80 % of the time).
+                                    "opened_tag":          thesis.get("opened_tag") if isinstance(thesis, dict) else getattr(thesis, "opened_tag", None),
                                     "closed_tag":          state.get("strategist_decision", {}).get("decision_tag", "unknown"),
                                     "opened_rationale":    thesis.get("rationale") if isinstance(thesis, dict) else thesis.rationale,
                                     "close_reason":        close_reason,

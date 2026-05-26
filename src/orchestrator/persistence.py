@@ -93,7 +93,6 @@ class TradeLogRow(Base):
     pnl_dollar: Mapped[float] = mapped_column(Float)
     pnl_pct: Mapped[float] = mapped_column(Float)
     holding_period_hours: Mapped[int] = mapped_column(Integer)
-    horizon_intent: Mapped[str] = mapped_column(String)
     opened_tag: Mapped[str] = mapped_column(String)
     closed_tag: Mapped[str] = mapped_column(String)
     opened_rationale: Mapped[str] = mapped_column(String)
@@ -125,21 +124,21 @@ class TickerStanceRow(Base):
     # encounter ambiguous duplicates (FU-06).
     __table_args__ = (UniqueConstraint("tick_id", "ticker", name="uq_ticker_stance_tick_ticker"),)
 
-    id: Mapped[int]                    = mapped_column(Integer, primary_key=True, autoincrement=True)
-    tick_id: Mapped[str]               = mapped_column(String, index=True)
-    recorded_at: Mapped[datetime]      = mapped_column(DateTime)
-    ticker: Mapped[str]                = mapped_column(String, index=True)
-    preferred_weight: Mapped[float]    = mapped_column(Float)
-    conviction: Mapped[float]          = mapped_column(Float)
-    rationale: Mapped[str]             = mapped_column(String)
-    horizon: Mapped[str | None]        = mapped_column(String, nullable=True)
-    target_price: Mapped[float | None] = mapped_column(Float, nullable=True)
-    stop_price: Mapped[float | None]   = mapped_column(Float, nullable=True)
-    catalyst: Mapped[str | None]       = mapped_column(String, nullable=True)
-    close_reason: Mapped[str | None]   = mapped_column(String, nullable=True)
-    trim_reason: Mapped[str | None]    = mapped_column(String, nullable=True)
-    lifecycle_action: Mapped[str]      = mapped_column(String, index=True)
-    decision_tag: Mapped[str]          = mapped_column(String, index=True)
+    id: Mapped[int]                 = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tick_id: Mapped[str]            = mapped_column(String, index=True)
+    recorded_at: Mapped[datetime]   = mapped_column(DateTime)
+    ticker: Mapped[str]             = mapped_column(String, index=True)
+    preferred_weight: Mapped[float] = mapped_column(Float)
+    conviction: Mapped[float]       = mapped_column(Float)
+    rationale: Mapped[str]          = mapped_column(String)
+    # horizon / target_price / stop_price dropped in iter-3 — the audit
+    # found they were hallucinated 80 % of the time and never consumed
+    # downstream (Bug #9, docs/backtest-audits/baseline-window-2025-09-iter-2.md).
+    catalyst: Mapped[str | None]    = mapped_column(String, nullable=True)
+    close_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    trim_reason: Mapped[str | None]  = mapped_column(String, nullable=True)
+    lifecycle_action: Mapped[str]   = mapped_column(String, index=True)
+    decision_tag: Mapped[str]       = mapped_column(String, index=True)
 
 
 def save_ticker_stance(
@@ -167,11 +166,10 @@ def save_ticker_stance(
             absent from the dump (Band 3 deleted them from ``TickerStance``).
             ``rationale`` is required on ``open`` stances; optional on others.
             Remaining lifecycle fields may be missing or ``None``.
-        lifecycle_action: One of ``"open" | "close" | "trim" | "add" | "hold" | "update"``
-            — the stance intent verb, now sourced from ``stance.intent`` directly
-            (was previously derived via ``derive_lifecycle_action``).  Saved
-            alongside the stance so that downstream analytics can filter without
-            recomputing.
+        lifecycle_action: One of ``"buy" | "sell" | "update"`` (iter-3
+            three-verb canonical form) — the stance intent verb, now sourced
+            from ``stance.intent`` directly.  Saved alongside the stance so
+            that downstream analytics can filter without recomputing.
 
     Returns:
         None. The new row is added and flushed but **not** committed; the caller
@@ -183,16 +181,17 @@ def save_ticker_stance(
     # ``TickerStance``, so stance dicts produced by ``model_dump`` no longer
     # carry them.  Fall back to 0.0 so the non-nullable columns receive a value
     # until the column rename migration runs.
+    # ``horizon`` / ``target_price`` / ``stop_price`` were dropped from
+    # ``TickerStanceRow`` in iter-3; they are no longer read from the
+    # stance dict.  Any caller still passing those keys is silently
+    # ignored at the dict-access level — the ORM column no longer exists.
     row = TickerStanceRow(
         tick_id=tick_id,
         recorded_at=recorded_at,
         ticker=stance["ticker"],
         preferred_weight=stance.get("preferred_weight", 0.0),
         conviction=stance.get("conviction", 0.0),
-        rationale=stance.get("rationale") or "",  # ``rationale`` is only populated on open stances
-        horizon=stance.get("horizon"),
-        target_price=stance.get("target_price"),
-        stop_price=stance.get("stop_price"),
+        rationale=stance.get("rationale") or "",  # only populated on buy stances
         catalyst=stance.get("catalyst"),
         close_reason=stance.get("close_reason"),
         trim_reason=stance.get("trim_reason"),
