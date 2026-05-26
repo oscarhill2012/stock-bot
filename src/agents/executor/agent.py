@@ -152,12 +152,19 @@ class ExecutorAgent(BaseAgent):
                             site="executor/agent.BUY",
                         )
 
+                        # Read the window-relative tick index so the thesis row
+                        # records when it was written (used by context_shim for
+                        # staleness rendering).  Defaults to 0 if absent — safe
+                        # for legacy live runs that do not yet populate this key.
+                        current_tick_index: int = state.get("user:current_tick_index") or 0
+
                         new_thesis = apply_stance_to_thesis(
                             open_stance,
-                            prior_row  = None,
-                            fill_price = fill.price,
-                            tick_id    = tick_id,
-                            as_of      = resolved_as_of,
+                            prior_row          = None,
+                            fill_price         = fill.price,
+                            tick_id            = tick_id,
+                            as_of              = resolved_as_of,
+                            current_tick_index = current_tick_index,
                         )
 
                         if new_thesis is not None:
@@ -480,13 +487,20 @@ def _executor_thesis_writer_callback(callback_context) -> None:
             site="executor/agent.callback",
         )
 
+        # Read the window-relative tick index so buy/update stances
+        # record ``thesis_last_updated_tick`` on the resulting row.
+        # Defaults to 0 when the key is absent (live runs not yet
+        # populating it; legacy test sessions).
+        current_tick_index: int = state.get("user:current_tick_index") or 0
+
         try:
             new_row = apply_stance_to_thesis(
                 stance,
-                prior_row  = prior_row,
-                fill_price = fill_price,
-                tick_id    = state.get("tick_id", "unknown"),
-                as_of      = resolved_as_of,
+                prior_row          = prior_row,
+                fill_price         = fill_price,
+                tick_id            = state.get("tick_id", "unknown"),
+                as_of              = resolved_as_of,
+                current_tick_index = current_tick_index,
             )
         except (AssertionError, ValueError):
             # Log and skip — do not abort the tick on a thesis-write failure.

@@ -410,3 +410,119 @@ def test_apply_stance_to_thesis_buy_only_reads_rationale_and_catalyst():
     assert not hasattr(thesis, "horizon")
     assert not hasattr(thesis, "target_price")
     assert not hasattr(thesis, "stop_price")
+
+
+# ---------------------------------------------------------------------------
+# Task 9 (iter-3): thesis_last_updated_tick is written on buy and update
+# ---------------------------------------------------------------------------
+
+
+def test_buy_stance_writes_thesis_last_updated_tick():
+    """apply_stance_to_thesis on a buy must set thesis_last_updated_tick = current_tick_index."""
+
+    from datetime import datetime, timezone
+
+    from agents.executor._verb_dispatch import apply_stance_to_thesis
+    from agents.strategist.stance_schema import TickerStance
+
+    stance = TickerStance(ticker="AAPL", intent="buy", weight=0.03, rationale="x")
+    thesis = apply_stance_to_thesis(
+        stance,
+        prior_row          = None,
+        fill_price         = 100.0,
+        tick_id            = "tick-1",
+        as_of              = datetime.now(timezone.utc),
+        current_tick_index = 7,
+    )
+
+    assert thesis is not None
+    assert thesis.thesis_last_updated_tick == 7, (
+        "buy stance must stamp thesis_last_updated_tick with current_tick_index"
+    )
+
+
+def test_buy_add_stance_writes_thesis_last_updated_tick():
+    """apply_stance_to_thesis on a buy-add (prior_row present) must update thesis_last_updated_tick."""
+
+    from datetime import datetime, timezone
+
+    from agents.executor._verb_dispatch import apply_stance_to_thesis
+    from agents.strategist.stance_schema import TickerStance
+
+    prior = _make_prior_row(weight=0.03)
+    stance = TickerStance(
+        ticker="AAPL", intent="buy", weight=0.05, rationale="Adding on the dip"
+    )
+    thesis = apply_stance_to_thesis(
+        stance,
+        prior_row          = prior,
+        fill_price         = 145.0,
+        tick_id            = "tick-5",
+        as_of              = datetime.now(timezone.utc),
+        current_tick_index = 12,
+    )
+
+    assert thesis is not None
+    assert thesis.thesis_last_updated_tick == 12, (
+        "buy-add stance must bump thesis_last_updated_tick to current_tick_index"
+    )
+
+
+def test_update_stance_writes_thesis_last_updated_tick():
+    """apply_stance_to_thesis on an update must set thesis_last_updated_tick = current_tick_index."""
+
+    from datetime import datetime, timezone
+
+    from agents.executor._verb_dispatch import apply_stance_to_thesis
+    from agents.strategist.stance_schema import TickerStance
+
+    prior = _make_prior_row(weight=0.08)
+    stance = TickerStance(
+        ticker="AAPL", intent="update", reason="Revised macro backdrop"
+    )
+    thesis = apply_stance_to_thesis(
+        stance,
+        prior_row          = prior,
+        fill_price         = None,
+        tick_id            = "tick-9",
+        as_of              = datetime.now(timezone.utc),
+        current_tick_index = 9,
+    )
+
+    assert thesis is not None
+    assert thesis.thesis_last_updated_tick == 9, (
+        "update stance must stamp thesis_last_updated_tick with current_tick_index"
+    )
+
+
+def test_sell_trim_does_not_update_thesis_last_updated_tick():
+    """apply_stance_to_thesis on a partial sell must NOT change thesis_last_updated_tick.
+
+    Partial trims reduce weight but do not revise the thesis prose,
+    so the staleness clock must not reset.
+    """
+
+    from datetime import datetime, timezone
+
+    from agents.executor._verb_dispatch import apply_stance_to_thesis
+    from agents.strategist.stance_schema import TickerStance
+
+    # Seed a prior row with a known tick index (simulating a thesis
+    # written at tick 3 that has not been updated since).
+    prior = _make_prior_row(weight=0.10, thesis_last_updated_tick=3)
+
+    stance = TickerStance(ticker="AAPL", intent="sell", weight=0.05, reason="Profit take")
+    thesis = apply_stance_to_thesis(
+        stance,
+        prior_row          = prior,
+        fill_price         = 160.0,
+        tick_id            = "tick-10",
+        as_of              = datetime.now(timezone.utc),
+        current_tick_index = 10,
+    )
+
+    assert thesis is not None
+    assert thesis.thesis_last_updated_tick == 3, (
+        "partial sell must NOT bump thesis_last_updated_tick — "
+        "the staleness clock only resets on buy or update stances"
+    )

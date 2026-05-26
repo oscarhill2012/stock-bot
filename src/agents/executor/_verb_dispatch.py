@@ -100,6 +100,7 @@ def apply_stance_to_thesis(
     fill_price: float | None,
     tick_id: str,
     as_of: datetime,
+    current_tick_index: int = 0,
 ) -> PositionThesis | None:
     """Compute the new PositionThesis row for one ticker after a stance.
 
@@ -120,6 +121,11 @@ def apply_stance_to_thesis(
         ``opened_tick_id``).
     as_of
         Tick timestamp (UTC) for ``last_reviewed_at`` and ``opened_at``.
+    current_tick_index
+        Window-relative integer tick counter.  Written into
+        ``thesis_last_updated_tick`` on ``buy`` and ``update`` stances so
+        ``context_shim`` can render staleness.  Defaults to 0 for callers
+        that do not yet carry the tick index (e.g. legacy tests).
 
     Returns
     -------
@@ -158,32 +164,37 @@ def apply_stance_to_thesis(
                 # ── Fresh entry ──────────────────────────────────────────────
                 # Seed a brand-new PositionThesis row.
                 # No horizon / target_price / stop_price — iter-3 removed them.
+                # Set thesis_last_updated_tick so the context_shim staleness
+                # counter starts from this tick, not from the zero default.
                 return PositionThesis(
-                    ticker                 = stance.ticker,
-                    opened_at              = as_of,
-                    opened_tick_id         = tick_id,
-                    opened_price           = fill_price,
-                    weight                 = stance.weight,
-                    catalyst               = stance.catalyst,
-                    rationale              = stance.rationale,
-                    last_reviewed_at       = as_of,
-                    last_reviewed_decision = "buy",
-                    last_reviewed_reason   = stance.rationale or "",
+                    ticker                    = stance.ticker,
+                    opened_at                 = as_of,
+                    opened_tick_id            = tick_id,
+                    opened_price              = fill_price,
+                    weight                    = stance.weight,
+                    catalyst                  = stance.catalyst,
+                    rationale                 = stance.rationale,
+                    last_reviewed_at          = as_of,
+                    last_reviewed_decision    = "buy",
+                    last_reviewed_reason      = stance.rationale or "",
+                    thesis_last_updated_tick  = current_tick_index,
                 )
 
             else:
                 # ── Position increase (add) ──────────────────────────────────
                 # Weight bump — preserve every immutable field, including
-                # rationale (Invariant 3).
+                # rationale (Invariant 3).  A buy-add is a thesis-affirmation
+                # so we also refresh thesis_last_updated_tick.
                 return prior_row.model_copy(update={
-                    "weight":                 stance.weight,
+                    "weight":                    stance.weight,
                     # Refresh the optional catalyst if the buy stance supplies one.
-                    "catalyst":               stance.catalyst if stance.catalyst is not None else prior_row.catalyst,
+                    "catalyst":                  stance.catalyst if stance.catalyst is not None else prior_row.catalyst,
                     # Review trail — updated on every stance that touches this row.
-                    "last_reviewed_at":       as_of,
-                    "last_reviewed_decision": "buy",
-                    "last_reviewed_reason":   stance.rationale or "",
+                    "last_reviewed_at":          as_of,
+                    "last_reviewed_decision":    "buy",
+                    "last_reviewed_reason":      stance.rationale or "",
                     # rationale is intentionally NOT included here — Invariant 3.
+                    "thesis_last_updated_tick":  current_tick_index,
                 })
 
         case "sell":
@@ -216,6 +227,9 @@ def apply_stance_to_thesis(
             # Prose-only revision — refresh review trail; no broker call,
             # no weight change.  Preserves all immutable fields including
             # rationale (Invariant 3).
+            # thesis_last_updated_tick IS refreshed here: an update stance
+            # explicitly revises the strategist's view of this position, so
+            # the staleness clock resets.
             if prior_row is None:
                 raise ValueError(
                     f"apply_stance_to_thesis: 'update' for {stance.ticker!r} but "
@@ -223,10 +237,11 @@ def apply_stance_to_thesis(
                 )
 
             return prior_row.model_copy(update={
-                "last_reviewed_at":       as_of,
-                "last_reviewed_decision": "update",
-                "last_reviewed_reason":   stance.reason or "",
+                "last_reviewed_at":          as_of,
+                "last_reviewed_decision":    "update",
+                "last_reviewed_reason":      stance.reason or "",
                 # rationale is intentionally NOT included here — Invariant 3.
+                "thesis_last_updated_tick":  current_tick_index,
             })
 
         case _:

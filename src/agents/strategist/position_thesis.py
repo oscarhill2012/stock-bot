@@ -145,3 +145,15 @@ class PositionThesis(BaseModel):
             "back into the next tick's prompt."
         ),
     )
+
+    # ---- Staleness tracking ---------------------------------------------
+    thesis_last_updated_tick: int = Field(
+        default=0,
+        description=(
+            "Window-relative tick index at which the thesis was last written "
+            "or revised; used by context_shim to render staleness.  Set by "
+            "the executor whenever a ``buy`` (entry or add) or ``update`` stance "
+            "is applied.  Defaults to 0 for backward compatibility with "
+            "existing fixtures that pre-date this field."
+        ),
+    )
