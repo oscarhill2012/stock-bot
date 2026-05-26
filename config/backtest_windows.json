@@ -13,5 +13,10 @@
     "start": "2026-02-10",
     "end":   "2026-03-24",
     "notes": "Onset of US-Iran conflict — geopolitical-instability stress window. 30 NYSE sessions (2026-02-10 Tue through 2026-03-24 Tue; Presidents Day 2026-02-16 closure accounted for). Within Finnhub's ~1-year news retention."
+  },
+  "long-baseline-2025": {
+    "start": "2025-09-02",
+    "end":   "2026-03-02",
+    "notes": "Six-month long-baseline window for involved backtests. Starts Tue 2025-09-02 (first NYSE session after Labor Day, matching baseline-2025-09's start) and runs through Mon 2026-03-02 — exactly six calendar months. Encompasses the shorter baseline-2025-09 window. Start date is within Finnhub's ~1-year news retention as of 2026-05-26 — re-fill promptly if the head of the window starts to age out."
   }
 }
