@@ -36,7 +36,8 @@ class ClampRecord(BaseModel):
     """Telemetry for one constraint application — logged for analysis."""
 
     rule: Literal[
-        "max_position", "max_delta", "cash_floor", "max_turnover", "no_short"
+        "max_position", "max_delta", "cash_floor", "max_turnover", "no_short",
+        "buy_delta_exceeded",
     ]
     ticker: str | None
     before: float   # weight before the clamp

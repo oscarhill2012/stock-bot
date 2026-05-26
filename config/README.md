@@ -11,7 +11,7 @@ and reference these files by relative path (resolved from the project root).
 | `analysts.json` | Per-analyst input caps + LLM output caps + report cache toggle | `src/config/analysts.py` (`get_analysts_config()`) |
 | `schedule.json` | Tick cadence — how many ticks per day and their ET times | `src/config/schedule.py` (`get_schedule_config()`) |
 | `strategist.json` | Character caps on strategist LLM free-text fields | `src/config/strategist.py` (`get_strategist_config()`) |
-| `risk_gate.json` | Five position-sizing constraints for the risk gate | `src/config/risk_gate.py` (`get_risk_gate_config()`) |
+| `risk_gate.json` | Six position-sizing constraints for the risk gate | `src/config/risk_gate.py` (`get_risk_gate_config()`) |
 | `models.json` | LLM + embedding model IDs for every model-using component | `src/config/models.py` (`get_models_config()`) |
 | `retry_429.json` | Backoff + retry policy for Vertex AI HTTP 429 (RESOURCE_EXHAUSTED) responses. Per-agent timeout/schema retry counts live in `analysts.json` / `strategist.json`. | `src/config/retry_429.py` (`get_retry_429_policy()`) |
 | `backtest_windows.json` | Era-keyed historical date windows for the backtest harness | `src/backtest/windows.py` (`load_windows()`) |
@@ -359,7 +359,7 @@ the two-tier gap is intentional and load-bearing; do not "fix" it.
 
 ## `risk_gate.json` — risk-gate position-sizing constraints
 
-The five hard limits applied by `src/agents/risk_gate/constraints.py` to
+The six hard limits applied by `src/agents/risk_gate/constraints.py` to
 every proposed portfolio before orders are generated.  Centralised here so
 they are operator-tunable without a code change.
 
@@ -376,6 +376,7 @@ unchanged.  A process restart is required after edits.
 | `cash_floor_weight` | float [0.0–0.50] | **0.00** (R1) | Minimum cash reserve fraction. When total invested weight would exceed `1 − cash_floor_weight`, all weights are scaled down proportionally. Set to `0.00` (R1 — raised from `0.10`) to let the strategist be fully invested during the post-baseline backtest. |
 | `max_delta_per_ticker` | float (0.0–1.0] | **0.05** (R2) | Maximum weight change per tick per ticker. Widened from `0.01` to `0.05` (R2) so the gate does not force unrealistically slow entry/exit ramps during backtest evaluation. |
 | `max_total_turnover` | float (0.0–2.0] | **0.50** (R3) | Maximum total portfolio turnover per tick (sum of absolute weight changes across all tickers). Raised from `0.30` to `0.50` (R3) to match the wider per-ticker delta ceiling. |
+| `max_buy_delta_per_trade` | float (0.0–1.0] | **0.05** | Per-buy delta cap (fraction of portfolio). Enforced by `constraints.apply_buy_delta_clamp` on each `TickerStance` with `intent='buy'` **before** target weights are written into the proposed dict. This is defence-in-depth: `TickerStance` already hard-rejects `weight > 0.05` at schema construction time; the risk-gate clamp catches any weight that bypassed validation (e.g. via `model_construct`) and emits a `ClampRecord(rule='buy_delta_exceeded')` for the audit trail. Operator may tighten below 0.05 to reduce position sizing velocity; loosening above 0.05 would conflict with the schema-level cap. |
 
 **R1/R2/R3 rationale.**  The original values (`cash_floor=0.10`,
 `max_delta=0.01`, `max_turnover=0.30`) were conservative placeholders

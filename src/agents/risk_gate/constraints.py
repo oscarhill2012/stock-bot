@@ -1,5 +1,19 @@
-"""The risk gate's clamping steps, in fixed order."""
+"""The risk gate's clamping steps, in fixed order.
+
+Two categories of constraint live here:
+
+1. **Stance-level** — ``apply_buy_delta_clamp`` fires on ``TickerStance``
+   objects before the target weights are written into the proposed dict.
+   This is defence-in-depth against callers that bypass the schema-level
+   validator (e.g. via ``model_construct``).
+
+2. **Weight-level** — ``apply_constraints`` operates on the proposed
+   ``{ticker: float}`` weight dict and enforces concentration, cash-floor,
+   delta, and turnover caps.
+"""
 from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 from orchestrator.state import (
     CASH_FLOOR_WEIGHT,
@@ -8,6 +22,62 @@ from orchestrator.state import (
     MAX_TOTAL_TURNOVER,
     ClampRecord,
 )
+
+if TYPE_CHECKING:
+    # Avoid a hard circular import at runtime — only needed for type hints.
+    from agents.strategist.stance_schema import TickerStance
+    from config.risk_gate import RiskGateConfig
+
+
+def apply_buy_delta_clamp(
+    stances: list["TickerStance"],
+    config: "RiskGateConfig",
+) -> list[ClampRecord]:
+    """Clamp any buy stance whose weight exceeds the configured per-trade cap.
+
+    This is the risk-gate's defence-in-depth layer.  ``TickerStance`` already
+    forbids ``weight > 0.05`` at construction time, but that validation is
+    bypassable via ``model_construct``.  This function catches any leakage.
+
+    Mutates each offending stance's ``weight`` in-place.
+
+    Parameters
+    ----------
+    stances:
+        The list of ``TickerStance`` objects emitted by the strategist.
+        Only stances with ``intent == "buy"`` are inspected; others pass
+        through unchanged.
+    config:
+        Loaded ``RiskGateConfig`` — supplies ``max_buy_delta_per_trade``.
+
+    Returns
+    -------
+    list[ClampRecord]
+        One ``ClampRecord(rule='buy_delta_exceeded')`` for each stance that
+        was clamped.  Empty if no stances exceeded the cap.
+    """
+    cap = config.max_buy_delta_per_trade
+    clamps: list[ClampRecord] = []
+
+    for stance in stances:
+        # Only buy stances carry a weight delta; sell and update pass through.
+        if stance.intent != "buy":
+            continue
+
+        if stance.weight is not None and stance.weight > cap:
+            clamps.append(
+                ClampRecord(
+                    rule="buy_delta_exceeded",
+                    ticker=stance.ticker,
+                    before=stance.weight,
+                    after=cap,
+                )
+            )
+            # Mutate in-place — the stance object is used directly by the
+            # caller to build the proposed-weights dict.
+            stance.weight = cap
+
+    return clamps
 
 
 def _clamp_negatives(weights: dict[str, float], clamps: list[ClampRecord]) -> None:

@@ -11,12 +11,13 @@ from google.adk.events import Event, EventActions
 from observability.trace import _trace_maybe
 from orchestrator.state import MIN_HELD_WEIGHT
 
-from .constraints import apply_constraints
+from .constraints import apply_buy_delta_clamp, apply_constraints
 from .orders import weights_to_orders
 
-# Hold and update are no-trade stances — risk caps are irrelevant.
-# They pass through unchanged and the executor's _run_async_impl
-# skips broker dispatch for them (resolve_broker_call returns None).
+# Update is a no-trade stance — risk caps are irrelevant.
+# Hold has been replaced by the three-verb schema (buy / sell / update);
+# this set is kept here for defensive filtering in case old serialised
+# state from a pre-iter-3 session surfaces during a transition.
 _NO_RISK_GATE_INTENTS: Final[frozenset[str]] = frozenset({"hold", "update"})
 
 
@@ -24,9 +25,12 @@ class RiskGateAgent(BaseAgent):
     """Pure-Python deterministic agent that sits between the Strategist and the Executor.
 
     Responsibilities:
-    1. Clamp the strategist's target weights to satisfy hard risk rules.
-    2. Validate position lifecycle contracts (close_reasons for any closing).
-    3. Convert the clamped weights into concrete broker Orders.
+    1. Clamp buy-stance deltas to ``max_buy_delta_per_trade`` (defence-in-depth
+       — the TickerStance schema already enforces this at construction time).
+    2. Clamp target weights to satisfy hard risk rules (concentration, cash
+       floor, per-ticker delta, total turnover).
+    3. Validate position lifecycle contracts (sell_reasons for any closing).
+    4. Convert the clamped weights into concrete broker Orders.
 
     No LLM calls — this agent is fast and fully deterministic.
     """
@@ -52,13 +56,22 @@ class RiskGateAgent(BaseAgent):
             else decision_raw
         )
 
+        # ── Step 1: stance-level buy-delta clamp (defence-in-depth) ─────────────
+        # Clamp any buy stance whose weight exceeds max_buy_delta_per_trade
+        # before we read the weights into ``proposed``.  This fires even when
+        # the TickerStance schema validator was bypassed (e.g. model_construct).
+        # Clamp records are merged with the weight-level clamps below.
+        from config.risk_gate import get_risk_gate_config as _get_rg_cfg
+        _rg_config = _get_rg_cfg()
+        _stance_clamps = apply_buy_delta_clamp(decision.stances or [], _rg_config)
+
         proposed = dict(decision.target_weights)
 
-        # Strip hold/update stances from ``proposed`` before clamping.
-        # These stances carry no weight change — the executor will skip
-        # broker dispatch for them (``resolve_broker_call`` returns ``None``).
-        # Leaving their tickers in the proposed dict would run the clamp
-        # logic against a stale/zero weight, which is semantically wrong.
+        # Strip update (and legacy hold) stances from ``proposed`` before
+        # clamping.  These stances carry no weight change — the executor will
+        # skip broker dispatch for them (``resolve_broker_call`` returns
+        # ``None``).  Leaving their tickers in the proposed dict would run the
+        # clamp logic against a stale/zero weight, which is semantically wrong.
         _stance_intents = {
             s.ticker: s.intent
             for s in (decision.stances or [])
@@ -93,36 +106,45 @@ class RiskGateAgent(BaseAgent):
             current_weights = {}
             prices = {}
 
-        # Close intents bypass the per-ticker delta cap — an audited "close"
-        # is a deliberate, reasoned full exit, not a tick-on-tick weight drift,
-        # so it should not be capped at MAX_DELTA_PER_TICKER (which would leave
-        # dust shares behind and diverge the broker's true holdings from
-        # ``user:positions`` on the next tick — Spec B / D3 contract trap).
-        # Snapshot the close tickers BEFORE clamping; restore target=0.0 AFTER
-        # so any incidental clamp rewrite (max_delta / max_turnover) is undone
-        # for closes only.  Trims remain bound by the cap, which is the
-        # intended behaviour for partial size reductions.
+        # Sell stances with no explicit weight (full close) bypass the
+        # per-ticker delta cap — an audited "sell" is a deliberate, reasoned
+        # full exit, not a tick-on-tick weight drift, so it should not be
+        # capped at MAX_DELTA_PER_TICKER (which would leave dust shares behind
+        # and diverge broker holdings from ``user:positions`` on the next tick
+        # — Spec B / D3 contract trap).
+        # Snapshot the full-close tickers BEFORE clamping; restore target=0.0
+        # AFTER so any incidental clamp rewrite (max_delta / max_turnover) is
+        # undone for full closes only.  Partial trims (sell with explicit
+        # weight) remain bound by the cap — intended behaviour.
         _close_tickers = {
-            s.ticker for s in (decision.stances or []) if s.intent == "close"
+            s.ticker
+            for s in (decision.stances or [])
+            if s.intent == "sell" and s.weight is None   # absent weight = full close
         }
 
-        # Apply all hard constraints in order; returns telemetry for logging.
-        clamps = apply_constraints(proposed, current_weights)
+        # Apply all weight-level hard constraints in order; returns telemetry.
+        weight_clamps = apply_constraints(proposed, current_weights)
 
-        # Restore full exits — close intent always targets 0.0 regardless of
-        # any post-clamp rewrite above.
+        # Merge stance-level and weight-level clamp records so the audit trail
+        # captures both categories in a single list.
+        clamps = _stance_clamps + weight_clamps
+
+        # Restore full exits — sell-with-no-weight always targets 0.0 regardless
+        # of any post-clamp rewrite above.
         for _t in _close_tickers:
             proposed[_t] = 0.0
 
         # Lifecycle check — only closing positions need a recorded reason.
         # New-open validation is handled earlier by the Strategist callback.
+        # ``sell_reasons`` replaces the former ``close_reasons`` + ``trim_reasons``
+        # split (iter-3 schema rewrite — see StrategistDecision.sell_reasons).
         for t, new_w in original_weights.items():
-            was_open  = current_weights.get(t, 0.0) >= MIN_HELD_WEIGHT
+            was_open     = current_weights.get(t, 0.0) >= MIN_HELD_WEIGHT
             will_be_open = new_w >= MIN_HELD_WEIGHT
-            if was_open and not will_be_open and t not in decision.close_reasons:
+            if was_open and not will_be_open and t not in decision.sell_reasons:
                 from agents.strategist.derivation import StrategistContractViolation
                 raise StrategistContractViolation(
-                    f"Closing {t} ({current_weights.get(t)} -> {new_w}) without close_reason"
+                    f"Closing {t} ({current_weights.get(t)} -> {new_w}) without sell_reason"
                 )
 
         orders = weights_to_orders(proposed, portfolio, prices) if self.broker else []

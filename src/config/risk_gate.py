@@ -1,4 +1,4 @@
-"""Loader for ``config/risk_gate.json`` — the five risk-gate constants.
+"""Loader for ``config/risk_gate.json`` — the six risk-gate constants.
 
 The constants govern position-sizing constraints applied by
 ``src/agents/risk_gate/constraints.py`` and surfaced to the strategist
@@ -56,13 +56,30 @@ class RiskGateConfig(BaseModel):
         Maximum total portfolio turnover per tick (sum of absolute weight
         changes).  Raised from ``0.30`` to ``0.50`` (R3) to match the
         wider per-ticker delta ceiling.
+    max_buy_delta_per_trade:
+        Per-buy stance delta cap (fraction of portfolio).  Applied by
+        ``constraints.apply_buy_delta_clamp`` before target weights are
+        committed to the proposed dict.  Defence-in-depth: ``TickerStance``
+        already enforces ``weight <= 0.05`` at construction; this fires for
+        any stance that bypassed validation.  Emits a
+        ``ClampRecord(rule='buy_delta_exceeded')`` for the audit trail.
     """
 
-    min_held_weight:       float = Field(ge=0.0, le=0.10)
-    max_position_weight:   float = Field(gt=0.0, le=1.0)
-    cash_floor_weight:     float = Field(ge=0.0, le=0.50)
-    max_delta_per_ticker:  float = Field(gt=0.0, le=1.0)
-    max_total_turnover:    float = Field(gt=0.0, le=2.0)
+    min_held_weight:          float = Field(ge=0.0, le=0.10)
+    max_position_weight:      float = Field(gt=0.0, le=1.0)
+    cash_floor_weight:        float = Field(ge=0.0, le=0.50)
+    max_delta_per_ticker:     float = Field(gt=0.0, le=1.0)
+    max_total_turnover:       float = Field(gt=0.0, le=2.0)
+    max_buy_delta_per_trade:  float = Field(
+        default=0.05, gt=0.0, le=1.0,
+        description=(
+            "Per-buy delta cap (fraction of portfolio).  Applied in the risk "
+            "gate as defence-in-depth in addition to the schema-level 5 % cap "
+            "on TickerStance.  Any buy stance whose weight exceeds this value "
+            "is clamped and a ClampRecord(rule='buy_delta_exceeded') is emitted "
+            "for the audit trail."
+        ),
+    )
 
 
 def load_risk_gate_config(*, path: Path | None = None) -> RiskGateConfig:
