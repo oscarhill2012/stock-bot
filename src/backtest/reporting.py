@@ -21,6 +21,11 @@ Spec §end-of-window: metrics.md must include:
   - annualised Sharpe ratio (252-day basis)
   - max drawdown
   - vs-SPY delta (bot_total_return − spy_total_return)
+  - SPY Sharpe — apples-to-apples risk-adjusted comparison
+  - vs matched-exposure SPY — bot return minus SPY weighted each tick by
+    the bot's actual equity exposure %, so cash drag is stripped out
+  - matched-exposure SPY Sharpe (annualised, same basis as bot Sharpe)
+  - average bot equity exposure (1 − cash/total) across the run
   - win rate (winning closed trades / total closed trades)
   - total Fill count
 
@@ -96,6 +101,10 @@ def report_progress(run_dir: Path, settings: BacktestSettings, *, window: str) -
 
         # Build (timestamp, total_value) pairs using actual column names.
         equity = [(r.recorded_at, float(r.bot_total_value)) for r in rows]
+        # Parallel cash series — same order, same length as ``equity`` — so the
+        # matched-exposure benchmark can ask "what was the bot's invested
+        # fraction at this tick?" without re-querying the DB.
+        cash   = [float(r.bot_cash) for r in rows]
 
         # Load closed trades for win rate and fill count.
         trade_rows = s.execute(select(TradeLogRow)).scalars().all()
@@ -112,23 +121,62 @@ def report_progress(run_dir: Path, settings: BacktestSettings, *, window: str) -
     winning    = sum(1 for t in trade_rows if t.pnl_dollar > 0)
     win_rate   = (winning / fill_count) if fill_count > 0 else float("nan")
 
-    # ── vs-SPY delta from the golden cache ────────────────────────────────────
-    # Attempt to compute SPY buy-and-hold return over the same window as the
-    # portfolio snapshots.  Falls back to a descriptive N/A string if SPY is not
-    # in the cache, so the run does not crash when the user hasn't fetched SPY.
+    # ── benchmark plumbing (SPY + matched-exposure) ──────────────────────────
     # Per-window golden cache — derived from ``backtests_root`` + window.
     from backtest.settings import cache_path_for_window
-    cache        = CachedDataStore(cache_path_for_window(settings, window))
-    # Pass ``starting_cash`` so the SPY benchmark series (shared by both the
-    # vs-SPY metric and the chart overlay) is sized against the same $-zero
-    # as the portfolio — apples-to-apples by construction.
-    vs_spy_delta = _compute_vs_spy_delta(equity, cache, starting_cash=equity[0][1])
+    cache         = CachedDataStore(cache_path_for_window(settings, window))
+    starting_cash = equity[0][1]
+    ticks_per_day = len(settings.ticks_per_day)
+
+    # Build the SPY series once and share it: chart overlay, matched-exposure
+    # benchmark, vs-SPY delta, and SPY Sharpe all derive from the same
+    # tick-aligned source so they cannot drift apart.
+    spy_series = _spy_benchmark_series(equity, cache, starting_cash)
+
+    # Matched-exposure series: SPY weighted each tick by the bot's equity
+    # exposure %.  Returns a descriptive N/A string when SPY is unavailable.
+    matched_series = _matched_exposure_series(equity, cash, spy_series, starting_cash)
+
+    # vs-SPY delta uses the same SPY series — call ``_compute_vs_spy_delta``
+    # rather than re-deriving here so any future refactor stays consolidated.
+    vs_spy_delta = _compute_vs_spy_delta(equity, cache, starting_cash=starting_cash)
+
+    # SPY Sharpe and matched Sharpe.  Both fall back to the matching N/A
+    # string when their series is unavailable, so the metrics file always
+    # writes successfully.
+    if isinstance(spy_series, list) and len(spy_series) >= 2:
+        spy_sharpe: float | str = _annualised_sharpe(spy_series, ticks_per_day=ticks_per_day)
+    else:
+        spy_sharpe = spy_series if isinstance(spy_series, str) else "N/A — SPY series too short"
+
+    if isinstance(matched_series, list) and len(matched_series) >= 2:
+        matched_sharpe: float | str = _annualised_sharpe(matched_series, ticks_per_day=ticks_per_day)
+        # vs-matched delta: bot total return minus matched-exposure total
+        # return — positive = bot's stock-picks beat passive SPY on the same
+        # invested capital.
+        matched_start = matched_series[0][1]
+        matched_end   = matched_series[-1][1]
+        if matched_start > 0:
+            matched_return  = (matched_end - matched_start) / matched_start
+            bot_return      = (equity[-1][1] - equity[0][1]) / equity[0][1] if equity[0][1] else 0.0
+            vs_matched_delta: float | str = bot_return - matched_return
+        else:
+            vs_matched_delta = "N/A — matched series start is zero"
+    else:
+        matched_sharpe   = matched_series if isinstance(matched_series, str) else "N/A — matched series too short"
+        vs_matched_delta = matched_series if isinstance(matched_series, str) else "N/A — matched series too short"
+
+    avg_exposure_pct = _avg_exposure_pct(equity, cash)
 
     _write_equity_curve(
         equity,
         report_dir / "equity_curve.png",
         cache=cache,
-        starting_cash=equity[0][1],
+        starting_cash=starting_cash,
+        # Pass only when it materialised as a real series — string N/A means
+        # SPY isn't in the cache and the SPY line itself is already absent,
+        # so a matched line would be misleading.
+        matched_series=matched_series if isinstance(matched_series, list) else None,
     )
     _write_metrics(
         equity,
@@ -136,7 +184,11 @@ def report_progress(run_dir: Path, settings: BacktestSettings, *, window: str) -
         fill_count=fill_count,
         win_rate=win_rate,
         vs_spy_delta=vs_spy_delta,
-        ticks_per_day=len(settings.ticks_per_day),
+        spy_sharpe=spy_sharpe,
+        matched_sharpe=matched_sharpe,
+        vs_matched_delta=vs_matched_delta,
+        avg_exposure_pct=avg_exposure_pct,
+        ticks_per_day=ticks_per_day,
     )
 
     # ── pipeline-efficiency section (tokens, latency, cache, retries) ────────
@@ -195,6 +247,7 @@ def _write_equity_curve(
     *,
     cache: CachedDataStore,
     starting_cash: float,
+    matched_series: list[tuple[datetime, float]] | None = None,
 ) -> None:
     """Render a portfolio equity curve PNG (with SPY overlay) to ``outpath``.
 
@@ -217,9 +270,15 @@ def _write_equity_curve(
         line and as the rebasing target for the SPY overlay.  Pass
         ``series[0][1]`` so both reference lines sit exactly at the
         portfolio's day-one value.
+    matched_series:
+        Optional output of ``_matched_exposure_series`` — when provided,
+        a third "Matched-exposure (rebased)" line is overlaid on the chart.
+        ``None`` (the default) preserves the original three-line layout
+        for callers that don't compute it.
     """
     fig = _build_equity_figure(
         series, cache=cache, starting_cash=starting_cash,
+        matched_series=matched_series,
     )
     fig.tight_layout()
     fig.savefig(outpath)
@@ -231,10 +290,11 @@ def _build_equity_figure(
     *,
     cache: CachedDataStore,
     starting_cash: float,
+    matched_series: list[tuple[datetime, float]] | None = None,
 ) -> Figure:
-    """Build the equity-curve ``Figure`` with portfolio, SPY, and initial-funds lines.
+    """Build the equity-curve ``Figure`` with portfolio + benchmark lines.
 
-    Renders three lines on a single ``$`` axis:
+    Renders up to four lines on a single ``$`` axis:
 
     - **Portfolio** — solid blue, the raw ``series`` values.
     - **SPY (rebased)** — solid orange, the tick-aligned buy-and-hold
@@ -244,6 +304,10 @@ def _build_equity_figure(
       ``_compute_vs_spy_delta``).  Critically, the chart and the metric
       now consume the **same** benchmark series, so they cannot drift
       apart on methodology (anchor price, intraday phase, tick cadence).
+    - **Matched-exposure (rebased)** — solid green, the SPY benchmark
+      weighted tick-by-tick to the bot's actual equity exposure %.  Drawn
+      only when ``matched_series`` is supplied (caller computed it from
+      cash + spy_series); omitted on backwards-compatible call sites.
     - **Initial funds** — grey dashed horizontal at ``starting_cash``, so
       the "above the line / below the line" signal is immediate.
 
@@ -260,6 +324,11 @@ def _build_equity_figure(
     starting_cash:
         Anchor value for the dashed initial-funds line and the SPY
         rebasing target.
+    matched_series:
+        Optional tick-aligned matched-exposure benchmark.  When provided,
+        an extra green line is drawn between the SPY line and the
+        initial-funds reference.  ``None`` preserves the original
+        three-line layout.
 
     Returns
     -------
@@ -287,6 +356,21 @@ def _build_equity_figure(
         spy_xs = [t for t, _ in spy_series]
         spy_ys = [v for _, v in spy_series]
         ax.plot(spy_xs, spy_ys, label="SPY (rebased)", color="tab:orange")
+
+    # ── Matched-exposure overlay (optional) ──────────────────────────────────
+    # When the caller has computed a matched-exposure series, draw it as a
+    # third line sandwiched between the SPY line and the initial-funds
+    # reference.  This is the "apples-to-apples" comparison: SPY weighted
+    # to the bot's actual equity exposure %, so cash drag is stripped out.
+    # Drawn in green so it visually separates from SPY's orange.
+    if matched_series:
+        matched_xs = [t for t, _ in matched_series]
+        matched_ys = [v for _, v in matched_series]
+        ax.plot(
+            matched_xs, matched_ys,
+            label="Matched-exposure (rebased)",
+            color="tab:green",
+        )
 
     # ── Initial-funds reference line ─────────────────────────────────────────
     ax.axhline(
@@ -326,6 +410,10 @@ def _write_metrics(
     fill_count: int = 0,
     win_rate: float = float("nan"),
     vs_spy_delta: float | str = "N/A — SPY not in cache (run backtest_fetch with SPY)",
+    spy_sharpe: float | str = "N/A — SPY not in cache",
+    matched_sharpe: float | str = "N/A — SPY not in cache",
+    vs_matched_delta: float | str = "N/A — SPY not in cache",
+    avg_exposure_pct: float = float("nan"),
     ticks_per_day: int = 1,
 ) -> None:
     """Compute performance metrics and write a Markdown report to ``outpath``.
@@ -335,6 +423,14 @@ def _write_metrics(
     - Annualised Sharpe ratio (252 trading days × ``ticks_per_day``).
     - Max drawdown (largest peak-to-trough decline as a fraction).
     - vs-SPY delta (bot total return − SPY total return over the same window).
+    - SPY Sharpe (annualised, same basis as bot Sharpe) — apples-to-apples
+      risk-adjusted comparison against a 100% SPY buy-and-hold.
+    - Matched-exposure Sharpe and vs-matched-exposure delta — same SPY
+      benchmark dynamically re-weighted to the bot's per-tick equity
+      exposure %, so cash-drag is stripped from the comparison.
+    - Average equity exposure — the bot's mean invested fraction across
+      the run (1 − cash/total), so the matched-exposure number is
+      interpretable on its own.
     - Win rate (winning closed trades / total closed trades).
     - Total Fill count (number of closed trade-log entries).
     - Tick count (number of portfolio snapshots).
@@ -354,6 +450,20 @@ def _write_metrics(
         Bot total return minus SPY total return, expressed as a fraction
         (e.g. ``0.05`` = 5 pp outperformance).  Pass a descriptive string
         when SPY data is unavailable rather than crashing.
+    spy_sharpe:
+        Annualised Sharpe of the SPY buy-and-hold benchmark over the
+        same window.  Pass a string when SPY is absent from the cache.
+    matched_sharpe:
+        Annualised Sharpe of the matched-exposure benchmark (SPY weighted
+        each tick by the bot's equity exposure %).  Pass a string when
+        SPY is absent.
+    vs_matched_delta:
+        Bot total return minus matched-exposure total return.  Positive =
+        bot's stock-picks beat passive SPY on the same invested capital.
+    avg_exposure_pct:
+        Mean of ``(total - cash) / total`` across all snapshots — the
+        bot's average invested fraction over the run.  ``NaN`` if no
+        snapshots have positive total value.
     ticks_per_day:
         Number of ticks per trading day in the schedule (e.g. 2 for the
         default open + close policy).  Used to scale the Sharpe
@@ -368,21 +478,11 @@ def _write_metrics(
     total_return = (end_v - start_v) / start_v
 
     # ── Sharpe ───────────────────────────────────────────────────────────────
-    # Per-tick returns: assumes ticks are evenly spaced.  Annualisation
-    # scales the per-tick Sharpe by ``sqrt(252 * ticks_per_day)`` — a
-    # two-ticks-per-day schedule produces twice as many returns per year
-    # as a daily-close-only schedule, so the naïve ``sqrt(252)`` factor
-    # under-reports Sharpe by ``sqrt(ticks_per_day)``.
-    rets = []
-    for (_, v0), (_, v1) in zip(series, series[1:], strict=False):
-        if v0 != 0:
-            rets.append((v1 - v0) / v0)
-
-    if len(rets) >= 2 and statistics.pstdev(rets) > 0:
-        annualisation = (252 * ticks_per_day) ** 0.5
-        sharpe = (statistics.mean(rets) / statistics.pstdev(rets)) * annualisation
-    else:
-        sharpe = float("nan")
+    # Delegated to the shared helper so bot / SPY / matched-exposure Sharpes
+    # all use the same per-tick return + ``sqrt(252 × ticks_per_day)``
+    # annualisation — the three numbers in ``metrics.md`` are directly
+    # comparable rather than each picking their own convention.
+    sharpe = _annualised_sharpe(series, ticks_per_day=ticks_per_day)
 
     # ── Max drawdown ──────────────────────────────────────────────────────────
     peak   = series[0][1]
@@ -393,13 +493,36 @@ def _write_metrics(
             max_dd = min(max_dd, (v - peak) / peak)
 
     # ── Format optional fields ────────────────────────────────────────────────
-    # vs-SPY delta may be a float (computed from cache) or a descriptive string
-    # (when SPY is absent from the cache).
-    if isinstance(vs_spy_delta, float):
-        vs_spy_str = f"**{vs_spy_delta:+.2%}**"
-    else:
-        vs_spy_str = f"_{vs_spy_delta}_"
+    # Each delta / Sharpe may be a float (computed) or a descriptive string
+    # (when SPY is absent from the cache).  ``_fmt_pct`` / ``_fmt_sharpe``
+    # below centralise the two layouts so every row in the file is
+    # consistent (bold for numbers, italic for N/A explanations).
 
+    def _fmt_pct(value: float | str) -> str:
+        """Format a fraction as a signed percentage, or an italic N/A string."""
+        if isinstance(value, float):
+            return f"**{value:+.2%}**"
+        return f"_{value}_"
+
+    def _fmt_sharpe(value: float | str) -> str:
+        """Format a Sharpe ratio as a 2dp float, or an italic N/A string."""
+        if isinstance(value, float):
+            return f"**{value:.2f}**"
+        return f"_{value}_"
+
+    vs_spy_str       = _fmt_pct(vs_spy_delta)
+    vs_matched_str   = _fmt_pct(vs_matched_delta)
+    spy_sharpe_str   = _fmt_sharpe(spy_sharpe)
+    matched_sharpe_str = _fmt_sharpe(matched_sharpe)
+
+    # Average exposure: a NaN means no snapshots had positive total value;
+    # surface the gap rather than silently writing "nan%".
+    if isinstance(avg_exposure_pct, float) and avg_exposure_pct == avg_exposure_pct:
+        avg_exposure_str = f"**{avg_exposure_pct:.1%}**"
+    else:
+        avg_exposure_str = "_N/A_"
+
+    # NaN check on win_rate uses ``x != x`` — robust to any NaN flavour.
     win_rate_str = f"**{win_rate:.1%}**" if not (isinstance(win_rate, float) and win_rate != win_rate) else "**N/A** (no closed trades)"
 
     outpath.write_text(
@@ -407,12 +530,203 @@ def _write_metrics(
         f"- Total return: **{total_return:+.2%}**\n"
         f"- Sharpe (annualised, 252d): **{sharpe:.2f}**\n"
         f"- Max drawdown: **{max_dd:+.2%}**\n"
-        f"- vs-SPY delta: {vs_spy_str}\n"
+        f"- vs-SPY delta (100% buy-and-hold): {vs_spy_str}\n"
+        f"- SPY Sharpe (annualised, 252d): {spy_sharpe_str}\n"
+        f"- vs matched-exposure SPY: {vs_matched_str}\n"
+        f"- Matched-exposure SPY Sharpe (annualised, 252d): {matched_sharpe_str}\n"
+        f"- Avg bot equity exposure: {avg_exposure_str}\n"
         f"- Win rate: {win_rate_str}\n"
         f"- Closed round-trips: **{fill_count}**\n"
         f"- Ticks recorded: **{len(series)}**\n",
         encoding="utf-8",
     )
+
+
+def _annualised_sharpe(
+    series: list[tuple[datetime, float]] | None,
+    ticks_per_day: int,
+) -> float:
+    """Compute the annualised Sharpe ratio of a tick-by-tick value series.
+
+    Returns the per-tick (arithmetic mean / population std) ratio of returns
+    scaled by ``sqrt(252 × ticks_per_day)`` — the same annualisation factor
+    the bot Sharpe uses, so bot, SPY, and matched-exposure numbers in
+    ``metrics.md`` are directly comparable.
+
+    The risk-free rate is treated as zero — same simplification ``_write_metrics``
+    already makes for the bot Sharpe.  Wire in a T-bill rate later if it
+    becomes available in the cache; today the metric is "excess of cash"
+    in name only.
+
+    Parameters
+    ----------
+    series:
+        Ordered list of (timestamp, value) pairs.  ``None`` or fewer than
+        two points yields ``NaN`` (no return series to compute over).
+    ticks_per_day:
+        Ticks per trading day, used to scale the annualisation factor — a
+        two-ticks-per-day schedule produces twice as many returns per
+        year as a daily schedule, so the naïve ``sqrt(252)`` under-reports
+        Sharpe by ``sqrt(ticks_per_day)``.
+
+    Returns
+    -------
+    float
+        Annualised Sharpe, or ``NaN`` when fewer than two returns are
+        available or the return series has zero variance.
+    """
+
+    if not series or len(series) < 2:
+        return float("nan")
+
+    # Per-tick simple returns; skip ticks where the prior value was zero so
+    # we never divide by zero.  ``strict=False`` matches the existing
+    # _write_metrics call site so behaviour is identical.
+    rets: list[float] = []
+    for (_, v0), (_, v1) in zip(series, series[1:], strict=False):
+        if v0 != 0:
+            rets.append((v1 - v0) / v0)
+
+    if len(rets) < 2 or statistics.pstdev(rets) == 0:
+        return float("nan")
+
+    annualisation = (252 * ticks_per_day) ** 0.5
+    return (statistics.mean(rets) / statistics.pstdev(rets)) * annualisation
+
+
+def _avg_exposure_pct(
+    equity: list[tuple[datetime, float]],
+    cash: list[float],
+) -> float:
+    """Return the mean fraction of portfolio invested across all snapshots.
+
+    Defined as ``mean((total - cash) / total)`` over every snapshot with
+    ``total > 0``.  Clamped to ``[0, 1]`` per-tick so a transient negative
+    position value (e.g. an intra-tick mark glitch) cannot push the mean
+    below zero or above one.
+
+    Parameters
+    ----------
+    equity:
+        Ordered list of (timestamp, total_portfolio_value) pairs.
+    cash:
+        Parallel list of cash balances — same length and order as
+        ``equity``.
+
+    Returns
+    -------
+    float
+        Mean exposure as a fraction in ``[0, 1]``.  ``NaN`` when no
+        snapshot has a positive total value (degenerate / empty run).
+    """
+
+    if not equity or not cash:
+        return float("nan")
+
+    fractions: list[float] = []
+    for (_, total), c in zip(equity, cash, strict=False):
+        if total <= 0:
+            continue
+        # Clamp protects against negative positions value (mark glitch) and
+        # cash exceeding total (rounding or reconciliation edge cases).
+        invested = max(0.0, min(1.0, (total - c) / total))
+        fractions.append(invested)
+
+    if not fractions:
+        return float("nan")
+
+    return statistics.mean(fractions)
+
+
+def _matched_exposure_series(
+    equity: list[tuple[datetime, float]],
+    cash: list[float],
+    spy_series: list[tuple[datetime, float]] | str,
+    starting_cash: float,
+) -> list[tuple[datetime, float]] | str:
+    """Build a tick-aligned "matched-exposure" benchmark series.
+
+    Conceptually: at every tick a synthetic portfolio holds
+    ``bot_equity_pct`` of SPY and ``bot_cash_pct`` in cash, then earns
+    ``bot_equity_pct × spy_return`` over the following tick (cash earns
+    zero — we have no T-bill rate in the cache).  Compounds tick-to-tick
+    starting from ``starting_cash``.
+
+    Used to strip cash-drag out of the vs-SPY comparison: if the bot is
+    only 40% invested, comparing it to a 100% SPY benchmark is unfair.
+    The matched-exposure series instead asks "did the bot's stock-picks
+    beat *passive* SPY on the same invested capital?".  Pair with the
+    raw 100% SPY benchmark to also see whether holding cash was the
+    correct decision (e.g. avoiding a drawdown).
+
+    Returns the same descriptive ``N/A`` string as ``_spy_benchmark_series``
+    when SPY is unavailable, so the metrics file still writes.
+
+    Parameters
+    ----------
+    equity:
+        Ordered list of (timestamp, total_portfolio_value) pairs.
+    cash:
+        Parallel list of cash balances — same length as ``equity``.
+    spy_series:
+        Output of ``_spy_benchmark_series`` — either a list of
+        (timestamp, $-value) pairs or a descriptive ``N/A`` string.
+    starting_cash:
+        Anchor $-value for the matched series.  Must equal the
+        portfolio's day-one value so the chart and metric share a $-zero.
+
+    Returns
+    -------
+    list[(datetime, float)] | str
+        A tick-aligned matched-exposure series, or a descriptive ``N/A``
+        string when SPY is unusable / the equity series is empty.
+    """
+
+    # Forward any upstream N/A so the metrics file carries the exact reason.
+    if isinstance(spy_series, str):
+        return spy_series
+
+    if not equity or not spy_series:
+        return "N/A — empty series"
+
+    if len(equity) != len(cash):
+        # Defensive: callers always build these parallel from the same DB
+        # query, but a mismatch would silently produce wrong exposures.
+        return "N/A — equity/cash length mismatch"
+
+    # Build per-timestamp lookups so we can pair SPY ticks (which may have
+    # skipped some equity ticks when SPY had no bar that calendar date)
+    # with the bot's exposure at the *start* of each compounding period.
+    total_by_ts: dict[datetime, float] = {ts: v for ts, v in equity}
+    cash_by_ts:  dict[datetime, float] = {ts: c for (ts, _), c in zip(equity, cash, strict=False)}
+
+    matched: list[tuple[datetime, float]] = []
+    value = starting_cash
+    matched.append((spy_series[0][0], value))
+
+    # Lagged exposure: the bot's exposure at the *start* of each return
+    # period drives the matched return over that period.  End-of-period
+    # exposure would smuggle in information that wasn't yet available.
+    for (ts_prev, spy_prev), (ts_curr, spy_curr) in zip(spy_series, spy_series[1:], strict=False):
+        if spy_prev <= 0:
+            # Anchor pathology — skip this period's compounding, value unchanged.
+            matched.append((ts_curr, value))
+            continue
+
+        total_prev = total_by_ts.get(ts_prev, 0.0)
+        cash_prev  = cash_by_ts.get(ts_prev,  0.0)
+        if total_prev <= 0:
+            exposure_pct = 0.0
+        else:
+            exposure_pct = max(0.0, min(1.0, (total_prev - cash_prev) / total_prev))
+
+        spy_return     = (spy_curr - spy_prev) / spy_prev
+        matched_return = exposure_pct * spy_return  # cash earns 0%
+
+        value = value * (1.0 + matched_return)
+        matched.append((ts_curr, value))
+
+    return matched
 
 
 def _spy_benchmark_series(

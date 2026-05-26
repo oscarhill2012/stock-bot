@@ -12,9 +12,12 @@ from pathlib import Path
 import pytest
 
 from backtest.reporting import (
+    _annualised_sharpe,
+    _avg_exposure_pct,
     _backfill_forward_returns,
     _build_equity_figure,
     _compute_vs_spy_delta,
+    _matched_exposure_series,
     _parse_date,
     _write_metrics,
 )
@@ -573,3 +576,380 @@ class TestBuildEquityFigure:
             assert initial_line.get_linestyle() in {"--", "dashed"}
         finally:
             plt.close(fig)
+
+    def test_four_lines_when_matched_series_passed(self) -> None:
+        """When ``matched_series`` is supplied, a fourth line is drawn between SPY and initial.
+
+        The matched-exposure series is built from the bot's per-tick equity
+        exposure; the chart consumer only needs the resulting (timestamp,
+        $-value) pairs.  We pass a hand-crafted series here and assert the
+        legend order + ydata round-trips correctly — no SPY mock needed.
+        """
+        from unittest.mock import MagicMock
+
+        import matplotlib.pyplot as plt
+
+        from data.models import OHLCBar
+
+        # Same SPY fixture as ``test_three_lines_when_spy_present`` — two
+        # bars, one per date, both open and close populated.
+        bar1 = MagicMock(spec=OHLCBar)
+        bar1.timestamp = datetime(2026, 2, 2, tzinfo=UTC)
+        bar1.open      = 400.0
+        bar1.close     = 405.0
+
+        bar2 = MagicMock(spec=OHLCBar)
+        bar2.timestamp = datetime(2026, 2, 3, tzinfo=UTC)
+        bar2.open      = 410.0
+        bar2.close     = 420.0
+
+        cache = MagicMock()
+        cache.read_ohlcv.return_value = [bar1, bar2]
+
+        # A synthetic matched-exposure series — values are arbitrary; we
+        # only need the chart to plot them where we tell it to.
+        matched = [
+            (datetime(2026, 2, 2, 13, 30, tzinfo=UTC), 100_000.0),
+            (datetime(2026, 2, 2, 20,  0, tzinfo=UTC), 100_250.0),
+            (datetime(2026, 2, 3, 13, 30, tzinfo=UTC), 100_500.0),
+            (datetime(2026, 2, 3, 20,  0, tzinfo=UTC), 100_750.0),
+        ]
+
+        fig = _build_equity_figure(
+            self._SERIES,
+            cache=cache,
+            starting_cash=100_000.0,
+            matched_series=matched,
+        )
+        try:
+            assert self._legend_texts(fig) == [
+                "Portfolio",
+                "SPY (rebased)",
+                "Matched-exposure (rebased)",
+                "Initial funds",
+            ]
+
+            # Matched line is plotted 3rd (index 2) — assert the y-values
+            # match what we passed in, so the chart faithfully renders the
+            # caller's series rather than re-deriving anything internally.
+            matched_line = fig.axes[0].lines[2]
+            matched_ys   = list(matched_line.get_ydata())
+            assert matched_ys == [pt[1] for pt in matched]
+        finally:
+            plt.close(fig)
+
+    def test_no_matched_line_when_matched_series_none(self) -> None:
+        """``matched_series=None`` (default) preserves the three-line layout.
+
+        Existing callers that haven't been migrated yet must keep working.
+        """
+        from unittest.mock import MagicMock
+
+        import matplotlib.pyplot as plt
+
+        cache = MagicMock()
+        cache.read_ohlcv.return_value = []
+
+        fig = _build_equity_figure(
+            self._SERIES, cache=cache, starting_cash=100_000.0,
+            matched_series=None,
+        )
+        try:
+            assert "Matched-exposure (rebased)" not in self._legend_texts(fig)
+        finally:
+            plt.close(fig)
+
+
+# ── _annualised_sharpe ───────────────────────────────────────────────────────
+
+class TestAnnualisedSharpe:
+    """Unit tests for the shared Sharpe helper.
+
+    The helper is used to compute three Sharpe ratios that must be
+    directly comparable (bot, SPY, matched-exposure).  We pin the
+    annualisation factor here so future refactors can't silently
+    introduce a different convention for one of the three.
+    """
+
+    def test_nan_for_empty_series(self) -> None:
+        """No data → NaN.  Caller decides how to format."""
+        result = _annualised_sharpe([], ticks_per_day=1)
+        assert result != result  # NaN check
+
+    def test_nan_for_single_tick(self) -> None:
+        """One tick → zero returns → NaN."""
+        result = _annualised_sharpe(
+            [(datetime(2023, 3, 6, tzinfo=UTC), 100.0)], ticks_per_day=1,
+        )
+        assert result != result
+
+    def test_nan_for_zero_variance(self) -> None:
+        """A flat series has zero std → NaN (no risk-adjusted signal)."""
+        series = [
+            (datetime(2023, 3, 6, tzinfo=UTC), 100.0),
+            (datetime(2023, 3, 7, tzinfo=UTC), 100.0),
+            (datetime(2023, 3, 8, tzinfo=UTC), 100.0),
+        ]
+        result = _annualised_sharpe(series, ticks_per_day=1)
+        assert result != result
+
+    def test_positive_sharpe_for_consistent_gains(self) -> None:
+        """A monotonic +1%/tick series → positive, finite Sharpe."""
+        series = [
+            (datetime(2023, 3, 6, tzinfo=UTC), 100.0),
+            (datetime(2023, 3, 7, tzinfo=UTC), 101.0),
+            (datetime(2023, 3, 8, tzinfo=UTC), 102.01),
+        ]
+        result = _annualised_sharpe(series, ticks_per_day=1)
+        # Mean / std is large (variance near zero with rounding), but
+        # std isn't exactly zero on float arithmetic — we just check sign.
+        assert result > 0
+        assert result == result  # not NaN
+
+    def test_annualisation_scales_with_ticks_per_day(self) -> None:
+        """sqrt(252 × ticks_per_day) scaling: two-ticks-per-day doubles input freq.
+
+        The helper's job is to multiply the per-tick Sharpe by the
+        annualisation factor; doubling ``ticks_per_day`` should
+        multiply the result by ``sqrt(2)``.
+        """
+        # A series whose per-tick mean and std are both stable enough
+        # that the ratio matters — use alternating +1% / -0.5%.
+        series = [
+            (datetime(2023, 3, 1, tzinfo=UTC), 100.0),
+            (datetime(2023, 3, 2, tzinfo=UTC), 101.0),
+            (datetime(2023, 3, 3, tzinfo=UTC), 100.495),  # -0.5%
+            (datetime(2023, 3, 4, tzinfo=UTC), 101.5),    # ~+1%
+            (datetime(2023, 3, 5, tzinfo=UTC), 100.99),   # -0.5%
+        ]
+        s_tpd1 = _annualised_sharpe(series, ticks_per_day=1)
+        s_tpd2 = _annualised_sharpe(series, ticks_per_day=2)
+        assert s_tpd2 == pytest.approx(s_tpd1 * (2 ** 0.5), rel=1e-9)
+
+
+# ── _avg_exposure_pct ────────────────────────────────────────────────────────
+
+class TestAvgExposurePct:
+    """Unit tests for the average-exposure helper."""
+
+    def test_full_cash_is_zero(self) -> None:
+        """When cash == total at every tick, exposure is 0%."""
+        equity = [
+            (datetime(2023, 3, 6, tzinfo=UTC), 10_000.0),
+            (datetime(2023, 3, 7, tzinfo=UTC), 10_000.0),
+        ]
+        cash = [10_000.0, 10_000.0]
+        assert _avg_exposure_pct(equity, cash) == pytest.approx(0.0)
+
+    def test_no_cash_is_one(self) -> None:
+        """When cash == 0 at every tick, exposure is 100%."""
+        equity = [
+            (datetime(2023, 3, 6, tzinfo=UTC), 10_000.0),
+            (datetime(2023, 3, 7, tzinfo=UTC), 10_500.0),
+        ]
+        cash = [0.0, 0.0]
+        assert _avg_exposure_pct(equity, cash) == pytest.approx(1.0)
+
+    def test_half_cash_is_half(self) -> None:
+        """50% cash at every tick → 50% mean exposure."""
+        equity = [
+            (datetime(2023, 3, 6, tzinfo=UTC), 10_000.0),
+            (datetime(2023, 3, 7, tzinfo=UTC), 10_000.0),
+        ]
+        cash = [5_000.0, 5_000.0]
+        assert _avg_exposure_pct(equity, cash) == pytest.approx(0.5)
+
+    def test_clamped_when_cash_exceeds_total(self) -> None:
+        """Cash > total (rounding edge case) → clamped to 0% rather than negative."""
+        equity = [
+            (datetime(2023, 3, 6, tzinfo=UTC), 10_000.0),
+        ]
+        cash = [11_000.0]  # impossible but defensive
+        result = _avg_exposure_pct(equity, cash)
+        assert result == pytest.approx(0.0)
+
+    def test_skips_zero_total_snapshots(self) -> None:
+        """Zero-total snapshots (degenerate) are excluded from the mean."""
+        equity = [
+            (datetime(2023, 3, 6, tzinfo=UTC),     0.0),  # skipped
+            (datetime(2023, 3, 7, tzinfo=UTC), 10_000.0), # 60% invested
+        ]
+        cash = [0.0, 4_000.0]
+        assert _avg_exposure_pct(equity, cash) == pytest.approx(0.6)
+
+    def test_nan_when_no_valid_snapshots(self) -> None:
+        """All zero-total → NaN (no usable data)."""
+        equity = [(datetime(2023, 3, 6, tzinfo=UTC), 0.0)]
+        cash   = [0.0]
+        result = _avg_exposure_pct(equity, cash)
+        assert result != result
+
+
+# ── _matched_exposure_series ─────────────────────────────────────────────────
+
+class TestMatchedExposureSeries:
+    """Unit tests for the matched-exposure benchmark builder.
+
+    Concept: at every tick the synthetic portfolio holds ``equity_pct ×
+    SPY + cash_pct × cash`` (cash earns 0%) and compounds from
+    ``starting_cash``.  We pin three boundary cases (100% cash → flat;
+    100% equity → tracks SPY; 50/50 → halfway) plus the N/A
+    propagation paths.
+    """
+
+    # Shared synthetic timeline — two ticks, SPY +10%.
+    _T0 = datetime(2026, 2, 2, 13, 30, tzinfo=UTC)
+    _T1 = datetime(2026, 2, 2, 20,  0, tzinfo=UTC)
+    _SPY_UP_10PCT = [(_T0, 10_000.0), (_T1, 11_000.0)]
+
+    def test_full_cash_is_flat(self) -> None:
+        """100% cash exposure → matched value never moves regardless of SPY."""
+        equity = [(self._T0, 10_000.0), (self._T1, 10_000.0)]
+        cash   = [10_000.0, 10_000.0]
+        result = _matched_exposure_series(
+            equity, cash, self._SPY_UP_10PCT, starting_cash=10_000.0,
+        )
+        assert isinstance(result, list)
+        assert result[0][1] == pytest.approx(10_000.0)
+        assert result[1][1] == pytest.approx(10_000.0)
+
+    def test_full_equity_tracks_spy(self) -> None:
+        """100% equity exposure → matched series matches SPY 1:1."""
+        equity = [(self._T0, 10_000.0), (self._T1, 11_000.0)]
+        cash   = [0.0, 0.0]
+        result = _matched_exposure_series(
+            equity, cash, self._SPY_UP_10PCT, starting_cash=10_000.0,
+        )
+        assert isinstance(result, list)
+        assert result[0][1] == pytest.approx(10_000.0)
+        assert result[1][1] == pytest.approx(11_000.0)
+
+    def test_half_exposure_is_halfway(self) -> None:
+        """50% equity / 50% cash → matched series captures half the SPY move."""
+        equity = [(self._T0, 10_000.0), (self._T1, 10_500.0)]
+        cash   = [5_000.0, 5_250.0]    # always 50% cash
+        result = _matched_exposure_series(
+            equity, cash, self._SPY_UP_10PCT, starting_cash=10_000.0,
+        )
+        assert isinstance(result, list)
+        # Lagged exposure: tick 0 → 1 uses 50% exposure × +10% SPY = +5%.
+        assert result[1][1] == pytest.approx(10_500.0)
+
+    def test_uses_lagged_exposure(self) -> None:
+        """Compounding uses *start-of-period* exposure, not end-of-period.
+
+        At tick 0 the bot was 100% equity; at tick 1 it had rebalanced to
+        100% cash.  The return from tick 0 → 1 should reflect the 100%
+        equity that was held entering the period, not the cash position
+        held at exit (which represents future information).
+        """
+        equity = [(self._T0, 10_000.0), (self._T1, 11_000.0)]
+        cash   = [0.0, 11_000.0]   # 100% → 0% over the period
+        result = _matched_exposure_series(
+            equity, cash, self._SPY_UP_10PCT, starting_cash=10_000.0,
+        )
+        assert isinstance(result, list)
+        # 100% exposure during the period → full SPY +10%.
+        assert result[1][1] == pytest.approx(11_000.0)
+
+    def test_propagates_na_string_from_spy(self) -> None:
+        """When SPY is unavailable, the same N/A string is returned verbatim."""
+        result = _matched_exposure_series(
+            equity=[(self._T0, 10_000.0)],
+            cash=[0.0],
+            spy_series="N/A — SPY not in cache (run backtest_fetch with SPY)",
+            starting_cash=10_000.0,
+        )
+        assert isinstance(result, str)
+        assert "SPY not in cache" in result
+
+    def test_na_when_equity_empty(self) -> None:
+        """Empty equity series → N/A string (matches surrounding helpers)."""
+        result = _matched_exposure_series(
+            equity=[], cash=[], spy_series=self._SPY_UP_10PCT, starting_cash=10_000.0,
+        )
+        assert isinstance(result, str)
+
+    def test_na_when_lengths_mismatch(self) -> None:
+        """Defensive: cash and equity must be the same length."""
+        result = _matched_exposure_series(
+            equity=[(self._T0, 10_000.0), (self._T1, 10_000.0)],
+            cash=[5_000.0],  # too short
+            spy_series=self._SPY_UP_10PCT,
+            starting_cash=10_000.0,
+        )
+        assert isinstance(result, str)
+        assert "length mismatch" in result.lower()
+
+
+# ── _write_metrics: new benchmark rows ───────────────────────────────────────
+
+class TestWriteMetricsBenchmarks:
+    """Unit tests for the SPY-Sharpe, matched-Sharpe, matched-delta, and
+    avg-exposure rows added on top of the original metrics file."""
+
+    _SIMPLE_SERIES = [
+        (datetime(2023, 3, 6, tzinfo=UTC), 100_000.0),
+        (datetime(2023, 3, 7, tzinfo=UTC), 105_000.0),
+    ]
+
+    def test_spy_sharpe_float_written(self, tmp_path: Path) -> None:
+        """A float SPY Sharpe is rendered as a 2dp bold number."""
+        _write_metrics(
+            self._SIMPLE_SERIES, tmp_path / "metrics.md",
+            spy_sharpe=1.42,
+        )
+        text = (tmp_path / "metrics.md").read_text()
+        assert "SPY Sharpe" in text
+        assert "**1.42**" in text
+
+    def test_spy_sharpe_na_string_written(self, tmp_path: Path) -> None:
+        """An N/A string is written in italics rather than crashing."""
+        _write_metrics(
+            self._SIMPLE_SERIES, tmp_path / "metrics.md",
+            spy_sharpe="N/A — SPY not in cache",
+        )
+        text = (tmp_path / "metrics.md").read_text()
+        assert "_N/A — SPY not in cache_" in text
+
+    def test_matched_sharpe_float_written(self, tmp_path: Path) -> None:
+        """Matched-exposure Sharpe renders alongside SPY Sharpe."""
+        _write_metrics(
+            self._SIMPLE_SERIES, tmp_path / "metrics.md",
+            matched_sharpe=0.85,
+        )
+        text = (tmp_path / "metrics.md").read_text()
+        assert "Matched-exposure SPY Sharpe" in text
+        assert "**0.85**" in text
+
+    def test_vs_matched_delta_float_written(self, tmp_path: Path) -> None:
+        """vs-matched-exposure delta renders as a signed percentage."""
+        _write_metrics(
+            self._SIMPLE_SERIES, tmp_path / "metrics.md",
+            vs_matched_delta=0.012,
+        )
+        text = (tmp_path / "metrics.md").read_text()
+        assert "vs matched-exposure SPY" in text
+        assert "+1.20%" in text
+
+    def test_avg_exposure_written_as_percentage(self, tmp_path: Path) -> None:
+        """Avg equity exposure renders as a 1dp percentage."""
+        _write_metrics(
+            self._SIMPLE_SERIES, tmp_path / "metrics.md",
+            avg_exposure_pct=0.624,
+        )
+        text = (tmp_path / "metrics.md").read_text()
+        assert "Avg bot equity exposure" in text
+        assert "**62.4%**" in text
+
+    def test_avg_exposure_nan_written_as_na(self, tmp_path: Path) -> None:
+        """NaN exposure → italic N/A (no NaN leaking into the markdown)."""
+        _write_metrics(
+            self._SIMPLE_SERIES, tmp_path / "metrics.md",
+            avg_exposure_pct=float("nan"),
+        )
+        text = (tmp_path / "metrics.md").read_text()
+        # Avoid asserting on the raw float repr — just confirm the row
+        # contains the italic N/A and not a stray "nan".
+        assert "Avg bot equity exposure: _N/A_" in text
+        assert "nan%" not in text.lower()
