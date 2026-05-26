@@ -431,3 +431,82 @@ class TestBoundaryValues:
         )
         rebuilt = TickerStance.model_validate(original.model_dump(mode="json"))
         assert rebuilt == original
+
+
+# ---------------------------------------------------------------------------
+# iter-3 schema rewrite — three-verb canonical form
+# ---------------------------------------------------------------------------
+
+def test_buy_requires_ticker_weight_rationale():
+    """buy stance requires ticker, weight in (0, 0.05], and rationale.
+
+    No horizon, target_price, or stop_price required (or accepted)
+    on a buy stance — those fields are removed from the new schema."""
+    from agents.strategist.stance_schema import TickerStance
+
+    s = TickerStance(ticker="AAPL", intent="buy", weight=0.03, rationale="iPhone launch catalyst")
+    assert s.intent == "buy"
+    assert s.weight == 0.03
+
+    import pytest
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError, match="rationale"):
+        TickerStance(ticker="AAPL", intent="buy", weight=0.03)
+
+    with pytest.raises(ValidationError, match="weight"):
+        TickerStance(ticker="AAPL", intent="buy", weight=0.06, rationale="x")
+
+    with pytest.raises(ValidationError, match="target_price|extra"):
+        TickerStance(ticker="AAPL", intent="buy", weight=0.03, rationale="x", target_price=250.0)
+
+
+def test_sell_full_close_when_weight_absent():
+    """sell stance with no weight is a full close.  Reason required."""
+    from agents.strategist.stance_schema import TickerStance
+
+    s = TickerStance(ticker="AAPL", intent="sell", reason="thesis invalidated")
+    assert s.intent == "sell"
+    assert s.weight is None
+
+    import pytest
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError, match="reason"):
+        TickerStance(ticker="AAPL", intent="sell")
+
+
+def test_sell_partial_with_weight_in_unit_interval():
+    """sell with weight is a partial trim.  Weight must be in (0, 1.0]."""
+    from agents.strategist.stance_schema import TickerStance
+
+    s = TickerStance(ticker="AAPL", intent="sell", weight=0.03, reason="taking partial profit")
+    assert s.weight == 0.03
+
+    import pytest
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        TickerStance(ticker="AAPL", intent="sell", weight=1.5, reason="x")
+
+
+def test_update_prose_only():
+    """update stance carries only a reason — no weight, no rationale."""
+    from agents.strategist.stance_schema import TickerStance
+
+    s = TickerStance(ticker="AAPL", intent="update", reason="revising the AI catalyst timeline downward")
+    assert s.intent == "update"
+
+    import pytest
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        TickerStance(ticker="AAPL", intent="update", weight=0.03, reason="x")
+
+
+def test_old_verbs_rejected_with_clear_message():
+    """open / add / trim / close / hold all fail with a migration hint."""
+    from agents.strategist.stance_schema import TickerStance
+    import pytest
+    from pydantic import ValidationError
+
+    for old in ("open", "add", "trim", "close", "hold"):
+        with pytest.raises(ValidationError) as exc:
+            TickerStance(ticker="AAPL", intent=old)
+        assert "buy" in str(exc.value) and "sell" in str(exc.value)
