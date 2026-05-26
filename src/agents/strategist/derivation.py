@@ -43,6 +43,7 @@ from datetime import datetime
 from agents.strategist.stance_schema import TickerStance
 from orchestrator.state import ORDER_EPSILON
 
+
 class StrategistContractViolation(RuntimeError):
     """Raised when a stance has ``intent=None``.
 
@@ -193,32 +194,33 @@ def derive_decision_fields(
     from the strategist's after-callback (C9), which is responsible for
     validating the stances before calling here.
 
-    Verb dispatch (three-verb schema, iter-3 rewrite)
-    --------------------------------------------------
+    Verb dispatch (four-verb schema)
+    ---------------------------------
     Reads ``stance.intent`` as the canonical action verb:
 
-    - ``buy``    — additive delta.  ``stance.weight`` is added to the current
-                   position weight (buy is always a delta, not an absolute
-                   target).  Requires weight and rationale (enforced by
-                   ``TickerStance`` validator).
-    - ``sell``   — reductive delta.  Absent weight ⇒ full close (target 0.0);
-                   present weight ⇒ reduce current by that delta, clamped ≥ 0.
-                   Populates ``sell_reasons`` with ``stance.reason``.
-    - ``update`` — prose-only revision.  No trade; current weight carries
-                   forward verbatim.  Populates ``update_reasons``.
+    - ``buy``       — additive delta.  ``stance.weight`` is added to the
+                      current position weight (buy is always a delta, not
+                      an absolute target).  Requires weight and rationale
+                      (enforced by ``TickerStance`` validator).
+    - ``sell``      — reductive delta.  Absent weight ⇒ full close
+                      (target 0.0); present weight ⇒ reduce current by
+                      that delta, clamped ≥ 0.  Populates ``sell_reasons``
+                      with ``stance.reason``.
+    - ``update``    — prose-only revision.  No trade; current weight
+                      carries forward verbatim.  Populates
+                      ``update_reasons``.
+    - ``no_action`` — explicit "considered, no change."  No trade; current
+                      weight carries forward.  Nothing recorded in the
+                      reason dicts (there's no prose to capture).
 
-    Active-stances model (iter-3)
-    ------------------------------
-    Held tickers the strategist does NOT emit a stance for are implicitly held:
-    their current weight carries forward in Pass 2 without error.  This is a
-    deliberate relaxation of the former Spec-B / D3 rule, which required
-    explicit engagement with every held ticker on every tick.  The new model
-    allows the LLM to emit only the tickers it has something to say about,
-    while the derivation layer handles the carry-forward silently.
-
-    Flat watchlist tickers (current weight ≈ 0) with no stance are padded to
-    0.0 as before so downstream agents always see an exhaustive
-    ``target_weights`` dict.
+    Carry-forward
+    -------------
+    Tickers the strategist does not emit a stance for at all still receive
+    a target-weight entry padded to their current weight, so downstream
+    agents always see an exhaustive ``target_weights`` dict.  Under the
+    four-verb schema the strategist is expected to emit one stance per
+    watchlist ticker (``no_action`` covers "no change"), so the
+    carry-forward path mainly catches off-watchlist held positions.
 
     Note: ``new_positions`` was removed in Band 6.  The executor now assembles
     the ``PositionThesis`` for each ``buy`` stance itself, using
@@ -268,7 +270,7 @@ def derive_decision_fields(
         if stance.intent is None:
             raise StrategistContractViolation(
                 f"Stance for {stance.ticker!r} has intent=None.  Every stance "
-                f"must carry an explicit intent (buy / sell / update)."
+                f"must carry an explicit intent (buy / sell / update / no_action)."
             )
 
         current = ctx.current_weights.get(stance.ticker, 0.0)
@@ -294,6 +296,12 @@ def derive_decision_fields(
                 # target_weights or sell_reasons.
                 target_weights[stance.ticker] = current
                 update_reasons[stance.ticker] = stance.reason
+
+            case "no_action":
+                # Explicit "considered, no change" — carry the current weight
+                # forward verbatim, no reason to record.  The presence of the
+                # stance is itself the audit signal.
+                target_weights[stance.ticker] = current
 
         # S6: derive a per-ticker intent tag from the (prior, new) weight pair.
         # Replaces the constant ``catalyst_driven_entry`` the LLM emitted for

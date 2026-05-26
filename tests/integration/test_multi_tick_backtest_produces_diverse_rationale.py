@@ -200,7 +200,7 @@ async def test_multi_tick_backtest_produces_diverse_rationale() -> None:
 
     # ── Assertion 2 — Held Positions block is non-empty on ticks 2-5 ─────
     # Tick 1: flat-portfolio sentinel present.
-    assert "(No held positions — portfolio is flat.)" in tick1
+    assert "(Thesis book is empty — no views recorded yet.)" in tick1
 
     for i, prompt in enumerate(ticks_n, start=2):
 
@@ -220,7 +220,7 @@ async def test_multi_tick_backtest_produces_diverse_rationale() -> None:
 
         # And the flat-portfolio sentinel MUST NOT be present alongside
         # a populated held set.
-        assert "(No held positions — portfolio is flat.)" not in prompt, (
+        assert "(Thesis book is empty — no views recorded yet.)" not in prompt, (
             f"Tick {i} prompt contains the flat-portfolio sentinel "
             f"despite a seeded held set"
         )

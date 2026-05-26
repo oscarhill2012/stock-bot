@@ -10,7 +10,7 @@ from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event, EventActions
 
-from agents.executor._verb_dispatch import apply_stance_to_thesis
+from agents.executor._verb_dispatch import HALLUCINATED, apply_stance_to_thesis
 from agents.strategist.position_thesis import PositionThesis as NewPositionThesis
 from agents.strategist.stance_schema import TickerStance
 from broker.protocol import Broker, BrokerRejection
@@ -463,6 +463,11 @@ def _executor_thesis_writer_callback(callback_context) -> None:
     prior_positions:   dict[str, dict] = dict(state.get("user:positions", {}))
     updated_positions: dict[str, dict] = dict(prior_positions)
 
+    # Per-tick counter for strategist hallucinations (e.g. sell on a
+    # ticker with no live position).  Bumped by the dispatcher's
+    # HALLUCINATED sentinel; surfaced in state for the reporting layer.
+    hallucinated_count: int = 0
+
     for stance in (decision.stances or []):
 
         # Skip legacy stances with no intent — they belong to the old code path.
@@ -503,13 +508,13 @@ def _executor_thesis_writer_callback(callback_context) -> None:
                 as_of              = resolved_as_of,
                 current_tick_index = current_tick_index,
             )
-        except (AssertionError, ValueError):
-            # Log and skip — do not abort the tick on a thesis-write failure.
-            # Silent failure here is acceptable because the broker call already
-            # landed; losing the thesis update is a monitoring concern, not a
-            # correctness crash.  Per "silent failures are the recurring bug
-            # class" policy, this is the only place a swallowed exception is
-            # appropriate — and the exception type is narrow.
+        except AssertionError:
+            # Caller bug (e.g. ``buy`` reaching the dispatcher with no fill
+            # price).  Strategist hallucinations are now reported via the
+            # HALLUCINATED sentinel — they don't raise.  An AssertionError
+            # here means our wiring is wrong, not the LLM's output, so we
+            # log loudly with the full traceback and continue rather than
+            # abort the tick.
             import sys
             import traceback as _tb
             print(
@@ -521,11 +526,34 @@ def _executor_thesis_writer_callback(callback_context) -> None:
             )
             continue
 
+        if new_row is HALLUCINATED:
+            # Strategist emitted a verb that's impossible against the prior
+            # state (e.g. sell on a ticker with no live position).  The
+            # dispatcher has already logged loudly; we just count it and
+            # leave the existing row alone.
+            hallucinated_count += 1
+            continue
+
         if new_row is None:
-            # close stance — drop the ticker from the position book.
+            # Either a full close, or no_action against a ticker with no
+            # prior row.  Either way the ticker should not be in the book
+            # after this stance — pop covers both ("was there, now gone"
+            # and "wasn't there, still isn't").
             updated_positions.pop(ticker, None)
         else:
             updated_positions[ticker] = new_row.model_dump(mode="json")
+
+    # Surface the per-tick hallucination count so the reporting layer can
+    # roll it up across a run.  Always written (even when zero) so
+    # downstream consumers don't have to guard for missing keys.
+    state["temp:hallucinated_stances"] = hallucinated_count
+    if hallucinated_count:
+        logger.warning(
+            "executor: %d hallucinated stance(s) this tick "
+            "(tick_id=%s) — see prior warnings for details.",
+            hallucinated_count,
+            state.get("tick_id", "unknown"),
+        )
 
     # ---- thesis carry-forward (explicit re-write) ----------------------
     # ``decision.thesis is not None`` means the strategist is actively

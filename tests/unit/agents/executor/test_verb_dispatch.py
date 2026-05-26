@@ -1,12 +1,14 @@
 """Unit tests for the pure verb-dispatch helpers in _verb_dispatch.py.
 
-Tests are aligned with the iter-3 three-verb schema:
-    buy    — enter (prior_row=None) or increase (prior_row present)
-    sell   — partial trim (weight supplied) or full close (weight absent)
-    update — prose-only revision; no broker call
-
-Invariant 3 (from Spec B) is codified throughout:
-    ``rationale`` MUST NOT be mutated by any stance after the initial buy.
+Tests are aligned with the four-verb schema:
+    buy       — open (no live position) or add (live position).  Rationale
+                refreshes on every buy — the agent is accountable for the
+                view at the time of each sizing decision.
+    sell      — partial trim (weight supplied) or full close (weight absent).
+                Rationale untouched (the trim is a sizing change, not a
+                view change — use ``update`` to revise the prose).
+    update    — prose-only revision; no broker call.  Rationale mutates.
+    no_action — explicit no-change; no broker call, no rationale change.
 """
 from __future__ import annotations
 
@@ -188,13 +190,16 @@ def test_apply_stance_buy_entry_sets_opened_tick_id_and_timestamps():
 # ---------------------------------------------------------------------------
 
 
-def test_apply_stance_buy_add_updates_weight_preserves_rationale():
-    """``buy`` on an existing position must update the weight and preserve rationale (Invariant 3)."""
+def test_apply_stance_buy_add_updates_weight_and_refreshes_rationale():
+    """``buy`` on an existing position must update the weight and refresh rationale.
 
-    original_rationale = "Locked-in rationale from open"
+    The agent is on the record justifying each add — buy stances always
+    overwrite the row's rationale with the latest reasoning.
+    """
+
     prior = _make_prior_row(
         weight    = 0.03,
-        rationale = original_rationale,
+        rationale = "Original rationale from open",
     )
     stance = _make_stance(
         intent    = "buy",
@@ -211,8 +216,8 @@ def test_apply_stance_buy_add_updates_weight_preserves_rationale():
 
     assert result is not None
     assert result.weight == pytest.approx(0.05), "buy must update the weight"
-    assert result.rationale == original_rationale, (
-        "buy-add must not overwrite rationale — Invariant 3"
+    assert result.rationale == "Adding on the dip", (
+        "buy-add must refresh rationale with the new stance reasoning"
     )
     assert result.last_reviewed_decision == "buy"
 
@@ -267,7 +272,11 @@ def test_apply_stance_buy_add_preserves_catalyst_when_none():
 
 
 def test_apply_stance_sell_trim_updates_weight_preserves_rationale():
-    """``sell`` with weight (partial trim) must update weight and preserve rationale (Invariant 3)."""
+    """``sell`` with weight (partial trim) must update weight and preserve rationale.
+
+    Trims are sizing changes, not view changes — the prose stays as the
+    last buy/update wrote it.  Use ``update`` to revise the rationale.
+    """
 
     original_rationale = "Original thesis locked at open"
     prior = _make_prior_row(
@@ -324,13 +333,18 @@ def test_apply_stance_sell_full_close_returns_none():
 # ---------------------------------------------------------------------------
 
 
-def test_apply_stance_update_refreshes_review_trail_only():
-    """``update`` must only refresh review fields; all commitment fields survive unchanged."""
+def test_apply_stance_update_refreshes_rationale_and_review_trail():
+    """``update`` refreshes the rationale (the prose view) and the review trail.
+
+    Sizing fields (weight, opened_price, opened_at) and catalyst stay
+    pinned to the original entry — update revises the view, not the
+    commitment.
+    """
 
     prior = _make_prior_row(
         weight    = 0.10,
         catalyst  = "Q4 earnings",
-        rationale = "Original rationale — must not be mutated",
+        rationale = "Original rationale at open",
     )
     new_ts = datetime(2026, 5, 24, tzinfo=UTC)
 
@@ -352,36 +366,15 @@ def test_apply_stance_update_refreshes_review_trail_only():
     assert result.last_reviewed_decision == "update"
     assert result.last_reviewed_reason   == "Revised macro view"
 
-    # All commitment fields preserved:
+    # Rationale refreshes to the new reason — the agent's standing view
+    # is what we record going forward.
+    assert result.rationale == "Revised macro view"
+
+    # Sizing + catalyst preserved:
     assert result.weight       == prior.weight
     assert result.catalyst     == prior.catalyst
-    assert result.rationale    == prior.rationale
     assert result.opened_price == prior.opened_price
     assert result.opened_at    == prior.opened_at
-
-
-def test_apply_stance_update_does_not_mutate_rationale():
-    """``update`` must NOT overwrite ``rationale`` — Invariant 3."""
-
-    original_rationale = "Original rationale — frozen at open"
-    prior = _make_prior_row(rationale=original_rationale)
-
-    stance = _make_stance(
-        intent  = "update",
-        reason  = "Revised macro backdrop",
-    )
-    result = apply_stance_to_thesis(
-        stance,
-        prior_row  = prior,
-        fill_price = None,
-        tick_id    = _TICK_ID,
-        as_of      = _TS,
-    )
-
-    assert result is not None
-    assert result.rationale == original_rationale, (
-        "update stance must not overwrite rationale — Invariant 3"
-    )
 
 
 # ---------------------------------------------------------------------------

@@ -189,10 +189,10 @@ def validate_and_enrich(state: dict) -> dict | None:
         raise StrategistContractViolation(msg)
 
     # ── Pass 2: intent-based action tally for the success-summary log ────────
-    # Three-verb model (iter-3 rewrite): buy / sell / update.
-    action_counts: dict[str, int] = {"buy": 0, "sell": 0, "update": 0}
+    # Four-verb model: buy / sell / update / no_action.
+    action_counts: dict[str, int] = {"buy": 0, "sell": 0, "update": 0, "no_action": 0}
     for stance in llm_decision.stances:
-        action = stance.intent or "update"
+        action = stance.intent or "no_action"
         action_counts[action] = action_counts.get(action, 0) + 1
 
     # ── Pass 3: derive decision fields ───────────────────────────────────────
@@ -217,8 +217,6 @@ def validate_and_enrich(state: dict) -> dict | None:
     derived = derive_decision_fields(llm_decision.stances, ctx)
 
     # Construct the full StrategistDecision downstream agents consume.
-    # sell_reasons and update_reasons replace the former close_reasons /
-    # trim_reasons split (iter-3 three-verb schema rewrite).
     decision = StrategistDecision(
         stances        = llm_decision.stances,
         decision_tag   = llm_decision.decision_tag,
@@ -235,12 +233,13 @@ def validate_and_enrich(state: dict) -> dict | None:
     # actually committing capital or just hold-flat-ing the watchlist.
     nonzero_weight_sum = sum(w for w in derived.target_weights.values() if w > 0.0)
     logger.info(
-        "Strategist tick=%s: buys=%d sells=%d updates=%d"
+        "Strategist tick=%s: buys=%d sells=%d updates=%d no_actions=%d"
         " | nonzero_weight_sum=%.4f decision_tag=%r confidence=%s",
         tick_id,
         action_counts["buy"],
         action_counts["sell"],
         action_counts["update"],
+        action_counts["no_action"],
         nonzero_weight_sum,
         decision.decision_tag,
         decision.confidence,

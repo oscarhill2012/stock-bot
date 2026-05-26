@@ -174,8 +174,8 @@ class StrategistContextShim(BaseAgent):
 
         The ``temp:held_positions_view`` value is produced by ``render()``
         via the ``_render_positions_shim`` helper below — the lightweight
-        renderer that shows thesis staleness, splits held vs watched theses,
-        and omits horizon/target/stop.
+        thesis-book renderer that shows position state, rationale, catalyst
+        and thesis staleness, and omits horizon/target/stop.
 
         Args:
             ctx: ADK invocation context; ``ctx.session.state`` is the
@@ -315,40 +315,26 @@ def _render_positions_shim(
     *,
     current_tick_index: int,
 ) -> str:
-    """Render held and watched positions for the prompt.
+    """Render the thesis book — one row per ticker the agent has a view on.
 
-    Replaces the former ``_render_held_positions_shim`` (Task 9).  Now handles
-    both held and watched rows, splitting them into two labelled sections.
-    The held/watched discriminator is structural: watched rows have all
-    four entry fields (``opened_at``, ``opened_tick_id``, ``opened_price``,
-    ``weight``) as ``None``.
+    The book holds a single row per ticker.  Whether the agent currently
+    owns the underlying is metadata on the row, not a different kind of
+    row.  The renderer reflects this: one labelled section, with each
+    row tagged as ``[POSITION]`` or ``[NO POSITION]`` so the strategist
+    sees its exposure state at a glance.
 
-    Accepts raw dicts from ``state["user:positions"]`` — values may be full
-    ``PositionThesis`` instances, their ``model_dump`` equivalents, or partial
-    dicts from tests/early code paths.  Missing fields render gracefully.
+    Accepts raw dicts from ``state["user:positions"]`` — values may be
+    full ``PositionThesis`` instances, their ``model_dump`` equivalents,
+    or partial dicts from tests/early code paths.  Missing fields render
+    gracefully.
 
-    Held section (## Currently Held)
-    ---------------------------------
-    - Ticker symbol (header)
-    - Opened-at price and date
-    - Rationale (frozen entry commitment)
+    Per-row fields rendered
+    -----------------------
+    - Ticker symbol (header) + position-state tag
+    - When owned: opened-at price and date
+    - Rationale (the agent's current view; mutable)
     - Catalyst (if present)
     - Thesis staleness in ticks
-
-    Watched section (## Watched theses (not in book))
-    --------------------------------------------------
-    - Ticker symbol (header)
-    - Rationale (latest evolving view — mutates on update)
-    - Catalyst (if present)
-    - Thesis staleness in ticks
-    - Deliberately omits "Opened at" — no entry record exists for watched rows.
-
-    Section visibility rules
-    ------------------------
-    - When held list is empty, "Currently Held" shows a flat-portfolio sentinel.
-    - When watched list is empty, the "Watched theses" section is omitted
-      entirely (avoid wasting prompt tokens on an empty block).
-    - When both are empty, return the flat-portfolio sentinel string only.
 
     Deliberately omits: ``horizon``, ``target_price``, ``stop_price`` —
     removed in iter-3.
@@ -365,31 +351,10 @@ def _render_positions_shim(
     -------
     str
         Human-readable block for splicing into the strategist's prompt.
-        Returns the flat-portfolio sentinel when ``positions`` is empty.
+        Returns an empty-state sentinel when ``positions`` is empty.
     """
     if not positions:
-        return "(No held positions — portfolio is flat.)"
-
-    # ── Normalise all rows to plain dicts and split held vs watched ──────
-    # The discriminator is structural: a row with no ``opened_at`` is a
-    # watched thesis (no open record).  This mirrors the ``is_watched``
-    # property on the PositionThesis model and stays in sync with it.
-    held_items:    list[tuple[str, dict]] = []
-    watched_items: list[tuple[str, dict]] = []
-
-    for ticker in sorted(positions.keys()):
-        raw = positions[ticker]
-
-        # Accept PositionThesis instances or plain dicts interchangeably.
-        if hasattr(raw, "model_dump"):
-            data: dict = raw.model_dump(mode="json")
-        else:
-            data = dict(raw)
-
-        if data.get("opened_at") is None:
-            watched_items.append((ticker, data))
-        else:
-            held_items.append((ticker, data))
+        return "(Thesis book is empty — no views recorded yet.)"
 
     # ── Helper: format the open-date string ──────────────────────────────
     def _fmt_opened_at(raw_val) -> str:
@@ -405,57 +370,41 @@ def _render_positions_shim(
             return raw_val.strftime("%Y-%m-%d %H:%M")
         return "(unknown date)"
 
-    # ── Build held section ────────────────────────────────────────────────
-    held_lines: list[str] = ["## Currently Held"]
+    # ── Render one block per ticker, sorted for stable prompt diffs ──────
+    lines: list[str] = ["## Thesis Book"]
 
-    if not held_items:
-        # Use a tighter sentinel here — the "portfolio is flat" claim is
-        # reserved for the empty-positions early return above, because when
-        # watched theses exist alongside an empty held book the portfolio
-        # is not strictly "flat" from the strategist's mental-model point
-        # of view (it has live views, just no exposure).
-        held_lines.append("(None — no exposure currently.)")
-    else:
-        for ticker, data in held_items:
-            rationale    = data.get("rationale") or "(no rationale recorded)"
-            opened_price = data.get("opened_price") or 0.0
-            opened_at    = _fmt_opened_at(data.get("opened_at"))
-            catalyst     = data.get("catalyst")
-            last_updated = data.get("thesis_last_updated_tick") or 0
-            stale_ticks  = max(current_tick_index - last_updated, 0)
+    for ticker in sorted(positions.keys()):
+        raw = positions[ticker]
 
-            block_lines: list[str] = [
-                ticker,
-                f"  Opened at ${opened_price:.2f} on {opened_at}",
-                f"  Rationale:  {rationale}",
-            ]
+        # Accept PositionThesis instances or plain dicts interchangeably.
+        if hasattr(raw, "model_dump"):
+            data: dict = raw.model_dump(mode="json")
+        else:
+            data = dict(raw)
 
-            if catalyst:
-                block_lines.append(f"  Catalyst:   {catalyst}")
+        # Position state — the row owns a live position when the entry
+        # fields are populated.  Fall back to ``opened_at`` as the
+        # discriminator (mirrors the dispatcher's ``_has_live_position``).
+        has_position = data.get("opened_at") is not None
+        state_tag    = "[POSITION]" if has_position else "[NO POSITION]"
 
-            block_lines.append(
-                f"  Thesis staleness:  {stale_ticks} ticks since last update"
-            )
-
-            # Separate each ticker block with a blank line for legibility.
-            held_lines.append("\n".join(block_lines))
-
-    held_section = "\n\n".join(held_lines)
-
-    # ── Build watched section (omitted entirely when empty) ───────────────
-    if not watched_items:
-        # Do not emit the watched block — no point wasting prompt tokens.
-        return held_section
-
-    watched_lines: list[str] = ["## Watched theses (not in book)"]
-
-    for ticker, data in watched_items:
         rationale    = data.get("rationale") or "(no rationale recorded)"
         catalyst     = data.get("catalyst")
         last_updated = data.get("thesis_last_updated_tick") or 0
         stale_ticks  = max(current_tick_index - last_updated, 0)
 
-        block_lines = [ticker]
+        block_lines: list[str] = [f"{ticker} {state_tag}"]
+
+        if has_position:
+            opened_price = data.get("opened_price") or 0.0
+            opened_at    = _fmt_opened_at(data.get("opened_at"))
+            weight       = data.get("weight")
+            weight_str   = f"{weight:.3f}" if weight is not None else "—"
+            block_lines.append(
+                f"  Opened at ${opened_price:.2f} on {opened_at}  "
+                f"(weight {weight_str})"
+            )
+
         block_lines.append(f"  Rationale:  {rationale}")
 
         if catalyst:
@@ -465,12 +414,10 @@ def _render_positions_shim(
             f"  Thesis staleness:  {stale_ticks} ticks since last update"
         )
 
-        watched_lines.append("\n".join(block_lines))
+        # Blank line between ticker blocks for legibility.
+        lines.append("\n".join(block_lines))
 
-    watched_section = "\n\n".join(watched_lines)
-
-    # ── Combine both sections with a blank line separator ─────────────────
-    return f"{held_section}\n\n{watched_section}"
+    return "\n\n".join(lines)
 
 
 def _render_recent_trades(closed_log: list[dict]) -> str:

@@ -169,6 +169,6 @@ async def test_shim_n_substitution_in_incremental_text() -> None:
     delta = await _run_shim_and_collect(state)
 
     # N is the held-position count, not the watchlist length — although
-    # here both happen to be 3.  Spec wording at line ~575:
-    # "Incremental — you have {N} held positions opened on prior ticks."
-    assert "3 held positions" in delta["temp:strategist_mode"]
+    # here both happen to be 3.  The incremental template substitutes N
+    # into "you hold {N} live position(s) opened on prior ticks."
+    assert "3 live position" in delta["temp:strategist_mode"]

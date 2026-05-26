@@ -413,9 +413,9 @@ async def test_three_verb_single_tick_smoke() -> None:
         "GOOGL weight must be unchanged after an update stance"
     )
 
-    # Rationale must be frozen (Invariant 3) — update must NOT overwrite it.
-    assert googl_thesis["rationale"] == prior_positions["GOOGL"]["rationale"], (
-        "GOOGL rationale must remain frozen after an update stance (Invariant 3)"
+    # Rationale must refresh — update revises the prose view to the new reason.
+    assert "still bullish" in googl_thesis["rationale"], (
+        "GOOGL rationale must refresh with the update stance's reason"
     )
 
     # Review trail must reflect the update stance.

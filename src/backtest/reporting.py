@@ -669,6 +669,11 @@ def _aggregate_obs_artefacts(obs_dir: Path) -> dict | None:
     cache_misses = 0
     retry_count  = 0
 
+    # ── Strategist hallucinations (sell on non-held, etc.) ───────────────────
+    # Emitted by ``agents.executor._verb_dispatch`` with stable message
+    # ``hallucinated_stance``.  One log event per hallucinated stance.
+    hallucinated_stances = 0
+
     ticks_observed = 0
 
     traces_dir = obs_dir / "traces"
@@ -735,6 +740,12 @@ def _aggregate_obs_artefacts(obs_dir: Path) -> dict | None:
                 elif msg == "report_cache_miss":
                     cache_misses += 1
 
+                # Strategist hallucinations — emitted by
+                # ``agents.executor._verb_dispatch`` with stable message
+                # ``hallucinated_stance`` (one event per occurrence).
+                elif msg == "hallucinated_stance":
+                    hallucinated_stances += 1
+
                 # Retries — anything coming out of the LLM retry helper logger.
                 # ``before_sleep_log`` writes one record per retry attempt, so
                 # this is a faithful count of retry events.
@@ -756,6 +767,7 @@ def _aggregate_obs_artefacts(obs_dir: Path) -> dict | None:
         and cache_misses == 0
         and retry_count == 0
         and generate_spans == 0
+        and hallucinated_stances == 0
     )
     if nothing_found:
         return None
@@ -767,13 +779,14 @@ def _aggregate_obs_artefacts(obs_dir: Path) -> dict | None:
             "total":                  input_tokens + output_tokens,
             "generate_content_spans": generate_spans,
         },
-        "agent_latency_ms": agent_latency_ms,
+        "agent_latency_ms":     agent_latency_ms,
         "cache": {
             "hits":   cache_hits,
             "misses": cache_misses,
         },
-        "retries":         retry_count,
-        "ticks_observed":  ticks_observed,
+        "retries":              retry_count,
+        "hallucinated_stances": hallucinated_stances,
+        "ticks_observed":       ticks_observed,
     }
 
 
@@ -800,11 +813,12 @@ def _format_obs_section(aggs: dict) -> str:
         cleanly to an existing file.
     """
 
-    tokens   = aggs["tokens"]
-    cache    = aggs["cache"]
-    latency  = aggs["agent_latency_ms"]
-    retries  = aggs["retries"]
-    ticks    = aggs["ticks_observed"]
+    tokens         = aggs["tokens"]
+    cache          = aggs["cache"]
+    latency        = aggs["agent_latency_ms"]
+    retries        = aggs["retries"]
+    hallucinations = aggs.get("hallucinated_stances", 0)
+    ticks          = aggs["ticks_observed"]
 
     # ── Cache hit rate (defensive against zero-denominator runs) ─────────────
     cache_total = cache["hits"] + cache["misses"]
@@ -860,6 +874,8 @@ def _format_obs_section(aggs: dict) -> str:
         f"across {tokens['generate_content_spans']:,} model calls\n"
         f"{cache_line}\n"
         f"- LLM retries: **{retries}**\n"
+        f"- Hallucinated stances (sell-on-non-held etc., dropped silently): "
+        f"**{hallucinations}**\n"
         f"- Ticks observed: **{ticks}**\n"
         "\n"
         "### Per-agent latency\n"

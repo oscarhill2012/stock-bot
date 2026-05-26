@@ -6,39 +6,79 @@ the executor package keeps the verb semantics in exactly one place
 under the agent that owns both the broker dispatch and the
 persistence write.
 
-Verb vocabulary (iter-3, three-verb canonical form)
-----------------------------------------------------
-    buy    — enter a flat ticker (prior_row is None) or increase an
-             existing position (prior_row is present), or promote a
-             watched thesis to a held position (``prior_row.is_watched``).
-    sell   — reduce or fully close a position.  ``stance.weight``
-             present ⇒ partial trim to that weight; absent ⇒ full
-             close (caller drops the ticker).  Raises if prior_row is
-             None or watched (sell only makes sense on a held row).
-    update — prose-only revision; no broker call, no weight change.
-             Creates a watched thesis when prior_row is None, refreshes
-             the watched view when ``prior_row.is_watched``, or updates
-             the review trail on a held row (rationale FROZEN, Invariant 3).
+Verb vocabulary (four-verb canonical form)
+------------------------------------------
+    buy       — open a position on a thesis (the row is seeded if it
+                doesn't exist yet) or add to an existing position.
+                Refreshes the row's rationale every time — the agent is
+                on the record justifying each entry and each add.
 
-Critical invariant (Invariant 3 — from Spec B):
-    ``rationale`` is FROZEN after the initial buy (or watched→held
-    promotion) for HELD rows.  ``sell`` and ``update`` on held rows
-    MUST NOT mutate it.  Tests in ``test_verb_dispatch.py`` codify this.
+    sell      — reduce or fully close an existing position.  Partial
+                trim updates ``weight``; full close (absent
+                ``stance.weight``) removes the row entirely (caller drops
+                the ticker).  ``sell`` on a row with no live position —
+                or on a ticker the agent has never written a thesis for —
+                is a strategist hallucination: logged, counted, skipped.
 
-    Watched rows are explicitly exempt: their rationale evolves with
-    every ``update`` stance.  Invariant 3 attaches at the moment the
-    watched row is promoted to held.
+    update    — revise the prose thesis without trading.  Works whether
+                or not a position exists; seeds a new row if needed.
+                Refreshes rationale freely.
+
+    no_action — explicit "considered, no change."  No broker call.
+                Refreshes the review trail on an existing row so the
+                audit shows the agent re-examined the ticker, but does
+                NOT reset ``thesis_last_updated_tick`` (staleness measures
+                real revisions, not passive confirmations).  No-op when
+                the agent has never written a thesis for the ticker.
+
+Hallucinated stance handling
+----------------------------
+``sell`` on a row with no live position is a strategist bug — the agent
+can't sell what it doesn't hold.  Rather than aborting the tick, the
+dispatcher logs the violation loudly and returns a sentinel so the
+caller can:
+
+  1. count the occurrence (``hallucinated_stances`` per-tick counter),
+  2. leave the thesis book unchanged for that ticker,
+  3. continue processing the rest of the stances.
+
+This matches the "log + skip + count" policy — silent failures are bad,
+but a single hallucinated verb should not bring down a whole backtest.
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import Final
 
 from agents.strategist.position_thesis import PositionThesis
 from agents.strategist.stance_schema import TickerStance
 
+logger = logging.getLogger(__name__)
+
 # Verbs that never produce a broker call.
-_NO_TRADE_INTENTS: Final[frozenset[str]] = frozenset({"update"})
+_NO_TRADE_INTENTS: Final[frozenset[str]] = frozenset({"update", "no_action"})
+
+
+# Sentinel returned by ``apply_stance_to_thesis`` when the stance is a
+# strategist hallucination (sell on a non-held row).  Distinct from
+# ``None`` (which means "full close — caller drops the ticker") so the
+# caller can branch on it explicitly.
+class _Hallucinated:
+    """Sentinel — strategist emitted an invalid verb for the prior state.
+
+    The caller treats this as "leave the row alone" and bumps the
+    hallucination counter.  A class-with-singleton (not just a string)
+    so accidental truthy checks can't confuse it with a real row.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid only
+        return "<Hallucinated>"
+
+
+HALLUCINATED: Final = _Hallucinated()
 
 
 def resolve_broker_call(
@@ -53,22 +93,22 @@ def resolve_broker_call(
     stance
         The risk-gated stance from the strategist.
     prior_row
-        The existing ``PositionThesis`` for this ticker (``None`` if
-        the ticker is flat).  Used to distinguish a full close (absent
-        ``stance.weight``) from a partial trim.
+        The existing ``PositionThesis`` for this ticker (``None`` if the
+        agent has no thesis on this ticker yet).  Used to distinguish a
+        full close (absent ``stance.weight``) from a partial trim.
 
     Returns
     -------
     dict | None
-        ``None`` for ``update`` (no broker dispatch).
+        ``None`` for verbs that do not trade (``update``, ``no_action``).
         Otherwise a dict with ``{"action": "BUY"|"SELL", "weight": float}``
         describing the broker call direction and target weight.
 
         Note: the Executor's ``_run_async_impl`` constructs the actual
-        ``Order`` object using ``final_orders`` from the risk gate —
-        this helper exists primarily to gate whether a broker call is
-        needed at all, and to provide the verb-dispatch logic in one
-        auditable place.
+        ``Order`` object using ``final_orders`` from the risk gate — this
+        helper exists primarily to gate whether a broker call is needed
+        at all, and to provide the verb-dispatch logic in one auditable
+        place.
     """
 
     if stance.intent in _NO_TRADE_INTENTS:
@@ -101,6 +141,17 @@ def resolve_broker_call(
             return None
 
 
+def _has_live_position(row: PositionThesis | None) -> bool:
+    """Return True when ``row`` describes a ticker the agent currently owns.
+
+    A live position has its entry fields populated by a prior ``buy``
+    stance.  A thesis row whose entry fields are still ``None`` is the
+    agent's standing view on a ticker it has chosen not to (yet) own.
+    """
+
+    return row is not None and row.opened_at is not None
+
+
 def apply_stance_to_thesis(
     stance: TickerStance,
     *,
@@ -109,23 +160,23 @@ def apply_stance_to_thesis(
     tick_id: str,
     as_of: datetime,
     current_tick_index: int = 0,
-) -> PositionThesis | None:
+):
     """Compute the new PositionThesis row for one ticker after a stance.
 
     Parameters
     ----------
     stance
-        The risk-gated stance.  Must use the iter-3 three-verb vocabulary:
-        ``buy`` / ``sell`` / ``update``.
+        The risk-gated stance.  Must use the four-verb vocabulary:
+        ``buy`` / ``sell`` / ``update`` / ``no_action``.
     prior_row
-        Existing ``PositionThesis`` (``None`` if ticker was flat or never
-        seen before).  May be a watched row (``prior_row.is_watched``)
-        for tickers the strategist tracks but has not yet bought.
+        Existing ``PositionThesis`` for this ticker, or ``None`` if the
+        agent has never written a thesis for it.  A row may exist without
+        a live position attached (``prior_row.opened_at is None``) — the
+        agent has a view but no exposure.
     fill_price
         Actual fill price from Executor's broker call.  Required for
-        ``buy`` stances (used as ``opened_price`` on entry or promotion).
-        ``None`` for ``sell`` / ``update`` (no broker call ran, or
-        is irrelevant).
+        ``buy`` stances (used as ``opened_price`` on entry or add).
+        ``None`` for the other verbs.
     tick_id
         Identifier for the current tick (for ``last_reviewed_at`` /
         ``opened_tick_id``).
@@ -139,54 +190,39 @@ def apply_stance_to_thesis(
 
     Returns
     -------
-    PositionThesis | None
-        ``None`` when the stance is a full ``sell`` (i.e. ``stance.weight``
-        is absent — caller must drop the ticker from the new positions
-        dict).  Otherwise the updated row.
-
-    Notes
-    -----
-    Invariant 3: ``rationale`` is FROZEN at the initial buy (or watched→held
-    promotion) for HELD rows.  ``sell`` / ``update`` on held rows MUST NOT
-    mutate it.
-
-    Watched rows (``prior_row.is_watched``) are exempt — their rationale
-    evolves freely with every ``update`` stance.  Invariant 3 attaches at
-    the moment of promotion.
+    PositionThesis | None | HALLUCINATED
+        - ``PositionThesis`` — the updated (or freshly seeded) row.
+        - ``None`` — the stance was a full ``sell`` (``stance.weight``
+          absent on a live position); the caller drops the ticker.
+        - ``HALLUCINATED`` — the stance was invalid for the prior state
+          (``sell`` on a row with no live position, or ``sell`` on a
+          ticker with no prior row at all).  The caller leaves the
+          existing row alone and bumps the hallucination counter.
 
     Raises
     ------
     AssertionError
-        ``buy`` without a fill price (caller bug).
-    ValueError
-        ``sell`` when prior_row is None or is a watched row — sell only
-        makes sense against a real held position.
+        ``buy`` without a fill price (caller bug, not strategist bug).
     """
 
     match stance.intent:
 
         case "buy":
-            # ``buy`` covers three sub-cases, distinguished by prior_row state:
-            #   1. Fresh entry — prior_row is None → seed a brand-new held row.
-            #   2. Promotion — prior_row.is_watched → populate entry fields,
-            #      FREEZE rationale to the buy stance's rationale.  The
-            #      watched view's rationale is discarded (Invariant 3
-            #      attaches at this moment).
-            #   3. Position increase / add — held prior_row → bump weight,
-            #      preserve immutable fields, refresh review trail.
+            # ``buy`` covers two structurally-distinct cases, distinguished
+            # by whether the agent has a live position already:
+            #   1. No live position (prior_row is None or its entry fields
+            #      are None) → seed the entry fields from the buy stance.
+            #      The buy stance's rationale becomes the row's rationale.
+            #   2. Live position → add to it.  Weight bumps to the new
+            #      target; rationale REFRESHES from the buy stance (the
+            #      agent must justify each add).
             assert fill_price is not None, "buy without fill price — caller bug"
 
-            # Fresh entry and watched-→-held promotion produce structurally
-            # identical rows — both seed every entry field from the buy stance
-            # and take the buy stance's rationale as the FROZEN entry rationale.
-            # Collapse them into a single branch.
-            if prior_row is None or prior_row.is_watched:
-                # ── Fresh entry / watched promotion ──────────────────────────
-                # Seed a brand-new held PositionThesis row.  For promotions,
-                # the prior watched rationale is intentionally discarded —
-                # the buy stance's rationale wins because Invariant 3 attaches
-                # here.  thesis_last_updated_tick starts from the current tick
-                # so the staleness counter does not begin in the past.
+            if not _has_live_position(prior_row):
+                # ── Open / seed a row from scratch ────────────────────────────
+                # Either there's no prior row at all, or there's a no-position
+                # thesis row whose rationale we now overwrite (the buy stance
+                # supersedes the prior watching-view).
                 return PositionThesis(
                     ticker                    = stance.ticker,
                     opened_at                 = as_of,
@@ -202,70 +238,73 @@ def apply_stance_to_thesis(
                 )
 
             else:
-                # ── Position increase (add) on a held row ────────────────────
-                # Weight bump on an existing held row — preserve every
-                # immutable field, including rationale (Invariant 3).  A
-                # buy-add affirms the thesis, so we refresh
-                # thesis_last_updated_tick to reset the staleness clock.
+                # ── Add to a live position ──────────────────────────────────
+                # Bump weight, refresh catalyst if supplied, refresh rationale
+                # (accountability: the agent justifies each add), reset
+                # staleness counter.  ``opened_at`` / ``opened_tick_id`` /
+                # ``opened_price`` stay frozen at their first-entry values —
+                # they record the original open, not the most recent add.
                 return prior_row.model_copy(update={
                     "weight":                    stance.weight,
-                    # Refresh the optional catalyst if the buy stance supplies one.
                     "catalyst":                  stance.catalyst if stance.catalyst is not None else prior_row.catalyst,
-                    # Review trail — updated on every stance that touches this row.
+                    "rationale":                 stance.rationale,
                     "last_reviewed_at":          as_of,
                     "last_reviewed_decision":    "buy",
                     "last_reviewed_reason":      stance.rationale or "",
-                    # rationale is intentionally NOT included here — Invariant 3.
                     "thesis_last_updated_tick":  current_tick_index,
                 })
 
         case "sell":
-            # ``sell`` covers both "trim" (weight supplied) and "close"
-            # (weight absent) in the iter-3 schema.
-            # ``sell`` only makes sense on a held position — a watched thesis
-            # has no position to sell.
-            if prior_row is None or prior_row.is_watched:
-                raise ValueError(
-                    f"apply_stance_to_thesis: 'sell' for {stance.ticker!r} but "
-                    f"no held prior_row found — sell requires an active held "
-                    f"position (prior_row is None or watched are both invalid)."
+            # ``sell`` only makes sense against a live position.  No live
+            # position ⇒ the strategist hallucinated — log loudly and let
+            # the caller count + skip.
+            if not _has_live_position(prior_row):
+                # Stable message key — picked up by the reporting layer's
+                # log aggregator (``_aggregate_obs_artefacts``) to count
+                # strategist hallucinations across a run.  ``extra`` carries
+                # the per-occurrence context for log readers.
+                logger.warning(
+                    "hallucinated_stance",
+                    extra={
+                        "ticker":     stance.ticker,
+                        "intent":     stance.intent,
+                        "prior_row":  "None" if prior_row is None else "no-position",
+                    },
                 )
+                return HALLUCINATED
 
             if stance.weight is None:
                 # ── Full close ───────────────────────────────────────────────
                 # Return None — the caller removes the ticker from the position
-                # book.  No thesis row remains after a full exit.
+                # book.  No thesis row remains after a full exit; the trade
+                # lands in the trade log + closed-trades rolling memory.
                 return None
 
             else:
                 # ── Partial trim ─────────────────────────────────────────────
-                # Weight reduction — preserve rationale; refresh review fields.
+                # Reduce weight; refresh review trail.  Rationale stays put
+                # — sell does not justify a thesis change (use update for
+                # that).  Staleness counter is NOT reset (a trim is not a
+                # revision of the view).
                 return prior_row.model_copy(update={
                     "weight":                 stance.weight,
                     "last_reviewed_at":       as_of,
                     "last_reviewed_decision": "sell",
                     "last_reviewed_reason":   stance.reason or "",
-                    # rationale is intentionally NOT included here — Invariant 3.
                 })
 
         case "update":
-            # ``update`` covers three sub-cases, distinguished by prior_row:
-            #   1. prior_row is None → create a new watched row.  The
-            #      strategist is recording an evolving view on a ticker it
-            #      doesn't yet hold.  stance.reason seeds the initial rationale.
-            #   2. prior_row.is_watched → refresh the watched view; rationale
-            #      IS mutable on watched rows.
-            #   3. held prior_row → prose-only revision on a held position;
-            #      rationale FROZEN (Invariant 3); only review trail refreshes.
+            # ``update`` revises prose.  Two sub-cases:
+            #   1. No prior row → seed a no-position thesis row.  The agent
+            #      is writing a fresh view on a ticker it hasn't (yet)
+            #      bought.  Entry fields default to None.
+            #   2. Existing row (with or without live position) → refresh
+            #      rationale + review trail.  Works on both no-position
+            #      thesis rows and live positions: in both cases the agent's
+            #      current view is what we record.
 
             if prior_row is None:
-                # ── New watched thesis ───────────────────────────────────────
-                # The strategist wants to record a view on a ticker it doesn't
-                # yet own.  Seed a watched row — entry fields are left as their
-                # default (None), which the model validator enforces as the
-                # "all-or-nothing" rule for a watched row.  stance.reason
-                # becomes the initial rationale (watched rationale is mutable —
-                # it will evolve on future update stances).
+                # ── Seed a no-position thesis row ────────────────────────────
                 return PositionThesis(
                     ticker                    = stance.ticker,
                     rationale                 = stance.reason or "",
@@ -275,12 +314,10 @@ def apply_stance_to_thesis(
                     thesis_last_updated_tick  = current_tick_index,
                 )
 
-            elif prior_row.is_watched:
-                # ── Refresh watched view ─────────────────────────────────────
-                # Rationale mutates here — watched rows are exempt from
-                # Invariant 3.  This is the core of the "evolving view"
-                # feature: each update replaces the prior watched rationale
-                # with the strategist's latest thinking on this ticker.
+            else:
+                # ── Refresh rationale on an existing row ────────────────────
+                # Works whether or not the agent owns the underlying ticker —
+                # rationale is mutable across the board.
                 return prior_row.model_copy(update={
                     "rationale":                 stance.reason or "",
                     "last_reviewed_at":          as_of,
@@ -289,18 +326,30 @@ def apply_stance_to_thesis(
                     "thesis_last_updated_tick":  current_tick_index,
                 })
 
-            else:
-                # ── Held update — rationale FROZEN (Invariant 3) ────────────
-                # Prose-only revision on a held position — refresh review trail
-                # only.  thesis_last_updated_tick resets because the strategist
-                # explicitly revised the view of this position.
-                return prior_row.model_copy(update={
-                    "last_reviewed_at":          as_of,
-                    "last_reviewed_decision":    "update",
-                    "last_reviewed_reason":      stance.reason or "",
-                    # rationale is intentionally NOT included here — Invariant 3.
-                    "thesis_last_updated_tick":  current_tick_index,
-                })
+        case "no_action":
+            # ``no_action`` is "I considered this and chose not to act."
+            # No trade, no prose change.  Two sub-cases:
+            #   1. No prior row → nothing to update; return None so the
+            #      caller leaves the book unchanged for this ticker.
+            #      (We do NOT seed a row here — no_action shouldn't create
+            #      content, only acknowledge it.)
+            #   2. Existing row → refresh the review trail so the audit
+            #      shows the agent re-examined the ticker.  ``rationale``
+            #      and ``thesis_last_updated_tick`` are untouched —
+            #      staleness measures real revisions, not passive
+            #      confirmations.
+
+            if prior_row is None:
+                # No thesis row, no position — nothing to acknowledge.  The
+                # caller leaves the book unchanged for this ticker.
+                return None
+
+            return prior_row.model_copy(update={
+                "last_reviewed_at":       as_of,
+                "last_reviewed_decision": "no_action",
+                "last_reviewed_reason":   "",
+                # thesis_last_updated_tick deliberately NOT refreshed.
+            })
 
         case _:
             # ``intent`` is None (legacy stance) or an unknown value.

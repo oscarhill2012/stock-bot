@@ -64,16 +64,17 @@ def test_template_no_longer_has_active_positions_dump():
 
 
 # ---------------------------------------------------------------------------
-# Three-verb contract — buy / sell / update.
+# Four-verb contract — buy / sell / update / no_action.
 # ---------------------------------------------------------------------------
 
-def test_template_has_three_verb_table():
-    """The OUTPUT CONTRACT table must name all three verbs."""
+def test_template_has_four_verb_table():
+    """The OUTPUT CONTRACT table must name all four verbs."""
     text = STRATEGIST_INSTRUCTION
 
-    assert "| buy" in text,    "buy verb row missing from contract table"
-    assert "| sell" in text,   "sell verb row missing from contract table"
-    assert "| update" in text, "update verb row missing from contract table"
+    assert "| buy" in text,       "buy verb row missing from contract table"
+    assert "| sell" in text,      "sell verb row missing from contract table"
+    assert "| update" in text,    "update verb row missing from contract table"
+    assert "| no_action" in text, "no_action verb row missing from contract table"
 
 
 def test_template_documents_buy_fields():
@@ -147,36 +148,53 @@ def test_template_drops_old_six_verb_vocabulary():
     """Legacy verbs open / add / trim / close / hold must not appear in the
     OUTPUT CONTRACT table.
 
-    These were the six verbs of the previous schema.  The new schema uses
-    buy / sell / update.  Old verb names in the contract table would
-    re-introduce the dual-vocabulary ambiguity.
+    These were the six verbs of the previous schema.  The current schema
+    uses buy / sell / update / no_action.  Old verb names in the contract
+    table would re-introduce the dual-vocabulary ambiguity.
     """
     text = STRATEGIST_INSTRUCTION
-    # Check they are absent from the intent column of the contract table.
-    assert "| open" not in text,  "legacy verb 'open' still in table"
-    assert "| add" not in text,   "legacy verb 'add' still in table"
-    assert "| trim" not in text,  "legacy verb 'trim' still in table"
-    assert "| close" not in text, "legacy verb 'close' still in table"
-    assert "| hold" not in text,  "legacy verb 'hold' still in table"
+    # Inspect only the OUTPUT CONTRACT table rows (lines beginning with
+    # "| " and naming a verb in the first column).  Prose elsewhere in
+    # the prompt is allowed to mention these words (e.g. "open a new
+    # position" appears as a description in the buy row).
+    intent_column_tokens: list[str] = []
+    for raw_line in text.splitlines():
+        if not raw_line.startswith("| "):
+            continue
+        # Skip the header and separator rows.
+        cells = [c.strip() for c in raw_line.strip("|").split("|")]
+        if not cells:
+            continue
+        first = cells[0]
+        if not first or first.startswith("-") or first.lower() == "intent":
+            continue
+        intent_column_tokens.append(first)
+
+    for legacy in ("open", "add", "trim", "close", "hold"):
+        assert legacy not in intent_column_tokens, (
+            f"legacy verb {legacy!r} still in OUTPUT CONTRACT table intent column"
+        )
 
 
 # ---------------------------------------------------------------------------
-# Selective-output rule — first-tick mandate + silence = hold.
+# Per-ticker stance requirement — every watchlist ticker gets an explicit
+# stance every tick (no_action is the explicit "no change" verb).
 # ---------------------------------------------------------------------------
 
-def test_template_has_selective_output_rule():
-    """The prompt must communicate that silence means 'no change' after tick 1."""
+def test_template_requires_stance_per_ticker():
+    """The prompt must instruct the model to emit one stance per watchlist ticker."""
     text = STRATEGIST_INSTRUCTION
-    assert "Silence is a valid response" in text
+    assert "exactly one stance per watchlist ticker" in text
+    # And explicitly steer toward no_action for the "no change" case.
+    assert "no_action" in text
 
 
-def test_template_has_first_tick_mandate():
-    """First tick of a window requires a stance for every watchlist ticker."""
+def test_template_silence_is_not_an_option():
+    """The prompt must reject the old 'silence means hold' rule outright —
+    every watchlist ticker requires an explicit verb so the audit trail
+    captures non-actions."""
     text = STRATEGIST_INSTRUCTION
-    # The phrase "First tick of a window" introduces the mandate.
-    assert "First tick of a window" in text
-    # Baseline establishment is the stated purpose.
-    assert "baseline view" in text
+    assert "silence is not an option" in text
 
 
 # ---------------------------------------------------------------------------

@@ -1,27 +1,32 @@
-"""Strategist v2 prompt template — three-verb schema edition.
+"""Strategist prompt template — four-verb schema.
 
-Renders held-position context inline so the model sees what it bought, why,
-and how the thesis has evolved.  Inputs the per-ticker ``TickerEvidence``
-(built by the deterministic digest in ``contract.digest``) instead of four
-flat per-analyst signal lists.
+Renders the thesis-book context inline so the model sees its current view
+on every tracked ticker — what it owns, what it's watching, why, and how
+each thesis has evolved.  Inputs the per-ticker ``TickerEvidence`` (built
+by the deterministic digest in ``contract.digest``) instead of four flat
+per-analyst signal lists.
 
-Output is a ``StrategistDecision`` whose ``stances`` list uses the three-verb
-vocabulary: ``buy``, ``sell``, ``update``.
+Output is a ``StrategistDecision`` whose ``stances`` list uses the
+four-verb vocabulary: ``buy``, ``sell``, ``update``, ``no_action``.  The
+model emits one stance per watchlist ticker every tick — ``no_action``
+is the explicit "considered, no change" verb so the audit trail captures
+non-actions, not just actions.
 
-Char caps mentioned in the prompt (``≤N chars`` markers) are sourced from
-``config/strategist.json`` at module load and injected into the template via
-double-brace placeholders (``{{REASONING_MAX}}`` etc.) — distinct from the
-single-brace placeholders that ADK's ``inject_session_state`` substitutes at
-runtime.  This two-pass substitution keeps the caps tunable without breaking
-the runtime template.
+Char caps mentioned in the prompt (``≤N chars`` markers) are sourced
+from ``config/strategist.json`` at module load and injected into the
+template via double-brace placeholders (``{{REASONING_MAX}}`` etc.) —
+distinct from the single-brace placeholders that ADK's
+``inject_session_state`` substitutes at runtime.  This two-pass
+substitution keeps the caps tunable without breaking the runtime
+template.
 
 The ``{{MAX_BUY_DELTA_PCT}}`` / ``{{MAX_BUY_DELTA}}`` markers are also
-resolved at build time from ``config/risk_gate.json``, keeping the risk caps
-in one place.
+resolved at build time from ``config/risk_gate.json``, keeping the risk
+caps in one place.
 
 The ``{temp:first_tick_flag}`` placeholder is a runtime ADK slot set by
-``StrategistContextShim`` (Task 9).  It resolves to ``"True"`` on the first
-tick of a window and ``"False"`` on every subsequent tick.
+``StrategistContextShim``.  It resolves to ``"True"`` on the first tick
+of a window and ``"False"`` on every subsequent tick.
 """
 from __future__ import annotations
 
@@ -84,10 +89,11 @@ COLD_START_MODE_TEMPLATE: str = (
 )
 
 INCREMENTAL_MODE_TEMPLATE: str = (
-    "Incremental — you have {N} held positions opened on prior ticks.  Each is "
-    "rendered below with the commitments you made on entry and the evolution "
-    "since.  Review each position and emit a stance when your view has changed "
-    "or when you want to trade."
+    "Incremental — you hold {N} live position(s) opened on prior ticks.  Your "
+    "full thesis book (positions plus non-position views) is rendered below.  "
+    "Review every watchlist ticker and emit exactly one stance per ticker — "
+    "use ``no_action`` for tickers where your view stands and you don't want "
+    "to trade."
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -121,7 +127,7 @@ Thesis:       {thesis}
 ## Recent Round-trips (your last closed positions — outcomes you should weigh before re-entering the same tickers)
 {temp:recent_trades_view}
 
-## Held Positions (your prior decisions, with evolution since open)
+## Thesis Book (your current view on every tracked ticker, with evolution since the last revision)
 {temp:held_positions_view}
 
 ## Ticker Evidence (per-analyst breakdown — features, tags, and prose reports)
@@ -134,67 +140,66 @@ may still override an analyst, but write down which signal you overweighted
 and why.
 
 Treat the digested aggregate as a deterministic input; you may disagree with
-it based on context (held position thesis, memory, day digest) — call out
+it based on context (your existing thesis, memory, day digest) — call out
 the disagreement in your rationale when you do.
 
 ## Your Job
 
 Watchlist for this tick: {tickers}.
 
-**First tick of a window** ({temp:first_tick_flag}): emit one stance for
-every watchlist ticker so you establish a baseline view.  This is the
-only tick where output volume is mandated.
+You hold a thesis on every watchlist ticker — whether or not you currently
+own it.  The thesis book above is your living view; you write to it via
+your stances and you are accountable for it.
 
-**Every subsequent tick**: emit a stance ONLY when you have something
-to say — one of:
-
-  (a) you are buying or selling (intent='buy' or 'sell'),
-  (b) you are revising the thesis prose on a held position
-      (intent='update'),
-  (c) your conviction has shifted enough that you want the audit trail
-      to reflect it (also intent='update').
-
-Tickers you do NOT mention this tick carry forward your last stated
-view.  Silence is a valid response and means "no change."
+**Emit exactly one stance per watchlist ticker every tick.**  This is true
+on the first tick (``first_tick_flag={temp:first_tick_flag}``) and on every
+subsequent tick.  Use ``no_action`` for tickers where your view stands and
+you don't want to trade — silence is not an option, the audit trail must
+record what you considered, not just what you acted on.
 
 ## OUTPUT CONTRACT — every rule is enforced; violations abort the tick
 
-| Intent  | What it means                              | Required                         | Optional   |
-|---------|--------------------------------------------|----------------------------------|------------|
-| buy     | enter flat or increase existing position   | weight, rationale                | catalyst   |
-| sell    | reduce or fully close a position           | reason                           | weight     |
-| update  | revise thesis prose (no trade)             | reason                           | —          |
+| Intent     | What it means                                       | Required           | Optional |
+|------------|-----------------------------------------------------|--------------------|----------|
+| buy        | open a new position or add to an existing one       | weight, rationale  | catalyst |
+| sell       | reduce or fully close an existing position          | reason             | weight   |
+| update     | revise your prose thesis (no trade)                 | reason             | —        |
+| no_action  | considered, no change to view or position           | —                  | —        |
 
-Use `update` for **watched** tickers too — record your evolving view on
-tickers you're not buying yet so future ticks see why.  The position book
-retains your latest rationale; the next tick's prompt shows it under
-"Watched theses".  Watched theses' rationale **may evolve** — only held
-theses are frozen.
+### Choosing the right verb
 
-**Weight semantics:**
+- **buy** every time you put capital on, including adds.  Every buy
+  refreshes the row's rationale — restate your current thinking so the
+  thesis stays in sync with the sizing.  You are on the record justifying
+  each entry and each add.
+- **sell** to exit or trim.  ``sell`` only works on tickers you currently
+  hold — selling a ticker with no live position is silently dropped and
+  counted as a hallucination.
+- **update** when your view has changed but you're not trading.  Works
+  whether or not you hold the underlying; use it to record an evolving
+  view on tickers you're tracking but haven't (yet) bought.
+- **no_action** when nothing has changed.  No prose required.  This is
+  the right verb for the majority of tickers on a typical tick.
+
+### Weight semantics
 
 - ``buy`` weight is the DELTA — how much to increase the position by,
   as a fraction of portfolio (e.g. 0.03 = 3 %).  Hard schema cap:
-  weight ≤ {{MAX_BUY_DELTA_PCT}} % per trade.  To build a larger
-  position, buy across multiple ticks.
+  weight ≤ {{MAX_BUY_DELTA_PCT}} % per trade.  Build larger positions
+  across multiple ticks.
 - ``sell`` weight is the DELTA — how much to reduce by.  Omit the
-  weight for a full close.  Sell is uncapped beyond the current
-  position size (you cannot sell more than you hold).
-- ``update`` takes no weight — no trade happens.
+  weight for a full close.  You cannot sell more than you hold.
+- ``update`` and ``no_action`` take no weight — no trade happens.
 
-**Forbidden fields by verb** (the schema rejects, the tick aborts):
+### Forbidden fields by verb (the schema rejects, the tick aborts)
 
-- buy:    no ``reason``    (use ``rationale``)
-- sell:   no ``rationale`` (use ``reason``)
-- update: no ``weight``, no ``rationale``, no ``catalyst``
-- ALL verbs: no ``target_price``, ``stop_price``, ``horizon`` — those
-  fields no longer exist in the schema.  Your thesis prose carries
-  your view; numerical commitments are not required.
-
-**Choosing between sell and update:** if you want to exit (or trim)
-the position this tick, use ``sell``.  If you want to revise what you
-think but keep holding, use ``update``.  Holding silently (omitting
-the ticker) is also valid if your view truly has not changed.
+- buy:        no ``reason``    (use ``rationale``)
+- sell:       no ``rationale`` (use ``reason``); no ``catalyst``
+- update:     no ``weight``, no ``rationale``, no ``catalyst``
+- no_action:  no ``weight``, no ``rationale``, no ``reason``, no ``catalyst``
+- ALL verbs:  no ``target_price``, ``stop_price``, ``horizon`` — those
+  fields no longer exist.  Your thesis prose carries your view;
+  numerical commitments are not required.
 
 ### Field constraints (schema-enforced)
 
@@ -222,8 +227,9 @@ the ticker) is also valid if your view truly has not changed.
 ## How to submit your output
 
 Emit ONE JSON object with this exact shape — nothing else.  Examples
-of all three verbs shown; in practice you will often emit zero or one
-stance per tick (after the first).
+of all four verbs shown; in practice ``no_action`` will dominate, with a
+handful of ``buy``/``sell``/``update`` stances on the tickers where your
+view has actually moved.
 
 {{
   "stances": [
@@ -240,6 +246,9 @@ stance per tick (after the first).
     {{
       "ticker": "<ticker>", "intent": "update",
       "reason": "<thesis revision, one sentence>"
+    }},
+    {{
+      "ticker": "<ticker>", "intent": "no_action"
     }}
   ],
   "decision_tag": "<snake_case_label>",

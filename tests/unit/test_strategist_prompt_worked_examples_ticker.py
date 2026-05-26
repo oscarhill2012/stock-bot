@@ -19,12 +19,11 @@ def test_shape_example_uses_placeholder_ticker() -> None:
     example) so the assertion isn't affected by stray references elsewhere
     in the prompt.
 
-    Updated for iter-3: the old header "Placeholders\\nonly; open + hold shown"
-    was replaced by "Examples\\nof all three verbs shown" when the worked
-    examples were rewritten for the buy / sell / update vocabulary.
+    Updated for the four-verb schema: the example block now leads with
+    "Examples\\nof all four verbs shown" — buy / sell / update / no_action.
     """
 
-    header = "Examples\nof all three verbs shown"
+    header = "Examples\nof all four verbs shown"
     assert header in STRATEGIST_INSTRUCTION, (
         "Could not find the shape-example header in the prompt — "
         "update this test if the header text changed again."

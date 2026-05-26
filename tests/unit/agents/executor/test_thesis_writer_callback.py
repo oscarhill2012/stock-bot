@@ -221,8 +221,8 @@ def test_callback_sell_stance_deletes_ticker():
     )
 
 
-def test_callback_update_stance_touches_review_fields_only():
-    """An ``update`` stance must update only the review fields — no trade mutation."""
+def test_callback_update_stance_refreshes_rationale_no_trade():
+    """An ``update`` stance refreshes prose (rationale + review trail) but does not trade."""
 
     prior_dt = datetime(2026, 1, 1, tzinfo=UTC)
     prior_position = PositionThesis(
@@ -259,7 +259,9 @@ def test_callback_update_stance_touches_review_fields_only():
 
     # Commitment fields must be preserved unchanged:
     assert row.weight        == 0.12
-    assert row.rationale     == "Cloud segment margin expansion"
+    assert row.rationale     == "No new information; thesis intact", (
+        "update stance must refresh rationale with the new reason"
+    )
     assert row.opened_price  == 400.0
 
 
