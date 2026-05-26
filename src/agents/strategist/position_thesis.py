@@ -12,8 +12,8 @@ round-trips through JSON are the authorised serialisation path.
 
 Immutability contract (Invariant 3) — held positions only
 ----------------------------------------------------------
-For ``kind="held"`` rows: ``opened_at``, ``opened_tick_id``, ``opened_price``,
-and ``rationale`` are written exactly once, at position-open time (or at the
+For HELD rows: ``opened_at``, ``opened_tick_id``, ``opened_price``, and
+``rationale`` are written exactly once, at position-open time (or at the
 moment a watched thesis is promoted to held).  This is documented in the
 ``Field(description=...)`` text — which the LLM sees in JSON-schema form —
 but is *not* mechanically enforced by Pydantic (a Pydantic model is mutable
@@ -21,34 +21,36 @@ by default).  The executor is responsible for never overwriting these fields
 after the initial write.  If the underlying thesis changes, the correct action
 is ``sell`` + ``buy``, not a verbal revision of ``rationale``.
 
-For ``kind="watched"`` rows: ``rationale`` IS mutable.  A watched thesis is an
-evolving view on a ticker the bot is monitoring but not yet holding.  Every
-``update`` stance on a watched ticker refreshes the rationale.  Invariant 3
-attaches only at the moment the watched row is promoted to ``kind="held"``.
+For WATCHED rows: ``rationale`` IS mutable.  A watched thesis is an evolving
+view on a ticker the bot is monitoring but not yet holding.  Every ``update``
+stance on a watched ticker refreshes the rationale.  Invariant 3 attaches
+only at the moment the watched row is promoted to held.
 
 Two kinds of row
 ----------------
-``kind="held"``
+Held
     The bot owns a position.  All four entry fields (``opened_at``,
     ``opened_tick_id``, ``opened_price``, ``weight``) are populated.
-    Rationale is FROZEN at the promotion/open write.
+    Rationale is FROZEN at the promotion/open write.  Discriminator:
+    ``is_watched`` property returns ``False``.
 
-``kind="watched"``
+Watched
     The bot is tracking a ticker it has not yet bought.  Entry fields are
     all ``None``; ``weight`` is ``None``.  ``rationale`` evolves freely
     with every ``update`` stance.  A ``buy`` stance on a watched ticker
-    PROMOTES it to ``kind="held"`` and FREEZES rationale to the buy
-    stance's rationale (the prior watched rationale is discarded).
+    PROMOTES it to held and FREEZES rationale to the buy stance's rationale
+    (the prior watched rationale is discarded).  Discriminator:
+    ``is_watched`` property returns ``True``.
+
+The held/watched distinction is encoded structurally by which entry fields
+are populated — there is no separate tag field.  The all-or-nothing
+invariant is enforced by ``_validate_entry_fields_invariant``.
 
 Schema evolution
 ----------------
 Every new field added to ``PositionThesis`` MUST carry a default value.  The
 frozen-V1 fixture at ``tests/fixtures/position_thesis_v1.json`` will fail to
 deserialise if a required field is added without one — that test is the gate.
-
-The V1 fixture lacks a ``kind`` field.  The default ``"held"`` ensures it
-deserialises correctly, and the ``kind="held"`` entry-fields validator passes
-because the fixture has all four entry fields populated.
 """
 from __future__ import annotations
 
@@ -67,27 +69,27 @@ class PositionThesis(BaseModel):
 
     Two kinds of row
     ----------------
-    ``kind="held"``
+    Held (``is_watched == False``)
         Active position.  All entry fields are populated.  ``rationale``
         is FROZEN at open (Invariant 3 — see module docstring).
 
-    ``kind="watched"``
+    Watched (``is_watched == True``)
         Monitored ticker, not yet owned.  Entry fields are ``None``;
         ``rationale`` evolves on every ``update`` stance.  Promoted to
-        ``kind="held"`` by a ``buy`` stance.
+        held by a ``buy`` stance.
 
     Field lifecycle
     ---------------
     - ``opened_at``, ``opened_tick_id``, ``opened_price`` are written
       once when the position is opened (or watched → held promotion)
-      and are immutable thereafter for ``kind="held"`` rows.
-      They are ``None`` for ``kind="watched"`` rows.
+      and are immutable thereafter for held rows.  They are ``None``
+      for watched rows.
     - ``weight`` is mutated by the executor on every ``buy``/``sell``
-      (``kind="held"`` only).  ``None`` for watched rows.
+      (held rows only).  ``None`` for watched rows.
     - ``catalyst`` is mutable via the ``update`` stance (no trade) for
       held rows; unused (``None``) for watched rows.
-    - ``rationale`` is FROZEN at open for ``kind="held"`` (Invariant 3).
-      For ``kind="watched"``, rationale IS mutable — it records the
+    - ``rationale`` is FROZEN at open for held rows (Invariant 3).
+      For watched rows, rationale IS mutable — it records the
       strategist's evolving view.  When a watched row is promoted to
       held, the buy stance's rationale REPLACES the watched view.
     - ``last_reviewed_at`` and ``last_reviewed_decision`` track the
@@ -111,22 +113,11 @@ class PositionThesis(BaseModel):
     # ---- Identity -------------------------------------------------------
     ticker: str = Field(..., description="Ticker symbol, e.g. 'AVGO'.")
 
-    # ---- Kind -----------------------------------------------------------
-    kind: Literal["held", "watched"] = Field(
-        default="held",
-        description=(
-            "Row kind.  "
-            "'held' — the bot owns a position; entry fields are populated; "
-            "rationale is FROZEN after the initial open write (Invariant 3). "
-            "'watched' — monitored ticker not yet in the book; entry fields "
-            "are all None; rationale is mutable and evolves with every "
-            "'update' stance.  A 'buy' stance promotes watched → held and "
-            "freezes the rationale to the buy stance's rationale."
-        ),
-    )
-
     # ---- Entry record (immutable after open for held — Invariant 3) -----
-    # All four entry fields are None for watched rows.
+    # The four entry fields together discriminate held from watched rows:
+    # all four populated ⇒ held; all four None ⇒ watched.  The validator
+    # below enforces the all-or-nothing rule.  Callers should prefer the
+    # ``is_watched`` property over inspecting any individual field.
     opened_at: datetime | None = Field(
         default=None,
         description=(
@@ -225,55 +216,45 @@ class PositionThesis(BaseModel):
         ),
     )
 
-    # ---- Per-kind invariant validator -----------------------------------
-    @model_validator(mode="after")
-    def _validate_kind_contract(self) -> PositionThesis:
-        """Enforce the per-kind entry-fields contract.
+    # ---- Held vs watched discriminator ----------------------------------
+    @property
+    def is_watched(self) -> bool:
+        """Return True when this row represents a watched (non-held) thesis.
 
-        Held rows must have all four entry fields populated.
-        Watched rows must have all four entry fields as None.
+        A watched row has no open record — all four entry fields are None.
+        Use this property at call sites instead of inspecting any single
+        entry field, so the discriminator can be tightened in one place if
+        the invariant ever changes.
+        """
+        return self.opened_at is None
+
+    # ---- All-or-nothing entry-field invariant ---------------------------
+    @model_validator(mode="after")
+    def _validate_entry_fields_invariant(self) -> PositionThesis:
+        """Enforce that entry fields are either all populated or all None.
+
+        A held row has all four entry fields set; a watched row has none.
+        Partial states ("opened_at set but opened_price None") are
+        meaningless and indicate a caller bug.
 
         Returns:
             The validated instance (Pydantic model_validator convention).
 
         Raises:
-            ValueError: When the entry fields do not match the declared kind.
+            ValueError: When the four entry fields are in a mixed state.
         """
-        entry_fields = (self.opened_at, self.opened_tick_id, self.opened_price, self.weight)
+        entry_field_names = ("opened_at", "opened_tick_id", "opened_price", "weight")
+        entry_field_values = (self.opened_at, self.opened_tick_id, self.opened_price, self.weight)
 
-        if self.kind == "held":
-            missing = [
-                name
-                for name, val in zip(
-                    ("opened_at", "opened_tick_id", "opened_price", "weight"),
-                    entry_fields,
-                    strict=True,
-                )
-                if val is None
-            ]
-            if missing:
-                raise ValueError(
-                    f"PositionThesis kind='held' requires all entry fields to be "
-                    f"non-None, but these are None: {missing}.  "
-                    f"Either supply the missing fields or set kind='watched'."
-                )
+        present = [name for name, val in zip(entry_field_names, entry_field_values, strict=True) if val is not None]
+        absent  = [name for name, val in zip(entry_field_names, entry_field_values, strict=True) if val is None]
 
-        elif self.kind == "watched":
-            present = [
-                name
-                for name, val in zip(
-                    ("opened_at", "opened_tick_id", "opened_price", "weight"),
-                    entry_fields,
-                    strict=True,
-                )
-                if val is not None
-            ]
-            if present:
-                raise ValueError(
-                    f"PositionThesis kind='watched' requires all entry fields to be "
-                    f"None, but these are set: {present}.  "
-                    f"Watched rows have no open record — set kind='held' if the "
-                    f"position is actually open."
-                )
+        # All four set ⇒ held; all four None ⇒ watched.  Anything else is a bug.
+        if present and absent:
+            raise ValueError(
+                f"PositionThesis entry fields must be all-or-nothing.  "
+                f"Populated: {present}.  None: {absent}.  "
+                f"Either supply every entry field (held row) or none of them (watched row)."
+            )
 
         return self

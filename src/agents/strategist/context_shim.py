@@ -318,8 +318,10 @@ def _render_positions_shim(
     """Render held and watched positions for the prompt.
 
     Replaces the former ``_render_held_positions_shim`` (Task 9).  Now handles
-    both ``kind="held"`` and ``kind="watched"`` rows, splitting them into two
-    labelled sections.
+    both held and watched rows, splitting them into two labelled sections.
+    The held/watched discriminator is structural: watched rows have all
+    four entry fields (``opened_at``, ``opened_tick_id``, ``opened_price``,
+    ``weight``) as ``None``.
 
     Accepts raw dicts from ``state["user:positions"]`` — values may be full
     ``PositionThesis`` instances, their ``model_dump`` equivalents, or partial
@@ -368,7 +370,10 @@ def _render_positions_shim(
     if not positions:
         return "(No held positions — portfolio is flat.)"
 
-    # ── Normalise all rows to plain dicts and split by kind ──────────────
+    # ── Normalise all rows to plain dicts and split held vs watched ──────
+    # The discriminator is structural: a row with no ``opened_at`` is a
+    # watched thesis (no open record).  This mirrors the ``is_watched``
+    # property on the PositionThesis model and stays in sync with it.
     held_items:    list[tuple[str, dict]] = []
     watched_items: list[tuple[str, dict]] = []
 
@@ -381,10 +386,7 @@ def _render_positions_shim(
         else:
             data = dict(raw)
 
-        # Default kind to "held" for rows that pre-date the kind field.
-        kind = data.get("kind", "held")
-
-        if kind == "watched":
+        if data.get("opened_at") is None:
             watched_items.append((ticker, data))
         else:
             held_items.append((ticker, data))

@@ -1,10 +1,15 @@
 """Tests for watched-thesis behaviour: update on non-held tickers.
 
+A "watched" PositionThesis is one whose four entry fields (``opened_at``,
+``opened_tick_id``, ``opened_price``, ``weight``) are all ``None``.  A "held"
+one has them all populated.  The ``is_watched`` property is the canonical
+discriminator; the all-or-nothing rule is enforced by a model validator.
+
 Covers:
-1.  PositionThesis(kind="held", ...) with full entry fields → valid.
-2.  PositionThesis(kind="held", opened_at=None, ...) → ValidationError.
-3.  PositionThesis(kind="watched", ...) with all entry fields None → valid.
-4.  PositionThesis(kind="watched", opened_at=<some date>, ...) → ValidationError.
+1.  Held PositionThesis (full entry fields) → valid; is_watched is False.
+2.  Mixed entry fields (some set, some None) → ValidationError.
+3.  Watched PositionThesis (all entry fields None) → valid; is_watched is True.
+4.  Watched with one entry field accidentally set → ValidationError.
 5.  apply_stance_to_thesis(update, prior_row=None) → watched row seeded.
 6.  apply_stance_to_thesis(update, prior_row=<watched>) → rationale mutates.
 7.  apply_stance_to_thesis(update, prior_row=<held>) → rationale UNCHANGED (Invariant 3).
@@ -13,7 +18,7 @@ Covers:
 9.  apply_stance_to_thesis(sell, prior_row=<watched>) → raises ValueError.
 10. _render_positions_shim with mixed held + watched → both sections rendered.
 11. _render_positions_shim with watched only → "Watched theses" section shown,
-    "Currently Held" section shows flat sentinel.
+    "Currently Held" section shows the no-exposure sentinel.
 """
 from __future__ import annotations
 
@@ -38,11 +43,11 @@ _TICK_ID = "t-test"
 def _make_held_thesis(**overrides) -> PositionThesis:
     """Build a minimal valid held PositionThesis.
 
-    Supplies all four entry fields so the kind='held' validator passes.
+    Supplies all four entry fields so the all-or-nothing validator
+    classifies the row as held (is_watched == False).
     """
     defaults = {
         "ticker":                 "AAPL",
-        "kind":                   "held",
         "opened_at":              _TS,
         "opened_tick_id":         "t-open",
         "opened_price":           150.0,
@@ -59,11 +64,10 @@ def _make_held_thesis(**overrides) -> PositionThesis:
 def _make_watched_thesis(**overrides) -> PositionThesis:
     """Build a minimal valid watched PositionThesis.
 
-    Entry fields are all None; rationale is mutable.
+    Entry fields are all None (so is_watched == True); rationale is mutable.
     """
     defaults = {
         "ticker":                 "MSFT",
-        "kind":                   "watched",
         "rationale":              "Initial watched view",
         "last_reviewed_at":       _TS,
         "last_reviewed_decision": "update",
@@ -81,35 +85,33 @@ def _make_stance(**kwargs) -> TickerStance:
 
 
 # ---------------------------------------------------------------------------
-# 1. kind="held" with full entry fields → valid
+# 1. Held PositionThesis (full entry fields) → valid; is_watched is False
 # ---------------------------------------------------------------------------
 
 
 def test_position_thesis_held_with_full_fields_is_valid():
-    """PositionThesis(kind='held', ...) with all entry fields → no exception."""
+    """A PositionThesis with all entry fields → no exception, is_watched=False."""
     thesis = _make_held_thesis()
 
-    assert thesis.kind           == "held"
+    assert thesis.is_watched     is False
     assert thesis.opened_at      == _TS
     assert thesis.opened_price   == 150.0
     assert thesis.weight         == pytest.approx(0.10)
 
 
 # ---------------------------------------------------------------------------
-# 2. kind="held" with a missing entry field → ValidationError
+# 2. Mixed entry fields → ValidationError (all-or-nothing rule)
 # ---------------------------------------------------------------------------
 
 
-def test_position_thesis_held_missing_entry_field_raises():
-    """PositionThesis(kind='held', opened_at=None, ...) → ValidationError.
-
-    All four entry fields must be non-None for held rows.
+def test_position_thesis_mixed_entry_fields_raises():
+    """A PositionThesis with some entry fields populated and some None
+    must raise — entry fields are all-or-nothing.
     """
-    with pytest.raises(ValidationError, match="kind='held'"):
+    with pytest.raises(ValidationError, match="all-or-nothing"):
         PositionThesis(
             ticker                    = "AAPL",
-            kind                      = "held",
-            opened_at                 = None,      # ← missing
+            opened_at                 = None,      # ← partial
             opened_tick_id            = "t-open",
             opened_price              = 150.0,
             weight                    = 0.10,
@@ -121,15 +123,15 @@ def test_position_thesis_held_missing_entry_field_raises():
 
 
 # ---------------------------------------------------------------------------
-# 3. kind="watched" with all entry fields None → valid
+# 3. Watched PositionThesis (all entry fields None) → valid; is_watched is True
 # ---------------------------------------------------------------------------
 
 
 def test_position_thesis_watched_with_null_entry_fields_is_valid():
-    """PositionThesis(kind='watched', ...) with all entry fields None → no exception."""
+    """A PositionThesis with all entry fields None → no exception, is_watched=True."""
     thesis = _make_watched_thesis()
 
-    assert thesis.kind           == "watched"
+    assert thesis.is_watched     is True
     assert thesis.opened_at      is None
     assert thesis.opened_tick_id is None
     assert thesis.opened_price   is None
@@ -137,23 +139,21 @@ def test_position_thesis_watched_with_null_entry_fields_is_valid():
 
 
 # ---------------------------------------------------------------------------
-# 4. kind="watched" with entry fields set → ValidationError
+# 4. Otherwise-watched row with one entry field set → ValidationError
 # ---------------------------------------------------------------------------
 
 
-def test_position_thesis_watched_with_entry_fields_set_raises():
-    """PositionThesis(kind='watched', opened_at=<date>, ...) → ValidationError.
-
-    Watched rows must have all entry fields as None — they carry no open record.
+def test_position_thesis_watched_with_one_entry_field_set_raises():
+    """An otherwise-watched row with a single entry field accidentally set
+    must raise — the all-or-nothing rule rejects the partial state.
     """
-    with pytest.raises(ValidationError, match="kind='watched'"):
+    with pytest.raises(ValidationError, match="all-or-nothing"):
         PositionThesis(
             ticker                    = "MSFT",
-            kind                      = "watched",
-            opened_at                 = _TS,       # ← forbidden on watched
-            opened_tick_id            = "t-open",
-            opened_price              = 100.0,
-            weight                    = 0.05,
+            opened_at                 = _TS,       # ← one field set
+            opened_tick_id            = None,
+            opened_price              = None,
+            weight                    = None,
             rationale                 = "x",
             last_reviewed_at          = _TS,
             last_reviewed_decision    = "update",
@@ -170,7 +170,7 @@ def test_apply_stance_update_on_flat_ticker_creates_watched_row():
     """apply_stance_to_thesis(update, prior_row=None) must create a watched thesis.
 
     The strategist is recording a view on a ticker it doesn't yet hold.
-    The resulting row carries kind='watched', weight=None, and rationale
+    The resulting row has is_watched=True, weight=None, and rationale
     set to stance.reason.
     """
     stance = _make_stance(
@@ -189,7 +189,7 @@ def test_apply_stance_update_on_flat_ticker_creates_watched_row():
     )
 
     assert result is not None
-    assert result.kind                      == "watched"
+    assert result.is_watched                is True
     assert result.rationale                 == "Watching for breakout above resistance"
     assert result.weight                    is None
     assert result.opened_at                 is None
@@ -231,7 +231,7 @@ def test_apply_stance_update_on_watched_row_mutates_rationale():
     )
 
     assert result is not None
-    assert result.kind                      == "watched"
+    assert result.is_watched                is True
     assert result.rationale                 == "New view: macro tailwind shifted"
     assert result.last_reviewed_decision    == "update"
     assert result.thesis_last_updated_tick  == 5
@@ -293,7 +293,7 @@ def test_apply_stance_buy_on_watched_row_promotes_to_held():
     """apply_stance_to_thesis(buy, prior_row=<watched>) must promote to held.
 
     The resulting row must:
-    - have kind='held'
+    - have is_watched == False (held)
     - carry all entry fields from the buy (not the watched row)
     - have rationale = BUY stance's rationale (NOT the watched view's rationale)
     - Invariant 3 is now in effect: this rationale is frozen going forward
@@ -323,7 +323,7 @@ def test_apply_stance_buy_on_watched_row_promotes_to_held():
     )
 
     assert result is not None
-    assert result.kind                      == "held"
+    assert result.is_watched                is False
     assert result.rationale                 == buy_rationale, (
         "promoted row must carry the BUY stance's rationale, "
         "not the prior watched view's rationale"
