@@ -3,13 +3,19 @@
 Reads thesis data from ``state["user:positions"]`` (a ``dict[ticker,
 PositionThesis-shaped dict]``) and live price/weight data from
 ``state["portfolio"]`` (a ``Portfolio`` instance or its serialised
-dict equivalent).  Spec B rewrites the renderer to emit two blocks per
-position:
+dict equivalent).  Renders two blocks per position:
 
   * **Your commitments on entry** — the immutable promise the strategist
-    made at open (rationale, target, stop, catalyst, horizon).
+    made at open (rationale, catalyst, opened price / tick).
   * **Evolution** — what has changed since open (price drift, time
-    held, distance to target / stop in $ and %, last-reviewed verb).
+    held, ticks since last thesis update, last-reviewed verb).
+
+Note (iter-3)
+-------------
+``target_price``, ``stop_price``, and ``horizon`` were removed from
+``PositionThesis`` in iter-3.  The renderer no longer emits Target /
+Stop / Horizon lines.  Price-target reasoning lives exclusively in the
+strategist's free-text output, not in the schema.
 
 ``last_reviewed_reason`` is persisted to the audit trail but NEVER
 rendered into the next tick's prompt (Principle 2 / Invariant 4) — the
@@ -164,31 +170,11 @@ def _format_one(
     # The immutable promise the strategist made when opening the position.
     # Rationale stays visible per Principle 1 (anti-anchoring via framing,
     # not hiding) — we label it "commitments", not "prior conclusion".
+    # Note: target_price, stop_price, and horizon were removed in iter-3;
+    # those fields no longer exist on PositionThesis.
     lines.append("  Your commitments on entry:")
     lines.append(f"    Rationale:  {thesis.rationale}")
-
-    if thesis.target_price is not None:
-        target_pct = _pct_change(
-            from_price = thesis.opened_price,
-            to_price   = thesis.target_price,
-        )
-        pct_str = f"  ({target_pct:+.1f}% from entry)" if target_pct is not None else ""
-        lines.append(f"    Target:     ${thesis.target_price:.2f}{pct_str}")
-    else:
-        lines.append("    Target:     (no target set)")
-
-    if thesis.stop_price is not None:
-        stop_pct = _pct_change(
-            from_price = thesis.opened_price,
-            to_price   = thesis.stop_price,
-        )
-        pct_str = f"  ({stop_pct:+.1f}% from entry)" if stop_pct is not None else ""
-        lines.append(f"    Stop:       ${thesis.stop_price:.2f}{pct_str}")
-    else:
-        lines.append("    Stop:       (no stop set)")
-
     lines.append(f"    Catalyst:   {thesis.catalyst or '(none recorded)'}")
-    lines.append(f"    Horizon:    {thesis.horizon}")
 
     # ── Evolution ────────────────────────────────────────────────────────
     # What has changed since open — the structural source of prompt
@@ -220,29 +206,16 @@ def _format_one(
             f"    Now:        ${current_price:.2f}{from_entry_str}  |  "
             f"weight {curr_weight:.3f}"
         )
-
-        # To-target / to-stop — distance from CURRENT price (not entry).
-        # Tells the LLM how much further the catalyst still has to run.
-        if thesis.target_price is not None:
-            delta_target = thesis.target_price - current_price
-            pct_target   = _pct_change(from_price=current_price, to_price=thesis.target_price)
-            pct_str      = f"  ({pct_target:+.1f}% from now)" if pct_target is not None else ""
-            lines.append(f"    To target:  ${delta_target:+.2f}{pct_str}")
-        else:
-            lines.append("    To target:  (no target set)")
-
-        if thesis.stop_price is not None:
-            delta_stop = thesis.stop_price - current_price
-            pct_stop   = _pct_change(from_price=current_price, to_price=thesis.stop_price)
-            pct_str    = f"  ({pct_stop:+.1f}% from now)" if pct_stop is not None else ""
-            lines.append(f"    To stop:    ${delta_stop:+.2f}{pct_str}")
-        else:
-            lines.append("    To stop:    (no stop set)")
     else:
-        # No live price — render placeholders so the LLM still sees the row.
+        # No live price — render a placeholder so the LLM still sees the row.
         lines.append("    Now:        (price unavailable)")
-        lines.append("    To target:  (price unavailable)")
-        lines.append("    To stop:    (price unavailable)")
+
+    # Thesis staleness — ticks elapsed since the thesis was last written or
+    # revised.  Gives the LLM a freshness signal without re-exposing the
+    # last_reviewed_reason (Principle 2 / Invariant 4).
+    lines.append(
+        f"    Thesis age: {thesis.thesis_last_updated_tick} ticks since last update"
+    )
 
     # Reviewed line — last-reviewed timestamp + the verb that produced
     # the review. ``last_reviewed_reason`` is DELIBERATELY OMITTED here

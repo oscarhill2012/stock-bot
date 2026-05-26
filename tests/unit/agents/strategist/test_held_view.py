@@ -33,19 +33,15 @@ _AS_OF = datetime(2026, 4, 29, 14, 0, tzinfo=UTC)
 
 
 def _thesis(
-    ticker:         str = "AAPL",
-    opened_price:   float = 192.40,
-    target_price:   float | None = 210.0,
-    stop_price:     float | None = 185.0,
-    catalyst:       str | None = "Q3 earnings",
-    rationale:      str = "FCF + insider",
-    horizon:        str = "swing",
+    ticker:       str = "AAPL",
+    opened_price: float = 192.40,
+    catalyst:     str | None = "Q3 earnings",
+    rationale:    str = "FCF + insider",
 ) -> PositionThesis:
     """Construct a PositionThesis fixture for testing.
 
-    Uses Plan 1's field set (``opened_tick_id``, ``weight``,
-    ``last_reviewed_decision``, ``last_reviewed_reason``) rather than
-    the legacy ``opened_tag`` / ``last_review_note``.
+    Uses the iter-3 prose-only field set — ``target_price``, ``stop_price``,
+    and ``horizon`` were removed from ``PositionThesis`` in iter-3.
     """
     return PositionThesis(
         ticker                 = ticker,
@@ -54,12 +50,9 @@ def _thesis(
         opened_price           = opened_price,
         weight                 = 0.05,
         rationale              = rationale,
-        horizon                = horizon,
-        target_price           = target_price,
-        stop_price             = stop_price,
         catalyst               = catalyst,
         last_reviewed_at       = datetime(2026, 4, 22, 14, 0, tzinfo=UTC),
-        last_reviewed_decision = "open",
+        last_reviewed_decision = "buy",
         last_reviewed_reason   = "opened on entry signal",
     )
 
@@ -76,7 +69,12 @@ def test_empty_portfolio_returns_no_holdings_message():
 
 
 def test_single_holding_block_includes_all_required_lines():
-    """Every expected field label and value must appear in the rendered block."""
+    """Every expected field label and value must appear in the rendered block.
+
+    iter-3: Target / Stop / Horizon lines are no longer emitted — the
+    schema dropped those fields.  The block now shows Rationale, Catalyst,
+    Held for, Now, Thesis age, and Reviewed.
+    """
     thesis = _thesis()
     pf = Portfolio(
         cash=900.0,
@@ -92,17 +90,17 @@ def test_single_holding_block_includes_all_required_lines():
     assert "192.40" in out
     assert "Your commitments on entry" in out
     assert "FCF + insider" in out
-    assert "Target:" in out
-    assert "210.00" in out
-    assert "Stop:" in out
-    assert "185.00" in out
-    assert "swing" in out
+    # Target / Stop / Horizon were removed in iter-3 and must NOT appear.
+    assert "Target:" not in out
+    assert "Stop:" not in out
+    assert "swing" not in out
     assert "Catalyst:" in out
     assert "Q3 earnings" in out
     assert "Evolution" in out
     assert "Held for:" in out
     assert "Now:" in out
     assert "198.50" in out
+    assert "Thesis age:" in out
 
 
 def test_pnl_pct_rendered_when_price_available():
@@ -137,25 +135,14 @@ def test_pnl_pct_negative_rendered_with_minus_sign():
     assert "-5" in out
 
 
-def test_no_target_no_stop_renders_none_message():
-    """When both target and stop are None the "(no target set)" / "(no stop set)"
-    messages must appear — the block must not crash."""
-    thesis = _thesis(target_price=None, stop_price=None, catalyst=None)
-    pf = Portfolio(
-        cash=900.0,
-        positions={"AAPL": Position(quantity=10.0, avg_cost=192.40, last_price=198.50)},
-    )
-    out = render_held_positions_view(
-        positions = {"AAPL": thesis.model_dump(mode="json")},
-        portfolio = pf,
-        as_of     = _AS_OF,
-    )
-    assert "(no target set)" in out
-    assert "(no stop set)"   in out
+def test_no_catalyst_renders_none_recorded_message():
+    """When catalyst is None the "(none recorded)" sentinel must appear — the
+    block must not crash and no raw "None" value must leak into the output.
 
-
-def test_no_catalyst_omits_catalyst_line():
-    """When catalyst is None the 'Catalyst:' label must not appear."""
+    iter-3: target_price / stop_price / horizon are gone from the schema so
+    the old "(no target set)" / "(no stop set)" sentinels no longer apply.
+    This test now covers the only nullable prose field: catalyst.
+    """
     thesis = _thesis(catalyst=None)
     pf = Portfolio(
         cash=900.0,
@@ -166,9 +153,24 @@ def test_no_catalyst_omits_catalyst_line():
         portfolio = pf,
         as_of     = _AS_OF,
     )
-    # The new renderer shows "(none recorded)" when catalyst is None rather
-    # than omitting the line entirely — assert the label IS still present
-    # and no raw "None" value leaks into the output.
+    assert "Catalyst:" in out
+    assert "(none recorded)" in out
+    assert "None" not in out
+
+
+def test_no_catalyst_still_renders_catalyst_label():
+    """When catalyst is None the 'Catalyst:' label must still appear with the
+    '(none recorded)' sentinel — the renderer always emits the label row."""
+    thesis = _thesis(catalyst=None)
+    pf = Portfolio(
+        cash=900.0,
+        positions={"AAPL": Position(quantity=10.0, avg_cost=192.40, last_price=198.50)},
+    )
+    out = render_held_positions_view(
+        positions = {"AAPL": thesis.model_dump(mode="json")},
+        portfolio = pf,
+        as_of     = _AS_OF,
+    )
     assert "Catalyst:" in out
     assert "none recorded" in out
 
@@ -180,8 +182,6 @@ def test_multiple_holdings_separated_by_blank_line():
         ticker="MSFT",
         opened_price=410.0,
         rationale="cloud tailwind",
-        target_price=450.0,
-        stop_price=395.0,
         catalyst=None,
     ).model_dump(mode="json")
     pf = Portfolio(

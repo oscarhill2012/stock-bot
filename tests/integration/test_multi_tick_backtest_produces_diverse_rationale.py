@@ -23,7 +23,7 @@ position from tick 2 onwards.  It asserts:
   (a) The Mode header text differs on ticks 2-5 vs tick 1 (cold-start
       vs incremental framing).
   (b) The Held Positions block is non-empty on ticks 2-5 — at minimum
-      it contains the seeded ticker symbol and the "Evolution" label.
+      it contains the seeded ticker symbol and the "Thesis staleness" line.
 
 Together these prove the prompt is no longer tick-isomorphic; an LLM
 running against this surface cannot produce byte-identical rationale
@@ -122,20 +122,23 @@ async def test_multi_tick_backtest_produces_diverse_rationale() -> None:
     # ── Fixture state ────────────────────────────────────────────────────
     # Tick 1: portfolio empty → cold-start mode, flat-portfolio held-view.
     # Tick 2-5: one seeded position → incremental mode, populated held-view.
+    #
+    # iter-3: target_price / stop_price / horizon removed from PositionThesis.
+    # The seeded dict uses the prose-only contract.  ``thesis_last_updated_tick``
+    # is 1 so that staleness advances as ``user:current_tick_index`` increments
+    # from 1 to 4 across ticks 2-5 (giving distinct stale_ticks values of 0-3).
     seeded_position = {
-        "ticker":                 "AVGO",
-        "opened_at":              "2026-05-01T14:00:00+00:00",
-        "opened_tick_id":         "tick_001",
-        "opened_price":           100.0,
-        "weight":                 0.05,
-        "target_price":           120.0,
-        "stop_price":              90.0,
-        "catalyst":               "Q3 guidance call",
-        "horizon":                "swing",
-        "rationale":              "Cloud-AI margin expansion thesis",
-        "last_reviewed_at":       "2026-05-01T14:00:00+00:00",
-        "last_reviewed_decision": "open",
-        "last_reviewed_reason":   "opened on entry signal",
+        "ticker":                   "AVGO",
+        "opened_at":                "2026-05-01T14:00:00+00:00",
+        "opened_tick_id":           "tick_001",
+        "opened_price":             100.0,
+        "weight":                   0.05,
+        "catalyst":                 "Q3 guidance call",
+        "rationale":                "Cloud-AI margin expansion thesis",
+        "last_reviewed_at":         "2026-05-01T14:00:00+00:00",
+        "last_reviewed_decision":   "buy",
+        "last_reviewed_reason":     "opened on entry signal",
+        "thesis_last_updated_tick": 1,
     }
 
     portfolio = Portfolio(cash=950.0).model_dump(mode="json")
@@ -151,6 +154,8 @@ async def test_multi_tick_backtest_produces_diverse_rationale() -> None:
     }
 
     # Run 5 ticks at hourly cadence.
+    # ``user:current_tick_index`` increments per tick so the shim can compute
+    # thesis staleness (stale_ticks = current_tick_index - thesis_last_updated_tick).
     as_of_start = datetime(2026, 5, 1, 14, 0, tzinfo=UTC)
     for i in range(5):
         # Tick 1 — empty positions; ticks 2-5 — seeded.
@@ -158,9 +163,10 @@ async def test_multi_tick_backtest_produces_diverse_rationale() -> None:
 
         state = {
             **base_state,
-            "user:positions": positions,
-            "tick_id":        f"tick_{i + 1:03d}",
-            "as_of":          as_of_start + timedelta(hours=i),
+            "user:positions":        positions,
+            "tick_id":               f"tick_{i + 1:03d}",
+            "as_of":                 as_of_start + timedelta(hours=i),
+            "user:current_tick_index": i,
         }
         await _run_one_tick(state=state, recorder=recorder)
 
@@ -203,10 +209,14 @@ async def test_multi_tick_backtest_produces_diverse_rationale() -> None:
             f"Tick {i} prompt does not render the seeded AVGO position"
         )
 
-        # The Evolution block header — proves the rewritten renderer
-        # was actually invoked, not a stale legacy renderer.
-        assert "Evolution" in prompt, (
-            f"Tick {i} prompt is missing the Evolution block header"
+        # Thesis-staleness line — proves the context_shim renderer
+        # was actually invoked and injected held-position data.
+        # (context_shim uses _render_held_positions_shim which shows
+        # "Thesis staleness: N ticks since last update" rather than the
+        # full held_view.py Evolution block — the shim is the authoritative
+        # live-pipeline path as of iter-3 Task 9.)
+        assert "Thesis staleness" in prompt, (
+            f"Tick {i} prompt is missing the Thesis staleness line"
         )
 
         # And the flat-portfolio sentinel MUST NOT be present alongside
@@ -217,11 +227,11 @@ async def test_multi_tick_backtest_produces_diverse_rationale() -> None:
         )
 
     # ── Assertion 3 — prompts are not byte-identical across ticks 2-5 ────
-    # The evolution columns mutate over time (Held for: increments, To
-    # target/stop deltas if price moved).  Here price is fixed by the
-    # fixture so only "Held for" mutates — but that is enough to defeat
-    # byte-identical prompts.  This is the actual "stuck on tick 1"
-    # pathology Spec B closes.
+    # Thesis staleness (stale_ticks = user:current_tick_index -
+    # thesis_last_updated_tick) increments every tick because
+    # user:current_tick_index advances while thesis_last_updated_tick stays
+    # at 1.  This is sufficient to defeat byte-identical prompts and closes
+    # the "stuck on tick 1" pathology that Spec B was designed to fix.
     unique_prompts = {p for p in ticks_n}
     assert len(unique_prompts) == len(ticks_n), (
         f"Ticks 2-5 produced only {len(unique_prompts)} unique prompts; "
