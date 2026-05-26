@@ -10,28 +10,52 @@ All ``datetime`` fields are stored in UTC by convention.  The ADK session
 state propagates them as ISO-8601 strings; ``model_validate`` / ``model_dump``
 round-trips through JSON are the authorised serialisation path.
 
-Immutability contract (Invariant 3)
--------------------------------------
-``opened_at``, ``opened_tick_id``, ``opened_price``, and ``rationale`` are
-written exactly once, at position-open time.  This is documented in the
+Immutability contract (Invariant 3) — held positions only
+----------------------------------------------------------
+For ``kind="held"`` rows: ``opened_at``, ``opened_tick_id``, ``opened_price``,
+and ``rationale`` are written exactly once, at position-open time (or at the
+moment a watched thesis is promoted to held).  This is documented in the
 ``Field(description=...)`` text — which the LLM sees in JSON-schema form —
 but is *not* mechanically enforced by Pydantic (a Pydantic model is mutable
 by default).  The executor is responsible for never overwriting these fields
 after the initial write.  If the underlying thesis changes, the correct action
 is ``sell`` + ``buy``, not a verbal revision of ``rationale``.
 
+For ``kind="watched"`` rows: ``rationale`` IS mutable.  A watched thesis is an
+evolving view on a ticker the bot is monitoring but not yet holding.  Every
+``update`` stance on a watched ticker refreshes the rationale.  Invariant 3
+attaches only at the moment the watched row is promoted to ``kind="held"``.
+
+Two kinds of row
+----------------
+``kind="held"``
+    The bot owns a position.  All four entry fields (``opened_at``,
+    ``opened_tick_id``, ``opened_price``, ``weight``) are populated.
+    Rationale is FROZEN at the promotion/open write.
+
+``kind="watched"``
+    The bot is tracking a ticker it has not yet bought.  Entry fields are
+    all ``None``; ``weight`` is ``None``.  ``rationale`` evolves freely
+    with every ``update`` stance.  A ``buy`` stance on a watched ticker
+    PROMOTES it to ``kind="held"`` and FREEZES rationale to the buy
+    stance's rationale (the prior watched rationale is discarded).
+
 Schema evolution
 ----------------
 Every new field added to ``PositionThesis`` MUST carry a default value.  The
 frozen-V1 fixture at ``tests/fixtures/position_thesis_v1.json`` will fail to
 deserialise if a required field is added without one — that test is the gate.
+
+The V1 fixture lacks a ``kind`` field.  The default ``"held"`` ensures it
+deserialises correctly, and the ``kind="held"`` entry-fields validator passes
+because the fixture has all four entry fields populated.
 """
 from __future__ import annotations
 
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class PositionThesis(BaseModel):
@@ -41,16 +65,31 @@ class PositionThesis(BaseModel):
     ticker).  Round-trips through ADK's session state via
     ``model_dump()`` / ``model_validate()`` at the persistence boundary.
 
+    Two kinds of row
+    ----------------
+    ``kind="held"``
+        Active position.  All entry fields are populated.  ``rationale``
+        is FROZEN at open (Invariant 3 — see module docstring).
+
+    ``kind="watched"``
+        Monitored ticker, not yet owned.  Entry fields are ``None``;
+        ``rationale`` evolves on every ``update`` stance.  Promoted to
+        ``kind="held"`` by a ``buy`` stance.
+
     Field lifecycle
     ---------------
     - ``opened_at``, ``opened_tick_id``, ``opened_price`` are written
-      once when the position is opened and are immutable thereafter
-      (Invariant 3 — see module docstring).
-    - ``weight`` is mutated by the executor on every ``buy``/``sell``.
-    - ``catalyst`` is mutable via the ``update`` stance (no trade).
-    - ``rationale`` is FROZEN at open.  It captures the entry
-      commitment.  If the thesis genuinely changes, the right action
-      is ``sell`` then ``buy`` — not a verbal revision.
+      once when the position is opened (or watched → held promotion)
+      and are immutable thereafter for ``kind="held"`` rows.
+      They are ``None`` for ``kind="watched"`` rows.
+    - ``weight`` is mutated by the executor on every ``buy``/``sell``
+      (``kind="held"`` only).  ``None`` for watched rows.
+    - ``catalyst`` is mutable via the ``update`` stance (no trade) for
+      held rows; unused (``None``) for watched rows.
+    - ``rationale`` is FROZEN at open for ``kind="held"`` (Invariant 3).
+      For ``kind="watched"``, rationale IS mutable — it records the
+      strategist's evolving view.  When a watched row is promoted to
+      held, the buy stance's rationale REPLACES the watched view.
     - ``last_reviewed_at`` and ``last_reviewed_decision`` track the
       most recent tick that touched this row.
     - ``last_reviewed_reason`` is persisted for the audit trail but is
@@ -72,52 +111,79 @@ class PositionThesis(BaseModel):
     # ---- Identity -------------------------------------------------------
     ticker: str = Field(..., description="Ticker symbol, e.g. 'AVGO'.")
 
-    # ---- Entry record (immutable after open — Invariant 3) --------------
-    opened_at: datetime = Field(
-        ...,
+    # ---- Kind -----------------------------------------------------------
+    kind: Literal["held", "watched"] = Field(
+        default="held",
+        description=(
+            "Row kind.  "
+            "'held' — the bot owns a position; entry fields are populated; "
+            "rationale is FROZEN after the initial open write (Invariant 3). "
+            "'watched' — monitored ticker not yet in the book; entry fields "
+            "are all None; rationale is mutable and evolves with every "
+            "'update' stance.  A 'buy' stance promotes watched → held and "
+            "freezes the rationale to the buy stance's rationale."
+        ),
+    )
+
+    # ---- Entry record (immutable after open for held — Invariant 3) -----
+    # All four entry fields are None for watched rows.
+    opened_at: datetime | None = Field(
+        default=None,
         description=(
             "Timestamp (UTC) of the tick on which the position was opened.  "
             "Matches the convention for ``state['as_of']`` in "
             "``docs/contract-invariants.md`` §A.  "
-            "IMMUTABLE after open."
+            "IMMUTABLE after open (held rows only).  "
+            "None for watched rows."
         ),
     )
-    opened_tick_id: str = Field(
-        ...,
+    opened_tick_id: str | None = Field(
+        default=None,
         description=(
             "Tick identifier captured at open time, for traceability.  "
-            "IMMUTABLE after open."
+            "IMMUTABLE after open (held rows only).  "
+            "None for watched rows."
         ),
     )
-    opened_price: float = Field(
-        ...,
+    opened_price: float | None = Field(
+        default=None,
         description=(
             "Fill price recorded by the executor at open.  "
-            "IMMUTABLE after open."
+            "IMMUTABLE after open (held rows only).  "
+            "None for watched rows."
         ),
     )
 
-    # ---- Current sizing (mutated by buy/sell) ---------------------------
-    weight: float = Field(
-        ...,
-        description="Current portfolio weight in [0, 1].",
+    # ---- Current sizing (held only — None for watched) ------------------
+    weight: float | None = Field(
+        default=None,
+        description=(
+            "Current portfolio weight in [0, 1].  "
+            "Populated and mutated on every buy/sell for held rows.  "
+            "None for watched rows (no position, no weight)."
+        ),
     )
 
-    # ---- Commitments (mutable via 'update' stance) ----------------------
+    # ---- Commitments (mutable via 'update' stance for held) -------------
     catalyst: str | None = Field(
         None,
         description="Free-form text describing the event that would confirm the thesis.",
     )
 
-    # ---- Entry rationale (FROZEN at open — Invariant 3) -----------------
+    # ---- Rationale ------------------------------------------------------
+    # For held: FROZEN at open (Invariant 3).
+    # For watched: mutable — updated with every 'update' stance.
     rationale: str = Field(
         ...,
         description=(
-            "The strategist's reasoning at the moment of opening the position. "
-            "IMMUTABLE for the lifetime of the position — if the underlying "
-            "thesis changes, the right action is sell + buy.  "
-            "Invariant 3: executor must never overwrite this field after the "
-            "initial open write."
+            "The strategist's reasoning for this ticker.  "
+            "For held rows: FROZEN at position-open time — Invariant 3 applies; "
+            "the executor must never overwrite this field after the initial open "
+            "write.  If the underlying thesis changes, the right action is "
+            "sell + buy.  "
+            "For watched rows: MUTABLE — evolves with every 'update' stance, "
+            "capturing the latest view on a ticker not yet owned.  Discarded "
+            "and replaced by the buy-stance rationale at promotion time."
         ),
     )
 
@@ -134,7 +200,8 @@ class PositionThesis(BaseModel):
             "(the row's lifetime begins with the buy stance that opened the "
             "position, which counts as the first review).  Never 'sell' after "
             "the position is closed — close deletes the row rather than "
-            "updating it."
+            "updating it.  For watched rows: 'update' on every revision; "
+            "'buy' at the moment of promotion."
         ),
     )
     last_reviewed_reason: str = Field(
@@ -157,3 +224,56 @@ class PositionThesis(BaseModel):
             "existing fixtures that pre-date this field."
         ),
     )
+
+    # ---- Per-kind invariant validator -----------------------------------
+    @model_validator(mode="after")
+    def _validate_kind_contract(self) -> PositionThesis:
+        """Enforce the per-kind entry-fields contract.
+
+        Held rows must have all four entry fields populated.
+        Watched rows must have all four entry fields as None.
+
+        Returns:
+            The validated instance (Pydantic model_validator convention).
+
+        Raises:
+            ValueError: When the entry fields do not match the declared kind.
+        """
+        entry_fields = (self.opened_at, self.opened_tick_id, self.opened_price, self.weight)
+
+        if self.kind == "held":
+            missing = [
+                name
+                for name, val in zip(
+                    ("opened_at", "opened_tick_id", "opened_price", "weight"),
+                    entry_fields,
+                    strict=True,
+                )
+                if val is None
+            ]
+            if missing:
+                raise ValueError(
+                    f"PositionThesis kind='held' requires all entry fields to be "
+                    f"non-None, but these are None: {missing}.  "
+                    f"Either supply the missing fields or set kind='watched'."
+                )
+
+        elif self.kind == "watched":
+            present = [
+                name
+                for name, val in zip(
+                    ("opened_at", "opened_tick_id", "opened_price", "weight"),
+                    entry_fields,
+                    strict=True,
+                )
+                if val is not None
+            ]
+            if present:
+                raise ValueError(
+                    f"PositionThesis kind='watched' requires all entry fields to be "
+                    f"None, but these are set: {present}.  "
+                    f"Watched rows have no open record — set kind='held' if the "
+                    f"position is actually open."
+                )
+
+        return self

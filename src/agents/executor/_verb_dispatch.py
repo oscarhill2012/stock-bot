@@ -9,17 +9,26 @@ persistence write.
 Verb vocabulary (iter-3, three-verb canonical form)
 ----------------------------------------------------
     buy    — enter a flat ticker (prior_row is None) or increase an
-             existing position (prior_row is present).  Requires
-             fill_price.
+             existing position (prior_row is present), or promote a
+             watched thesis to a held position (prior_row.kind="watched").
     sell   — reduce or fully close a position.  ``stance.weight``
              present ⇒ partial trim to that weight; absent ⇒ full
-             close (caller drops the ticker).
+             close (caller drops the ticker).  Raises if prior_row is
+             None OR prior_row.kind != "held".
     update — prose-only revision; no broker call, no weight change.
+             Creates a watched thesis when prior_row is None, refreshes
+             the watched view when prior_row.kind="watched", or updates
+             the review trail on a held row (rationale FROZEN, Invariant 3).
 
 Critical invariant (Invariant 3 — from Spec B):
-    ``rationale`` is FROZEN after the initial buy.  ``sell`` /
-    ``update`` MUST NOT mutate it.  Tests in ``test_verb_dispatch.py``
+    ``rationale`` is FROZEN after the initial buy (or watched→held
+    promotion) for ``kind="held"`` rows.  ``sell`` and ``update`` on
+    held rows MUST NOT mutate it.  Tests in ``test_verb_dispatch.py``
     codify this.
+
+    ``kind="watched"`` rows are explicitly exempt: their rationale
+    evolves with every ``update`` stance.  Invariant 3 attaches at
+    the moment the watched row is promoted to held.
 """
 from __future__ import annotations
 
@@ -110,12 +119,14 @@ def apply_stance_to_thesis(
         The risk-gated stance.  Must use the iter-3 three-verb vocabulary:
         ``buy`` / ``sell`` / ``update``.
     prior_row
-        Existing ``PositionThesis`` (``None`` if ticker was flat).
+        Existing ``PositionThesis`` (``None`` if ticker was flat or never
+        seen before).  May be a ``kind="watched"`` row for tickers the
+        strategist tracks but has not yet bought.
     fill_price
         Actual fill price from Executor's broker call.  Required for
-        ``buy`` stances (used as ``opened_price`` on entry, or to record
-        the add price for position increases).  ``None`` for ``sell`` /
-        ``update`` (no broker call ran, or is irrelevant).
+        ``buy`` stances (used as ``opened_price`` on entry or promotion).
+        ``None`` for ``sell`` / ``update`` (no broker call ran, or
+        is irrelevant).
     tick_id
         Identifier for the current tick (for ``last_reviewed_at`` /
         ``opened_tick_id``).
@@ -136,28 +147,33 @@ def apply_stance_to_thesis(
 
     Notes
     -----
-    Invariant 3: ``rationale`` is FROZEN at the initial buy.  ``sell`` /
-    ``update`` MUST NOT mutate it.  Tests in ``test_verb_dispatch.py``
-    codify this.
+    Invariant 3: ``rationale`` is FROZEN at the initial buy (or watched→held
+    promotion) for ``kind="held"`` rows.  ``sell`` / ``update`` on held
+    rows MUST NOT mutate it.
+
+    Watched rows (``kind="watched"``) are exempt — their rationale evolves
+    freely with every ``update`` stance.  Invariant 3 attaches at promotion.
 
     Raises
     ------
     AssertionError
-        On invalid combinations, e.g. ``buy`` against a held ticker with
-        ``prior_row is None`` when weight would imply a fresh open (the
-        distinction is clear — prior_row=None → open, prior_row≠None →
-        add; both are handled correctly below).  Also raised for ``buy``
-        without a fill price.
+        ``buy`` without a fill price (caller bug).
     ValueError
-        For ``sell`` / ``update`` with no prior row (the ticker must
-        already be in the position book).
+        ``sell`` when prior_row is None or prior_row.kind != "held" — sell
+        only makes sense against a real held position.
     """
 
     match stance.intent:
 
         case "buy":
-            # ``buy`` covers both "open" (prior_row is None) and "add"
-            # (prior_row is present) in the iter-3 schema.
+            # ``buy`` covers three sub-cases:
+            #   1. Fresh entry (prior_row is None) — seed a new held row.
+            #   2. Promotion (prior_row.kind == "watched") — populate entry
+            #      fields, set kind="held", FREEZE rationale to the buy
+            #      stance's rationale.  The watched view's rationale is
+            #      discarded (Invariant 3 attaches at this moment).
+            #   3. Position increase / add (prior_row.kind == "held") — bump
+            #      weight, preserve immutable fields, refresh review trail.
             assert fill_price is not None, "buy without fill price — caller bug"
 
             if prior_row is None:
@@ -168,6 +184,28 @@ def apply_stance_to_thesis(
                 # counter starts from this tick, not from the zero default.
                 return PositionThesis(
                     ticker                    = stance.ticker,
+                    kind                      = "held",
+                    opened_at                 = as_of,
+                    opened_tick_id            = tick_id,
+                    opened_price              = fill_price,
+                    weight                    = stance.weight,
+                    catalyst                  = stance.catalyst,
+                    rationale                 = stance.rationale,
+                    last_reviewed_at          = as_of,
+                    last_reviewed_decision    = "buy",
+                    last_reviewed_reason      = stance.rationale or "",
+                    thesis_last_updated_tick  = current_tick_index,
+                )
+
+            elif prior_row.kind == "watched":
+                # ── Watched → held promotion ─────────────────────────────────
+                # The strategist has been tracking this ticker and now decides
+                # to buy.  Populate entry fields, set kind="held", and FREEZE
+                # the rationale to the BUY stance's rationale — not the prior
+                # watched view (Invariant 3 attaches at this moment).
+                return PositionThesis(
+                    ticker                    = stance.ticker,
+                    kind                      = "held",
                     opened_at                 = as_of,
                     opened_tick_id            = tick_id,
                     opened_price              = fill_price,
@@ -182,9 +220,10 @@ def apply_stance_to_thesis(
 
             else:
                 # ── Position increase (add) ──────────────────────────────────
-                # Weight bump — preserve every immutable field, including
-                # rationale (Invariant 3).  A buy-add is a thesis-affirmation
-                # so we also refresh thesis_last_updated_tick.
+                # Weight bump on an existing held row — preserve every
+                # immutable field, including rationale (Invariant 3).  A
+                # buy-add affirms the thesis, so we refresh
+                # thesis_last_updated_tick to reset the staleness clock.
                 return prior_row.model_copy(update={
                     "weight":                    stance.weight,
                     # Refresh the optional catalyst if the buy stance supplies one.
@@ -200,10 +239,13 @@ def apply_stance_to_thesis(
         case "sell":
             # ``sell`` covers both "trim" (weight supplied) and "close"
             # (weight absent) in the iter-3 schema.
-            if prior_row is None:
+            # ``sell`` only makes sense on a held position — a watched thesis
+            # has no position to sell.
+            if prior_row is None or prior_row.kind != "held":
                 raise ValueError(
                     f"apply_stance_to_thesis: 'sell' for {stance.ticker!r} but "
-                    f"no prior_row found — ticker must already be in position book"
+                    f"no held prior_row found — sell requires an active held position "
+                    f"(prior_row is None or kind='watched' are both invalid for sell)"
                 )
 
             if stance.weight is None:
@@ -224,25 +266,63 @@ def apply_stance_to_thesis(
                 })
 
         case "update":
-            # Prose-only revision — refresh review trail; no broker call,
-            # no weight change.  Preserves all immutable fields including
-            # rationale (Invariant 3).
-            # thesis_last_updated_tick IS refreshed here: an update stance
-            # explicitly revises the strategist's view of this position, so
-            # the staleness clock resets.
+            # ``update`` covers three sub-cases:
+            #   1. prior_row is None → NEW: create a watched row.  The
+            #      strategist is recording an evolving view on a ticker it
+            #      doesn't yet hold.  stance.reason seeds the initial rationale.
+            #   2. prior_row.kind == "watched" → refresh the watched view;
+            #      rationale IS mutable on watched rows.
+            #   3. prior_row.kind == "held" → prose-only revision on a held
+            #      position; rationale FROZEN (Invariant 3); only review
+            #      trail refreshes.
+
             if prior_row is None:
-                raise ValueError(
-                    f"apply_stance_to_thesis: 'update' for {stance.ticker!r} but "
-                    f"no prior_row found — ticker must already be in position book"
+                # ── New watched thesis ───────────────────────────────────────
+                # The strategist wants to record a view on a ticker it doesn't
+                # yet own.  Seed a watched row with all entry fields as None.
+                # stance.reason becomes the initial rationale (watched rationale
+                # is mutable — this will evolve with future update stances).
+                return PositionThesis(
+                    ticker                    = stance.ticker,
+                    kind                      = "watched",
+                    opened_at                 = None,
+                    opened_tick_id            = None,
+                    opened_price              = None,
+                    weight                    = None,
+                    catalyst                  = None,
+                    rationale                 = stance.reason or "",
+                    last_reviewed_at          = as_of,
+                    last_reviewed_decision    = "update",
+                    last_reviewed_reason      = stance.reason or "",
+                    thesis_last_updated_tick  = current_tick_index,
                 )
 
-            return prior_row.model_copy(update={
-                "last_reviewed_at":          as_of,
-                "last_reviewed_decision":    "update",
-                "last_reviewed_reason":      stance.reason or "",
-                # rationale is intentionally NOT included here — Invariant 3.
-                "thesis_last_updated_tick":  current_tick_index,
-            })
+            elif prior_row.kind == "watched":
+                # ── Refresh watched view ─────────────────────────────────────
+                # Rationale mutates here — watched rows are exempt from
+                # Invariant 3.  This is the core of the "evolving view"
+                # feature: each update replaces the prior watched rationale
+                # with the strategist's latest thinking on this ticker.
+                return prior_row.model_copy(update={
+                    "rationale":                 stance.reason or "",
+                    "last_reviewed_at":          as_of,
+                    "last_reviewed_decision":    "update",
+                    "last_reviewed_reason":      stance.reason or "",
+                    "thesis_last_updated_tick":  current_tick_index,
+                })
+
+            else:
+                # ── Held update — rationale FROZEN (Invariant 3) ────────────
+                # Prose-only revision on a held position — refresh review trail
+                # only.  thesis_last_updated_tick resets because the strategist
+                # explicitly revised the view of this position.
+                return prior_row.model_copy(update={
+                    "last_reviewed_at":          as_of,
+                    "last_reviewed_decision":    "update",
+                    "last_reviewed_reason":      stance.reason or "",
+                    # rationale is intentionally NOT included here — Invariant 3.
+                    "thesis_last_updated_tick":  current_tick_index,
+                })
 
         case _:
             # ``intent`` is None (legacy stance) or an unknown value.

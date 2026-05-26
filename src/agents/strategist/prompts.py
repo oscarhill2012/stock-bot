@@ -165,6 +165,12 @@ view.  Silence is a valid response and means "no change."
 | sell    | reduce or fully close a position           | reason                           | weight     |
 | update  | revise thesis prose (no trade)             | reason                           | —          |
 
+Use `update` for **watched** tickers too — record your evolving view on
+tickers you're not buying yet so future ticks see why.  The position book
+retains your latest rationale; the next tick's prompt shows it under
+"Watched theses".  Watched theses' rationale **may evolve** — only held
+theses are frozen.
+
 **Weight semantics:**
 
 - ``buy`` weight is the DELTA — how much to increase the position by,
