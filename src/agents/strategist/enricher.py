@@ -4,7 +4,7 @@ The wrapped Strategist LlmAgent emits the *narrow* :class:`StrategistLLMDecision
 shape (stances + decision_tag + reasoning + thesis + confidence) via ADK's
 ``output_key`` mechanism.  Downstream agents (RiskGate, Executor,
 StrategistDecisionWriter) need the *full* :class:`StrategistDecision` shape,
-which adds the derived ``target_weights`` / ``close_reasons`` / ``trim_reasons``
+which adds the derived ``target_weights`` / ``sell_reasons`` / ``update_reasons``
 dicts.  This enricher runs that derivation and overwrites
 ``state["strategist_decision"]`` with the enriched dump.
 
@@ -189,18 +189,17 @@ def validate_and_enrich(state: dict) -> dict | None:
         raise StrategistContractViolation(msg)
 
     # ── Pass 2: intent-based action tally for the success-summary log ────────
-    action_counts: dict[str, int] = {
-        "open": 0, "close": 0, "trim": 0, "add": 0, "hold": 0, "update": 0,
-    }
+    # Three-verb model (iter-3 rewrite): buy / sell / update.
+    action_counts: dict[str, int] = {"buy": 0, "sell": 0, "update": 0}
     for stance in llm_decision.stances:
-        action = stance.intent or "hold"
+        action = stance.intent or "update"
         action_counts[action] = action_counts.get(action, 0) + 1
 
     # ── Pass 3: derive decision fields ───────────────────────────────────────
-    # All validation passed — derive ``target_weights`` / ``close_reasons`` /
-    # ``trim_reasons`` from the stances.  Reads intent + weight directly;
+    # All validation passed — derive ``target_weights`` / ``sell_reasons`` /
+    # ``update_reasons`` from the stances.  Reads intent + weight directly;
     # raises ``StrategistContractViolation`` on intent=None or missing
-    # reason on close/trim (no silent legacy fallback).
+    # reason on sell/update (no silent legacy fallback).
     raw_as_of = state.get("as_of")
     derivation_now = resolve_as_of(
         raw_as_of,
@@ -218,6 +217,8 @@ def validate_and_enrich(state: dict) -> dict | None:
     derived = derive_decision_fields(llm_decision.stances, ctx)
 
     # Construct the full StrategistDecision downstream agents consume.
+    # sell_reasons and update_reasons replace the former close_reasons /
+    # trim_reasons split (iter-3 three-verb schema rewrite).
     decision = StrategistDecision(
         stances        = llm_decision.stances,
         decision_tag   = llm_decision.decision_tag,
@@ -225,8 +226,8 @@ def validate_and_enrich(state: dict) -> dict | None:
         thesis         = llm_decision.thesis,
         confidence     = llm_decision.confidence,
         target_weights = derived.target_weights,
-        close_reasons  = derived.close_reasons,
-        trim_reasons   = derived.trim_reasons,
+        sell_reasons   = derived.sell_reasons,
+        update_reasons = derived.update_reasons,
     )
 
     # ── Per-tick success summary ─────────────────────────────────────────────
@@ -234,14 +235,11 @@ def validate_and_enrich(state: dict) -> dict | None:
     # actually committing capital or just hold-flat-ing the watchlist.
     nonzero_weight_sum = sum(w for w in derived.target_weights.values() if w > 0.0)
     logger.info(
-        "Strategist tick=%s: opens=%d closes=%d trims=%d adds=%d holds=%d updates=%d"
+        "Strategist tick=%s: buys=%d sells=%d updates=%d"
         " | nonzero_weight_sum=%.4f decision_tag=%r confidence=%s",
         tick_id,
-        action_counts["open"],
-        action_counts["close"],
-        action_counts["trim"],
-        action_counts["add"],
-        action_counts["hold"],
+        action_counts["buy"],
+        action_counts["sell"],
         action_counts["update"],
         nonzero_weight_sum,
         decision.decision_tag,

@@ -64,25 +64,25 @@ def _run(coro_gen):
 def _narrow_llm_output(tickers: list[str]) -> dict:
     """Build the *narrow* StrategistLLMDecision dump the LLM emits via output_key.
 
-    Crucially this dict has NO ``target_weights`` / ``close_reasons`` /
-    ``trim_reasons`` keys — those are derived downstream by the enricher.
+    Crucially this dict has NO ``target_weights`` / ``sell_reasons`` /
+    ``update_reasons`` keys — those are derived downstream by the enricher.
     A fresh ``StrategistLLMDecision`` matches exactly what arrives at the
     enricher after the LlmAgent's ``output_key`` write lands in state.
+
+    Uses the iter-3 three-verb schema: intent is ``buy`` (not ``open``), and
+    the deprecated horizon/target_price/stop_price fields are absent.
     """
     return StrategistLLMDecision(
         stances=[
             TickerStance(
-                ticker       = tickers[0],
-                intent       = "open",
-                weight       = 0.05,
-                rationale    = "open justification text",
-                horizon      = "swing",
-                target_price = 210.0,
-                stop_price   = 185.0,
+                ticker    = tickers[0],
+                intent    = "buy",
+                weight    = 0.05,
+                rationale = "buy justification text",
             ),
         ],
-        decision_tag = "open_first",
-        reasoning    = "Cold-start open on first watchlist ticker.",
+        decision_tag = "buy_first",
+        reasoning    = "Cold-start buy on first watchlist ticker.",
         thesis       = None,
         confidence   = 0.7,
     ).model_dump(mode="json")
@@ -110,7 +110,7 @@ def test_enricher_transforms_narrow_llm_output_into_full_decision():
     site, a schema-retry inside RetryingAgentWrapper could leave only the
     LLM's narrow output in state.  RiskGate then read ``decision.target_weights``
     and got ``{}`` (schema default), produced zero orders, and the executor
-    asserted ``open without fill price`` for every open stance.  This test
+    asserted ``buy without fill price`` for every buy stance.  This test
     locks in the new contract: the enricher runs unconditionally after the
     wrapper and produces the full shape downstream agents need.
     """
@@ -120,7 +120,8 @@ def test_enricher_transforms_narrow_llm_output_into_full_decision():
     # The narrow shape must NOT contain target_weights — this is the
     # pre-enrichment state that downstream agents currently see (and break on).
     assert "target_weights" not in narrow
-    assert "close_reasons" not in narrow
+    assert "sell_reasons" not in narrow
+    assert "update_reasons" not in narrow
 
     state = _state(tickers=tickers, decision=narrow)
 
@@ -135,11 +136,11 @@ def test_enricher_transforms_narrow_llm_output_into_full_decision():
 
     enriched = delta["strategist_decision"]
     assert isinstance(enriched, dict)
-    # All derived dicts must be present and populated.
+    # All derived dicts must be present in the enriched shape.
     assert "target_weights" in enriched
-    assert "close_reasons" in enriched
-    assert "trim_reasons" in enriched
-    # Open stance on AAPL → target_weights["AAPL"] == 0.05; flat tickers
+    assert "sell_reasons" in enriched
+    assert "update_reasons" in enriched
+    # Buy stance on AAPL → target_weights["AAPL"] == 0.05; flat tickers
     # padded to 0.0 by the active-stances derivation carry-forward.
     assert enriched["target_weights"]["AAPL"] == pytest.approx(0.05)
     for t in ("MSFT", "NVDA"):
@@ -175,13 +176,10 @@ def test_enricher_raises_on_off_watchlist_ticker():
     narrow = StrategistLLMDecision(
         stances=[
             TickerStance(
-                ticker       = "ZZZZ",                                            # off-watchlist
-                intent       = "open",
-                weight       = 0.05,
-                rationale    = "fictional ticker",
-                horizon      = "swing",
-                target_price = 100.0,
-                stop_price   = 90.0,
+                ticker    = "ZZZZ",                                               # off-watchlist
+                intent    = "buy",
+                weight    = 0.05,
+                rationale = "fictional ticker",
             ),
         ],
         decision_tag = "bad",
