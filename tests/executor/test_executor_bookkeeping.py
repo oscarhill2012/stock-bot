@@ -95,6 +95,72 @@ async def _broker_with_position(qty: float) -> FakeBroker:
 # ── Tests ─────────────────────────────────────────────────────────────────────
 
 
+async def test_buy_stance_populates_bare_key_bridge(session):
+    """A BUY order with a matching intent='buy' stance must write the ticker into
+    the bare-key bridge ``state['positions']``.
+
+    Scenario: the broker is flat (no existing position); the executor receives a
+    BUY order for TSLA together with a ``strategist_decision`` that carries a
+    ``TickerStance`` with ``intent='buy'``.  After the fill, ``state['positions']``
+    (the Band 4 BUY→SELL bridge) must contain a thesis entry for TSLA.
+
+    This test acts as the regression guard that the old ``intent='open'``
+    filter (Bug resolved in iter-3 Task 7) does NOT suppress the thesis write.
+    """
+    # Flat broker — no position yet; BUY will be the first fill.
+    broker = FakeBroker(starting_cash=50_000.0, prices={_TICKER: _OPEN_PRICE})
+    executor = ExecutorAgent(broker=broker, db_session=session)
+
+    state = {
+        "tick_id":  "tick-buy",
+        "as_of":    _OPEN_AT.isoformat(),
+        "final_orders": [
+            Order(ticker=_TICKER, action="BUY", quantity=5.0, est_price=_OPEN_PRICE),
+        ],
+        "positions": {},  # Flat at the start of this tick
+        "strategist_decision": {
+            "decision_tag": "enter_tsla",
+            "stances": [
+                {
+                    "ticker":    _TICKER,
+                    "intent":    "buy",
+                    "weight":    0.05,
+                    "rationale": "Strong momentum breakout",
+                    "catalyst":  "Earnings beat",
+                    "reason":    None,
+                }
+            ],
+        },
+    }
+
+    events = await _run(executor, state)
+
+    # The executor must yield exactly one event.
+    assert len(events) == 1, "Executor must yield exactly one event per tick"
+
+    delta = events[0].actions.state_delta
+
+    # The bare-key bridge must now contain TSLA — thesis was assembled from the
+    # buy stance and the honest fill price.
+    assert _TICKER in delta["positions"], (
+        "BUY path must insert the ticker into state_delta['positions'] when a "
+        "matching intent='buy' stance is present in strategist_decision"
+    )
+
+    # Spot-check the thesis fields written into the bridge.
+    thesis = delta["positions"][_TICKER]
+    assert thesis["ticker"]       == _TICKER
+    assert thesis["opened_price"] == pytest.approx(_OPEN_PRICE)
+    assert thesis["weight"]       == pytest.approx(0.05)
+    assert thesis["rationale"]    == "Strong momentum breakout"
+    assert thesis["catalyst"]     == "Earnings beat"
+
+    # ``user:positions`` must be absent — it belongs to the after-callback only.
+    assert "user:positions" not in delta, (
+        "_run_async_impl must not write user:positions — that belongs to the after-callback"
+    )
+
+
 async def test_trim_preserves_position_thesis(session):
     """A partial SELL must not delete the position slot or write a TradeLogRow.
 

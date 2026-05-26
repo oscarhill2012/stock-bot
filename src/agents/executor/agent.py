@@ -115,7 +115,7 @@ class ExecutorAgent(BaseAgent):
                     ),
                 )
 
-                # BUY: assemble the thesis from the open-intent stance + fill price
+                # BUY: assemble the thesis from the buy-intent stance + fill price
                 # and record it in the *legacy* position book so SELL can recover
                 # it in the same tick.  The after_agent_callback writes the
                 # new-model ``user:positions`` after the run loop completes.
@@ -123,20 +123,20 @@ class ExecutorAgent(BaseAgent):
                 # Band 6 change: the strategist no longer pre-computes
                 # ``new_positions``; the executor is the only agent with an
                 # honest fill price, so PositionThesis assembly belongs here.
-                # We find the ``intent="open"`` stance for this ticker and call
+                # We find the ``intent="buy"`` stance for this ticker and call
                 # ``apply_stance_to_thesis`` — the same helper used by the
                 # after-callback — so there is exactly one assembly path.
                 if order.action == "BUY":
                     decision_raw = state.get("strategist_decision") or {}
                     stances_raw  = decision_raw.get("stances") or []
 
-                    # Find the open-intent stance for this ticker.
+                    # Find the buy-intent stance for this ticker.
                     open_stance = next(
                         (
                             TickerStance.model_validate(s) if isinstance(s, dict) else s
                             for s in stances_raw
                             if (s.get("ticker") if isinstance(s, dict) else s.ticker) == order.ticker
-                            and (s.get("intent") if isinstance(s, dict) else s.intent) == "open"
+                            and (s.get("intent") if isinstance(s, dict) else s.intent) == "buy"
                         ),
                         None,
                     )
