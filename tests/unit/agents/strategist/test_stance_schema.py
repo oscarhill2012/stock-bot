@@ -510,3 +510,13 @@ def test_old_verbs_rejected_with_clear_message():
         with pytest.raises(ValidationError) as exc:
             TickerStance(ticker="AAPL", intent=old)
         assert "buy" in str(exc.value) and "sell" in str(exc.value)
+
+
+def test_sell_rejects_catalyst():
+    """catalyst is buy-only; sell must reject it (mirrors rationale rejection)."""
+    from agents.strategist.stance_schema import TickerStance
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="catalyst"):
+        TickerStance(ticker="AAPL", intent="sell", reason="x", catalyst="earnings beat")

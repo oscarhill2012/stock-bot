@@ -126,13 +126,15 @@ class PositionThesis(BaseModel):
         ...,
         description="Timestamp (UTC) of the most recent tick whose stance touched this row.",
     )
-    last_reviewed_decision: Literal["open", "add", "trim", "hold", "update"] = Field(
+    last_reviewed_decision: Literal["buy", "sell", "update"] = Field(
         ...,
         description=(
-            "Stance verb that produced the most recent review.  Set to "
-            "'open' on initial entry (the row's lifetime begins with the "
-            "open stance, which counts as the first review).  Never "
-            "'close' — close deletes the row."
+            "Stance verb that produced the most recent review, using the "
+            "iter-3 three-verb vocabulary.  Set to 'buy' on initial entry "
+            "(the row's lifetime begins with the buy stance that opened the "
+            "position, which counts as the first review).  Never 'sell' after "
+            "the position is closed — close deletes the row rather than "
+            "updating it."
         ),
     )
     last_reviewed_reason: str = Field(

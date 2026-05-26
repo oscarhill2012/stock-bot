@@ -43,17 +43,13 @@ from datetime import datetime
 from agents.strategist.stance_schema import TickerStance
 from orchestrator.state import ORDER_EPSILON
 
-# Sentinel used in TickContext fields that are optional for simplified
-# (test-facing) construction but required when running inside the pipeline.
-_UNSET = object()
-
-
 class StrategistContractViolation(RuntimeError):
-    """Raised when the strategist's output violates a position-lifecycle invariant.
+    """Raised when a stance has ``intent=None``.
 
-    The strategist's after-callback raises this for off-watchlist tickers, missing
-    close reasons, or missing trim reasons.  The risk_gate also raises this if a
-    close slips through without a reason.  Callers (pipeline, backtest runner)
+    Every stance emitted by the strategist must carry an explicit intent verb
+    (buy / sell / update).  ``derive_decision_fields`` raises this if a stance
+    slips through with ``intent=None`` — the only remaining caller-side
+    violation in the iter-3 schema path.  Callers (pipeline, backtest runner)
     should treat this as a hard tick failure.
     """
 

@@ -161,6 +161,15 @@ class TickerStance(BaseModel):
                         f"on sell — use 'reason'."
                     )
 
+                # catalyst is accepted on buy stances only (module docstring).
+                # A sell that carries a catalyst field is almost certainly an
+                # LLM copy-paste error from a prior buy stance — reject loudly.
+                if self.catalyst is not None:
+                    raise ValueError(
+                        f"Stance for {self.ticker!r}: 'catalyst' is forbidden "
+                        f"on sell — catalyst is accepted on buy stances only."
+                    )
+
             case "update":
                 # reason articulates what has changed in the prose thesis.
                 if self.reason is None:
