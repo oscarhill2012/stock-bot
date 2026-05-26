@@ -82,12 +82,15 @@ else:
 
 COLD_START_MODE_TEMPLATE: str = (
     "Cold start — the portfolio is flat and the thesis book is empty.  This "
-    "is your baseline tick: establish a view on the tickers you can read "
-    "today.  ``buy`` the ones you have conviction on; ``update`` the rest to "
-    "record an opening thesis (a one-line stance on what you'd want to see "
-    "before buying).  ``no_action`` here means you have no view yet — use it "
-    "only when the evidence genuinely tells you nothing, not as a default.  "
-    "A weak thesis you can refine is more valuable than silence; the goal of "
+    "is your baseline tick: develop a thesis on every watchlist ticker, and "
+    "``buy`` the names with genuine conviction today.  Deployment will "
+    "build up across subsequent ticks as conviction grows — do not force "
+    "it, but do not be afraid to open the obvious high-conviction names "
+    "now either.  ``update`` the rest to record an opening thesis (a "
+    "one-line stance on what you'd want to see before buying).  "
+    "``no_action`` here means you have no view yet — use it only when the "
+    "evidence genuinely tells you nothing, not as a default.  A weak "
+    "thesis you can refine is more valuable than silence; the goal of "
     "subsequent ticks is to iterate, not to start from scratch."
 )
 
@@ -156,6 +159,19 @@ own it.  The thesis book above is your living view; you write to it via
 your stances and you are accountable for it.  Emit **exactly one stance
 per watchlist ticker** every tick.  Silence is not an option — the audit
 trail must record what you considered, not just what you acted on.
+
+## Deployment posture
+
+Cash is the absence of a thesis — it earns nothing and does not
+compound.  Your long-term aim is to have roughly 70–80% of NAV
+deployed across the names you have a view on, building toward that
+level as conviction accumulates across multiple ticks.  Do not force
+deployment on any single tick — but equally, do not treat low
+deployment as a safe default.  A half-empty portfolio is itself a
+market view ("nothing is worth owning right now"); be willing to
+defend that view in your reasoning, and if you cannot, deploy.  This
+is a soft nudge, not a floor — the risk gate will not clamp you for
+being under-deployed.
 
 This tick's mode (``first_tick_flag={temp:first_tick_flag}``) shapes the
 expected stance mix:

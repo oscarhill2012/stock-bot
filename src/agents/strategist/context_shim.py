@@ -120,9 +120,9 @@ class StrategistContextShim(BaseAgent):
           ``"False"`` thereafter.  The prompt uses this flag to decide whether
           to emit a full baseline stance set or an incremental update.
         - ``temp:held_positions_view`` — the lightweight held-positions block
-          showing rationale, opened-at, and thesis staleness in ticks.
-          Intentionally omits ``horizon``, ``target_price``, ``stop_price``
-          (removed in iter-3).
+          showing rationale, opened-at, current price/weight/P&L, and thesis
+          staleness in ticks.  Intentionally omits ``horizon``,
+          ``target_price``, ``stop_price`` (removed in iter-3).
 
         Separating the pure computation from the ADK plumbing in
         ``_run_async_impl`` lets unit tests call ``render()`` directly without
@@ -132,7 +132,9 @@ class StrategistContextShim(BaseAgent):
             state: ADK session-state dict / proxy.  Reads the following keys:
                 ``user:active_stances_initialised`` (bool, defaults to False),
                 ``user:positions`` (dict[ticker, thesis-dict], defaults to {}),
-                ``user:current_tick_index`` (int, defaults to 0).
+                ``user:current_tick_index`` (int, defaults to 0),
+                ``portfolio`` (Portfolio dump, defaults to empty) — sourced so
+                the held-view can show live price/weight/P&L per position.
 
         Returns:
             dict with keys ``temp:first_tick_flag`` and
@@ -151,9 +153,15 @@ class StrategistContextShim(BaseAgent):
         positions = state.get("user:positions") or state.get("positions") or {}
         current_tick_index: int = state.get("user:current_tick_index", 0) or 0
 
+        # Portfolio carries live ``last_price`` per held ticker and the cash
+        # balance — feed it through so the thesis-book renderer can compute
+        # current weight and unrealised P&L without needing extra state keys.
+        portfolio = _coerce_portfolio(state.get("portfolio"))
+
         held_view = _render_positions_shim(
             positions,
             current_tick_index = current_tick_index,
+            portfolio          = portfolio,
         )
 
         return {
@@ -234,6 +242,12 @@ class StrategistContextShim(BaseAgent):
         news = _index_evidence(state, "news_evidence")
         sm   = _index_evidence(state, "smart_money_evidence")
 
+        # Coerce the portfolio off state so we can lift live ``last_price`` for
+        # held tickers — the most authoritative source since the broker syncs
+        # it every tick.  For non-held tickers we fall back to the technical
+        # extractor's ``last_close`` feature.
+        portfolio = _coerce_portfolio(state.get("portfolio"))
+
         # Build one TickerEvidence per watchlist ticker.
         ticker_evidence: list[TickerEvidence] = []
         for t in tickers:
@@ -247,12 +261,28 @@ class StrategistContextShim(BaseAgent):
             if t in sm:
                 per_analyst["smart_money"] = sm[t]
 
+            # Resolve live price.  Held positions win (broker updates each tick);
+            # otherwise read the technical analyst's ``last_close`` feature
+            # (the sentinel ``0.0`` indicates the extractor had no bars and
+            # we should treat the value as absent).
+            last_price: float | None = None
+            held = portfolio.positions.get(t)
+            if held is not None and held.last_price > 0:
+                last_price = float(held.last_price)
+            else:
+                tech_ev = per_analyst.get("technical")
+                if tech_ev is not None:
+                    raw_lc = (tech_ev.features or {}).get("last_close")
+                    if raw_lc is not None and float(raw_lc) > 0:
+                        last_price = float(raw_lc)
+
             te = build_ticker_evidence(
                 per_analyst = per_analyst,
                 ticker      = t,
                 tick_id     = tick_id,
                 recorded_at = recorded_at,
                 weights     = DEFAULT_ANALYST_WEIGHTS,
+                last_price  = last_price,
             )
             ticker_evidence.append(te)
 
@@ -314,6 +344,7 @@ def _render_positions_shim(
     positions: dict,
     *,
     current_tick_index: int,
+    portfolio: Portfolio | None = None,
 ) -> str:
     """Render the thesis book — one row per ticker the agent has a view on.
 
@@ -331,9 +362,13 @@ def _render_positions_shim(
     Per-row fields rendered
     -----------------------
     - Ticker symbol (header) + position-state tag
-    - When owned: opened-at price and date
+    - When owned: opened-at price + entry weight (frozen at decision time)
+    - When owned AND a matching portfolio position is present: live close,
+      live weight (drifts with price), and unrealised P&L as a signed %
+      since entry.  Surfacing these closes the "lock-in-gains on a loss"
+      hallucination from iter-3 (the strategist had no way to know whether
+      a position was up or down without manual arithmetic).
     - Rationale (the agent's current view; mutable)
-    - Catalyst (if present)
     - Thesis staleness in ticks
 
     Deliberately omits: ``horizon``, ``target_price``, ``stop_price`` —
@@ -346,6 +381,11 @@ def _render_positions_shim(
     current_tick_index:
         The current backtest tick index, read from
         ``state["user:current_tick_index"]``.  Used to compute staleness.
+    portfolio:
+        Optional live portfolio snapshot — when supplied, each
+        ``[POSITION]`` row picks up its live price, current weight, and
+        unrealised P&L from the matching ``Position``.  ``None`` skips the
+        live overlay (the renderer still emits the entry block).
 
     Returns
     -------
@@ -369,6 +409,10 @@ def _render_positions_shim(
         if raw_val is not None and hasattr(raw_val, "strftime"):
             return raw_val.strftime("%Y-%m-%d %H:%M")
         return "(unknown date)"
+
+    # ── Pre-compute NAV so per-ticker current weight is a single division.
+    # NAV can be zero on cold-start fixtures — guard the division below.
+    nav: float = portfolio.total_value if portfolio is not None else 0.0
 
     # ── Render one block per ticker, sorted for stable prompt diffs ──────
     lines: list[str] = ["## Thesis Book"]
@@ -397,12 +441,40 @@ def _render_positions_shim(
         if has_position:
             opened_price = data.get("opened_price") or 0.0
             opened_at    = _fmt_opened_at(data.get("opened_at"))
-            weight       = data.get("weight")
-            weight_str   = f"{weight:.3f}" if weight is not None else "—"
+            entry_weight = data.get("weight")
+            entry_w_str  = f"{entry_weight:.3f}" if entry_weight is not None else "—"
             block_lines.append(
                 f"  Opened at ${opened_price:.2f} on {opened_at}  "
-                f"(weight {weight_str})"
+                f"(entry weight {entry_w_str})"
             )
+
+            # Live overlay — only when the portfolio is supplied AND the ticker
+            # is actually held (the thesis book can carry watched-only rows
+            # whose ``[POSITION]`` tag predates an executed exit, so we don't
+            # assume the position is still open).
+            live_pos = portfolio.positions.get(ticker) if portfolio is not None else None
+            if (
+                live_pos is not None
+                and live_pos.last_price > 0
+                and live_pos.quantity > 0
+            ):
+                current_price = float(live_pos.last_price)
+                current_w     = (live_pos.market_value / nav) if nav > 0 else 0.0
+
+                # Unrealised P&L vs the avg-cost basis (volume-weighted across
+                # all fills on this position) — more accurate than the thesis
+                # opened_price when the position has been added to.
+                if live_pos.avg_cost > 0:
+                    unrealised_pct = (current_price / live_pos.avg_cost - 1.0) * 100.0
+                    pnl_sign       = "+" if unrealised_pct >= 0 else ""
+                    pnl_str        = f"{pnl_sign}{unrealised_pct:.2f}%"
+                else:
+                    pnl_str = "n/a"
+
+                block_lines.append(
+                    f"  Now ${current_price:.2f}  ({pnl_str})  "
+                    f"current weight {current_w:.3f}"
+                )
 
         block_lines.append(f"  Rationale:  {rationale}")
 

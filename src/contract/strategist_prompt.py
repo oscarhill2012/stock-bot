@@ -616,7 +616,7 @@ def render_ticker_block(te: TickerEvidence) -> str:
 
     .. code-block:: text
 
-        === <TICKER> ===
+        === <TICKER>  $250.34 ===
 
         [Technical]  lean: bearish  magnitude: 0.49  confidence: 0.90
           RSI(14):                  76.0   (overbought)
@@ -652,7 +652,14 @@ def render_ticker_block(te: TickerEvidence) -> str:
     parts: list[str] = []
 
     # ── Section header ────────────────────────────────────────────────────────
-    parts.append(f"=== {te.ticker} ===")
+    # Show the live close alongside the ticker so the strategist always sees
+    # "where this is trading right now" without having to dig into the
+    # technical block.  Falls back to a "(price n/a)" sentinel when no price
+    # source was available (technical analyst missing AND not held).
+    if te.last_price is not None and te.last_price > 0:
+        parts.append(f"=== {te.ticker}  ${te.last_price:,.2f} ===")
+    else:
+        parts.append(f"=== {te.ticker}  (price n/a) ===")
     parts.append("")
 
     # ── Per-analyst blocks ────────────────────────────────────────────────────

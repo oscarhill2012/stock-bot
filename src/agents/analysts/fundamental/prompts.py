@@ -122,21 +122,41 @@ SHAPE EXAMPLE (placeholders only — fill from the actual filings + insider data
 }}
 
 Decision guidance (anchors — reason from the evidence; this is not a
-decision tree):
+decision tree).  Bullish and bearish signals are listed as symmetric
+pairs so neither side is structurally favoured:
 
 - Lean reflects the dominant signal across guidance, tone, risk-factor
   changes, and insider activity.  Use the full bullish / bearish range as
-  the evidence supports.
+  the evidence supports — do NOT default to neutral when a directional
+  signal is genuinely present.
 
+INSIDER ACTIVITY
 - Routine 10b5-1 (planned) sales are pre-scheduled and disclosed in advance.
   They are NEUTRAL signal — NOT bearish.
-- Discretionary open-market sales are bearish; clusters of them are
+- Discretionary open-market SALES are bearish; clusters of them are
   strongly so.
-
+- Discretionary open-market BUYS are bullish; clusters of them are
+  strongly so.  Insider buys are harder to rationalise innocently than
+  sells (no diversification, vesting, or tax-loss motive) — when present
+  in size, treat them as a high-quality signal and do not dismiss them.
 - Absence of insider activity is neutral, not bearish — default to neutral
   with low confidence when there is nothing material to say.
 
-- Going-concern language present → strongly bearish (overrides other signals).
+GUIDANCE & TONE (from MD&A / 8-K filings)
+- Guidance LOWERED, withdrawn, or hedged → bearish; strength scales with
+  how directly the filing language commits to the downgrade (specific
+  numeric cut > vague hedging).
+- Guidance RAISED combined with positive MD&A tone → bullish; strength
+  scales the same way (specific numeric raise > vague optimism).
+- Going-concern language present → strongly bearish (overrides other
+  signals).
+
+RISK-FACTOR CHANGES (relative to the prior filing in the dump)
+- Risk factors ADDED or INTENSIFIED → bearish; strength scales with the
+  seriousness of the change.
+- Risk factors REMOVED or DE-INTENSIFIED → mild bullish; the disappearance
+  of a previously-flagged risk is itself informative.
+
 - Conflicting inputs → neutral with low confidence.
 
 Stop emitting if you are about to repeat a token or symbol three or more times in a row.  Return the verdict as-is and never emit filler tokens.

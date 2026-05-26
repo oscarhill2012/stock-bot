@@ -261,6 +261,7 @@ def build_ticker_evidence(
     tick_id: str,
     recorded_at: datetime,
     weights: Mapping[str, float],
+    last_price: float | None = None,
 ) -> TickerEvidence:
     """Collapse per-analyst evidence into one TickerEvidence for the strategist.
 
@@ -284,6 +285,13 @@ def build_ticker_evidence(
         Per-analyst weight factors. Must cover every analyst the digest
         considers. Passed through unchanged to ``TickerEvidence.weights`` for
         auditability.
+    last_price:
+        Optional live close at evidence-build time.  The shim that drives this
+        function resolves the value from the portfolio (held tickers) or the
+        technical analyst's ``last_close`` feature (non-held tickers) and
+        passes it through here so the strategist's per-ticker renderer can
+        show the live price in its section header.  ``None`` when no source
+        was available.
 
     Returns
     -------
@@ -300,4 +308,5 @@ def build_ticker_evidence(
         per_analyst=filled,
         aggregate=aggregate,
         weights=dict(weights),
+        last_price=last_price,
     )

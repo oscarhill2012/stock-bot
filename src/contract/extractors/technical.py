@@ -56,6 +56,11 @@ _KEYS = (
     "golden_cross",
     "death_cross",
     "beta_confidence_damping",
+    # Most recent close — surfaced as a feature so the strategist's per-ticker
+    # block can render the live price in its section header (Bug: strategist
+    # was blind to current price, causing hallucinated-gains close decisions).
+    # ``0.0`` is the no-data sentinel (matches the other feature defaults).
+    "last_close",
 )
 
 
@@ -403,6 +408,12 @@ def extract_technical_features(
                 low52 = min(closes)
 
     last_close = float(close.iloc[-1])
+
+    # Surface the live close so downstream renderers (section header, thesis
+    # book) can show "where the ticker is trading right now" without going back
+    # to the raw bars dict.  Stored under the same feature key advertised in
+    # ``_KEYS`` above.
+    out["last_close"] = last_close
 
     # Distances expressed as signed percentages (e.g. -3.25 = 3.25 % below high).
     # This convention matches the verdict heuristic which compares against

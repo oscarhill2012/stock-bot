@@ -43,7 +43,16 @@ class AggregateVerdict(BaseModel):
 
 
 class TickerEvidence(BaseModel):
-    """One row of evidence the strategist sees for a ticker on a tick."""
+    """One row of evidence the strategist sees for a ticker on a tick.
+
+    ``last_price`` carries the live close at evidence-build time so the
+    strategist's per-ticker renderer can show "where the ticker is trading
+    right now" in the section header — see ``contract.strategist_prompt``.
+    It is ``None`` when no price source is available for the ticker (the
+    technical analyst was missing AND the ticker is not held in the
+    portfolio).  Downstream renderers must treat ``None`` and ``0.0`` as
+    "no price" — both can arise depending on the path that populates it.
+    """
 
     ticker: str
     tick_id: str
@@ -51,3 +60,4 @@ class TickerEvidence(BaseModel):
     per_analyst: dict[str, AnalystEvidence]
     aggregate: AggregateVerdict
     weights: dict[str, float]
+    last_price: float | None = None
