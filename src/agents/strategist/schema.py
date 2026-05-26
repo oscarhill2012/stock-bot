@@ -75,7 +75,7 @@ class StrategistLLMDecision(BaseModel):
     investigation): the LLM's ``response_schema`` must be a narrow shape that
     matches what the prompt actually instructs the model to produce.  The
     previous monolithic ``StrategistDecision`` exposed
-    ``target_weights`` / ``close_reasons`` / ``trim_reasons`` to the model via
+    ``target_weights`` / ``sell_reasons`` / ``update_reasons`` to the model via
     the JSON Schema even though those fields are filled in by the after-callback
     — the prompt never mentioned them, so the model was constrained to emit
     three top-level fields with zero guidance.  That ambiguity correlated with
@@ -147,7 +147,9 @@ class StrategistDecision(BaseModel):
 
     confidence: float = Field(ge=0.0, le=1.0)
 
-    # Required when closing an existing position (weight >0 → 0).
-    close_reasons: dict[str, str] = Field(default_factory=dict)
-    # Required when reducing (not zeroing) an existing position.
-    trim_reasons: dict[str, str] = Field(default_factory=dict)
+    # Populated by sell stances — covers both full closes and partial trims.
+    # Replaces the former close_reasons + trim_reasons split (iter-3 rewrite).
+    sell_reasons: dict[str, str] = Field(default_factory=dict)
+
+    # Populated by update stances — prose rationale with no associated trade.
+    update_reasons: dict[str, str] = Field(default_factory=dict)

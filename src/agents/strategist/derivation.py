@@ -1,11 +1,26 @@
 """Derive canonical decision fields from per-ticker stances.
 
 The strategist's after-callback runs ``derive_decision_fields`` to populate
-``StrategistDecision.target_weights`` / ``close_reasons`` / ``trim_reasons``
+``StrategistDecision.target_weights`` / ``sell_reasons`` / ``update_reasons``
 from the LLM-emitted ``stances``.  Downstream agents (risk_gate, executor,
 memory_writer) keep their existing input shape, so this function acts as the
 translation layer between the richer per-ticker stance model and the flat
 derived fields.
+
+Three-verb vocabulary (iter-3 schema rewrite)
+---------------------------------------------
+    buy    — additive delta; increases current weight by ``stance.weight``.
+    sell   — reductive delta; absent weight = full close (target 0.0);
+             present weight = reduce current by that delta (clamped ≥ 0).
+    update — prose-only; no trade; carries current weight forward verbatim.
+
+Held-ticker omission policy
+----------------------------
+Held tickers the strategist does NOT emit a stance for are **implicitly held**:
+their current weight is carried forward in Pass 2 without error.  This replaces
+the former Spec-B / D3 rule (omission raised ``StrategistContractViolation``)
+which the iter-3 schema rewrite supersedes.  Flat tickers (weight ≈ 0) the
+strategist does not mention are padded to 0.0 as before.
 
 ``new_positions`` was a derived field that pre-computed a ``PositionThesis``
 for every ``open`` stance at decision time.  It was removed in Band 6: the
@@ -27,6 +42,10 @@ from datetime import datetime
 
 from agents.strategist.stance_schema import TickerStance
 from orchestrator.state import ORDER_EPSILON
+
+# Sentinel used in TickContext fields that are optional for simplified
+# (test-facing) construction but required when running inside the pipeline.
+_UNSET = object()
 
 
 class StrategistContractViolation(RuntimeError):
@@ -88,19 +107,26 @@ class TickContext:
     """Inputs the derivation needs that aren't carried on the stance itself.
 
     Args:
-        tick_id: Unique identifier for this decision tick (e.g. ``"tick_042"``).
-        decision_tag: Snake-case label attached to this tick's decision
-            (e.g. ``"morning_sweep_2026_05_08"``).
-        now: Timestamp of the current tick, used as ``opened_at`` for new positions.
-        current_weights: Mapping of ticker → current portfolio weight. Used to
-            verify that held tickers have explicit stances (Spec B / D3).
+        current_weights: Mapping of ticker → current portfolio weight.  Used
+            to compute carry-forward weights for held and flat tickers.
         watchlist: The full watchlist for this tick.  Derivation pads
             ``target_weights`` for every watchlist ticker so downstream
             agents (risk_gate, executor) always see an exhaustive dict.
             Flat tickers (current weight ≈ 0) the strategist did not emit
-            a stance for are padded to 0.0.  Held tickers MUST have an
-            explicit stance — omission raises ``StrategistContractViolation``
-            (Spec B / D3).
+            a stance for are padded to 0.0.  Held tickers with no stance
+            are now implicitly held — their current weight carries forward
+            without error (iter-3 schema rewrite).
+        held_tickers: Explicit set of currently-held tickers.  When provided,
+            this overrides the weight-threshold computation used as a fallback
+            (``current_weights ≥ ORDER_EPSILON``).  Callers that don't supply
+            this get the computed set automatically.
+        tick_id: Unique identifier for this decision tick (e.g. ``"tick_042"``).
+            Optional — pipeline passes it; unit tests may omit it.
+        decision_tag: Snake-case label attached to this tick's decision
+            (e.g. ``"morning_sweep_2026_05_08"``).
+            Optional — pipeline passes it; unit tests may omit it.
+        now: Timestamp of the current tick, used as ``opened_at`` for new
+            positions.  Optional — pipeline passes it; unit tests may omit it.
 
     Note:
         ``current_prices`` deliberately omitted: the strategist no longer
@@ -110,11 +136,18 @@ class TickContext:
         price to record.  See ``PositionThesis`` docstring.
     """
 
-    tick_id: str
-    decision_tag: str
-    now: datetime
     current_weights: dict[str, float]
     watchlist: list[str] = field(default_factory=list)
+
+    # Explicit held-tickers set; when None the derivation computes it from
+    # current_weights using the ORDER_EPSILON threshold.
+    held_tickers: set[str] | None = None
+
+    # Pipeline-facing fields — optional so unit tests can construct a
+    # minimal TickContext without threading through tick metadata.
+    tick_id: str | None = None
+    decision_tag: str | None = None
+    now: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -128,13 +161,19 @@ class DerivedFields:
 
     Args:
         target_weights: Target portfolio weight for every stance ticker,
-            including holds (weight unchanged) and closes (weight → 0.0).
-        close_reasons: Human-readable reason for each full exit, keyed by ticker.
-            Only populated when the stance supplies a ``reason`` with ``intent=="close"``.
-        trim_reasons: Human-readable reason for each partial size reduction,
-            keyed by ticker. Only populated when the stance supplies a ``reason``
-            with ``intent=="trim"``.
-        decision_tags: Per-ticker intent tag derived from (prior, new) weight pair.
+            including carries (weight unchanged) and closes (weight → 0.0).
+            Padded for every watchlist ticker so downstream agents always see
+            an exhaustive dict.
+        sell_reasons: Human-readable reason for each sell (full or partial),
+            keyed by ticker.  Populated by ``sell`` stances.  Replaces the
+            former ``close_reasons`` + ``trim_reasons`` split — both full closes
+            and partial trims now share this dict (iter-3 schema rewrite).
+        update_reasons: Prose rationale for each update stance, keyed by ticker.
+            No trade occurs on update; this is surfaced in traces only.
+        decision_tags: Per-ticker intent tag derived from the (prior, new)
+            weight pair — one of ``entry``, ``ramp``, ``trim``, ``exit``,
+            ``hold_flat``, ``hold``.  Carry-forward tickers are included with
+            their implicit action tag.
 
     Note:
         ``frozen=True`` prevents field reassignment but does not deep-freeze the
@@ -142,15 +181,9 @@ class DerivedFields:
     """
 
     target_weights: dict[str, float]
-    close_reasons: dict[str, str]
-    trim_reasons: dict[str, str]
+    sell_reasons: dict[str, str]
+    update_reasons: dict[str, str]
     decision_tags: dict[str, str]
-    """Per-ticker intent tag derived from (prior, new) weight — one of:
-    ``entry``, ``ramp``, ``trim``, ``exit``, ``hold_flat``, ``hold``.
-    Spec B / Spec C memory writers use this as a discriminating intent key
-    (S6 — replaces the constant ``catalyst_driven_entry`` the LLM emitted).
-    Carry-forward tickers are included with their implicit action tag.
-    """
 
 
 def derive_decision_fields(
@@ -159,60 +192,50 @@ def derive_decision_fields(
 ) -> DerivedFields:
     """Translate a list of per-ticker stances into the derived decision fields.
 
-    This function is **pure** — it reads from ``stances`` and ``ctx`` and returns
-    a ``DerivedFields`` snapshot with no side effects. It is called from the
-    strategist's after-callback (C9), which is responsible for validating the
-    stances before calling here.
+    This function is **pure** — it reads from ``stances`` and ``ctx`` and
+    returns a ``DerivedFields`` snapshot with no side effects.  It is called
+    from the strategist's after-callback (C9), which is responsible for
+    validating the stances before calling here.
 
-    Reads ``stance.intent`` as the canonical action verb and ``stance.weight``
-    as the target portfolio weight.  The legacy ``preferred_weight`` field is
-    no longer consulted — ``intent is None`` on any stance raises
-    ``StrategistContractViolation`` immediately (silent legacy-path fallback
-    is the recurring bug class, per ``feedback_silent_failures_loud_tests``).
+    Verb dispatch (three-verb schema, iter-3 rewrite)
+    --------------------------------------------------
+    Reads ``stance.intent`` as the canonical action verb:
 
-    Active-stances model (Spec B / D3):
+    - ``buy``    — additive delta.  ``stance.weight`` is added to the current
+                   position weight (buy is always a delta, not an absolute
+                   target).  Requires weight and rationale (enforced by
+                   ``TickerStance`` validator).
+    - ``sell``   — reductive delta.  Absent weight ⇒ full close (target 0.0);
+                   present weight ⇒ reduce current by that delta, clamped ≥ 0.
+                   Populates ``sell_reasons`` with ``stance.reason``.
+    - ``update`` — prose-only revision.  No trade; current weight carries
+                   forward verbatim.  Populates ``update_reasons``.
 
-        The strategist MUST emit a stance for every pre-tick held ticker
-        (open / add / trim / close / hold / update).  Silent carry-forward
-        of held positions is no longer permitted; omitting a held ticker
-        raises ``StrategistContractViolation``.
+    Active-stances model (iter-3)
+    ------------------------------
+    Held tickers the strategist does NOT emit a stance for are implicitly held:
+    their current weight carries forward in Pass 2 without error.  This is a
+    deliberate relaxation of the former Spec-B / D3 rule, which required
+    explicit engagement with every held ticker on every tick.  The new model
+    allows the LLM to emit only the tickers it has something to say about,
+    while the derivation layer handles the carry-forward silently.
 
-        Flat watchlist tickers (current weight ≈ 0) remain optional — the
-        strategist only needs to emit a stance when it wants to *change* a
-        flat ticker's exposure (open / add).  Flat tickers the strategist
-        does NOT mention are padded to 0.0 in Pass 2 so downstream agents
-        always see an exhaustive ``target_weights`` dict.
-
-    Each emitted stance is processed independently:
-
-    - ``target_weights`` is populated for *every* emitted stance.
-      Opens/adds/trims write ``stance.weight``; closes write ``0.0``
-      (the full exit); holds/updates write ``stance.weight or 0.0``
-      (preserving the current weight where weight is not re-stated).
-    - ``close_reasons`` fires only on ``"close"`` and requires a non-empty
-      ``stance.reason`` — raising ``StrategistContractViolation`` if absent,
-      because silent exits without a reason are forbidden audit failures.
-    - ``trim_reasons`` mirrors ``close_reasons`` for the ``"trim"`` action.
-    - ``"open"``, ``"add"``, ``"hold"``, and ``"update"`` actions only
-      contribute to ``target_weights``.
+    Flat watchlist tickers (current weight ≈ 0) with no stance are padded to
+    0.0 as before so downstream agents always see an exhaustive
+    ``target_weights`` dict.
 
     Note: ``new_positions`` was removed in Band 6.  The executor now assembles
-    the ``PositionThesis`` for each ``open`` stance itself, using
+    the ``PositionThesis`` for each ``buy`` stance itself, using
     ``apply_stance_to_thesis`` from ``executor._verb_dispatch`` with the real
     fill price from the broker.  Pre-computing it here was always wrong because
     the strategist runs before the order fills and has no honest fill price.
 
-    Then ``target_weights`` is padded for un-emitted FLAT watchlist tickers
-    to 0.0 (the active-stances model).  Held tickers must have been covered
-    by an explicit stance — Pass 1.5 enforces this with
-    ``StrategistContractViolation`` (Spec B / D3).
-
     Parameters
     ----------
     stances:
-        Iterable of ``TickerStance`` objects — one per *active* ticker for
-        this tick (not every watchlist ticker; omissions = carry-forward for
-        flat tickers only).
+        Iterable of ``TickerStance`` objects — one per ticker the strategist
+        has something to say about this tick.  Omissions are valid for both
+        held (implicit hold) and flat tickers (implicit no-position).
     ctx:
         ``TickContext`` carrying tick metadata, current portfolio state,
         and the full watchlist used for carry-forward padding.
@@ -226,14 +249,12 @@ def derive_decision_fields(
     Raises
     ------
     StrategistContractViolation
-        - When any stance has ``intent is None`` (no silent legacy fallback).
-        - When a ``"close"`` stance has no ``reason`` (audit requirement).
-        - When a ``"trim"`` stance has no ``reason`` (audit requirement).
-        - When a pre-tick held ticker has no stance (Spec B / D3).
+        When any stance has ``intent is None`` (no silent legacy fallback;
+        every stance must carry an explicit intent verb).
     """
     target_weights: dict[str, float] = {}
-    close_reasons: dict[str, str] = {}
-    trim_reasons: dict[str, str] = {}
+    sell_reasons: dict[str, str] = {}
+    update_reasons: dict[str, str] = {}
     decision_tags: dict[str, str] = {}
 
     # ── Pass 1: emitted stances ───────────────────────────────────────────────
@@ -246,115 +267,78 @@ def derive_decision_fields(
         emitted.add(stance.ticker)
 
         # Guard: intent MUST be present — no silent legacy-path fallback.
-        # Silently falling through to preferred_weight was the recurring bug class
+        # Silently falling through was the recurring bug class
         # (see auto-memory feedback_silent_failures_loud_tests).
         if stance.intent is None:
             raise StrategistContractViolation(
-                f"Stance for {stance.ticker!r} has intent=None.  "
-                f"Every stance must carry an explicit intent verb "
-                f"(open / add / trim / close / hold / update)."
+                f"Stance for {stance.ticker!r} has intent=None.  Every stance "
+                f"must carry an explicit intent (buy / sell / update)."
             )
 
-        # Read the canonical action directly from intent — no weight comparison.
-        action = stance.intent
+        current = ctx.current_weights.get(stance.ticker, 0.0)
 
-        # Derive the new target weight from the stance's explicit weight field.
-        # Closes always target 0.0 (full exit); holds/updates use current weight
-        # if no new weight was stated (weight=None); opens/adds/trims use weight.
-        if action == "close":
-            target_weights[stance.ticker] = 0.0
+        match stance.intent:
 
-        else:
-            # ``or 0.0`` handles close/hold/update where weight is None —
-            # the risk-gate and executor both tolerate 0.0 as "no change".
-            target_weights[stance.ticker] = stance.weight or 0.0
+            case "buy":
+                # weight is the DELTA — increase current position by that much.
+                target_weights[stance.ticker] = current + stance.weight
+
+            case "sell":
+                # weight absent ⇒ full close; weight present ⇒ reduce by delta
+                # (clamped to current; risk gate will surface clamps as audit).
+                if stance.weight is None:
+                    target_weights[stance.ticker] = 0.0
+                else:
+                    target_weights[stance.ticker] = max(0.0, current - stance.weight)
+                sell_reasons[stance.ticker] = stance.reason
+
+            case "update":
+                # No trade — current weight carries forward verbatim.  Reason
+                # is captured separately for the trace; not surfaced in
+                # target_weights or sell_reasons.
+                target_weights[stance.ticker] = current
+                update_reasons[stance.ticker] = stance.reason
 
         # S6: derive a per-ticker intent tag from the (prior, new) weight pair.
         # Replaces the constant ``catalyst_driven_entry`` the LLM emitted for
         # every tick — gives Spec B / Spec C memory writers a discriminating key.
-        current = ctx.current_weights.get(stance.ticker, 0.0)
-
         decision_tags[stance.ticker] = derive_decision_tag(
             prior=current,
             new=target_weights[stance.ticker],
         )
 
-        # ── Close reason — required, not optional ────────────────────────────
-        # A full exit without a reason is an audit failure; raise rather than
-        # silently skipping (the prior implementation used a falsy check and
-        # skipped silently, which is the recurring bug class).
-        if action == "close":
-            if not stance.reason:
-                raise StrategistContractViolation(
-                    f"Stance for {stance.ticker!r} has intent='close' but "
-                    f"reason is missing or empty.  Every close must articulate "
-                    f"why the position is being exited so the audit trail is complete."
-                )
-            close_reasons[stance.ticker] = stance.reason
-
-        # ── Trim reason — required, not optional ────────────────────────────
-        # Same principle as close: a trim without a reason is a silent failure.
-        elif action == "trim":
-            if not stance.reason:
-                raise StrategistContractViolation(
-                    f"Stance for {stance.ticker!r} has intent='trim' but "
-                    f"reason is missing or empty.  Every trim must articulate "
-                    f"why the position size is being reduced."
-                )
-            trim_reasons[stance.ticker] = stance.reason
-
-        # "open", "add", "hold", "update" only contribute to target_weights above.
-
-    # ── Pass 1.5: stance required per held position (Spec B / D3) ────────────
-    # Every pre-tick held ticker MUST have been touched by a stance above.
-    # Silent carry-forward of held positions is no longer permitted — the
-    # strategist must explicitly engage with each held position on every
-    # tick (Principle 3 of the spec).  Flat tickers remain optional (the
-    # active-stances model survives for them — Pass 2 below).
+    # ── Pass 1.5: resolve held_tickers ───────────────────────────────────────
+    # Use the caller-supplied set if present; otherwise compute from
+    # current_weights using ORDER_EPSILON as the "is held" threshold.
     #
-    # The threshold is ``ORDER_EPSILON`` (1e-6), not strict ``> 0.0``: a
-    # broker-side close can leave a sub-epsilon dust quantity (e.g. 3.55e-15
-    # observed on AMD post-close 2026-05-25) whose weight reads as positive
-    # under strict comparison but is operationally flat.  The shim's
-    # ``user:positions`` thesis-registry view of "held" already implicitly
-    # filters dust by removing closed theses, so without this epsilon the
-    # two layers disagree and the strategist is rejected for missing a
-    # stance on a ticker the prompt never asked it to engage with.  See
-    # ``docs/todo-fixes.md`` §5.3 for the broader open question on whether
-    # weight-based portfolio maths is the right primitive at all.
-    held_tickers = {
-        t for t, w in ctx.current_weights.items() if w >= ORDER_EPSILON
-    }
-    uncovered_held = held_tickers - emitted
+    # The threshold avoids misidentifying sub-epsilon dust quantities (e.g.
+    # 3.55e-15 observed on AMD post-close 2026-05-25) as held positions.
+    if ctx.held_tickers is not None:
+        held_tickers = ctx.held_tickers
+    else:
+        held_tickers = {
+            t for t, w in ctx.current_weights.items() if w >= ORDER_EPSILON
+        }
 
-    if uncovered_held:
-        # Sort for deterministic error messages — easier to grep for in logs.
-        names = ", ".join(sorted(uncovered_held))
-        raise StrategistContractViolation(
-            f"Held position(s) {{{names}}} have no matching stance in the "
-            f"strategist's output.  Every pre-tick held ticker must be "
-            f"explicitly engaged with on every tick (Spec B / D3) — emit a "
-            f"hold / trim / close / update stance for each."
-        )
+    # ── Pass 2: carry-forward for un-emitted tickers ──────────────────────────
+    # Any ticker not covered by a stance above gets its current weight carried
+    # forward.  For held tickers this is an implicit hold; for flat watchlist
+    # tickers it pads to 0.0.  Both cases are valid under the iter-3 model —
+    # the former Spec-B / D3 "error on omission" rule is intentionally removed.
+    all_relevant = set(ctx.watchlist) | held_tickers
 
-    # ── Pass 2: carry-forward padding for FLAT tickers only ──────────────────
-    # Any *flat* watchlist ticker the strategist did not emit a stance for
-    # keeps its current weight (0.0) — the active-stances model survives for
-    # flat tickers since the LLM has no view to commit to.  Held tickers are
-    # NOT padded here — Pass 1.5 above guarantees they were covered by an
-    # explicit stance.
-    for ticker in ctx.watchlist:
+    for ticker in all_relevant:
         if ticker in emitted:
             continue
 
-        # By construction (Pass 1.5), ticker is NOT in held_tickers — so its
-        # current weight is 0.0 (or absent) and we pad with 0.0.
-        target_weights[ticker] = 0.0
-        decision_tags[ticker]  = derive_decision_tag(prior=0.0, new=0.0)
+        # Carry forward the current weight (0.0 for flat tickers).
+        current = ctx.current_weights.get(ticker, 0.0)
+        target_weights[ticker] = current
+        decision_tags[ticker]  = derive_decision_tag(prior=current, new=current)
 
     return DerivedFields(
         target_weights=target_weights,
-        close_reasons=close_reasons,
-        trim_reasons=trim_reasons,
+        sell_reasons=sell_reasons,
+        update_reasons=update_reasons,
         decision_tags=decision_tags,
     )
