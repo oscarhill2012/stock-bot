@@ -504,6 +504,13 @@ class Runner:
                 db_session=db_session,
                 decision_logger=dl,
                 failure_abort_ratio=self._settings.failed_tick_abort_ratio,
+                # Forward settings so the driver can refresh
+                # ``report/equity_curve.png`` + ``report/metrics.md`` at the
+                # end of every tick (per-tick progress dashboard).  The
+                # end-of-run ``report()`` call below still runs unconditionally
+                # — it adds the forward-return backfill that ``report_progress``
+                # deliberately skips.
+                settings=self._settings,
             )
             schedule = generate_ticks(window.start, window.end)
 

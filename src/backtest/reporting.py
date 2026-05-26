@@ -1,10 +1,20 @@
-"""End-of-window reporting: equity curve, metrics, forward-return backfill.
+"""Reporting: equity curve, metrics, forward-return backfill.
 
 Reads ``PortfolioSnapshotRow`` from the run's ``db.sqlite`` and produces
 ``report/equity_curve.png`` and ``report/metrics.md``.  The forward-return
 backfill walks ``decisions/*.json`` and patches each file in place with +1d /
 +5d / +20d returns from the cache — the supervision signal a future RAG
 retriever wants.
+
+Two public entry points exist:
+
+- ``report_progress`` — equity curve + metrics.md (with the pipeline-efficiency
+  section appended).  Cheap enough to call at the end of every tick from the
+  driver, so an operator watching the run gets a live, on-disk dashboard
+  rather than a single artefact at the end.
+- ``report`` — calls ``report_progress`` then runs the forward-return backfill.
+  Backfill walks every decision JSON and only gains useful data as time
+  passes within the cache window, so it stays end-of-run.
 
 Spec §end-of-window: metrics.md must include:
   - total return
@@ -49,27 +59,30 @@ logger = logging.getLogger(__name__)
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def report(run_dir: Path, settings: BacktestSettings, *, window: str) -> None:
-    """Generate ``report/equity_curve.png`` and ``report/metrics.md``; backfill forwards.
+def report_progress(run_dir: Path, settings: BacktestSettings, *, window: str) -> None:
+    """Refresh ``report/equity_curve.png`` and ``report/metrics.md`` only.
 
-    Reads portfolio snapshots from the run's ``db.sqlite``, writes an equity
-    curve PNG and a Markdown metrics file, then walks ``decisions/`` to
-    backfill forward returns from the golden cache.
+    The cheap, per-tick slice of :func:`report`: load snapshots, render the
+    equity curve, write the financial metrics file, and append the
+    pipeline-efficiency section.  The forward-return backfill is **not**
+    performed here — it walks every decision JSON and only gains useful data
+    as time advances within the cache window, so it stays end-of-run.
+
+    Safe to call after every tick.  Returns silently if no portfolio
+    snapshots have been written yet (e.g. the snapshotter has not run on the
+    very first tick of a brand-new run).
 
     Parameters
     ----------
     run_dir:
         Root directory for the run (contains ``db.sqlite``, ``decisions/``, etc.).
     settings:
-        Validated ``BacktestSettings`` instance.  Used to locate the
-        per-window golden cache and to read ``forward_return_horizons_days``.
+        Validated ``BacktestSettings`` instance.  Used to locate the per-window
+        golden cache (for the SPY benchmark) and to scale the Sharpe annualisation.
     window:
         Window key — required so the per-window cache path can be derived.
-        Callers running a fresh backtest pass the same ``window_key`` used
-        for the run; ad-hoc replays parse it from the run-id via
-        ``window_from_run_id``.
     """
-    run_dir = Path(run_dir)
+    run_dir    = Path(run_dir)
     report_dir = run_dir / "report"
     report_dir.mkdir(parents=True, exist_ok=True)
 
@@ -88,7 +101,10 @@ def report(run_dir: Path, settings: BacktestSettings, *, window: str) -> None:
         trade_rows = s.execute(select(TradeLogRow)).scalars().all()
 
     if not equity:
-        logger.warning("no portfolio snapshots in %s — skipping report", run_dir)
+        # First-tick / pre-snapshotter call — nothing to render yet.  Logged at
+        # debug because per-tick callers will hit this path until the first
+        # snapshot lands; warning-level would spam the console.
+        logger.debug("no portfolio snapshots in %s — skipping progress report", run_dir)
         return
 
     # ── win rate and fill count from closed trades ────────────────────────────
@@ -102,11 +118,11 @@ def report(run_dir: Path, settings: BacktestSettings, *, window: str) -> None:
     # in the cache, so the run does not crash when the user hasn't fetched SPY.
     # Per-window golden cache — derived from ``backtests_root`` + window.
     from backtest.settings import cache_path_for_window
-    cache          = CachedDataStore(cache_path_for_window(settings, window))
+    cache        = CachedDataStore(cache_path_for_window(settings, window))
     # Pass ``starting_cash`` so the SPY benchmark series (shared by both the
     # vs-SPY metric and the chart overlay) is sized against the same $-zero
     # as the portfolio — apples-to-apples by construction.
-    vs_spy_delta   = _compute_vs_spy_delta(equity, cache, starting_cash=equity[0][1])
+    vs_spy_delta = _compute_vs_spy_delta(equity, cache, starting_cash=equity[0][1])
 
     _write_equity_curve(
         equity,
@@ -126,7 +142,9 @@ def report(run_dir: Path, settings: BacktestSettings, *, window: str) -> None:
     # ── pipeline-efficiency section (tokens, latency, cache, retries) ────────
     # Driven by the per-tick observability artefacts written under ``obs/`` by
     # ``observability.drain.drain_tick``.  Older runs (or runs that skipped the
-    # observability install) won't have the directory — skip silently.
+    # observability install) won't have the directory — skip silently.  Because
+    # ``_write_metrics`` rewrites ``metrics.md`` whole on every call, the
+    # append below is fresh each time and never accumulates stale sections.
     obs_dir = run_dir / "obs"
     if obs_dir.exists():
         aggregates = _aggregate_obs_artefacts(obs_dir)
@@ -135,10 +153,38 @@ def report(run_dir: Path, settings: BacktestSettings, *, window: str) -> None:
             with (report_dir / "metrics.md").open("a", encoding="utf-8") as f:
                 f.write(section)
 
+
+def report(run_dir: Path, settings: BacktestSettings, *, window: str) -> None:
+    """Generate the full end-of-window report.
+
+    Calls :func:`report_progress` to refresh the equity curve and metrics
+    file, then walks ``decisions/`` to backfill +1d / +5d / +20d forward
+    returns from the golden cache into each decision JSON in place.
+
+    Parameters
+    ----------
+    run_dir:
+        Root directory for the run (contains ``db.sqlite``, ``decisions/``, etc.).
+    settings:
+        Validated ``BacktestSettings`` instance.  Used to locate the
+        per-window golden cache and to read ``forward_return_horizons_days``.
+    window:
+        Window key — required so the per-window cache path can be derived.
+        Callers running a fresh backtest pass the same ``window_key`` used
+        for the run; ad-hoc replays parse it from the run-id via
+        ``window_from_run_id``.
+    """
+    report_progress(run_dir, settings, window=window)
+
     # ── forward-return backfill ───────────────────────────────────────────────
-    # ``cache`` was already opened above for the SPY delta calculation; reuse it.
+    # Re-open the per-window cache here (rather than threading it through from
+    # ``report_progress``) so the two entry points stay independently callable.
+    # The cost is one extra ``CachedDataStore`` open per end-of-run report —
+    # negligible compared to the backfill walk itself.
+    from backtest.settings import cache_path_for_window
+    cache    = CachedDataStore(cache_path_for_window(settings, window))
     horizons = settings.forward_return_horizons_days
-    _backfill_forward_returns(run_dir / "decisions", cache, horizons)
+    _backfill_forward_returns(Path(run_dir) / "decisions", cache, horizons)
 
 
 # ── Private helpers ───────────────────────────────────────────────────────────

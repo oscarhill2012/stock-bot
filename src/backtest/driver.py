@@ -138,6 +138,13 @@ class Driver:
         that exercise the driver against a stubbed / failing pipeline
         (e.g. no API keys, mocked ADK runner) should pass ``False`` because
         the snapshotter cannot run end-to-end in those scenarios.
+    settings:
+        Optional ``BacktestSettings`` instance.  When supplied, the driver
+        calls ``backtest.reporting.report_progress`` at the end of every
+        tick so ``report/equity_curve.png`` and ``report/metrics.md`` are
+        refreshed live rather than only at end-of-run.  Tests that build a
+        Driver without a real settings object (no per-window cache wired)
+        leave this ``None`` and the per-tick reporting is skipped.
     """
 
     def __init__(
@@ -152,6 +159,7 @@ class Driver:
         decision_logger: Any = None,
         failure_abort_ratio: float = 0.10,
         enforce_pipeline_completion: bool = True,
+        settings: Any = None,
     ) -> None:
         """Wire the driver.  ``run_dir`` should already exist."""
         self._broker             = broker
@@ -163,6 +171,10 @@ class Driver:
         self._dl                 = decision_logger
         self._ratio              = failure_abort_ratio
         self._enforce_completion = enforce_pipeline_completion
+        # Optional — when set, per-tick progress reports are rendered.  Stored
+        # as-is (no import-time coupling to backtest.settings) so tests that
+        # patch the reporting module don't have to construct a real settings.
+        self._settings           = settings
         self._traces_dir         = self._run_dir / "traces"
         self._traces_dir.mkdir(parents=True, exist_ok=True)
 
@@ -380,6 +392,27 @@ class Driver:
                 tick_slug = _slug(tick.as_of) + f"-{tick.phase}",
                 tick_id   = state["tick_id"],
             )
+
+            # ── per-tick progress report ──────────────────────────────────────
+            # Refresh ``report/equity_curve.png`` and ``report/metrics.md`` so
+            # an operator watching the run sees a live dashboard rather than a
+            # single artefact at end-of-run.  Deliberately placed *after* the
+            # OTEL drain so the pipeline-efficiency section reflects this
+            # tick's observability data too.  Skipped when settings is absent
+            # (driver unit tests that don't wire a per-window cache).  Wrapped
+            # in try/except because a reporting fault must never abort the
+            # tick loop — end-of-run report() will retry with full context.
+            if self._settings is not None:
+                try:
+                    from backtest.reporting import report_progress
+                    report_progress(
+                        self._run_dir, self._settings, window=self._window_key,
+                    )
+                except Exception:
+                    logger.exception(
+                        "per-tick progress report failed for tick %s",
+                        state.get("tick_id", "<unknown>"),
+                    )
 
         self._write_manifest_status(
             "completed_with_failures" if self._failed else "completed",
