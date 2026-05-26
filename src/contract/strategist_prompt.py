@@ -208,6 +208,49 @@ def _cluster_buy_band(v: float) -> str:
     return "(cluster buy)" if v >= 1.0 else ""
 
 
+def _golden_cross_band(v: float) -> str:
+    """Return a regime annotation when the ``golden_cross`` flag is set.
+
+    The technical extractor emits ``golden_cross == 1.0`` when the 50-day MA
+    sits above the 200-day MA and price sits above the 50-day MA — the
+    canonical bullish trend-regime signal. Surfacing the annotation here lets
+    the strategist read the medium-term regime alongside the short-term RSI
+    and momentum bullets (Bug #13 in the 2025-09 baseline audit).
+
+    Parameters
+    ----------
+    v:
+        ``golden_cross`` feature value (1.0 = flag set).
+
+    Returns
+    -------
+    str
+        ``"(golden cross)"`` when the flag is set, otherwise ``""``.
+    """
+    return "(golden cross)" if v >= 1.0 else ""
+
+
+def _death_cross_band(v: float) -> str:
+    """Return a regime annotation when the ``death_cross`` flag is set.
+
+    Mirrors ``_golden_cross_band`` for the bearish regime: ``death_cross == 1.0``
+    when the 50-day MA sits below the 200-day MA and price sits below the
+    50-day MA. The annotation gives the strategist explicit context for the
+    bearish medium-term regime (Bug #13 in the 2025-09 baseline audit).
+
+    Parameters
+    ----------
+    v:
+        ``death_cross`` feature value (1.0 = flag set).
+
+    Returns
+    -------
+    str
+        ``"(death cross)"`` when the flag is set, otherwise ``""``.
+    """
+    return "(death cross)" if v >= 1.0 else ""
+
+
 def _planned_sale_band(v: float) -> str:
     """Return a neutralisation annotation for 10b5-1 planned-sale ratios.
 
@@ -269,6 +312,12 @@ TECHNICAL_BULLETS: list[_BulletEntry] = [
     # 52-week distances — already stored as scaled %, e.g. -3.0 = 3% below high.
     ("dist_from_high_52w_pct", "Distance from 52w high:",  _pct_unscaled_signed, _position_band),
     ("dist_from_low_52w_pct",  "Distance from 52w low:",   _pct_unscaled_signed, None),
+    # Trend regime — MA50 vs MA200 crossover flags (Bug #13). Both keys are
+    # always emitted together by the extractor when ratios are available, so
+    # the strategist sees two rows: at most one carries an annotation, the
+    # other reads as a plain "0.0" the LLM can ignore.
+    ("golden_cross",           "Trend regime (golden):",   _plain,              _golden_cross_band),
+    ("death_cross",            "Trend regime (death):",    _plain,              _death_cross_band),
     # Volume relative to 20-day average.
     ("vol_ratio_20d",          "Volume vs 20d avg:",       _ratio,              None),
     # ATR as % of close — volatility gauge.

@@ -577,6 +577,22 @@ def derive_technical_verdict(
     elif vol_ratio < h.vol_ratio_dry_up:
         factors.append("vol_dry_up")
 
+    # --- Trend regime: golden / death cross (Bug #13) ------------------------
+    # The extractor populates these flags when ratios are available. Surface
+    # them as corroborating factors so the strategist can weigh the
+    # medium-term regime alongside the short-term RSI / momentum reads. The
+    # flags themselves never flip ``lean`` on their own — that responsibility
+    # stays with 20-day momentum (and the RSI capitulation rule above) so the
+    # cross flag remains pure context.
+    #
+    # ``.get(..., 0.0)`` guards the live behaviour where ratios are absent and
+    # the extractor omits the keys entirely (see ``_emit_ratios_features``).
+    if features.get("golden_cross", 0.0) >= 1.0:
+        factors.append("golden_cross")
+
+    if features.get("death_cross", 0.0) >= 1.0:
+        factors.append("death_cross")
+
     # --- 52-week proximity ---------------------------------------------------
     # dist_from_high_52w_pct is negative — negate to get a positive "distance".
     dist_high = features.get("dist_from_high_52w_pct", -100.0)

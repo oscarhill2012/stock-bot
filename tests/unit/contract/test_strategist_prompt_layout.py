@@ -37,7 +37,12 @@ from contract.evidence import (
     AnalystVerdict,
     ReportDriver,
 )
-from contract.strategist_prompt import _planned_sale_band, render_ticker_block
+from contract.strategist_prompt import (
+    _death_cross_band,
+    _golden_cross_band,
+    _planned_sale_band,
+    render_ticker_block,
+)
 from contract.ticker_evidence import AggregateVerdict, TickerEvidence
 
 # ---------------------------------------------------------------------------
@@ -551,6 +556,76 @@ def test_planned_sale_band_lower_bound_inclusive_at_0_9():
 def test_planned_sale_band_lower_bound_inclusive_at_0_7():
     """The 0.7 boundary itself must qualify for the 'mostly' band (>= comparison)."""
     assert _planned_sale_band(0.7) == "(mostly 10b5-1 — neutral)"
+
+
+# ---------------------------------------------------------------------------
+# Tests — _golden_cross_band / _death_cross_band helpers (Bug #13)
+# ---------------------------------------------------------------------------
+#
+# Surface the trend-regime flags emitted by the technical extractor so the
+# strategist can weigh medium-term context alongside the short-term RSI /
+# momentum reads. The helpers annotate the inline bullet only when the
+# corresponding flag is set — otherwise they collapse to an empty annotation
+# and the bullet renders as a plain ``0.0`` (which the strategist can ignore).
+# ---------------------------------------------------------------------------
+
+def test_golden_cross_band_set():
+    """A ``golden_cross`` value of 1.0 must annotate as ``(golden cross)``."""
+    assert _golden_cross_band(1.0) == "(golden cross)"
+
+
+def test_golden_cross_band_unset():
+    """A ``golden_cross`` value of 0.0 must produce no annotation."""
+    assert _golden_cross_band(0.0) == ""
+
+
+def test_death_cross_band_set():
+    """A ``death_cross`` value of 1.0 must annotate as ``(death cross)``."""
+    assert _death_cross_band(1.0) == "(death cross)"
+
+
+def test_death_cross_band_unset():
+    """A ``death_cross`` value of 0.0 must produce no annotation."""
+    assert _death_cross_band(0.0) == ""
+
+
+def test_golden_cross_bullet_renders_annotation():
+    """A technical feature dict with ``golden_cross=1.0`` must surface the annotation.
+
+    Integration cover for Bug #13 Layer 2 — the strategist must see a regime
+    annotation next to the raw flag value so it can fold the medium-term
+    trend regime into its scoring.
+    """
+    te = _make_ticker_evidence()
+    te.per_analyst["technical"].features["golden_cross"] = 1.0
+    te.per_analyst["technical"].features["death_cross"] = 0.0
+
+    out = render_ticker_block(te)
+
+    assert "(golden cross)" in out
+
+
+def test_death_cross_bullet_renders_annotation():
+    """A technical feature dict with ``death_cross=1.0`` must surface the annotation."""
+    te = _make_ticker_evidence()
+    te.per_analyst["technical"].features["golden_cross"] = 0.0
+    te.per_analyst["technical"].features["death_cross"] = 1.0
+
+    out = render_ticker_block(te)
+
+    assert "(death cross)" in out
+
+
+def test_no_cross_bullet_omits_annotation():
+    """When both flags are 0.0 neither cross annotation must appear."""
+    te = _make_ticker_evidence()
+    te.per_analyst["technical"].features["golden_cross"] = 0.0
+    te.per_analyst["technical"].features["death_cross"] = 0.0
+
+    out = render_ticker_block(te)
+
+    assert "(golden cross)" not in out
+    assert "(death cross)" not in out
 
 
 def test_planned_sale_ratio_bullet_renders_annotation():

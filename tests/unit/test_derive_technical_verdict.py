@@ -239,6 +239,78 @@ def test_high_atr_penalises_confidence():
 
 
 # ---------------------------------------------------------------------------
+# Golden / death cross (Bug #13)
+# ---------------------------------------------------------------------------
+#
+# The extractor emits ``golden_cross`` / ``death_cross`` whenever ratios are
+# available, but the verdict layer previously ignored them. They now appear as
+# corroborating factors in ``key_factors`` so the strategist can weigh the
+# medium-term trend regime alongside the short-term RSI / momentum signals.
+# Neither flag is allowed to flip ``lean`` on its own — that responsibility
+# stays with 20-day momentum.
+# ---------------------------------------------------------------------------
+
+def test_golden_cross_emits_factor():
+    """``golden_cross == 1.0`` ⇒ ``"golden_cross"`` appended to key_factors."""
+    v = derive_technical_verdict(
+        _features(pct_change_20d=0.05, golden_cross=1.0, death_cross=0.0),
+        _h(),
+    )
+    assert "golden_cross" in v.key_factors
+
+
+def test_death_cross_emits_factor():
+    """``death_cross == 1.0`` ⇒ ``"death_cross"`` appended to key_factors."""
+    v = derive_technical_verdict(
+        _features(pct_change_20d=-0.05, golden_cross=0.0, death_cross=1.0),
+        _h(),
+    )
+    assert "death_cross" in v.key_factors
+
+
+def test_no_cross_emits_neither_factor():
+    """Both flags 0.0 ⇒ neither ``golden_cross`` nor ``death_cross`` in key_factors."""
+    v = derive_technical_verdict(
+        _features(pct_change_20d=0.02, golden_cross=0.0, death_cross=0.0),
+        _h(),
+    )
+    assert "golden_cross" not in v.key_factors
+    assert "death_cross" not in v.key_factors
+
+
+def test_missing_cross_keys_do_not_blow_up():
+    """Feature dict without the cross keys must not raise — mirrors live behaviour.
+
+    The extractor omits ``golden_cross`` / ``death_cross`` entirely when
+    ratios are absent. The verdict layer reads via ``.get(..., 0.0)`` so a
+    missing key simply produces no factor.
+    """
+    feats = _features(pct_change_20d=0.05)
+    feats.pop("golden_cross", None)
+    feats.pop("death_cross", None)
+
+    v = derive_technical_verdict(feats, _h())
+
+    assert "golden_cross" not in v.key_factors
+    assert "death_cross" not in v.key_factors
+
+
+def test_golden_cross_does_not_flip_bearish_lean():
+    """A bullish ``golden_cross`` factor must NOT override a bearish trend lean.
+
+    The cross flag is corroborating context only — lean is owned by the 20d
+    momentum + RSI capitulation logic.
+    """
+    v = derive_technical_verdict(
+        _features(pct_change_20d=-0.05, pct_change_5d=-0.01, golden_cross=1.0),
+        _h(),
+    )
+    # 20d momentum is negative ⇒ lean stays bearish despite the golden_cross tag.
+    assert v.lean == "bearish"
+    assert "golden_cross" in v.key_factors
+
+
+# ---------------------------------------------------------------------------
 # Closed vocabulary
 # ---------------------------------------------------------------------------
 
@@ -251,6 +323,7 @@ def test_closed_vocabulary():
         "near_52w_high", "near_52w_low",
         "vol_breakout", "vol_dry_up",
         "high_volatility",
+        "golden_cross", "death_cross",
     }
     v = derive_technical_verdict(
         _features(
@@ -259,6 +332,7 @@ def test_closed_vocabulary():
             vol_ratio_20d=2.0,
             # -2.0 means 2 % below high — within the 5 % threshold
             dist_from_high_52w_pct=-2.0,
+            golden_cross=1.0,
         ),
         _h(),
     )
