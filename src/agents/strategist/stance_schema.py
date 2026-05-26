@@ -19,7 +19,8 @@ stance and the schema rejected it).  One field, one name.
 Verb vocabulary
 ---------------
     buy       — enter a position on a thesis or increase an existing one.
-                Required: ticker, intent, weight (0 < w ≤ 0.05), rationale.
+                Required: ticker, intent, weight (0 < w ≤ ``max_delta_per_buy``
+                from ``config/risk_gate.json``), rationale.
                 ``rationale`` is rewritten onto the row — the agent is on
                 the record justifying every entry and every add.
 
@@ -55,11 +56,16 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from config.risk_gate import get_risk_gate_config
+
 logger = logging.getLogger(__name__)
 
-# 5 % buy-delta cap is the schema-level hard ceiling — risk gate may
-# clamp tighter.  Defined as a literal so Pydantic accepts it.
-_MAX_BUY_DELTA = 0.05
+# Per-buy stance delta cap.  Sourced from ``config/risk_gate.json`` so the
+# schema validator, the strategist prompt, and the risk-gate clamp all read
+# the same value.  Resolved at module-import time via the lru-cached loader
+# — a process restart is required after editing the JSON, matching the
+# semantics of every other risk-gate constant.
+_MAX_BUY_DELTA: float = get_risk_gate_config().max_delta_per_buy
 
 
 class TickerStance(BaseModel):
@@ -75,7 +81,8 @@ class TickerStance(BaseModel):
         intent:    Stance verb — one of buy / sell / update / no_action.
                    See module docstring for verb-conditional field rules.
         weight:    Position-delta weight.  Semantics vary by verb:
-                     buy       → required, 0 < w ≤ 0.05 (per-trade delta cap).
+                     buy       → required, 0 < w ≤ ``max_delta_per_buy``
+                                 (per-trade cap, config-driven).
                      sell      → optional, 0 < w ≤ 1.0 (partial trim delta).
                                  Absent means full close.
                      update    → forbidden (no trade occurs).
@@ -100,8 +107,8 @@ class TickerStance(BaseModel):
     )
 
     # Weight semantics depend on the verb (validator below enforces):
-    #   buy       → required, 0 < w ≤ 0.05 (delta-per-trade cap)
-    #   sell      → optional, 0 < w ≤ 1.0  (delta; absent = full close)
+    #   buy       → required, 0 < w ≤ max_delta_per_buy (config-driven cap)
+    #   sell      → optional, 0 < w ≤ 1.0 (delta; absent = full close)
     #   update    → forbidden
     #   no_action → forbidden
     weight: float | None = Field(default=None, ge=0.0, le=1.0)
@@ -151,8 +158,8 @@ class TickerStance(BaseModel):
                     raise ValueError(
                         f"Stance for {self.ticker!r}: buy weight {self.weight} "
                         f"is outside the allowed range (0, {_MAX_BUY_DELTA}]. "
-                        f"5 % is the per-trade delta cap; the risk gate may "
-                        f"clamp tighter."
+                        f"Per-trade cap is sourced from "
+                        f"``config/risk_gate.json :: max_delta_per_buy``."
                     )
 
             case "sell":

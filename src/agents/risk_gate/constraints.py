@@ -5,11 +5,14 @@ Two categories of constraint live here:
 1. **Stance-level** — ``apply_buy_delta_clamp`` fires on ``TickerStance``
    objects before the target weights are written into the proposed dict.
    This is defence-in-depth against callers that bypass the schema-level
-   validator (e.g. via ``model_construct``).
+   validator (e.g. via ``model_construct``); both layers read the same
+   ``max_delta_per_buy`` value from ``config/risk_gate.json``.
 
 2. **Weight-level** — ``apply_constraints`` operates on the proposed
    ``{ticker: float}`` weight dict and enforces concentration, cash-floor,
-   delta, and turnover caps.
+   and turnover caps.  There is no per-ticker net-delta cap: sells are
+   intentionally unrestricted on a per-stance basis and the buy direction
+   is already bounded upstream by ``apply_buy_delta_clamp``.
 """
 from __future__ import annotations
 
@@ -17,7 +20,6 @@ from typing import TYPE_CHECKING
 
 from orchestrator.state import (
     CASH_FLOOR_WEIGHT,
-    MAX_DELTA_PER_TICKER,
     MAX_POSITION_WEIGHT,
     MAX_TOTAL_TURNOVER,
     ClampRecord,
@@ -48,7 +50,7 @@ def apply_buy_delta_clamp(
         Only stances with ``intent == "buy"`` are inspected; others pass
         through unchanged.
     config:
-        Loaded ``RiskGateConfig`` — supplies ``max_buy_delta_per_trade``.
+        Loaded ``RiskGateConfig`` — supplies ``max_delta_per_buy``.
 
     Returns
     -------
@@ -56,7 +58,7 @@ def apply_buy_delta_clamp(
         One ``ClampRecord(rule='buy_delta_exceeded')`` for each stance that
         was clamped.  Empty if no stances exceeded the cap.
     """
-    cap = config.max_buy_delta_per_trade
+    cap = config.max_delta_per_buy
     clamps: list[ClampRecord] = []
 
     for stance in stances:
@@ -116,24 +118,6 @@ def _clamp_cash_floor(weights: dict[str, float], clamps: list[ClampRecord]) -> N
             weights[t] = after
 
 
-def _clamp_max_delta(
-    proposed: dict[str, float],
-    current: dict[str, float],
-    clamps: list[ClampRecord],
-) -> None:
-    """Limit the per-ticker weight change each tick to prevent sudden large swings."""
-    for t, p in list(proposed.items()):
-        c = current.get(t, 0.0)
-        delta = p - c
-        if abs(delta) > MAX_DELTA_PER_TICKER:
-            capped = MAX_DELTA_PER_TICKER if delta > 0 else -MAX_DELTA_PER_TICKER
-            new_w = c + capped
-            clamps.append(
-                ClampRecord(rule="max_delta", ticker=t, before=p, after=new_w)
-            )
-            proposed[t] = new_w
-
-
 def _clamp_max_turnover(
     proposed: dict[str, float],
     current: dict[str, float],
@@ -164,13 +148,13 @@ def apply_constraints(
     """Mutate `proposed` in-place to satisfy all hard rules. Returns clamp telemetry.
 
     Rules are applied in order: negatives → max position → cash floor →
-    max delta → max turnover. Each step may further constrain the weights
-    that a previous step already modified.
+    max turnover.  Each step may further constrain the weights that a
+    previous step already modified.  The per-buy delta cap fires earlier
+    in the pipeline (``apply_buy_delta_clamp``) and is not repeated here.
     """
     clamps: list[ClampRecord] = []
     _clamp_negatives(proposed, clamps)
     _clamp_max_position(proposed, clamps)
     _clamp_cash_floor(proposed, clamps)
-    _clamp_max_delta(proposed, current, clamps)
     _clamp_max_turnover(proposed, current, clamps)
     return clamps

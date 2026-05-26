@@ -25,10 +25,11 @@ class RiskGateAgent(BaseAgent):
     """Pure-Python deterministic agent that sits between the Strategist and the Executor.
 
     Responsibilities:
-    1. Clamp buy-stance deltas to ``max_buy_delta_per_trade`` (defence-in-depth
-       — the TickerStance schema already enforces this at construction time).
+    1. Clamp buy-stance deltas to ``max_delta_per_buy`` (defence-in-depth
+       — the TickerStance schema already enforces this at construction time
+       using the same config field).
     2. Clamp target weights to satisfy hard risk rules (concentration, cash
-       floor, per-ticker delta, total turnover).
+       floor, total turnover).
     3. Validate position lifecycle contracts (sell_reasons for any closing).
     4. Convert the clamped weights into concrete broker Orders.
 
@@ -57,9 +58,9 @@ class RiskGateAgent(BaseAgent):
         )
 
         # ── Step 1: stance-level buy-delta clamp (defence-in-depth) ─────────────
-        # Clamp any buy stance whose weight exceeds max_buy_delta_per_trade
-        # before we read the weights into ``proposed``.  This fires even when
-        # the TickerStance schema validator was bypassed (e.g. model_construct).
+        # Clamp any buy stance whose weight exceeds max_delta_per_buy before
+        # we read the weights into ``proposed``.  This fires even when the
+        # TickerStance schema validator was bypassed (e.g. model_construct).
         # Clamp records are merged with the weight-level clamps below.
         from config.risk_gate import get_risk_gate_config as _get_rg_cfg
         _rg_config = _get_rg_cfg()
@@ -107,15 +108,15 @@ class RiskGateAgent(BaseAgent):
             prices = {}
 
         # Sell stances with no explicit weight (full close) bypass the
-        # per-ticker delta cap — an audited "sell" is a deliberate, reasoned
-        # full exit, not a tick-on-tick weight drift, so it should not be
-        # capped at MAX_DELTA_PER_TICKER (which would leave dust shares behind
-        # and diverge broker holdings from ``user:positions`` on the next tick
-        # — Spec B / D3 contract trap).
+        # downstream weight-level clamps — an audited "sell" is a deliberate,
+        # reasoned full exit and must land at exactly 0.0 even if a clamp
+        # (cash-floor scaling, max-turnover scaling) would otherwise leave
+        # dust shares behind and diverge broker holdings from
+        # ``user:positions`` on the next tick (Spec B / D3 contract trap).
         # Snapshot the full-close tickers BEFORE clamping; restore target=0.0
-        # AFTER so any incidental clamp rewrite (max_delta / max_turnover) is
-        # undone for full closes only.  Partial trims (sell with explicit
-        # weight) remain bound by the cap — intended behaviour.
+        # AFTER so any incidental clamp rewrite is undone for full closes
+        # only.  Partial trims (sell with explicit weight) remain bound by
+        # the downstream clamps — intended behaviour.
         _close_tickers = {
             s.ticker
             for s in (decision.stances or [])

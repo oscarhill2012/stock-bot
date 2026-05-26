@@ -1,11 +1,10 @@
 """Verb-aware risk-gate skip rule — Band 4 tests.
 
-Four cases per plan §4.5:
+Three cases:
 
 1. test_risk_gate_passes_hold_through_unchanged
 2. test_risk_gate_passes_update_through_unchanged
 3. test_risk_gate_caps_open_at_max_position_weight
-4. test_risk_gate_caps_add_at_max_delta_per_ticker
 
 The risk gate lives in ``src/agents/risk_gate/agent.py``.  These tests drive
 it end-to-end via ``_run_async_impl`` against a mock InvocationContext, then
@@ -20,7 +19,7 @@ import pytest
 from agents.risk_gate.agent import _NO_RISK_GATE_INTENTS, RiskGateAgent
 from agents.strategist.schema import StrategistDecision
 from agents.strategist.stance_schema import TickerStance
-from orchestrator.state import MAX_DELTA_PER_TICKER, MAX_POSITION_WEIGHT
+from orchestrator.state import MAX_POSITION_WEIGHT
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -205,64 +204,3 @@ async def test_risk_gate_caps_open_at_max_position_weight():
     )
 
 
-@pytest.mark.asyncio
-async def test_risk_gate_caps_add_at_max_delta_per_ticker():
-    """An ``add`` stance requesting a delta above ``MAX_DELTA_PER_TICKER`` must be clamped."""
-
-    # Simulate a position already held at 0.10; request a huge add to 0.50.
-    current_weight = 0.10
-    requested_weight = current_weight + MAX_DELTA_PER_TICKER + 0.10
-
-    # Use model_construct to bypass Pydantic weight validation (testing the
-    # risk gate clamp, not the schema).  The weight exceeds the buy delta cap
-    # (0.05) intentionally — the risk gate must clamp it.
-    add_stance = TickerStance.model_construct(
-        ticker    = "TSLA",
-        intent    = "buy",
-        weight    = requested_weight,
-        rationale = "adding to strong position",
-        catalyst  = None,
-    )
-
-    # Build a fake broker that reports TSLA held at current_weight.
-    # The ``weights_to_orders`` function needs a price for TSLA in the
-    # portfolio positions map — supply a mock Position with last_price set.
-    from broker.portfolio import Position
-
-    mock_position = MagicMock(spec=Position)
-    mock_position.quantity   = 10.0
-    mock_position.avg_cost   = 250.0
-    mock_position.last_price = 250.0
-
-    mock_portfolio = MagicMock()
-    mock_portfolio.current_weights.return_value = {"TSLA": current_weight}
-    mock_portfolio.total_value = 10_000.0
-    mock_portfolio.positions   = {"TSLA": mock_position}
-    mock_broker = MagicMock()
-    mock_broker.get_portfolio  = AsyncMock(return_value=mock_portfolio)
-
-    # Use model_construct on StrategistDecision as well — the schema validates
-    # stances at construction time, which would reject the overweight buy stance
-    # even though we are testing the risk gate's clamping logic (not the schema).
-    decision = StrategistDecision.model_construct(
-        stances        = [add_stance],
-        target_weights = {"TSLA": requested_weight},
-        decision_tag   = "test",
-        reasoning      = "test",
-        confidence     = 0.5,
-        sell_reasons   = {},
-        update_reasons = {},
-    )
-
-    agent = RiskGateAgent(broker=mock_broker)
-    deltas = await _collect_deltas(agent, {"strategist_decision": decision})
-
-    assert deltas
-    delta = deltas[0]
-
-    # A clamp record for TSLA must exist.
-    clamps = delta.get("risk_clamps_applied", [])
-    tsla_clamps = [c for c in clamps if c.get("ticker") == "TSLA"]
-    assert len(tsla_clamps) > 0, (
-        "add above MAX_DELTA_PER_TICKER must produce a clamp record"
-    )

@@ -111,8 +111,16 @@ def test_buy_missing_required_field(missing_field: str):
 
 
 def test_buy_weight_above_cap_raises():
-    """buy weight above the 5 % per-trade cap must raise ValidationError."""
-    data = _buy(weight=0.06)
+    """buy weight above the per-trade cap must raise ValidationError.
+
+    The cap is the live ``max_delta_per_buy`` from ``config/risk_gate.json``
+    — the single source of truth — so this test stays correct whatever the
+    operator tunes it to.
+    """
+    from config.risk_gate import get_risk_gate_config
+
+    over_cap = get_risk_gate_config().max_delta_per_buy + 0.01
+    data = _buy(weight=over_cap)
 
     with pytest.raises(ValidationError) as exc_info:
         TickerStance.model_validate(data)

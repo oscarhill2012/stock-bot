@@ -1,4 +1,4 @@
-"""Loader for ``config/risk_gate.json`` — the six risk-gate constants.
+"""Loader for ``config/risk_gate.json`` — the five risk-gate constants.
 
 The constants govern position-sizing constraints applied by
 ``src/agents/risk_gate/constraints.py`` and surfaced to the strategist
@@ -12,10 +12,13 @@ entry point; ``load_risk_gate_config(path=...)`` exists for tests that
 want to feed a custom file.
 
 A note on coupling: ``src/orchestrator/state.py`` re-exports each field
-under its legacy ``MAX_DELTA_PER_TICKER`` etc. name so every existing
+under its uppercase constant name so every existing
 ``from orchestrator.state import …`` call site keeps working unchanged.
 The strategist prompt module reads this loader directly so the
 prompt-stated percentages stay in lockstep with the gate-enforced ones.
+The ``TickerStance`` schema validator also reads ``max_delta_per_buy``
+from here, making this the single source of truth for the per-buy cap —
+prompt, schema, and gate all converge on one number.
 """
 from __future__ import annotations
 
@@ -46,40 +49,30 @@ class RiskGateConfig(BaseModel):
     cash_floor_weight:
         Minimum cash reserve fraction.  When total invested weight would
         exceed ``1 - cash_floor_weight``, all weights are scaled down
-        proportionally.  Set to ``0.00`` (R1) to allow the strategist to
-        be fully invested — the backtest envelope needs the flexibility.
-    max_delta_per_ticker:
-        Maximum weight change per tick per ticker.  Widened from ``0.01``
-        to ``0.05`` (R2) so the gate does not force the strategist into
-        unrealistically slow entry/exit ramps during backtest runs.
+        proportionally.  Set to ``0.00`` to allow the strategist to be
+        fully invested.
     max_total_turnover:
         Maximum total portfolio turnover per tick (sum of absolute weight
-        changes).  Raised from ``0.30`` to ``0.50`` (R3) to match the
-        wider per-ticker delta ceiling.
-    max_buy_delta_per_trade:
-        Per-buy stance delta cap (fraction of portfolio).  Applied by
-        ``constraints.apply_buy_delta_clamp`` before target weights are
-        committed to the proposed dict.  Defence-in-depth: ``TickerStance``
-        already enforces ``weight <= 0.05`` at construction; this fires for
-        any stance that bypassed validation.  Emits a
-        ``ClampRecord(rule='buy_delta_exceeded')`` for the audit trail.
+        changes across every ticker).  Caps aggregate churn even when no
+        single position is the offender.
+    max_delta_per_buy:
+        Per-buy stance delta cap (fraction of portfolio).  This is the
+        single source of truth for the buy cap — three layers converge on
+        it: the ``TickerStance`` schema validator rejects any buy whose
+        ``weight`` exceeds this value, the strategist prompt renders the
+        cap into the model's instructions, and
+        ``constraints.apply_buy_delta_clamp`` clamps anything that slips
+        through the schema (e.g. via ``model_construct``).  Sells are
+        intentionally uncapped on a per-stance basis — the strategist may
+        close any held position in a single tick — so only the buy
+        direction needs a per-stance ceiling.
     """
 
-    min_held_weight:          float = Field(ge=0.0, le=0.10)
-    max_position_weight:      float = Field(gt=0.0, le=1.0)
-    cash_floor_weight:        float = Field(ge=0.0, le=0.50)
-    max_delta_per_ticker:     float = Field(gt=0.0, le=1.0)
-    max_total_turnover:       float = Field(gt=0.0, le=2.0)
-    max_buy_delta_per_trade:  float = Field(
-        default=0.05, gt=0.0, le=1.0,
-        description=(
-            "Per-buy delta cap (fraction of portfolio).  Applied in the risk "
-            "gate as defence-in-depth in addition to the schema-level 5 % cap "
-            "on TickerStance.  Any buy stance whose weight exceeds this value "
-            "is clamped and a ClampRecord(rule='buy_delta_exceeded') is emitted "
-            "for the audit trail."
-        ),
-    )
+    min_held_weight:      float = Field(ge=0.0, le=0.10)
+    max_position_weight:  float = Field(gt=0.0, le=1.0)
+    cash_floor_weight:    float = Field(ge=0.0, le=0.50)
+    max_total_turnover:   float = Field(gt=0.0, le=2.0)
+    max_delta_per_buy:    float = Field(gt=0.0, le=1.0)
 
 
 def load_risk_gate_config(*, path: Path | None = None) -> RiskGateConfig:

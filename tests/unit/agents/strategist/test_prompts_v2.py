@@ -203,17 +203,27 @@ def test_template_silence_is_not_an_option():
 # ---------------------------------------------------------------------------
 
 def test_max_buy_delta_substituted():
-    """{{MAX_BUY_DELTA}} must resolve to the float string '0.05'."""
+    """{{MAX_BUY_DELTA}} must resolve to the live ``max_delta_per_buy`` value."""
+    from config.risk_gate import get_risk_gate_config
+
     # No raw marker should survive build-time substitution.
     assert "{{MAX_BUY_DELTA}}" not in STRATEGIST_INSTRUCTION
-    # The resolved value must appear somewhere in the rendered template.
-    assert "0.05" in STRATEGIST_INSTRUCTION
+    # The resolved value (as Python's default float repr) must appear.
+    cap = get_risk_gate_config().max_delta_per_buy
+    assert str(cap) in STRATEGIST_INSTRUCTION, (
+        f"rendered prompt must cite max_delta_per_buy={cap}"
+    )
 
 
 def test_max_buy_delta_pct_substituted():
-    """{{MAX_BUY_DELTA_PCT}} must resolve to '5'."""
+    """{{MAX_BUY_DELTA_PCT}} must resolve to the integer percentage."""
+    from config.risk_gate import get_risk_gate_config
+
     assert "{{MAX_BUY_DELTA_PCT}}" not in STRATEGIST_INSTRUCTION
-    assert "5" in STRATEGIST_INSTRUCTION
+    cap_pct = int(round(get_risk_gate_config().max_delta_per_buy * 100))
+    assert f"{cap_pct} %" in STRATEGIST_INSTRUCTION or f"{cap_pct}%" in STRATEGIST_INSTRUCTION, (
+        f"rendered prompt must cite the cap as {cap_pct} %"
+    )
 
 
 def test_no_unreplaced_cap_markers():

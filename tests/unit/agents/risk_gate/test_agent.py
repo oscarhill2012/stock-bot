@@ -11,7 +11,7 @@ Interface under test
 --------------------
 ``constraints.apply_buy_delta_clamp(stances, config)``
     Mutates ``stances`` in-place (clamping weight on any buy stance that
-    exceeds ``config.max_buy_delta_per_trade``) and returns a list of
+    exceeds ``config.max_delta_per_buy``) and returns a list of
     ``ClampRecord`` objects — one per clamped stance.
 
 We also test the ``position_cap_exceeded`` path (the existing
@@ -55,17 +55,17 @@ def _make_buy_stance(ticker: str, weight: float):
 # ── buy-delta clamp tests ─────────────────────────────────────────────────────
 
 def test_buy_delta_at_cap_passes_unchanged():
-    """A buy stance whose weight equals max_buy_delta_per_trade (0.05) should
-    pass through the clamp without modification and produce no clamp record."""
+    """A buy stance whose weight equals max_delta_per_buy should pass through
+    the clamp without modification and produce no clamp record."""
     from agents.risk_gate.constraints import apply_buy_delta_clamp
     from config.risk_gate import load_risk_gate_config
 
     cfg = load_risk_gate_config()
-    stance = _make_buy_stance("AAPL", cfg.max_buy_delta_per_trade)
+    stance = _make_buy_stance("AAPL", cfg.max_delta_per_buy)
 
     clamps = apply_buy_delta_clamp([stance], cfg)
 
-    assert stance.weight == cfg.max_buy_delta_per_trade
+    assert stance.weight == cfg.max_delta_per_buy
     assert clamps == []
 
 
@@ -84,7 +84,7 @@ def test_buy_delta_below_cap_passes_unchanged():
 
 
 def test_buy_delta_above_cap_is_clamped():
-    """A buy stance whose weight exceeds max_buy_delta_per_trade must be
+    """A buy stance whose weight exceeds max_delta_per_buy must be
     clamped to the cap and a ClampRecord with reason 'buy_delta_exceeded'
     must be emitted.
 
@@ -96,20 +96,20 @@ def test_buy_delta_above_cap_is_clamped():
     from config.risk_gate import load_risk_gate_config
 
     cfg = load_risk_gate_config()
-    over_cap = cfg.max_buy_delta_per_trade + 0.03   # 0.08 > 0.05
+    over_cap = cfg.max_delta_per_buy + 0.03   # any delta above the configured cap
 
     stance = _make_buy_stance("NVDA", over_cap)
     clamps = apply_buy_delta_clamp([stance], cfg)
 
     # Weight must be clamped to the cap.
-    assert stance.weight == pytest.approx(cfg.max_buy_delta_per_trade)
+    assert stance.weight == pytest.approx(cfg.max_delta_per_buy)
 
     # Exactly one ClampRecord must be emitted.
     assert len(clamps) == 1
     assert clamps[0].rule == "buy_delta_exceeded"
     assert clamps[0].ticker == "NVDA"
     assert clamps[0].before == pytest.approx(over_cap)
-    assert clamps[0].after == pytest.approx(cfg.max_buy_delta_per_trade)
+    assert clamps[0].after == pytest.approx(cfg.max_delta_per_buy)
 
 
 def test_sell_and_update_stances_are_not_clamped():
@@ -139,7 +139,7 @@ def test_multiple_buys_all_clamped():
     from config.risk_gate import load_risk_gate_config
 
     cfg = load_risk_gate_config()
-    cap = cfg.max_buy_delta_per_trade
+    cap = cfg.max_delta_per_buy
 
     over1 = _make_buy_stance("AAPL", cap + 0.02)   # will be clamped
     over2 = _make_buy_stance("TSLA", cap + 0.05)   # will be clamped

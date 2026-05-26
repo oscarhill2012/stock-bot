@@ -121,43 +121,82 @@ SHAPE EXAMPLE (placeholders only — fill from the actual filings + insider data
   }}
 }}
 
-Decision guidance (anchors — reason from the evidence; this is not a
-decision tree).  Bullish and bearish signals are listed as symmetric
-pairs so neither side is structurally favoured:
+How to analyse the evidence
+---------------------------
+Your job is to argue a lean from the filings prose + insider activity.
+Below is HOW to read each signal source — not a lookup table of
+"if X then bullish".  Reason from the evidence in front of you; rule
+your verdict in or out the same way an analyst on a desk would.
 
-- Lean reflects the dominant signal across guidance, tone, risk-factor
-  changes, and insider activity.  Use the full bullish / bearish range as
-  the evidence supports — do NOT default to neutral when a directional
-  signal is genuinely present.
+1. MD&A tone — read the verbs, not the headlines.
+   Compare how management frames the same topic across the dump.  Watch
+   for:
+     - Commitment strength.  "We are confident we will" >> "We expect to"
+       >> "We may be able to" >> "We are working toward".  A downgrade
+       of verb commitment between filings is itself a directional move
+       even if the headline guidance number is unchanged.
+     - Forward vs historical framing.  "We saw" describes the past;
+       "we are seeing" commits the company to a continuing trend.
+       Tense shifts matter.
+     - Hedge density.  Count the qualifiers ("subject to", "could",
+       "potentially", "may", "in part") in passages that previously
+       carried fewer.  Hedge inflation is bearish even when the noun
+       is positive.
 
-INSIDER ACTIVITY
-- Routine 10b5-1 (planned) sales are pre-scheduled and disclosed in advance.
-  They are NEUTRAL signal — NOT bearish.
-- Discretionary open-market SALES are bearish; clusters of them are
-  strongly so.
-- Discretionary open-market BUYS are bullish; clusters of them are
-  strongly so.  Insider buys are harder to rationalise innocently than
-  sells (no diversification, vesting, or tax-loss motive) — when present
-  in size, treat them as a high-quality signal and do not dismiss them.
-- Absence of insider activity is neutral, not bearish — default to neutral
-  with low confidence when there is nothing material to say.
+2. Insider activity — the asymmetry is the signal.
+   Insiders sell for many innocent reasons (diversification, tax
+   planning, exercising vested options, paying for a house).  They
+   buy with their own discretionary cash for ONE reason: they think
+   the price is going up.  This asymmetry is the most important thing
+   to internalise:
+     - A single open-market BUY by an executive is a high-quality
+       bullish signal even at small dollar size.  A cluster (multiple
+       insiders within a short window) is a very high-quality bullish
+       signal.  Do not dilute or hedge it.
+     - Routine 10b5-1 sales are pre-scheduled; treat them as neutral
+       noise, not as bearish information.
+     - Discretionary open-market SALES — especially clusters by senior
+       officers — are bearish, but the strength scales with dollar
+       size relative to the insider's total holding.  A CFO selling
+       5% of their stake is materially weaker than one selling 50%.
+     - Absence of insider activity is genuinely neutral — it tells
+       you nothing.  Do not treat silence as bearish.
 
-GUIDANCE & TONE (from MD&A / 8-K filings)
-- Guidance LOWERED, withdrawn, or hedged → bearish; strength scales with
-  how directly the filing language commits to the downgrade (specific
-  numeric cut > vague hedging).
-- Guidance RAISED combined with positive MD&A tone → bullish; strength
-  scales the same way (specific numeric raise > vague optimism).
-- Going-concern language present → strongly bearish (overrides other
-  signals).
+3. Risk-factor changes — distinguish boilerplate from new disclosure.
+   The risk-factors section is mostly copy-pasted between filings.
+   The signal is in what CHANGES:
+     - A genuinely new bullet (not in the prior filing) is high signal
+       even if its wording is bland — the company chose to disclose
+       it now and didn't before.
+     - An INTENSIFIED bullet (same topic, sharpened language —
+       "could materially" → "will likely materially") is moderate
+       bearish; the company is preparing the reader for the worst
+       case.
+     - A REMOVED bullet is moderate bullish; the company believes the
+       risk is no longer material enough to disclose.
+     - Unchanged boilerplate is not evidence in either direction.
 
-RISK-FACTOR CHANGES (relative to the prior filing in the dump)
-- Risk factors ADDED or INTENSIFIED → bearish; strength scales with the
-  seriousness of the change.
-- Risk factors REMOVED or DE-INTENSIFIED → mild bullish; the disappearance
-  of a previously-flagged risk is itself informative.
+4. Going-concern language — overrides everything.
+   Any going-concern disclosure ("substantial doubt about the company's
+   ability to continue") is strongly bearish and dominates other
+   signals.  This is the one case where you should NOT weigh
+   counter-evidence.
 
-- Conflicting inputs → neutral with low confidence.
+Forming the lean — do not default to neutral.
+---------------------------------------------
+- The right question is "what is the dominant signal here?", not
+  "do all signals agree?".  Real evidence almost never agrees.
+- When two signals conflict (e.g. raised guidance + cluster insider
+  sales), pick the dominant one and ACKNOWLEDGE the counter in your
+  summary.  That is a directional lean with appropriate confidence,
+  not a neutral lean.
+- Only use ``lean=neutral`` when the evidence is genuinely silent
+  (insider activity absent AND filings unchanged AND tone flat) OR
+  when truly equal-and-opposite signals cancel.  "I'm not sure" is
+  not a neutral lean — it is low confidence on a directional lean.
+- Calibrate confidence separately from lean.  A weakly-bullish lean
+  with low confidence is the right output when there is one
+  directional signal of modest size.
 
 Stop emitting if you are about to repeat a token or symbol three or more times in a row.  Return the verdict as-is and never emit filler tokens.
 

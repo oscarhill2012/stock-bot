@@ -45,15 +45,16 @@ _STANCE   = _cfg.stance_caps
 # the gate enforces them on execution.  Integer-rounded percentages match
 # how the model thinks about position sizing.
 _RISK             = get_risk_gate_config()
-_MAX_POSITION_PCT = int(round(_RISK.max_position_weight  * 100))
-_MAX_DELTA_PCT    = int(round(_RISK.max_delta_per_ticker * 100))
+_MAX_POSITION_PCT = int(round(_RISK.max_position_weight * 100))
 
-# Buy-delta cap — used in the verb table and weight semantics explanation.
-# ``_MAX_BUY_DELTA`` is the raw float (e.g. 0.05) and ``_MAX_BUY_DELTA_PCT``
-# is the percentage integer (e.g. 5).  Both are injected into the prompt so
+# Buy-delta cap — single source of truth read from ``config/risk_gate.json``.
+# ``_MAX_BUY_DELTA`` is the raw float (e.g. 0.20) and ``_MAX_BUY_DELTA_PCT``
+# is the percentage integer (e.g. 20).  Both are injected into the prompt so
 # neither the prose section nor the JSON example need hard-coded numbers.
-_MAX_BUY_DELTA     = _RISK.max_delta_per_ticker          # e.g. 0.05
-_MAX_BUY_DELTA_PCT = int(round(_MAX_BUY_DELTA * 100))    # e.g. 5
+# The same field also drives the ``TickerStance`` schema validator and the
+# ``apply_buy_delta_clamp`` defence — three callsites, one config value.
+_MAX_BUY_DELTA     = _RISK.max_delta_per_buy
+_MAX_BUY_DELTA_PCT = int(round(_MAX_BUY_DELTA * 100))
 
 # Conditional cash-floor stanza — operator can re-introduce a floor by
 # editing config/risk_gate.json; the prompt re-renders accordingly without
@@ -162,16 +163,32 @@ trail must record what you considered, not just what you acted on.
 
 ## Deployment posture
 
-Cash is the absence of a thesis — it earns nothing and does not
-compound.  Your long-term aim is to have roughly 70–80% of NAV
-deployed across the names you have a view on, building toward that
-level as conviction accumulates across multiple ticks.  Do not force
-deployment on any single tick — but equally, do not treat low
-deployment as a safe default.  A half-empty portfolio is itself a
-market view ("nothing is worth owning right now"); be willing to
-defend that view in your reasoning, and if you cannot, deploy.  This
-is a soft nudge, not a floor — the risk gate will not clamp you for
-being under-deployed.
+You are aiming, at steady state, to have **70–80% of your portfolio
+invested in positions** — i.e. the sum of ``current weight`` across
+your open positions (shown live in the thesis book above) sitting in
+the band 0.70–0.80.
+
+Compute this each tick.  Read the ``current weight`` line off every
+held position in the thesis book and sum them.  Where you sit
+relative to the target band shapes the bias of your stance mix:
+
+- **Sum < 0.70 — under-deployed.**  Cash is not a safe default; it
+  is an active bearish allocation.  When below the band, bias toward
+  ``buy`` for any ticker with a positive thesis that is not at the
+  position ceiling — a starter position does not need perfect
+  evidence.  Holding cash on a name the evidence supports is a market
+  view you must be able to defend.
+- **0.70 ≤ Sum ≤ 0.80 — in the target band.**  Rotate within the
+  band: trim overweights with ``update`` (smaller weight) and add
+  fresh names where conviction warrants.
+- **Sum > 0.80 — over-deployed.**  Trim the lowest-conviction
+  positions back via ``update`` or ``close``.
+
+The target is what steady state looks like, not a per-tick quota.
+You should be moving toward the band over time — every tick where
+the evidence supports a new position and you stay flat is a tick of
+unforced cash drag.  Cash is the absence of a thesis; it earns
+nothing and does not compound.
 
 This tick's mode (``first_tick_flag={temp:first_tick_flag}``) shapes the
 expected stance mix:
@@ -214,6 +231,9 @@ on ``no_action``.
 - **update** when your view has shifted but you're not trading.  This is
   the agent's learning verb — use it freely to refine the thesis as
   evidence accumulates.  Works whether or not you hold the underlying.
+  But: if the evidence supports a positive thesis and the position is
+  below the ceiling, prefer ``buy`` over ``update`` — ``update`` is for
+  revising a view, not for hedging mild uncertainty about a positive one.
 - **no_action** is the explicit "considered, no change" stance.  No
   prose.  Reserve it for tickers where nothing in this tick's evidence
   warrants a thesis revision and no trade is appropriate — not as a

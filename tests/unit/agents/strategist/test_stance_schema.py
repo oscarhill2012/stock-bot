@@ -146,26 +146,34 @@ class TestBoundaryValues:
 # ---------------------------------------------------------------------------
 
 def test_buy_requires_ticker_weight_rationale():
-    """buy stance requires ticker, weight in (0, 0.05], and rationale.
+    """buy stance requires ticker, weight in (0, max_delta_per_buy], and rationale.
 
     No horizon, target_price, or stop_price required (or accepted)
-    on a buy stance — those fields are removed from the new schema."""
+    on a buy stance — those fields are removed from the new schema.  The
+    over-cap weight is sourced from ``config.risk_gate`` so the test stays
+    in sync with the single source of truth for the buy ceiling.
+    """
     from agents.strategist.stance_schema import TickerStance
+    from config.risk_gate import get_risk_gate_config
 
-    s = TickerStance(ticker="AAPL", intent="buy", weight=0.03, rationale="iPhone launch catalyst")
+    cap = get_risk_gate_config().max_delta_per_buy
+    in_band = cap / 2.0                         # comfortably within the band
+    over_cap = cap + 0.01                       # any weight above the configured cap
+
+    s = TickerStance(ticker="AAPL", intent="buy", weight=in_band, rationale="iPhone launch catalyst")
     assert s.intent == "buy"
-    assert s.weight == 0.03
+    assert s.weight == in_band
 
     import pytest
     from pydantic import ValidationError
     with pytest.raises(ValidationError, match="rationale"):
-        TickerStance(ticker="AAPL", intent="buy", weight=0.03)
+        TickerStance(ticker="AAPL", intent="buy", weight=in_band)
 
     with pytest.raises(ValidationError, match="weight"):
-        TickerStance(ticker="AAPL", intent="buy", weight=0.06, rationale="x")
+        TickerStance(ticker="AAPL", intent="buy", weight=over_cap, rationale="x")
 
     with pytest.raises(ValidationError, match="target_price|extra"):
-        TickerStance(ticker="AAPL", intent="buy", weight=0.03, rationale="x", target_price=250.0)
+        TickerStance(ticker="AAPL", intent="buy", weight=in_band, rationale="x", target_price=250.0)
 
 
 def test_sell_full_close_when_weight_absent():
