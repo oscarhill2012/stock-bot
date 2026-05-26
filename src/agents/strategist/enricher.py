@@ -299,7 +299,7 @@ class StrategistEnricher(BaseAgent):
 
     Contract violations
     -------------------
-    Off-watchlist tickers / intent=None / missing reason on close|trim →
+    Off-watchlist tickers / intent=None / missing reason on sell|update →
     raises :class:`StrategistContractViolation` from
     :func:`derive_decision_fields`.  The exception propagates up through
     the SequentialAgent → Runner → backtest driver, aborting the tick.

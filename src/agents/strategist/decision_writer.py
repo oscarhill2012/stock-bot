@@ -81,10 +81,10 @@ class StrategistDecisionWriter(BaseAgent):
         # Loop: one DB row per stance in the decision.
         for stance in decision.stances:
             # Read intent directly from the stance — no weight-comparison derivation.
-            # Fallback to "hold" only as a safety net; intent=None should have been
-            # rejected upstream by derive_decision_fields, so this branch is unreachable
-            # in production (the derivation already raises on intent=None).
-            action = stance.intent or "hold"
+            # Fallback to "update" (the iter-3 no-trade verb) as a safety net;
+            # intent=None should have been rejected upstream by derive_decision_fields,
+            # so this branch is unreachable in production (derivation raises on None).
+            action = stance.intent or "update"
             save_ticker_stance(
                 self.db_session,
                 tick_id=state.get("tick_id", "unknown"),

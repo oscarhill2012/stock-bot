@@ -86,32 +86,25 @@ def _make_state() -> dict:
 
         # Real shape: ``stances`` is a list, not a dict.  Each entry carries
         # ``ticker`` plus the per-ticker fields the snapshot surfaces.
-        # Intent-form only (Band 3 — preferred_weight / conviction deleted).
+        # Uses the iter-3 three-verb schema: buy / sell / update.
         "strategist_decision": {
             "stances": [
                 {
-                    "ticker":       "SIVB",
-                    "intent":       "close",
-                    "reason":       "Thesis broken",
-                    "rationale":    "Thesis broken — closing the position.",
-                    "horizon":      None,
-                    "target_price": None,
-                    "stop_price":   None,
-                    "catalyst":     None,
+                    "ticker":   "SIVB",
+                    "intent":   "sell",
+                    "reason":   "Thesis broken",
+                    "catalyst": None,
                 },
                 {
-                    "ticker":       "AAPL",
-                    "intent":       "open",
-                    "weight":       0.05,
-                    "rationale":    "Opening on bullish technical setup.",
-                    "horizon":      "swing",
-                    "target_price": 160.0,
-                    "stop_price":   145.0,
-                    "catalyst":     "Earnings beat expected next week",
+                    "ticker":    "AAPL",
+                    "intent":    "buy",
+                    "weight":    0.05,
+                    "rationale": "Opening on bullish technical setup.",
+                    "catalyst":  "Earnings beat expected next week",
                 },
             ],
-            "close_reasons":  {"SIVB": "Thesis broken"},
-            "trim_reasons":   {},
+            "sell_reasons":   {"SIVB": "Thesis broken"},
+            "update_reasons": {},
             "reasoning":      "Rotating out of regional banks into mega-cap tech on the back of the SIVB blowup.",
             "thesis": "Regional bank stress is the dominant risk; rotate to balance-sheet-strong mega-caps.",
             "decision_tag":   "rotate_to_megacap",
@@ -119,20 +112,20 @@ def _make_state() -> dict:
         },
 
         # The held-position book.  SIVB is currently held; AAPL is flat.
+        # Uses iter-3 PositionThesis fields (no horizon / target_price / stop_price).
         "positions": {
             "SIVB": {
-                "ticker":          "SIVB",
-                "opened_at":       "2023-03-01T14:30:00+00:00",
-                "opened_price":    268.5,
-                "opened_tag":      "regional_bank_long",
-                "rationale":       "Above-average net interest margin and deposit growth.",
-                "horizon":         "swing",
-                "target_price":    320.0,
-                "stop_price":      240.0,
-                "catalyst":        "Q1 earnings",
-                "last_reviewed_at":"2023-03-13T09:30:00+00:00",
-                "last_review_note":"",
-                "opened_tick_id":  "tick-prior",
+                "ticker":                   "SIVB",
+                "opened_at":                "2023-03-01T14:30:00+00:00",
+                "opened_tick_id":           "tick-prior",
+                "opened_price":             268.5,
+                "weight":                   0.10,
+                "rationale":                "Above-average net interest margin and deposit growth.",
+                "catalyst":                 "Q1 earnings",
+                "last_reviewed_at":         "2023-03-13T09:30:00+00:00",
+                "last_reviewed_decision":   "buy",
+                "last_reviewed_reason":     "Initial entry on NIM thesis.",
+                "thesis_last_updated_tick": 0,
             },
         },
 
@@ -172,11 +165,12 @@ def test_logs_one_file_per_filled_execution_with_populated_content(tmp_path: Pat
         assert key in sivb, f"missing key: {key}"
 
     # Strategist decision section is no longer empty.
+    # Uses iter-3 key names (sell_reason, iter-3 intent verbs).
     sd = sivb["strategist_decision"]
     assert sd["stance"]["ticker"]       == "SIVB"
-    assert sd["stance"]["intent"]       == "close"
+    assert sd["stance"]["intent"]       == "sell"   # iter-3 verb (was "close")
     assert sd["stance"]["reason"]       == "Thesis broken"
-    assert sd["close_reason"]           == "Thesis broken"
+    assert sd["sell_reason"]            == "Thesis broken"
     assert sd["reasoning"].startswith("Rotating out of regional banks")
     assert sd["thesis"].startswith("Regional bank stress")
     assert sd["decision_tag"]           == "rotate_to_megacap"
@@ -187,13 +181,11 @@ def test_logs_one_file_per_filled_execution_with_populated_content(tmp_path: Pat
     assert sv["ticker_evidence"]["ticker"]            == "SIVB"
     assert sv["ticker_evidence"]["aggregate"]["lean"] == "bearish"
 
-    # Held position thesis dump is the full PositionThesis (this ticker IS held).
+    # Held position thesis dump is the iter-3 PositionThesis (no target/stop/horizon).
     held = sv["held_view_at_decision"]
     assert held is not None
-    assert held["ticker"]        == "SIVB"
-    assert held["opened_price"]  == 268.5
-    assert held["target_price"]  == 320.0
-    assert held["stop_price"]    == 240.0
+    assert held["ticker"]       == "SIVB"
+    assert held["opened_price"] == 268.5
     assert held["rationale"].startswith("Above-average")
 
     # ── AAPL BUY snapshot (newly-opened — no prior position) ─────────────────
@@ -201,11 +193,10 @@ def test_logs_one_file_per_filled_execution_with_populated_content(tmp_path: Pat
     aapl      = json.loads(aapl_path.read_text())
 
     sd_a = aapl["strategist_decision"]
-    assert sd_a["stance"]["ticker"]       == "AAPL"
-    assert sd_a["stance"]["intent"]       == "open"
-    assert sd_a["stance"]["weight"]       == 0.05
-    assert sd_a["stance"]["target_price"] == 160.0
-    assert sd_a["close_reason"]           == ""  # AAPL not in close_reasons
+    assert sd_a["stance"]["ticker"]  == "AAPL"
+    assert sd_a["stance"]["intent"]  == "buy"   # iter-3 verb (was "open")
+    assert sd_a["stance"]["weight"]  == 0.05
+    assert sd_a["sell_reason"]       == ""  # AAPL not in sell_reasons
     assert sd_a["reasoning"].startswith("Rotating out of regional banks")  # tick-level field shared across both fills
 
     # AAPL is flat — held_view_at_decision is None because no prior thesis exists.

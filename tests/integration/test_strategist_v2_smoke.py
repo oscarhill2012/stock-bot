@@ -134,7 +134,8 @@ async def test_strategist_v2_emits_per_ticker_stances_with_held_position():
     from google.genai import types as genai_types
 
     from agents.strategist.agent import build_strategist
-    from agents.strategist.schema import PositionThesis, StrategistDecision
+    from agents.strategist.position_thesis import PositionThesis
+    from agents.strategist.schema import StrategistDecision
     from broker.portfolio import Portfolio, Position
 
     # The module-level ``strategist_agent`` singleton was deleted (2026-05-21)
@@ -154,14 +155,13 @@ async def test_strategist_v2_emits_per_ticker_stances_with_held_position():
     aapl_thesis = PositionThesis(
         ticker="AAPL",
         opened_at=datetime(2026, 4, 22, 14, tzinfo=UTC),
-        opened_price=192.40,
-        opened_tag="open_aapl",
-        rationale="FCF + insider buying",
-        horizon="swing",
-        target_price=210.0,
-        stop_price=185.0,
-        last_reviewed_at=datetime(2026, 4, 22, 14, tzinfo=UTC),
         opened_tick_id="tick_OPEN",
+        opened_price=192.40,
+        weight=0.10,
+        rationale="FCF + insider buying",
+        last_reviewed_at=datetime(2026, 4, 22, 14, tzinfo=UTC),
+        last_reviewed_decision="buy",
+        last_reviewed_reason="Initial entry on FCF thesis.",
     )
 
     # ── Build portfolio with AAPL position ───────────────────────────────────

@@ -8,7 +8,8 @@ from pydantic import ValidationError
 
 from agents.strategist.agent import _strategist_validation_callback
 from agents.strategist.derivation import StrategistContractViolation
-from agents.strategist.schema import PositionThesis, StrategistDecision
+from agents.strategist.position_thesis import PositionThesis
+from agents.strategist.schema import StrategistDecision
 from agents.strategist.stance_schema import TickerStance
 from broker.portfolio import Portfolio, Position
 from contract.evidence import AnalystEvidence, AnalystVerdict
@@ -158,8 +159,9 @@ def test_after_raises_on_sell_without_reason():
     """
     thesis = PositionThesis(
         ticker="AAPL", opened_at=datetime.now(tz=UTC),
-        opened_price=192.40, opened_tag="x", rationale="x", horizon="swing",
-        last_reviewed_at=datetime.now(tz=UTC),
+        opened_tick_id="tick_001", opened_price=192.40, weight=0.05,
+        rationale="x", last_reviewed_at=datetime.now(tz=UTC),
+        last_reviewed_decision="buy", last_reviewed_reason="Initial entry.",
     )
     # Build a sell stance with no reason, bypassing schema validation.
     # ``model_construct`` sets fields without running validators — this
@@ -200,8 +202,9 @@ def test_after_raises_on_update_without_reason():
     """
     thesis = PositionThesis(
         ticker="MSFT", opened_at=datetime.now(tz=UTC),
-        opened_price=410.0, opened_tag="x", rationale="x", horizon="swing",
-        last_reviewed_at=datetime.now(tz=UTC),
+        opened_tick_id="tick_001", opened_price=410.0, weight=0.05,
+        rationale="x", last_reviewed_at=datetime.now(tz=UTC),
+        last_reviewed_decision="buy", last_reviewed_reason="Initial entry.",
     )
     # Build an update stance with no reason, bypassing schema validation.
     bad_stance = TickerStance.model_construct(

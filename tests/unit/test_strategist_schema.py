@@ -3,8 +3,9 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from agents.strategist.schema import PositionThesis, StrategistDecision
-from config.strategist import get_strategist_config
+from agents.strategist.position_thesis import PositionThesis
+from agents.strategist.schema import StrategistDecision
+from config.strategist import get_strategist_config  # used by test_strategist_decision_rejects_long_reasoning
 
 
 def _now():
@@ -45,35 +46,40 @@ def test_strategist_decision_rejects_bad_confidence():
 
 
 def test_position_thesis_valid():
+    """PositionThesis (iter-3 schema) round-trips the core fields correctly."""
     pt = PositionThesis(
         ticker="AAPL",
         opened_at=_now(),
+        opened_tick_id="tick_001",
         opened_price=200.0,
-        opened_tag="buy_signal",
+        weight=0.05,
         rationale="Strong momentum",
-        horizon="swing",
         last_reviewed_at=_now(),
+        last_reviewed_decision="buy",
+        last_reviewed_reason="Initial entry.",
     )
-    assert pt.horizon == "swing"
+    assert pt.ticker == "AAPL"
+    assert pt.rationale == "Strong momentum"
 
 
-def test_position_thesis_rejects_long_rationale():
-    """``PositionThesis.rationale`` is capped by the *schema* cap (prompt
-    cap + ``slack_percent`` headroom — see the "two-tier convention" note
-    in ``src/config/strategist.py``).  Reads the live schema cap from
-    config so retuning does not silently invalidate this regression.
+def test_position_thesis_rejects_old_fields():
+    """The iter-3 ``PositionThesis`` uses ``extra='forbid'`` — passing old fields
+    like ``horizon``, ``target_price``, or ``stop_price`` must raise ValidationError.
+
+    This pins the regression that stale callers (serialised pre-iter-3 state,
+    old test fixtures) cannot silently populate removed fields.
     """
-
-    cfg        = get_strategist_config()
-    schema_cap = cfg.schema_cap(cfg.position_thesis_caps.rationale_max_chars)
 
     with pytest.raises(ValidationError):
         PositionThesis(
             ticker="AAPL",
             opened_at=_now(),
+            opened_tick_id="tick_001",
             opened_price=200.0,
-            opened_tag="x",
-            rationale="x" * (schema_cap + 1),  # one char over the *schema* (slack-applied) cap
-            horizon="swing",
+            weight=0.05,
+            rationale="Strong momentum",
             last_reviewed_at=_now(),
+            last_reviewed_decision="buy",
+            last_reviewed_reason="Initial entry.",
+            horizon="swing",        # removed in iter-3 — must be rejected
         )

@@ -272,7 +272,7 @@ class DecisionLogger:
         # iter-3 rename: ``close_reasons`` → ``sell_reasons``.
         # Read ``sell_reasons`` first; fall back to ``close_reasons`` for
         # legacy session state that was persisted before the rename landed.
-        close_reason  = (
+        sell_reason  = (
             (decision.get("sell_reasons") or decision.get("close_reasons") or {})
             .get(ticker, "")
         )
@@ -350,7 +350,7 @@ class DecisionLogger:
             # one decision per fill is the right granularity to pay that cost.
             "strategist_decision": {
                 "stance":       _coerce(stance),
-                "close_reason": close_reason,
+                "sell_reason":  sell_reason,
                 "reasoning":    decision.get("reasoning", ""),
                 "thesis":       decision.get("thesis", ""),
                 "decision_tag": decision.get("decision_tag", ""),
