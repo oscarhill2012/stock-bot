@@ -101,13 +101,39 @@ def test_downtrend_20d():
 # RSI flip logic
 # ---------------------------------------------------------------------------
 
-def test_overbought_exhaustion_flips_to_bearish():
-    """RSI above overbought threshold AND positive 5d momentum ⇒ bearish flip."""
+def test_overbought_with_positive_momentum_keeps_trend_lean():
+    """RSI overbought + positive 5d momentum on an uptrend must NOT flip to bearish.
+
+    Regression cover for Bug #12 (baseline-window-2025-09-iter-2.md §Bug #12):
+    the prior "exhaustion" flip fought trending names (GOOGL/UNH/AMD ran 12-30 %
+    while the verdict reported bearish).  Persistent overbought RSI is a feature
+    of strong trends, not an exit signal — the lean must reflect the 20d trend
+    score rather than being unconditionally flipped.
+    """
     v = derive_technical_verdict(
         _features(rsi_14=80, pct_change_5d=0.04, pct_change_20d=0.05),
         _h(),
     )
-    assert v.lean == "bearish"
+
+    # Trend score is positive, so lean should remain bullish.
+    assert v.lean == "bullish"
+
+    # The overbought factor is still informational — keep it in the rationale.
+    assert "rsi_overbought" in v.key_factors
+
+
+def test_overbought_factor_emitted_regardless_of_lean():
+    """``rsi_overbought`` must appear in ``key_factors`` whenever RSI > threshold.
+
+    Even though we no longer flip the lean on this signal alone, the factor
+    itself remains valuable context for downstream consumers (rationale text,
+    strategist prompt).
+    """
+    v = derive_technical_verdict(
+        _features(rsi_14=80, pct_change_5d=0.04, pct_change_20d=0.05),
+        _h(),
+    )
+    assert "rsi_overbought" in v.key_factors
 
 
 def test_oversold_capitulation_flips_to_bullish():

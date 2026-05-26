@@ -543,10 +543,11 @@ def derive_technical_verdict(
     rsi = features["rsi_14"]
 
     if rsi > h.rsi_overbought:
+        # Informational tag only — persistent overbought RSI is a feature of
+        # strong trends, not an exit signal.  The lean stays whatever the trend
+        # score set.  (Bug #12 removed the unconditional bearish flip here —
+        # see docs/backtest-audits/baseline-window-2025-09-iter-2.md §Bug #12.)
         factors.append("rsi_overbought")
-        # Exhaustion: strong recent rally at extreme RSI suggests reversal.
-        if pct5 > 0:
-            lean = "bearish"
 
     if rsi < h.rsi_oversold:
         factors.append("rsi_oversold")
