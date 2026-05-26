@@ -15,6 +15,19 @@ of the Strategist LlmAgent inside a SequentialAgent so the LlmAgent's
 
 The three keys carry the ``temp:`` prefix mandated by §C-Rule 2 — they are
 invocation-scoped working state, never read across ticks.
+
+Task 9 additions
+----------------
+- ``temp:first_tick_flag`` — derived from ``user:active_stances_initialised``.
+  Renders as the string ``"True"`` when this IS the first tick of a window
+  (i.e. ``user:active_stances_initialised`` is absent or ``False``), and
+  ``"False"`` on every subsequent tick.  The strategist prompt uses this to
+  decide whether to emit one stance per watchlist ticker (first tick) or a
+  focused incremental update.  Semantics: "True" = emit a full baseline.
+
+- The held-positions view now shows thesis staleness (ticks since the thesis
+  was last updated) and deliberately omits ``horizon``, ``target_price``, and
+  ``stop_price`` — those fields were removed in iter-3.
 """
 from __future__ import annotations
 
@@ -97,6 +110,58 @@ class StrategistContextShim(BaseAgent):
 
     name: str = "StrategistContextShim"
 
+    def render(self, state: dict) -> dict:
+        """Compute the synchronous context keys derived from session state.
+
+        This method is the pure computation core — it reads state and returns
+        a partial ``state_delta`` dict containing:
+
+        - ``temp:first_tick_flag`` — ``"True"`` when this is the first tick of
+          a window (``user:active_stances_initialised`` is absent or ``False``),
+          ``"False"`` thereafter.  The prompt uses this flag to decide whether
+          to emit a full baseline stance set or an incremental update.
+        - ``temp:held_positions_view`` — the lightweight held-positions block
+          showing rationale, opened-at, catalyst, and thesis staleness in ticks.
+          Intentionally omits ``horizon``, ``target_price``, ``stop_price``
+          (removed in iter-3).
+
+        Separating the pure computation from the ADK plumbing in
+        ``_run_async_impl`` lets unit tests call ``render()`` directly without
+        constructing a fake ``InvocationContext``.
+
+        Args:
+            state: ADK session-state dict / proxy.  Reads the following keys:
+                ``user:active_stances_initialised`` (bool, defaults to False),
+                ``user:positions`` (dict[ticker, thesis-dict], defaults to {}),
+                ``user:current_tick_index`` (int, defaults to 0).
+
+        Returns:
+            dict with keys ``temp:first_tick_flag`` and
+            ``temp:held_positions_view``.
+        """
+        # ── Selective-output flag ─────────────────────────────────────────
+        # ``user:active_stances_initialised`` is False (or absent) on the
+        # first tick of every window, and flipped to True by
+        # StrategistEnricher after the first successful LLM call.
+        # "True" → this IS the first tick (emit a full baseline).
+        # "False" → subsequent tick (incremental update).
+        initialised = state.get("user:active_stances_initialised", False)
+        first_tick_flag: str = "True" if not initialised else "False"
+
+        # ── Lightweight held-positions view with staleness ────────────────
+        positions = state.get("user:positions") or state.get("positions") or {}
+        current_tick_index: int = state.get("user:current_tick_index", 0) or 0
+
+        held_view = _render_held_positions_shim(
+            positions,
+            current_tick_index = current_tick_index,
+        )
+
+        return {
+            "temp:first_tick_flag":     first_tick_flag,
+            "temp:held_positions_view": held_view,
+        }
+
     async def _run_async_impl(
         self, ctx: InvocationContext,
     ) -> AsyncGenerator[Event, None]:
@@ -104,8 +169,15 @@ class StrategistContextShim(BaseAgent):
 
         Reads ``positions``, ``portfolio``, ``tickers``, ``tick_id``,
         ``as_of`` / ``recorded_at``, and the four per-analyst
-        ``*_evidence`` lists.  Writes ``temp:held_positions_view``,
-        ``temp:ticker_evidence``, and ``temp:ticker_evidence_objects``.
+        ``*_evidence`` lists.  Writes ``temp:first_tick_flag``,
+        ``temp:held_positions_view``, ``temp:ticker_evidence``, and
+        ``temp:ticker_evidence_objects``.
+
+        The ``temp:held_positions_view`` value is produced by ``render()``
+        (the lightweight shim renderer that shows thesis staleness and omits
+        horizon/target/stop).  The full portfolio-evolution renderer in
+        ``held_view.py`` is retained for tests / future use but is no longer
+        wired here — the shim renderer is the authoritative path.
 
         Args:
             ctx: ADK invocation context; ``ctx.session.state`` is the
@@ -113,29 +185,20 @@ class StrategistContextShim(BaseAgent):
 
         Yields:
             Exactly one ``Event`` whose ``actions.state_delta`` carries
-            the three context keys.
+            the required context keys.
         """
         state = ctx.session.state
 
-        # ── Held-positions view ───────────────────────────────────────────
-        # Read from the user-scoped key Plan 1 ships.  The legacy bare
-        # ``state["positions"]`` is never written post-Plan-1, but the
-        # fallback keeps tests on the migrated code path informative if
-        # one slips in.
-        positions = state.get("user:positions") or state.get("positions") or {}
-        portfolio = _coerce_portfolio(state.get("portfolio"))
+        # ── Keys computed by the pure render() helper ─────────────────────
+        # Separated so unit tests can call render() directly.
+        pure_keys = self.render(state)
 
-        # Resolve the ``recorded_at`` / ``as_of`` timestamp for the
-        # evolution columns AND the evidence aggregation.  Priority:
-        # state["as_of"] (backtest replay clock) > state["recorded_at"]
-        # > wall-clock fallback (live, when STOCKBOT_STRICT_AS_OF=0).
-        # Must be resolved before the held-view call so we can thread
-        # ``as_of`` through to the evolution renderer.
-        #
+        # ── Timestamp resolution for evidence aggregation ─────────────────
+        # Priority: state["as_of"] (backtest replay clock) >
+        # state["recorded_at"] > wall-clock fallback (live only).
         # NOTE: DatabaseSessionService serialises state via JSON, so ``as_of``
-        # may arrive as an ISO-8601 string rather than a ``datetime``.  Pass
-        # the raw value to ``resolve_as_of`` which handles ``datetime``, ``str``,
-        # and ``None`` uniformly rather than duplicating the parsing here.
+        # may arrive as an ISO-8601 string.  Pass raw to resolve_as_of which
+        # handles both datetime and str uniformly.
         as_of_raw = state.get("as_of")
         if as_of_raw is not None:
             recorded_at = resolve_as_of(
@@ -152,17 +215,12 @@ class StrategistContextShim(BaseAgent):
                     None, allow_wallclock=True, site="strategist/context_shim",
                 )
 
-        held_view = render_held_positions_view(
-            positions = positions,
-            portfolio = portfolio,
-            as_of     = recorded_at,
-        )
-
         # ── Mode header — cold-start vs incremental framing ──────────────
         # Drives the structural diversity of the prompt across ticks.
         # Cold start: portfolio is empty; encourage 1-3 fresh opens.
         # Incremental: emit a stance per held position with a 'what's
         # changed' reason.  See Principle 4 in the spec.
+        positions = state.get("user:positions") or state.get("positions") or {}
         if not positions:
             mode_text = COLD_START_MODE_TEMPLATE
         else:
@@ -232,7 +290,10 @@ class StrategistContextShim(BaseAgent):
             invocation_id = ctx.invocation_id,
             actions       = EventActions(state_delta={
                 "temp:strategist_mode":         mode_text,
-                "temp:held_positions_view":     held_view,
+                # Held-positions view and first-tick flag from the pure
+                # render() helper — separated so tests can call it directly.
+                "temp:held_positions_view":     pure_keys["temp:held_positions_view"],
+                "temp:first_tick_flag":         pure_keys["temp:first_tick_flag"],
                 "temp:ticker_evidence":         ticker_evidence_rendered,
                 "temp:ticker_evidence_objects": ticker_evidence_objects,
                 "temp:recent_trades_view":      recent_trades_view,
@@ -249,6 +310,105 @@ class StrategistContextShim(BaseAgent):
                 "temp:_last_schema_error":      "",
             }),
         )
+
+
+def _render_held_positions_shim(
+    positions: dict,
+    *,
+    current_tick_index: int,
+) -> str:
+    """Render held positions for the prompt, including thesis-staleness ticks.
+
+    This is the Task 9 lightweight renderer.  It accepts raw dicts from
+    ``state["user:positions"]`` — values may be full ``PositionThesis``
+    instances, their ``model_dump`` equivalents, or partial dicts produced
+    by tests/early code paths.
+
+    Each position block shows:
+    - Ticker symbol (header)
+    - Rationale (the frozen entry commitment)
+    - Opened-at price and date
+    - Catalyst (if present)
+    - Thesis staleness: how many ticks have elapsed since ``thesis_last_updated_tick``
+
+    Deliberately omits: ``horizon``, ``target_price``, ``stop_price`` —
+    these fields were removed in iter-3 and must not appear in the prompt.
+
+    Parameters
+    ----------
+    positions:
+        Mapping of ticker → thesis dict (or PositionThesis instance).
+        Raw dicts with only a subset of fields are tolerated; missing
+        fields render as "(unknown)".
+    current_tick_index:
+        The current backtest tick index, read from
+        ``state["user:current_tick_index"]``.  Used to compute staleness.
+
+    Returns
+    -------
+    str
+        Human-readable block for splicing into the strategist's prompt, or
+        the flat-portfolio sentinel string when ``positions`` is empty.
+    """
+    if not positions:
+        return "(No held positions — portfolio is flat.)"
+
+    blocks: list[str] = []
+
+    for ticker in sorted(positions.keys()):
+        raw = positions[ticker]
+
+        # Normalise to a plain dict for uniform access regardless of whether
+        # the value is a PositionThesis instance or already a dict.
+        if hasattr(raw, "model_dump"):
+            data: dict = raw.model_dump(mode="json")
+        else:
+            data = dict(raw)
+
+        rationale  = data.get("rationale") or "(no rationale recorded)"
+        opened_price = data.get("opened_price", 0.0)
+        opened_at_raw = data.get("opened_at")
+        catalyst   = data.get("catalyst")
+
+        # Format the open date — accept datetime objects and ISO strings.
+        if isinstance(opened_at_raw, str):
+            try:
+                from datetime import datetime as _dt
+                opened_at_raw = _dt.fromisoformat(opened_at_raw)
+            except (TypeError, ValueError):
+                opened_at_raw = None
+
+        if opened_at_raw is not None and hasattr(opened_at_raw, "strftime"):
+            opened_str = opened_at_raw.strftime("%Y-%m-%d %H:%M")
+        else:
+            opened_str = "(unknown date)"
+
+        # Compute staleness: ticks elapsed since the thesis was last updated.
+        # ``thesis_last_updated_tick`` defaults to 0 if absent; a missing
+        # ``current_tick_index`` means staleness cannot be computed → 0.
+        last_updated = data.get("thesis_last_updated_tick") or 0
+        stale_ticks  = max(current_tick_index - last_updated, 0)
+
+        lines: list[str] = [
+            ticker,
+            f"  Opened at ${opened_price:.2f} on {opened_str}",
+            f"  Rationale:  {rationale}",
+        ]
+
+        if catalyst:
+            lines.append(f"  Catalyst:   {catalyst}")
+
+        lines.append(
+            f"  Thesis staleness:  {stale_ticks} ticks since last update"
+        )
+
+        blocks.append("\n".join(lines))
+
+    if not blocks:
+        return "(No held positions — portfolio is flat.)"
+
+    # Separate blocks with a blank line for prompt legibility.
+    return "\n\n".join(blocks)
 
 
 def _render_recent_trades(closed_log: list[dict]) -> str:

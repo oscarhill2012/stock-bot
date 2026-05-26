@@ -85,6 +85,8 @@ def test_shim_yields_one_event_with_temp_prefixed_keys(populated_state: dict) ->
         # Seeded empty so the RetryingAgentWrapper's schema-error feedback
         # slot resolves on the first attempt (overwritten on schema retry).
         "temp:_last_schema_error",
+        # Task 9: selective-output flag — "True" on first tick, "False" thereafter.
+        "temp:first_tick_flag",
     }
     assert set(delta.keys()) == expected_keys, (
         f"state_delta keys mismatch: {set(delta.keys())} vs {expected_keys}"
@@ -197,3 +199,91 @@ def test_shim_thesis_cold_start_defaults_to_empty_string(populated_state: dict) 
     assert delta["thesis"] == "", (
         f"cold-start thesis must be empty string; got {delta['thesis']!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Task 9 — selective-output flag + thesis staleness
+# ---------------------------------------------------------------------------
+
+def test_first_tick_sets_flag_true() -> None:
+    """On the first tick (active_stances_initialised=False), first_tick_flag is 'True'.
+
+    ``temp:first_tick_flag`` is rendered by ``StrategistContextShim.render()``
+    from the durable boolean ``user:active_stances_initialised``.  When the
+    flag is absent or False, this IS the first tick of the window, so the
+    rendered value should be "True".
+    """
+    from agents.strategist.context_shim import StrategistContextShim
+
+    state = {"user:positions": {}, "user:active_stances_initialised": False}
+    shim = StrategistContextShim()
+    rendered = shim.render(state)
+    assert rendered["temp:first_tick_flag"] == "True"
+
+
+def test_subsequent_tick_sets_flag_false() -> None:
+    """Once initialised, first_tick_flag is 'False'.
+
+    After the first successful tick the enricher sets
+    ``user:active_stances_initialised = True``.  On every tick thereafter
+    ``render()`` should produce ``"False"`` for ``temp:first_tick_flag``.
+    """
+    from agents.strategist.context_shim import StrategistContextShim
+
+    state = {"user:positions": {}, "user:active_stances_initialised": True}
+    shim = StrategistContextShim()
+    rendered = shim.render(state)
+    assert rendered["temp:first_tick_flag"] == "False"
+
+
+def test_held_view_shows_thesis_staleness() -> None:
+    """Held positions view shows ticks since the thesis last updated.
+
+    The rendered ``temp:held_positions_view`` must contain the ticker symbol
+    and either an explicit "N ticks" staleness string or the word "stale".
+    Staleness is computed as ``current_tick_index - thesis_last_updated_tick``.
+    """
+    from agents.strategist.context_shim import StrategistContextShim
+
+    state = {
+        "user:positions": {
+            "AAPL": {
+                "rationale":                "iPhone launch",
+                "opened_price":             210.0,
+                "opened_at":                "2026-01-15T13:30:00+00:00",
+                "thesis_last_updated_tick": 1,
+            }
+        },
+        "user:current_tick_index": 5,
+    }
+    shim = StrategistContextShim()
+    rendered = shim.render(state)
+    held = rendered["temp:held_positions_view"]
+    assert "AAPL" in held
+    assert "4 ticks" in held or "stale" in held.lower()
+
+
+def test_held_view_omits_horizon_target_stop() -> None:
+    """Held view must not mention horizon/target_price/stop_price.
+
+    iter-3 removed those fields from ``PositionThesis``.  The held view
+    rendered by ``context_shim`` must not leak them back into the prompt.
+    """
+    from agents.strategist.context_shim import StrategistContextShim
+
+    state = {
+        "user:positions": {
+            "AAPL": {
+                "rationale":    "iPhone launch",
+                "opened_price": 210.0,
+                "opened_at":    "2026-01-15T13:30:00+00:00",
+            }
+        },
+        "user:current_tick_index": 1,
+    }
+    shim = StrategistContextShim()
+    rendered = shim.render(state)
+    held = rendered["temp:held_positions_view"]
+    assert "horizon" not in held.lower()
+    assert "target" not in held.lower()
+    assert "stop" not in held.lower()

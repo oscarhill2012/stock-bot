@@ -339,11 +339,18 @@ class StrategistEnricher(BaseAgent):
         # Contract Rule 1: yield a state_delta Event rather than mutating
         # ``ctx.session.state`` in place.  ``SessionService.append_event``
         # is the writer-of-record.
+        #
+        # Task 9: also flip ``user:active_stances_initialised`` to True so
+        # subsequent ticks know a baseline stance set has been established.
+        # This is a one-shot flip — once True it stays True for the rest of
+        # the window.  ``StrategistContextShim.render()`` reads this to derive
+        # ``temp:first_tick_flag`` ("True" only on the first tick).
         yield Event(
             author        = self.name,
             invocation_id = ctx.invocation_id,
             actions       = EventActions(state_delta={
-                "strategist_decision": enriched,
+                "strategist_decision":            enriched,
+                "user:active_stances_initialised": True,
             }),
         )
 
