@@ -149,6 +149,35 @@ def test_oversold_capitulation_flips_to_bullish():
 # Volume effects on magnitude
 # ---------------------------------------------------------------------------
 
+def test_vol_ratio_nan_emits_neither_factor():
+    """Bug #14: NaN ``vol_ratio_20d`` (insufficient history) emits no volume factor.
+
+    Previously, the extractor defaulted ``vol_ratio_20d`` to 0.0 on short
+    windows, which compared less than ``h.vol_ratio_dry_up`` (0.7) and
+    spuriously appended ``vol_dry_up``.  With a NaN sentinel, neither
+    ``vol_breakout`` nor ``vol_dry_up`` should appear.
+    """
+    v = derive_technical_verdict(
+        _features(pct_change_20d=0.05, vol_ratio_20d=float("nan")),
+        _h(),
+    )
+    assert "vol_dry_up" not in v.key_factors
+    assert "vol_breakout" not in v.key_factors
+
+
+def test_vol_ratio_real_dry_up_still_emits_factor():
+    """A genuinely low ``vol_ratio_20d`` (< 0.7) still triggers ``vol_dry_up``.
+
+    Regression cover: the NaN guard must NOT short-circuit real low-volume
+    signals.
+    """
+    v = derive_technical_verdict(
+        _features(pct_change_20d=0.05, vol_ratio_20d=0.4),
+        _h(),
+    )
+    assert "vol_dry_up" in v.key_factors
+
+
 def test_vol_breakout_boosts_magnitude():
     """High volume ratio above breakout threshold lifts magnitude."""
     quiet = derive_technical_verdict(

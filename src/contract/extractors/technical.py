@@ -22,6 +22,7 @@ sites continue to work unchanged.
 """
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from datetime import date, datetime
 from math import copysign
@@ -321,6 +322,12 @@ def extract_technical_features(
     """
     out = _zero_features()
 
+    # Bug #14: ``vol_ratio_20d`` defaults to NaN rather than 0.0 so that a
+    # short-history "no data" state is distinguishable from a real
+    # "volume is 70 % of normal" reading.  The downstream verdict heuristic
+    # explicitly guards against NaN before classifying the volume context.
+    out["vol_ratio_20d"] = float("nan")
+
     if not raw:
         return out
 
@@ -556,9 +563,16 @@ def derive_technical_verdict(
             lean = "bullish"
 
     # --- Volume context -------------------------------------------------------
+    # Bug #14: ``vol_ratio_20d`` is NaN when the OHLCV series is shorter than
+    # the 50-bar window needed to compute the ratio.  Treat NaN as "no signal"
+    # — append neither factor — so a missing-data state is not mistaken for a
+    # genuine low-volume dry-up.  Magnitude adjustments downstream key off the
+    # factor list, so skipping the append is sufficient.
     vol_ratio = features["vol_ratio_20d"]
 
-    if vol_ratio > h.vol_ratio_breakout:
+    if math.isnan(vol_ratio):
+        pass  # no volume signal available
+    elif vol_ratio > h.vol_ratio_breakout:
         factors.append("vol_breakout")
     elif vol_ratio < h.vol_ratio_dry_up:
         factors.append("vol_dry_up")

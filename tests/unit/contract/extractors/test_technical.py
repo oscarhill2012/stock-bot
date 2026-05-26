@@ -49,10 +49,21 @@ def test_dist_from_52w_high_negative(aapl_data):
 
 
 def test_handles_empty_data_gracefully():
-    """Empty data → all-zero features (no exception)."""
+    """Empty data → zeroed features (no exception), except ``vol_ratio_20d`` is NaN.
+
+    Bug #14 changed the ``vol_ratio_20d`` sentinel from 0.0 to NaN so a
+    short-/empty-history state is distinguishable from a real low-volume
+    reading.  All other locked-catalogue features still default to 0.0.
+    """
+    import math
+
     features = extract_technical_features({}, ticker="AAPL")
-    for v in features.values():
-        assert v == 0.0
+
+    for k, v in features.items():
+        if k == "vol_ratio_20d":
+            assert math.isnan(v), f"{k} expected NaN, got {v!r}"
+        else:
+            assert v == 0.0, f"{k} expected 0.0, got {v!r}"
 
 
 def test_handles_short_history_gracefully():
@@ -68,6 +79,57 @@ def test_handles_short_history_gracefully():
     # Should not raise. RSI/ATR should be 0.0 (insufficient history).
     assert features["rsi_14"] == 0.0
     assert features["atr_pct_14"] == 0.0
+
+
+def test_vol_ratio_20d_is_nan_when_history_too_short():
+    """Bug #14: short history (<50 bars) must emit NaN for ``vol_ratio_20d``.
+
+    The prior default of 0.0 was a real-looking value that downstream
+    consumers compared against the dry-up threshold (0.7) and spuriously
+    appended ``vol_dry_up`` to the factor list — see
+    docs/backtest-audits/baseline-window-2025-09-iter-2.md Bug #14.
+    """
+    import math
+
+    # 30 bars — enough for RSI/ATR but well below the 50-bar volume window.
+    bars = [
+        {
+            "timestamp": datetime(2023, 3, d + 1, tzinfo=UTC).isoformat(),
+            "open": 100.0, "high": 101.0, "low": 99.0,
+            "close": 100.0 + d * 0.1, "volume": 1_000_000,
+        }
+        for d in range(30)
+    ]
+    raw = {"ticker": "AAPL", "bars": bars, "ratios": {}}
+
+    features = extract_technical_features(raw, ticker="AAPL")
+
+    # NaN sentinel — distinguishable from a real "volume is 70 % of normal".
+    assert math.isnan(features["vol_ratio_20d"]), (
+        f"expected NaN sentinel, got {features['vol_ratio_20d']!r}"
+    )
+
+
+def test_vol_ratio_20d_populated_when_enough_history():
+    """With ≥50 bars present, ``vol_ratio_20d`` is a real (non-NaN) float."""
+    import math
+
+    # 60 bars — comfortably above the 50-bar requirement.
+    bars = [
+        {
+            "timestamp": datetime(2023, 1, 1, tzinfo=UTC).isoformat(),
+            "open": 100.0, "high": 101.0, "low": 99.0,
+            "close": 100.0 + d * 0.1, "volume": 1_000_000,
+        }
+        for d in range(60)
+    ]
+    raw = {"ticker": "AAPL", "bars": bars, "ratios": {}}
+
+    features = extract_technical_features(raw, ticker="AAPL")
+
+    # All-equal volumes → ratio is 1.0; the key point is that it's not NaN.
+    assert not math.isnan(features["vol_ratio_20d"])
+    assert features["vol_ratio_20d"] == pytest.approx(1.0)
 
 
 # ---------------------------------------------------------------------------
