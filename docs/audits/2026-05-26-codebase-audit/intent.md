@@ -180,9 +180,16 @@ broker orders. No LLM calls, no I/O.
 `state["last_risk_gate_decision"]`.
 
 **Key invariants:**
-- Clamps applied in order: buy-delta-per-trade (defence-in-depth) →
-  concentration cap → cash floor → per-ticker delta → total turnover →
-  no-short rule.
+- Clamps applied in order, matching `src/agents/risk_gate/`:
+  1. `apply_buy_delta_clamp` (defence-in-depth, in `agent.py` before
+     `apply_constraints`)
+  2. `_clamp_negatives` (no-short — runs **first** inside
+     `apply_constraints` so subsequent clamps operate on non-negative
+     weights)
+  3. `_clamp_max_position` (concentration cap)
+  4. `_clamp_cash_floor`
+  5. `_clamp_max_delta` (per-ticker delta)
+  6. `_clamp_max_turnover` (total turnover)
 - `update` and `no_action` stances are stripped from the weight dict before
   clamping (they carry no weight change).
 - Every `sell` (and trim) must carry a rationale (validated upstream by
@@ -191,7 +198,7 @@ broker orders. No LLM calls, no I/O.
 - Orders emitted only for tickers whose weight changes (no churn).
 - Every clamp is recorded for audit.
 
-### 2.5 agents-misc — `src/agents/{memory,snapshot,isolated_failure.py,llm_retry.py}` (and empty `attribution/`)
+### 2.5 agents-misc — `src/agents/{memory,snapshot,isolated_failure.py,llm_retry.py}`
 
 **[AGREED] Components:**
 - **`isolated_failure.py` / `IsolatedFailureWrapper`** — wraps per-ticker LLM
@@ -760,13 +767,15 @@ The §6 disagreements have been adjudicated by the human. The following is
 authoritative — downstream module agents must treat these as ground truth
 in preference to anything in §1–§6 that contradicts them.
 
-### 7.1 Smart-money analyst (resolves §6.1)
-**Status:** Registered in `AnalystPool` and runs every tick. Emits a
-canonical no-data shape (the underlying providers are shelved, so the
-verdict carries `is_no_data=True`, but the `smart_money_evidence` key is
-always present).
-**Audit implication:** Downstream consumers may assume the key exists.
-Any defensive code that handles `smart_money_evidence` absence is dead.
+### 7.1 Smart-money analyst (resolves §6.1 — see §8.1)
+**Status:** **Shelved.** `pipeline.py:88` has `_build_smart_money_analyst(...)`
+commented out, deliberately, pending PIT-correct providers for
+`notable_holders` and `politician_trades`. The analyst module
+(`src/agents/analysts/smart_money/`), its fetcher, and its test suite are
+kept as dormant scaffolding for reactivation; do not delete them.
+**Audit implication:** Defensive consumer code that handles
+`smart_money_evidence` **absence** is correct, not dead, for the shelved
+state.
 
 ### 7.2 Strategist enrichment paths (resolves §6.2)
 **Status:** `_strategist_validation_callback` is dead in production
