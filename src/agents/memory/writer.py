@@ -18,43 +18,6 @@ BUFFER_MAX   = 24
 BUFFER_EVICT_AT = 25  # evict the oldest entry when buffer reaches this size
 
 
-def _has_real_smart_money(state: dict) -> bool:
-    """Return True iff at least one smart-money evidence row has is_no_data == False.
-
-    Handles both dict-shaped evidence (from JSON state) and Pydantic-object-shaped
-    evidence (from in-process ADK pipelines), so the check is robust regardless
-    of serialisation depth.
-
-    Parameters
-    ----------
-    state:
-        The ADK session state dict; reads ``state["smart_money_evidence"]``.
-
-    Returns
-    -------
-    bool
-        True if at least one evidence row reports real (non-absent) smart-money
-        data; False if the list is missing, empty, or every row is no-data.
-    """
-    for ev in state.get("smart_money_evidence", []) or []:
-        # Evidence rows may be raw dicts or Pydantic model instances.
-        verdict = (
-            ev.get("verdict") if isinstance(ev, dict) else getattr(ev, "verdict", None)
-        )
-        if verdict is None:
-            continue
-
-        # Verdict itself may be a dict or a Pydantic object.
-        is_no_data = (
-            verdict.get("is_no_data")
-            if isinstance(verdict, dict)
-            else getattr(verdict, "is_no_data", False)
-        )
-        if not is_no_data:
-            return True
-
-    return False
-
 
 async def append_with_eviction(
     buffer: list[BufferEntry],
@@ -106,9 +69,7 @@ class MemoryWriter(BaseAgent):
         # so ``detect_repeat`` (and any other attribute-access consumer
         # downstream) sees the same shape it did before the state_delta
         # round-trip.  This mirrors the permissive-read pattern already used
-        # for ``final_orders`` in ``executor/agent.py`` (model_validate-or-
-        # passthrough) and for ``smart_money_evidence`` in
-        # ``_has_real_smart_money`` above.
+        # for ``final_orders`` in ``executor/agent.py``.
         raw_buffer = state.get("memory_buffer", [])
         buffer: list[BufferEntry] = [
             BufferEntry.model_validate(e) if isinstance(e, dict) else e
@@ -139,7 +100,21 @@ class MemoryWriter(BaseAgent):
                 if isinstance(decision, dict)
                 else decision.reasoning[:120]
             ),
-            smart_money_seen=_has_real_smart_money(state),
+            smart_money_seen=any(
+                not (
+                    (ev.get("verdict") if isinstance(ev, dict) else getattr(ev, "verdict", None)) is None
+                    or (
+                        (ev.get("verdict") if isinstance(ev, dict) else getattr(ev, "verdict", None)).get("is_no_data")
+                        if isinstance((ev.get("verdict") if isinstance(ev, dict) else getattr(ev, "verdict", None)), dict)
+                        else getattr(
+                            (ev.get("verdict") if isinstance(ev, dict) else getattr(ev, "verdict", None)),
+                            "is_no_data",
+                            False,
+                        )
+                    )
+                )
+                for ev in state.get("smart_money_evidence", []) or []
+            ),
             executions_count=len(executions),
         )
 
