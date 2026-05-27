@@ -77,7 +77,7 @@ from google.adk.models import LlmResponse
 from google.genai import types as genai_types
 from pydantic import ValidationError
 
-from agents.analysts.report_cache import log_cache_hit_to_state, read_cache, write_cache
+from agents.analysts.report_cache import read_cache, write_cache
 from config.analysts import get_analysts_config
 from data.timeguard import resolve_as_of
 from observability.trace import TraceWriter
@@ -211,15 +211,6 @@ def make_report_cache_callbacks(
                 },
             )
             return None
-
-        # Audit telemetry — records which tick the cached verdict originated from.
-        log_cache_hit_to_state(
-            state,
-            analyst=analyst_name,
-            ticker=ticker,
-            input_hash=input_hash,
-            originating_as_of=hit.get("originating_as_of"),
-        )
 
         _log.info(
             "report_cache_hit",
