@@ -18,7 +18,7 @@ from orchestrator.persistence import (
 from . import scheduler
 
 _REQUIRED_ENV = ("TRADING212_API_KEY", "FINNHUB_API_KEY")
-_STOCKBOT_TABLES = ("buffer_entries", "trade_log", "portfolio_snapshots")
+_STOCKBOT_TABLES = ("trade_log", "portfolio_snapshots")
 
 
 class NonEmptyTablesError(RuntimeError):

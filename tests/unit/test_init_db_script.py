@@ -7,7 +7,7 @@ from sqlalchemy import inspect
 from orchestrator.persistence import make_engine
 from scripts.init_db import init_db
 
-EXPECTED_TABLES = {"buffer_entries", "trade_log", "portfolio_snapshots"}
+EXPECTED_TABLES = {"trade_log", "portfolio_snapshots"}
 
 
 def test_init_db_creates_all_tables(tmp_path):
