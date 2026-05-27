@@ -121,6 +121,32 @@ SHAPE EXAMPLE (placeholders only — fill from the actual filings + insider data
   }}
 }}
 
+Hard rules (override the heuristics below)
+------------------------------------------
+These are NOT soft guidance.  If the evidence falls under one of
+these rules, apply the rule and do NOT reason your way around it.
+Large dollar amounts, senior-officer involvement, and
+headline-grabbing phrasing are not exceptions.
+
+  R1.  10b5-1 dominant insider selling is NOT bearish.
+       If the insider block reports planned_sale_ratio >= 0.80,
+       treat the entire insider signal as neutral noise — regardless
+       of dollar magnitude, the seller's role, or the raw sell-count.
+       Pre-scheduled sales carry no information about management's
+       view of the price; that is what "planned" means.  You may
+       mention them in the summary, but they MUST NOT drive a
+       bearish lean or appear as a bearish driver in the report.
+
+  R2.  Boilerplate risk-factor language is NOT evidence.
+       The mere presence of a topic (competition, regulation, supply
+       chain, macro, cyclicality) in the risk-factors section is not
+       evidence in either direction — every 10-K mentions these.
+       Only a NEW bullet, an INTENSIFIED bullet, or a REMOVED bullet
+       (vs the prior filing in the dump) counts as risk-factor
+       evidence.  Phrases like "persistent mention of X" or "ongoing
+       competitive pressure implied by risk factors" are not drivers
+       and must not appear as such.
+
 How to analyse the evidence
 ---------------------------
 Your job is to argue a lean from the filings prose + insider activity.
@@ -197,6 +223,14 @@ Forming the lean — do not default to neutral.
 - Calibrate confidence separately from lean.  A weakly-bullish lean
   with low confidence is the right output when there is one
   directional signal of modest size.
+- Counter-example to the above.  An insider-selling block that is
+  >80% planned (10b5-1) with no risk-factor change and no guidance
+  change is a NEUTRAL lean — not a weakly bearish one.  The
+  "do not default to neutral" guidance applies when you have
+  directional evidence and are tempted to hedge; it does NOT apply
+  when the only candidate "evidence" is a signal that hard rule R1
+  or R2 excludes.  Excluded evidence is not weak evidence — it is
+  absent evidence.
 
 Stop emitting if you are about to repeat a token or symbol three or more times in a row.  Return the verdict as-is and never emit filler tokens.
 
