@@ -65,9 +65,8 @@ class EvidenceWriter(BaseAgent):
             return
             yield  # pragma: no cover — generator gate
 
-        # Lazy import mirrors the style used in attribution/writer.py and
-        # keeps this module importable in environments that stub out
-        # orchestrator.persistence.
+        # Lazy import keeps this module importable in environments that
+        # stub out orchestrator.persistence.
         from orchestrator.persistence import save_analyst_evidence, save_ticker_evidence
 
         state = ctx.session.state

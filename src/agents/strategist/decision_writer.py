@@ -57,7 +57,8 @@ class StrategistDecisionWriter(BaseAgent):
             yield  # pragma: no cover — generator gate
 
         # Lazy imports keep the module importable without ADK in test environments
-        # and mirror the style used in attribution/writer.py.
+        # and keep the orchestrator.persistence dependency lazy so this
+        # module imports without a configured ORM session.
         from agents.strategist.schema import StrategistDecision
         from orchestrator.persistence import save_ticker_stance
 
