@@ -512,7 +512,7 @@ def derive_technical_verdict(
     # Deferred runtime imports — avoids the circular import that arises when
     # loading this module triggers agents.analysts.__init__ (which re-imports
     # this module before it has finished initialising).
-    from contract.evidence import AnalystReport, AnalystVerdict, ReportDriver  # noqa: PLC0415
+    from contract.evidence import AnalystVerdict  # noqa: PLC0415
 
     # --- No-data fingerprint --------------------------------------------------
     # The extractor emits all-zero features when price history is missing.
@@ -523,14 +523,12 @@ def derive_technical_verdict(
         and features["pct_change_20d"] == 0
         and features["atr_pct_14"] == 0
     ):
-        return AnalystVerdict(
-            lean="neutral",
-            magnitude=0.0,
-            confidence=0.0,
-            rationale="no price data",
-            key_factors=[],
-            is_no_data=True,
-        )
+        # Route through the canonical no-data builder so every synthesis site
+        # emits the same shape (A-015): is_no_data=True, report=None,
+        # non-empty rationale.
+        from contract.evidence import _no_data_analyst_verdict  # noqa: PLC0415
+
+        return _no_data_analyst_verdict(reason="no price data")
 
     factors: list[str] = []
 
@@ -645,54 +643,10 @@ def derive_technical_verdict(
     confidence = max(0.0, min(1.0, confidence))
 
     # --- Rationale -----------------------------------------------------------
+    # Deterministic extractors carry their prose exclusively in ``rationale``
+    # (A-016): a compact ", "-joined factor list, capped at 160 chars.
+    # ``report`` is left None — LLM analysts own that surface.
     rationale = (", ".join(factors) or "neutral")[:160]
-
-    # --- Synthetic AnalystReport -----------------------------------------------
-    # Structured analysts have no LLM prose, but the schema requires ``report``
-    # whenever ``is_no_data=False``.  Build a minimal report from the
-    # deterministic signals so the uniform contract holds.
-    direction_map    = {"bullish": "bull", "bearish": "bear", "neutral": "neutral"}
-    driver_direction = direction_map[lean]
-
-    # Evenly distribute weight across factors; guard against empty list.
-    driver_factors = factors if factors else [lean]
-    n_factors      = len(driver_factors)
-    even_weight    = round(1.0 / n_factors, 4)
-
-    # Build one ReportDriver per key_factor, referencing the observed RSI/pct values.
-    drivers = [
-        ReportDriver(
-            name=factor[:69],
-            direction=driver_direction,
-            weight=even_weight,
-            body=(
-                f"Technical signal: {factor} "
-                f"(rsi={rsi:.1f}, pct20={pct20:.3f})"
-            )[:575],
-        )
-        for factor in driver_factors
-    ]
-
-    # AnalystReport requires at least 2 drivers; pad when only one factor fired
-    # (e.g. lean is neutral with no momentum or RSI extremes).
-    if len(drivers) < 2:
-        drivers.append(
-            ReportDriver(
-                name="overall_lean",
-                direction=driver_direction,
-                weight=even_weight,
-                body=(
-                    f"20d change {pct20:.3f}, RSI {rsi:.1f}, "
-                    f"vol_ratio {vol_ratio:.2f}"
-                )[:575],
-            )
-        )
-
-    summary = (
-        f"Technical analysis leans {lean}: {rationale}."
-    )[:1150]
-
-    report = AnalystReport(summary=summary, drivers=drivers[:4])
 
     return AnalystVerdict(
         lean=lean,
@@ -701,5 +655,4 @@ def derive_technical_verdict(
         rationale=rationale,
         key_factors=factors,
         is_no_data=False,
-        report=report,
     )

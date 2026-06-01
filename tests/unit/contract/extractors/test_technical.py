@@ -412,3 +412,74 @@ def test_technical_relative_strength_5d_values_match_expected():
     expected_rs_spy_5d = 0.10 - 0.05
     assert "relative_strength_vs_spy_5d" in features
     assert abs(features["relative_strength_vs_spy_5d"] - expected_rs_spy_5d) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# A-016 / A-049 — Deterministic extractor must NOT fabricate AnalystReport
+# ---------------------------------------------------------------------------
+
+def test_deterministic_verdict_no_longer_fabricates_report() -> None:
+    """A-016 / A-049 regression: technical extractor must leave
+    report=None and let rationale carry the one-liner.  Previously the
+    extractor synthesised an AnalystReport to satisfy the old
+    _report_required_when_data_present validator — that path is gone.
+    """
+    # All keys from _KEYS plus vol_ratio_20d (which is NaN when history is short,
+    # but here we supply a real value so a directional verdict fires).
+    features = {
+        "rsi_14": 55.0, "pct_change_20d": 0.04, "pct_change_5d": 0.01,
+        "vol_ratio_20d": 1.1, "atr_pct_14": 1.5,
+        "dist_from_high_52w_pct": -5.0, "dist_from_low_52w_pct": 25.0,
+        "golden_cross": 0.0, "death_cross": 0.0,
+        "beta_confidence_damping": 1.0, "last_close": 100.0,
+    }
+
+    # NOTE: TechnicalHeuristics lives at agents.analysts.heuristics,
+    # NOT agents.heuristics.technical as the plan spec assumed.
+    from agents.analysts.heuristics import TechnicalHeuristics
+    from contract.extractors.technical import derive_technical_verdict
+
+    h = TechnicalHeuristics(
+        rsi_overbought=75.0, rsi_oversold=25.0,
+        pct_change_momentum_scale=4.0,
+        vol_ratio_breakout=1.5, vol_ratio_dry_up=0.7,
+        atr_high_volatility_pct=5.0, near_52w_extreme_pct=5.0,
+        confidence_base=0.5, confidence_boost_step=0.2,
+        confidence_penalty_step=0.3, magnitude_cap=1.0,
+    )
+
+    v = derive_technical_verdict(features, h)
+
+    assert v.is_no_data is False
+    assert v.report is None, "deterministic extractor must not fabricate report"
+    assert v.rationale != "", "rationale carries the deterministic one-liner"
+
+
+def test_no_data_branch_uses_canonical_builder() -> None:
+    """The all-zero fingerprint branch produces is_no_data=True with the
+    canonical shape (report=None, non-empty rationale).
+    """
+    features = {k: 0.0 for k in (
+        "rsi_14", "pct_change_20d", "pct_change_5d", "vol_ratio_20d",
+        "atr_pct_14", "dist_from_high_52w_pct", "dist_from_low_52w_pct",
+        "golden_cross", "death_cross", "beta_confidence_damping",
+        "last_close",
+    )}
+
+    from agents.analysts.heuristics import TechnicalHeuristics
+    from contract.extractors.technical import derive_technical_verdict
+
+    h = TechnicalHeuristics(
+        rsi_overbought=75.0, rsi_oversold=25.0,
+        pct_change_momentum_scale=4.0,
+        vol_ratio_breakout=1.5, vol_ratio_dry_up=0.7,
+        atr_high_volatility_pct=5.0, near_52w_extreme_pct=5.0,
+        confidence_base=0.5, confidence_boost_step=0.2,
+        confidence_penalty_step=0.3, magnitude_cap=1.0,
+    )
+
+    v = derive_technical_verdict(features, h)
+
+    assert v.is_no_data is True
+    assert v.report is None
+    assert v.rationale  # non-empty
