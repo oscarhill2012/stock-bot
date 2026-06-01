@@ -149,3 +149,73 @@ def test_smart_money_holder_outside_window_excluded():
     assert f["total_shares_held_30d"] == pytest.approx(0.0)
     # No politician trades either → still no-data.
     assert f["is_no_data"] == pytest.approx(1.0)
+
+
+# ---------------------------------------------------------------------------
+# A-016 / A-049 regression — derive_smart_money_verdict must not fabricate prose
+# ---------------------------------------------------------------------------
+
+def test_deterministic_verdict_no_longer_fabricates_report() -> None:
+    """A-016 / A-049 regression: smart_money extractor must leave
+    report=None and let rationale carry the one-liner.
+
+    The fixture has net positive flow (3 buys, no sells) to ensure a
+    directional (bullish) verdict rather than the no-data short-circuit.
+    """
+    import json
+    import pathlib
+
+    from agents.analysts.heuristics import SmartMoneyHeuristics
+    from contract.extractors.smart_money import _KEYS, derive_smart_money_verdict
+
+    # Load thresholds from the real config so values are consistent with production.
+    raw_cfg = json.loads(
+        (pathlib.Path(__file__).parent.parent.parent.parent.parent
+         / "config" / "analyst_heuristics.json").read_text()
+    )
+    h = SmartMoneyHeuristics(**raw_cfg["smart_money"])
+
+    # Minimal directional features: net positive flow, is_no_data cleared.
+    features = {
+        "is_no_data": 0.0,
+        "n_buys_30d": 3.0,
+        "n_sells_30d": 0.0,
+        "net_flow_dollar": 250_000.0,
+        "total_dollar_value_buys": 250_000.0,
+        "total_dollar_value_sells": 0.0,
+        "n_politicians": 2.0,
+    }
+    # Backfill any remaining _KEYS to 0.0 so the helper doesn't KeyError.
+    for k in _KEYS:
+        features.setdefault(k, 0.0)
+
+    v = derive_smart_money_verdict(features, h)
+
+    assert v.is_no_data is False
+    assert v.report is None
+    assert v.rationale != ""
+
+
+def test_no_data_branch_uses_canonical_builder() -> None:
+    """is_no_data sentinel → canonical no-data shape via _no_data_analyst_verdict."""
+    import json
+    import pathlib
+
+    from agents.analysts.heuristics import SmartMoneyHeuristics
+    from contract.extractors.smart_money import _KEYS, derive_smart_money_verdict
+
+    raw_cfg = json.loads(
+        (pathlib.Path(__file__).parent.parent.parent.parent.parent
+         / "config" / "analyst_heuristics.json").read_text()
+    )
+    h = SmartMoneyHeuristics(**raw_cfg["smart_money"])
+
+    # All features zeroed with is_no_data set to trip the no-data branch.
+    features = {k: 0.0 for k in _KEYS}
+    features["is_no_data"] = 1.0
+
+    v = derive_smart_money_verdict(features, h)
+
+    assert v.is_no_data is True
+    assert v.report is None
+    assert v.rationale
