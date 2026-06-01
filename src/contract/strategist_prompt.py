@@ -573,10 +573,15 @@ def _render_analyst(
         lines.append(f"  -> {tag_label}: {', '.join(v.key_factors)}")
 
     # ── Prose surface: report (LLM) XOR rationale (deterministic) ─────────────
-    # Per the exactly-one-prose-surface invariant (Task 1), a non-no-data
-    # verdict carries either a report or a rationale, never both.  Render
-    # whichever is present; the is_no_data branch above already short-circuits,
-    # so "neither populated" cannot reach here for a valid verdict.
+    # Two independent guards ensure exactly one prose surface is present here:
+    #   1. The is_no_data short-circuit above handles the no-data case (no
+    #      prose surface expected), so it never reaches this block.
+    #   2. For non-no-data verdicts, the AnalystVerdict model validator
+    #      `_prose_surface_required_when_data_present` rejects construction
+    #      if neither report nor rationale is populated — so "neither surface"
+    #      is impossible for any valid verdict that reaches this point.
+    # The `elif` rationale guard is therefore defence-in-depth; it cannot
+    # fire for a valid verdict.
     if v.report is not None:
         lines.extend(_render_report(v.report))
     elif v.rationale:
