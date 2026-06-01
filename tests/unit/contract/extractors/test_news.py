@@ -48,12 +48,10 @@ def test_positive_share_calculated(aapl_data):
 
 
 def test_polarity_mean(aapl_data):
-    """headline_polarity_mean (and the back-compat _7d alias) must match the fixture sentiments."""
+    """headline_polarity_mean_7d must match the mean of fixture sentiments."""
     features = extract_news_features(aapl_data, ticker="AAPL")
     sentiments = [0.8, 0.6, 0.5, -0.4, 0.1, 0.2, 0.0]
     expected = sum(sentiments) / len(sentiments)
-    assert features["headline_polarity_mean"] == pytest.approx(expected, rel=0.01)
-    # Back-compat alias must carry the same value.
     assert features["headline_polarity_mean_7d"] == pytest.approx(expected, rel=0.01)
 
 
@@ -66,7 +64,7 @@ def test_handles_empty_news():
     features = extract_news_features({"news_items": []}, ticker="AAPL")
     assert features["news_count_7d"] == 0.0
     assert features["pct_news_positive_7d"] == 0.0
-    assert features["headline_polarity_mean"] == 0.0
+    assert features["headline_polarity_mean_7d"] == 0.0
 
 
 def test_handles_missing_social_volume():
@@ -97,7 +95,7 @@ def test_news_reads_sentiment_field_not_polarity():
     state = {"as_of": "2023-03-10T12:00:00+00:00"}
     f = extract_news_features(raw, state=state)
     # mean of (0.5, -0.3) = 0.1
-    assert abs(f["headline_polarity_mean"] - 0.1) < 1e-9
+    assert abs(f["headline_polarity_mean_7d"] - 0.1) < 1e-9
 
 
 # ---------------------------------------------------------------------------

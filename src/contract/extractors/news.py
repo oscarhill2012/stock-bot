@@ -26,8 +26,7 @@ _KEYS = (
     "news_count_7d",
     "pct_news_positive_7d",
     "pct_news_negative_7d",
-    "headline_polarity_mean",        # renamed from headline_polarity_mean_7d
-    "headline_polarity_mean_7d",     # back-compat alias — same value
+    "headline_polarity_mean_7d",     # canonical mean headline-polarity feature key
     "social_volume_z",
     # Phase 7 additions (Fix J).
     "news_count_24h",
@@ -188,10 +187,9 @@ def extract_news_features(
 
         polarity_mean = sum(sentiments) / n
 
-        out["pct_news_positive_7d"]  = positives / n * 100.0
-        out["pct_news_negative_7d"]  = negatives / n * 100.0
-        out["headline_polarity_mean"]     = polarity_mean
-        out["headline_polarity_mean_7d"]  = polarity_mean   # back-compat alias
+        out["pct_news_positive_7d"]   = positives / n * 100.0
+        out["pct_news_negative_7d"]   = negatives / n * 100.0
+        out["headline_polarity_mean_7d"] = polarity_mean
 
         out["news_count_24h"] = float(n_24h)
         out["news_count_72h"] = float(n_72h)
