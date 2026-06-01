@@ -134,24 +134,40 @@ class AnalystVerdict(BaseModel):
     report: AnalystReport | None = None
 
     @model_validator(mode="after")
-    def _report_required_when_data_present(self) -> AnalystVerdict:
-        """Reject verdicts that claim data but omit the report block.
+    def _prose_surface_required_when_data_present(self) -> AnalystVerdict:
+        """A non-no-data verdict must carry exactly one prose surface.
 
-        LLM analysts must emit ``report`` whenever ``is_no_data=False`` — the
-        strategist reads the prose to weigh evidence.  Schema-level
-        enforcement is the source of truth; the prompt instruction is the
-        LLM-facing statement of the same rule.  ``llm_retry`` already
-        classifies ``pydantic.ValidationError`` as retryable, so an
-        offending LLM response is automatically retried up to the
-        configured cap.
+        - Deterministic extractors populate ``rationale`` (a one-line
+          ``", "``-joined factor list) and leave ``report=None``.
+        - LLM analysts populate ``report`` (summary + drivers block) and
+          leave ``rationale=""``.
+        - Carrying both is the old synthetic-prose pathology (extractors
+          fabricating an ``AnalystReport`` to satisfy the previous validator)
+          and is rejected loudly so it can't silently reappear.
+        - ``is_no_data=True`` short-circuits the check; the canonical no-data
+          shape is ``rationale="<reason>"`` with ``report=None``.
         """
 
-        if not self.is_no_data and self.report is None:
+        # No-data verdicts have their own shape contract; the builder enforces it.
+        if self.is_no_data:
+            return self
+
+        has_rationale = bool(self.rationale)
+        has_report    = self.report is not None
+
+        if has_rationale and has_report:
             raise ValueError(
-                "report is required when is_no_data=False — "
-                "the analyst must emit a summary + drivers block "
-                "alongside the verdict"
+                "verdict carries both rationale and report — exactly one prose "
+                "surface is allowed: rationale (deterministic extractors) OR "
+                "report (LLM analysts)"
             )
+
+        if not has_rationale and not has_report:
+            raise ValueError(
+                "verdict has no prose surface — populate either rationale "
+                "(deterministic) or report (LLM)"
+            )
+
         return self
 
 
