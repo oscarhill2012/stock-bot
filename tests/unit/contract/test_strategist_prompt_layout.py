@@ -49,19 +49,6 @@ from contract.ticker_evidence import AggregateVerdict, TickerEvidence
 # Fixtures — shared TickerEvidence builders
 # ---------------------------------------------------------------------------
 
-# Stub report used by _make_verdict() when is_no_data=False and no real report
-# is supplied by the caller.  The D1.1 validator requires a report block in
-# that case; this stub satisfies the contract without polluting individual
-# test assertions (which check for specific content they themselves supply).
-_STUB_REPORT = AnalystReport(
-    summary="Stub report for strategist-prompt layout tests.",
-    drivers=[
-        ReportDriver(name="driver-a", direction="bull", weight=0.6, body="Stub body A."),
-        ReportDriver(name="driver-b", direction="bear", weight=0.4, body="Stub body B."),
-    ],
-)
-
-
 def _make_verdict(
     lean: str = "bullish",
     magnitude: float = 0.5,
@@ -71,7 +58,18 @@ def _make_verdict(
     is_no_data: bool = False,
     report: AnalystReport | None = None,
 ) -> AnalystVerdict:
-    """Build an AnalystVerdict for use in fixtures.
+    """Build an AnalystVerdict respecting the exactly-one-prose-surface invariant.
+
+    Exactly one of ``report`` (LLM analysts) or ``rationale`` (deterministic
+    extractors) may be set on a non-no-data verdict.  This helper enforces the
+    three valid configurations:
+
+    - ``is_no_data=True``       → no-data short-circuit; report forced to None,
+                                   rationale may carry the no-data reason.
+    - ``report is not None``    → LLM-style verdict; rationale forced to ``""``
+                                   so the validator's exactly-one check passes.
+    - otherwise                 → deterministic verdict; report stays None and
+                                   rationale keeps its non-empty default.
 
     Parameters
     ----------
@@ -80,7 +78,7 @@ def _make_verdict(
     magnitude, confidence:
         Numeric fields in ``[0, 1]``.
     rationale:
-        Short rationale string.
+        Short rationale string.  Blanked automatically for LLM-style verdicts.
     key_factors:
         List of closed-vocab factor tags.
     is_no_data:
@@ -91,19 +89,27 @@ def _make_verdict(
     Returns
     -------
     AnalystVerdict
-        Fully-formed verdict object.
+        Fully-formed verdict object satisfying the exactly-one-prose-surface
+        invariant.
     """
-    # The D1.1 validator rejects is_no_data=False with report=None.  Supply
-    # the stub so fixture helpers that don't care about report content still
-    # produce valid verdicts.  Callers that explicitly pass a real report
-    # (e.g. the "report present" render tests) override this with their own.
-    effective_report = report if (is_no_data or report is not None) else _STUB_REPORT
+    if is_no_data:
+        # No-data short-circuit — report is invalid here; rationale holds the reason.
+        effective_report = None
+        effective_rationale = rationale
+    elif report is not None:
+        # LLM-style: report is the prose surface; blank the rationale field.
+        effective_report = report
+        effective_rationale = ""
+    else:
+        # Deterministic extractor: rationale is the prose surface; no report.
+        effective_report = None
+        effective_rationale = rationale
 
     return AnalystVerdict(
         lean=lean,            # type: ignore[arg-type]
         magnitude=magnitude,
         confidence=confidence,
-        rationale=rationale,
+        rationale=effective_rationale,
         key_factors=key_factors or [],
         is_no_data=is_no_data,
         report=effective_report,
@@ -208,8 +214,8 @@ def _make_ticker_evidence(
         Stock ticker symbol.
     news_report:
         Optional ``AnalystReport`` to attach to the news analyst verdict.
-        When ``None`` and ``news_no_data=False``, a stub report is used to
-        satisfy the D1.1 validator.
+        When ``None`` and ``news_no_data=False``, the news analyst is built as
+        a deterministic-style (rationale-only) verdict — no report is injected.
     news_no_data:
         When ``True`` the news analyst is marked as no-data (report=None is
         then valid).  Used by tests that assert no Drivers block is rendered.
@@ -462,10 +468,10 @@ def test_no_report_omits_drivers_block():
     """When the News analyst has no AnalystReport, no Drivers block appears in
     the News section of the rendered output.
 
-    Since D1.1 makes (is_no_data=False, report=None) invalid, the "no report"
-    case is represented by news_no_data=True.  Other analysts (Technical,
-    Fundamental) carry stub reports that may render their own Drivers lines;
-    this test therefore checks only the News section, not the whole string.
+    The "no report" case is represented by news_no_data=True (a no-data verdict
+    naturally carries no report).  Other analysts (Technical, Fundamental) are
+    deterministic-style with rationale only — no Drivers lines from them either;
+    this test isolates the News section for clarity.
     """
     # Build a te where the news analyst is no-data (and therefore report-less).
     te = _make_ticker_evidence(news_report=None, news_no_data=True)
@@ -749,3 +755,60 @@ def test_planned_sale_ratio_bullet_renders_annotation():
 
     # The literal annotation string — with em-dash (U+2014) — must appear.
     assert "(all 10b5-1 — neutral)" in out
+
+
+# ---------------------------------------------------------------------------
+# Tests — rationale fallback for deterministic analysts (Task 9)
+# ---------------------------------------------------------------------------
+#
+# Deterministic analysts (technical, social, smart_money) no longer produce an
+# AnalystReport.  The renderer must therefore surface their ``rationale`` string
+# as a one-line prose fallback so the strategist is not left with a header-only
+# block.  LLM analysts (news with a report) must still render via the report
+# path; the rationale fallback must not fire for them.
+# ---------------------------------------------------------------------------
+
+def test_deterministic_analyst_block_renders_rationale_line() -> None:
+    """A deterministic analyst (report=None) must surface its rationale as a
+    one-line prose fallback, otherwise the strategist loses all per-analyst
+    prose for technical/social/smart_money.
+    """
+    # Build a TickerEvidence whose technical analyst carries a distinctive
+    # rationale string.  _make_ticker_evidence builds technical as a
+    # deterministic verdict by default (no report), so we just need to ensure
+    # the rationale string is recognisable and won't collide with other output.
+    te = _make_ticker_evidence()
+    te.per_analyst["technical"].verdict.rationale = (
+        "distinctive-rationale-xyz: momentum divergence above upper band"
+    )
+
+    block = render_ticker_block(te)
+
+    # The exact prose line the renderer must emit for a deterministic analyst.
+    assert '-> Rationale: "distinctive-rationale-xyz: momentum divergence above upper band"' in block
+
+    # Belt-and-braces: no synthetic Report summary line must have been invented.
+    # Isolate the [Technical] section to avoid false-positives from other analysts.
+    tech_start = block.find("[Technical]")
+    fund_start = block.find("[Fundamental]")
+    tech_section = block[tech_start:fund_start] if fund_start > tech_start else block[tech_start:]
+    assert "-> Report summary:" not in tech_section
+
+
+def test_llm_analyst_block_renders_report_summary() -> None:
+    """An LLM analyst (report populated, rationale=='') renders the report
+    summary and drivers as before — the rationale fallback must not fire.
+    """
+    te = _make_ticker_evidence(news_report=_make_report(summary="LLM prose here."))
+    block = render_ticker_block(te)
+
+    # The report summary must appear in the rendered block.
+    assert "LLM prose here." in block
+
+    # The rationale fallback line must not appear in the News section — the
+    # news verdict was built with rationale="" (LLM path) so there is nothing
+    # to fall back to.
+    news_start = block.find("[News]")
+    sm_start = block.find("[SmartMoney]", news_start)
+    news_section = block[news_start:sm_start] if sm_start != -1 else block[news_start:]
+    assert '-> Rationale:' not in news_section

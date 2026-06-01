@@ -572,9 +572,15 @@ def _render_analyst(
         tag_label = _TAG_LINE_LABEL.get(name, "Tags")
         lines.append(f"  -> {tag_label}: {', '.join(v.key_factors)}")
 
-    # ── Report (LLM analysts only) ────────────────────────────────────────────
+    # ── Prose surface: report (LLM) XOR rationale (deterministic) ─────────────
+    # Per the exactly-one-prose-surface invariant (Task 1), a non-no-data
+    # verdict carries either a report or a rationale, never both.  Render
+    # whichever is present; the is_no_data branch above already short-circuits,
+    # so "neither populated" cannot reach here for a valid verdict.
     if v.report is not None:
         lines.extend(_render_report(v.report))
+    elif v.rationale:
+        lines.append(f'  -> Rationale: "{v.rationale}"')
 
     return "\n".join(lines)
 
