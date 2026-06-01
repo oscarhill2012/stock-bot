@@ -1,9 +1,15 @@
 """make_evidence_callback writes only AnalystEvidence — no legacy *_signals.
 
-These tests verify the new evidence-only callback introduced in D3. The callback
-reads verdicts directly from ``state[verdicts_state_key]`` (LLM output), runs the
-deterministic feature extractor, and writes ``state["{analyst}_evidence"]``. It
-explicitly must NOT write any legacy ``*_signals`` key.
+These tests verify the evidence-only callback introduced in D3.  The callback
+is wired into the **deterministic analyst trio** (technical, social, smart_money)
+only — it never processes LLM analysts.  All fixtures here model the *technical*
+analyst, which is deterministic (no LLM calls; all verdicts from heuristics).
+
+Because TechnicalAnalyst is deterministic, every non-no-data verdict is
+**rationale-only** (``rationale`` non-empty, ``report=None``).  This is mandated
+by the exactly-one-prose-surface invariant on ``AnalystVerdict``: a non-no-data
+verdict carries EXACTLY ONE of ``rationale`` XOR ``report``; carrying both or
+neither is a contract violation.
 """
 from __future__ import annotations
 
@@ -51,20 +57,12 @@ def test_writes_only_evidence_state_key():
                 "lean": "bullish",
                 "magnitude": 0.5,
                 "confidence": 0.6,
-                # LLM analysts emit report-only verdicts; rationale is absent
-                # (LlmTickerVerdict has no rationale field, so real payloads
-                # always arrive with rationale="" and a populated report block).
-                "rationale": "",
+                # TechnicalAnalyst is deterministic (rationale-only); the
+                # one-prose-surface invariant means rationale XOR report, so
+                # report must be None and rationale must be a non-empty string.
+                "rationale": "trend intact",
                 "key_factors": ["rsi"],
                 "is_no_data": False,
-                # D1.1: report is required for non-no-data verdicts.
-                "report": {
-                    "summary": "Trend intact.",
-                    "drivers": [
-                        {"name": "rsi", "direction": "bull", "weight": 0.6, "body": "RSI supports uptrend."},
-                        {"name": "momentum", "direction": "bull", "weight": 0.4, "body": "Momentum confirming."},
-                    ],
-                },
             }
         ],
     }
@@ -103,19 +101,12 @@ def test_missing_verdict_synthesises_no_data_evidence():
                 "lean": "bullish",
                 "magnitude": 0.5,
                 "confidence": 0.6,
-                # LLM verdict — report-only; rationale is empty string as real
-                # LlmTickerVerdict payloads carry no rationale field.
-                "rationale": "",
+                # TechnicalAnalyst is deterministic (rationale-only); the
+                # one-prose-surface invariant means rationale XOR report, so
+                # report must be None and rationale must be a non-empty string.
+                "rationale": "trend",
                 "key_factors": [],
                 "is_no_data": False,
-                # D1.1: report is required for non-no-data verdicts.
-                "report": {
-                    "summary": "Trend intact.",
-                    "drivers": [
-                        {"name": "momentum", "direction": "bull", "weight": 0.6, "body": "Upward momentum."},
-                        {"name": "volume",   "direction": "bull", "weight": 0.4, "body": "Volume confirms."},
-                    ],
-                },
             },
             # MSFT verdict deliberately absent.
         ],
@@ -153,21 +144,15 @@ def test_extractor_called_with_per_ticker_slice():
         "tickers": ["AAPL", "MSFT"],
         "temp:technical_data": {"AAPL": {"price": 100}, "MSFT": {"price": 200}},
         "technical_verdicts": [
-            # D1.1: report is required for non-no-data verdicts.
-            # LLM analysts are report-only — rationale is "" (LlmTickerVerdict
-            # carries no rationale field, so real payloads always arrive this way).
+            # TechnicalAnalyst is deterministic (rationale-only); the
+            # one-prose-surface invariant means rationale XOR report, so
+            # report must be None and rationale must be a non-empty string.
             {"ticker": "AAPL", "lean": "neutral", "magnitude": 0.0,
-             "confidence": 0.0, "rationale": "", "key_factors": [], "is_no_data": False,
-             "report": {"summary": "Neutral.", "drivers": [
-                 {"name": "s1", "direction": "neutral", "weight": 0.5, "body": "s1 body."},
-                 {"name": "s2", "direction": "neutral", "weight": 0.5, "body": "s2 body."},
-             ]}},
+             "confidence": 0.0, "rationale": "neutral trend", "key_factors": [],
+             "is_no_data": False},
             {"ticker": "MSFT", "lean": "neutral", "magnitude": 0.0,
-             "confidence": 0.0, "rationale": "", "key_factors": [], "is_no_data": False,
-             "report": {"summary": "Neutral.", "drivers": [
-                 {"name": "s1", "direction": "neutral", "weight": 0.5, "body": "s1 body."},
-                 {"name": "s2", "direction": "neutral", "weight": 0.5, "body": "s2 body."},
-             ]}},
+             "confidence": 0.0, "rationale": "neutral trend", "key_factors": [],
+             "is_no_data": False},
         ],
     }
     cb = make_evidence_callback(
@@ -187,12 +172,13 @@ def test_extractor_called_with_per_ticker_slice():
 # ---------------------------------------------------------------------------
 
 def test_verdict_fields_round_trip():
-    """lean / magnitude / confidence / key_factors survive intact for LLM-style verdicts.
+    """lean / magnitude / confidence / rationale / key_factors survive intact.
 
-    LLM analysts (Fundamental, News) produce report-only verdicts — the
-    ``LlmTickerVerdict`` schema has no ``rationale`` field, so a real LLM
-    payload always arrives with ``rationale=""`` and a populated ``report``
-    block.  This test uses a report-only canned payload to reflect that reality.
+    This models the *deterministic* TechnicalAnalyst (no LLM calls; verdicts
+    from heuristics).  Technical verdicts are **rationale-only** — ``report``
+    is ``None`` and ``rationale`` carries a meaningful one-liner.  The
+    exactly-one-prose-surface invariant (rationale XOR report) means both
+    fields are never populated simultaneously.
     """
     state = {
         "tick_id": "tick-abc",
@@ -204,19 +190,12 @@ def test_verdict_fields_round_trip():
                 "lean": "bearish",
                 "magnitude": 0.8,
                 "confidence": 0.75,
-                # LLM verdict — report-only; rationale is "" because
-                # LlmTickerVerdict carries no rationale field.
-                "rationale": "",
+                # TechnicalAnalyst is deterministic (rationale-only); the
+                # one-prose-surface invariant means rationale XOR report, so
+                # report must be None and rationale must be a non-empty string.
+                "rationale": "Death cross formed",
                 "key_factors": ["death cross", "volume surge"],
                 "is_no_data": False,
-                # D1.1: report is required for non-no-data verdicts.
-                "report": {
-                    "summary": "Death cross formed with volume surge; bearish.",
-                    "drivers": [
-                        {"name": "death_cross",  "direction": "bear", "weight": 0.6, "body": "50/200 MA death cross confirmed."},
-                        {"name": "volume_surge", "direction": "bear", "weight": 0.4, "body": "Volume surge on down-move."},
-                    ],
-                },
             }
         ],
     }
@@ -231,8 +210,8 @@ def test_verdict_fields_round_trip():
     assert ev.verdict.lean == "bearish"
     assert ev.verdict.magnitude == pytest.approx(0.8)
     assert ev.verdict.confidence == pytest.approx(0.75)
-    # LLM verdict is report-only — rationale field is empty string.
-    assert ev.verdict.rationale == ""
+    # Deterministic (rationale-only) verdict — the rationale string survives intact.
+    assert ev.verdict.rationale == "Death cross formed"
     assert ev.verdict.key_factors == ["death cross", "volume surge"]
     assert ev.verdict.is_no_data is False
     assert ev.analyst == "technical"
