@@ -22,12 +22,19 @@ def test_canned_good_verdict_validates() -> None:
 
     The ``report`` block is now required whenever ``is_no_data=False`` (D1.1),
     so the canned dict must include it to represent a well-formed LLM output.
+
+    LLM analysts (Fundamental, News) produce report-only verdicts — the
+    ``LlmTickerVerdict`` schema has no ``rationale`` field, so a genuine LLM
+    payload always arrives with ``rationale=""`` and a populated ``report``
+    block.  The canned dict here reflects that reality (rationale is empty).
     """
     raw = {
         "lean": "bullish",
         "magnitude": 0.6,
         "confidence": 0.7,
-        "rationale": "raised guidance + cluster_buying by CEO and CFO",
+        # LLM verdict — report-only; rationale is "" (LlmTickerVerdict carries
+        # no rationale field, so the invariant forbids carrying both surfaces).
+        "rationale": "",
         "key_factors": [
             "guidance:raised",
             "tone:confident",
@@ -53,12 +60,18 @@ def test_canned_bearish_verdict_with_insider_tags_validates() -> None:
     """A bearish verdict with multiple insider + risk tags validates correctly.
 
     The ``report`` block is now required whenever ``is_no_data=False`` (D1.1).
+
+    LLM analysts are report-only — the ``LlmTickerVerdict`` schema carries no
+    ``rationale`` field, so the canned payload uses ``rationale=""`` to match
+    the shape a real Fundamental LLM response would produce.
     """
     raw = {
         "lean": "bearish",
         "magnitude": 0.75,
         "confidence": 0.65,
-        "rationale": "discretionary_sale_dominant + lowered guidance + going_concern",
+        # LLM verdict — report-only; rationale empty (LlmTickerVerdict has no
+        # rationale field, so both surfaces together are forbidden by invariant).
+        "rationale": "",
         "key_factors": [
             "guidance:lowered",
             "tone:defensive",
@@ -123,29 +136,39 @@ def test_canned_bad_verdict_invalid_lean_rejected() -> None:
         AnalystVerdict.model_validate(raw)
 
 
-def test_canned_bad_verdict_rationale_too_long_rejected() -> None:
-    """A rationale exceeding the *schema* cap is rejected.
+def test_canned_bad_verdict_dual_surface_rejected() -> None:
+    """A verdict carrying BOTH a rationale and a report is rejected.
 
-    The schema cap is the prompt-facing cap from
-    ``config/analysts.json::output_caps.verdict_rationale_max_chars``
-    plus ``slack_percent`` headroom — see the "two-tier convention" note
-    in ``src/config/strategist.py``.  Reads the live schema cap from
-    config so retuning either the prompt cap or the slack does not
-    silently invalidate this regression.
+    Under the one-prose-surface invariant, each verdict must use exactly one
+    prose channel: ``rationale`` (deterministic analysts) OR ``report`` (LLM
+    analysts).  Carrying both is structurally invalid — the Fundamental analyst
+    is LLM-driven and therefore must be report-only.
+
+    Note: the ``rationale`` length cap (``config/analysts.json::
+    output_caps.verdict_rationale_max_chars``) is enforced at the prompt layer,
+    not at the Pydantic schema layer (``max_length`` is intentionally absent
+    from the field declaration — see the "no max_length on prose fields" note
+    in ``LlmTickerVerdict``).  Structural invariant violations (both surfaces)
+    are caught by the model validator, which is tested here.
     """
-    from config.analysts import get_analysts_config
-
-    cfg        = get_analysts_config()
-    schema_cap = cfg.schema_cap(cfg.output_caps.verdict_rationale_max_chars)
-    long_rationale = "x" * (schema_cap + 1)  # one char over the *schema* (slack-applied) cap
-
     raw = {
         "lean": "neutral",
         "magnitude": 0.3,
         "confidence": 0.3,
-        "rationale": long_rationale,
+        # Dual-surface payload — both rationale and report present.
+        # This is the shape a broken LLM response might produce, and the
+        # invariant must reject it to prevent corrupted verdicts from landing
+        # in the evidence store.
+        "rationale": "some analyst commentary",
         "key_factors": [],
         "is_no_data": False,
+        "report": {
+            "summary": "Conflicting prose surfaces.",
+            "drivers": [
+                {"name": "signal_a", "direction": "bull", "weight": 0.6, "body": "First signal."},
+                {"name": "signal_b", "direction": "bull", "weight": 0.4, "body": "Second signal."},
+            ],
+        },
     }
     with pytest.raises(ValidationError):
         AnalystVerdict.model_validate(raw)

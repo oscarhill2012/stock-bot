@@ -51,7 +51,10 @@ def test_writes_only_evidence_state_key():
                 "lean": "bullish",
                 "magnitude": 0.5,
                 "confidence": 0.6,
-                "rationale": "trend intact",
+                # LLM analysts emit report-only verdicts; rationale is absent
+                # (LlmTickerVerdict has no rationale field, so real payloads
+                # always arrive with rationale="" and a populated report block).
+                "rationale": "",
                 "key_factors": ["rsi"],
                 "is_no_data": False,
                 # D1.1: report is required for non-no-data verdicts.
@@ -100,7 +103,9 @@ def test_missing_verdict_synthesises_no_data_evidence():
                 "lean": "bullish",
                 "magnitude": 0.5,
                 "confidence": 0.6,
-                "rationale": "trend",
+                # LLM verdict — report-only; rationale is empty string as real
+                # LlmTickerVerdict payloads carry no rationale field.
+                "rationale": "",
                 "key_factors": [],
                 "is_no_data": False,
                 # D1.1: report is required for non-no-data verdicts.
@@ -149,14 +154,16 @@ def test_extractor_called_with_per_ticker_slice():
         "temp:technical_data": {"AAPL": {"price": 100}, "MSFT": {"price": 200}},
         "technical_verdicts": [
             # D1.1: report is required for non-no-data verdicts.
+            # LLM analysts are report-only — rationale is "" (LlmTickerVerdict
+            # carries no rationale field, so real payloads always arrive this way).
             {"ticker": "AAPL", "lean": "neutral", "magnitude": 0.0,
-             "confidence": 0.0, "rationale": "x", "key_factors": [], "is_no_data": False,
+             "confidence": 0.0, "rationale": "", "key_factors": [], "is_no_data": False,
              "report": {"summary": "Neutral.", "drivers": [
                  {"name": "s1", "direction": "neutral", "weight": 0.5, "body": "s1 body."},
                  {"name": "s2", "direction": "neutral", "weight": 0.5, "body": "s2 body."},
              ]}},
             {"ticker": "MSFT", "lean": "neutral", "magnitude": 0.0,
-             "confidence": 0.0, "rationale": "x", "key_factors": [], "is_no_data": False,
+             "confidence": 0.0, "rationale": "", "key_factors": [], "is_no_data": False,
              "report": {"summary": "Neutral.", "drivers": [
                  {"name": "s1", "direction": "neutral", "weight": 0.5, "body": "s1 body."},
                  {"name": "s2", "direction": "neutral", "weight": 0.5, "body": "s2 body."},
@@ -180,7 +187,13 @@ def test_extractor_called_with_per_ticker_slice():
 # ---------------------------------------------------------------------------
 
 def test_verdict_fields_round_trip():
-    """lean / magnitude / confidence / rationale / key_factors survive intact."""
+    """lean / magnitude / confidence / key_factors survive intact for LLM-style verdicts.
+
+    LLM analysts (Fundamental, News) produce report-only verdicts — the
+    ``LlmTickerVerdict`` schema has no ``rationale`` field, so a real LLM
+    payload always arrives with ``rationale=""`` and a populated ``report``
+    block.  This test uses a report-only canned payload to reflect that reality.
+    """
     state = {
         "tick_id": "tick-abc",
         "tickers": ["AAPL"],
@@ -191,7 +204,9 @@ def test_verdict_fields_round_trip():
                 "lean": "bearish",
                 "magnitude": 0.8,
                 "confidence": 0.75,
-                "rationale": "Death cross formed",
+                # LLM verdict — report-only; rationale is "" because
+                # LlmTickerVerdict carries no rationale field.
+                "rationale": "",
                 "key_factors": ["death cross", "volume surge"],
                 "is_no_data": False,
                 # D1.1: report is required for non-no-data verdicts.
@@ -216,7 +231,8 @@ def test_verdict_fields_round_trip():
     assert ev.verdict.lean == "bearish"
     assert ev.verdict.magnitude == pytest.approx(0.8)
     assert ev.verdict.confidence == pytest.approx(0.75)
-    assert ev.verdict.rationale == "Death cross formed"
+    # LLM verdict is report-only — rationale field is empty string.
+    assert ev.verdict.rationale == ""
     assert ev.verdict.key_factors == ["death cross", "volume surge"]
     assert ev.verdict.is_no_data is False
     assert ev.analyst == "technical"

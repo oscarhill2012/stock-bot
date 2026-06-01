@@ -4,8 +4,6 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock
 
-import pytest
-
 from agents.analysts.cache_callbacks import make_report_cache_callbacks
 from contract.evidence import TickerVerdict
 
@@ -18,6 +16,8 @@ def test_before_single_ticker_hit_returns_single_verdict_llm_response(tmp_path, 
     from agents.analysts.report_cache import write_cache
 
     # D1.1: report is required for non-no-data verdicts; include it in the cached entry.
+    # LLM analysts are report-only — rationale is "" because LlmTickerVerdict
+    # carries no rationale field (carrying both surfaces violates the invariant).
     write_cache(
         tmp_path, "news", "AAPL",
         input_hash="hash-1",
@@ -27,7 +27,7 @@ def test_before_single_ticker_hit_returns_single_verdict_llm_response(tmp_path, 
             "lean":        "bullish",
             "magnitude":   0.7,
             "confidence":  0.8,
-            "rationale":   "Strong quarter",
+            "rationale":   "",
             "key_factors": ["catalyst:earnings", "direction:positive"],
             "is_no_data":  False,
             "report": {
@@ -124,12 +124,12 @@ def test_after_writes_single_verdict_to_cache(tmp_path, monkeypatch):
 
     # Synthetic LLM response — a single TickerVerdict JSON, not a batch.
     # ``report`` is REQUIRED whenever ``is_no_data=False`` (see prompts and
-    # TickerVerdict's validator).  Omitting it here used to silently land in
-    # the cache and replay on the next tick; the schema-gate in
-    # ``_after`` now rejects such payloads, so the fixture must be valid.
+    # TickerVerdict's validator).  LLM analysts are report-only — rationale is
+    # "" because LlmTickerVerdict carries no rationale field; carrying both
+    # surfaces would violate the one-prose-surface invariant and be rejected.
     fake_text = json.dumps({
         "ticker": "AAPL", "lean": "bearish", "magnitude": 0.4,
-        "confidence": 0.6, "rationale": "Macro headwinds",
+        "confidence": 0.6, "rationale": "",
         "key_factors": ["catalyst:macro", "regime:risk_off"], "is_no_data": False,
         "report": {
             "summary": "Macro headwinds weighing on outlook.",
@@ -166,10 +166,20 @@ def test_after_writes_single_verdict_to_cache(tmp_path, monkeypatch):
 def test_after_skips_cache_write_when_response_fails_schema_validation(
     tmp_path, monkeypatch, caplog,
 ):
-    """A schema-invalid LLM response (e.g. ``is_no_data=False`` with no
-    ``report``) must NOT be written to the cache — otherwise the broken
-    verdict would replay on every subsequent tick with the same input hash,
-    permanently masking the underlying LLM-side failure.
+    """A schema-invalid LLM response must NOT be written to the cache.
+
+    The broken payload is ``is_no_data=False`` with no prose surface at all —
+    neither a ``report`` block nor a non-empty ``rationale``.  Under the
+    one-prose-surface invariant every non-no-data verdict must carry exactly
+    one prose channel; carrying none is structurally invalid and must be
+    rejected so the broken verdict cannot replay on every subsequent tick
+    with the same input hash, permanently masking the underlying LLM-side
+    failure.
+
+    If this gate were absent, a malformed LLM response that once slipped past
+    would be faithfully cached and re-served on every future cache hit,
+    turning a transient LLM failure into a permanent silent degradation — the
+    top bug class in this project.
     """
 
     monkeypatch.setattr(
@@ -188,13 +198,17 @@ def test_after_skips_cache_write_when_response_fails_schema_validation(
         trace_label        = None,
     )
 
-    # Invalid payload: is_no_data=False MUST be accompanied by a report block.
-    # The LLM returned valid JSON, but the shape violates the contract.
+    # Invalid payload: is_no_data=False with no prose surface at all — neither
+    # report nor rationale.  Under the one-prose-surface invariant this is
+    # structurally invalid; the gate must refuse to cache it.
+    # Note: this is the failure mode the gate catches — a non-no-data verdict
+    # with an empty rationale ("") and no report block.
     broken_text = json.dumps({
         "ticker": "AAPL", "lean": "bullish", "magnitude": 0.5,
-        "confidence": 0.5, "rationale": "Half-formed response",
+        "confidence": 0.5, "rationale": "",
         "key_factors": ["x"], "is_no_data": False,
-        # Note: no "report" field — this is the failure mode the gate catches.
+        # No "report" field — combined with empty rationale this violates the
+        # invariant: non-no-data verdicts must carry exactly one prose surface.
     })
     llm_response = MagicMock()
     llm_response.content.parts = [MagicMock(text=broken_text)]
