@@ -8,35 +8,41 @@ import pytest
 
 from contract.digest import build_ticker_evidence
 from contract.digest_defaults import DEFAULT_ANALYST_WEIGHTS
-from contract.evidence import AnalystEvidence, AnalystReport, AnalystVerdict, ReportDriver
+from contract.evidence import AnalystEvidence, AnalystVerdict
 
 
 def _now():
     return datetime(2026, 5, 8, 14, 0, tzinfo=UTC)
 
 
-# Minimal stub report used by the _ev() helper so that the D1.1
-# model_validator (report required when is_no_data=False) is satisfied.
-# Digest tests don't care about report content — they exercise aggregation
-# maths — so a single shared stub is sufficient here.
-_STUB_REPORT = AnalystReport(
-    summary="Stub report for digest aggregation tests.",
-    drivers=[
-        ReportDriver(name="driver-a", direction="bull", weight=0.6, body="Stub body A."),
-        ReportDriver(name="driver-b", direction="bear", weight=0.4, body="Stub body B."),
-    ],
-)
-
-
 def _ev(
     analyst: str, lean: str, conf: float, ticker: str = "AAPL", magnitude: float | None = None
 ) -> AnalystEvidence:
-    """Build an AnalystEvidence. By default magnitude == confidence (the LLM is
-    instructed to keep them aligned unless it has a reason not to). Tests that
-    care about the magnitude/confidence split pass `magnitude=` explicitly.
+    """Build a deterministic-style AnalystEvidence for aggregation tests.
 
-    ``report`` is populated with a stub so the D1.1 validator is satisfied;
-    digest tests exercise aggregation maths, not report content.
+    Digest tests exercise aggregation maths, not prose content.  All verdicts
+    are built as deterministic-extractor style: rationale carries the one-liner
+    and ``report`` is ``None``.  This satisfies the exactly-one-prose-surface
+    invariant without introducing LLM-report scaffolding.
+
+    Parameters
+    ----------
+    analyst:
+        Analyst key (e.g. ``"technical"``).
+    lean:
+        Direction string — ``"bullish"``, ``"bearish"``, or ``"neutral"``.
+    conf:
+        Confidence value in ``[0, 1]``.  Also used as magnitude unless
+        ``magnitude`` is supplied explicitly.
+    ticker:
+        Stock ticker symbol (default ``"AAPL"``).
+    magnitude:
+        Override for magnitude when it should differ from confidence.
+
+    Returns
+    -------
+    AnalystEvidence
+        Fully-formed evidence object with a rationale-only verdict.
     """
     return AnalystEvidence(
         ticker=ticker,
@@ -49,10 +55,10 @@ def _ev(
             lean=lean,
             magnitude=conf if magnitude is None else magnitude,
             confidence=conf,
-            rationale="x",
+            rationale="digest-test deterministic verdict",
             key_factors=[],
             is_no_data=False,
-            report=_STUB_REPORT,
+            report=None,
         ),
     )
 

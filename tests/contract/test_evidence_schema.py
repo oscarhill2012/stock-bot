@@ -1,17 +1,17 @@
-"""D1.1 — schema-level enforcement that ``report`` accompanies non-no-data verdicts.
+"""Prose-surface invariant enforcement on AnalystVerdict.
 
-The News and Fundamental analyst LLMs were silently emitting
-``report: null`` on a non-trivial fraction of ``is_no_data=False`` verdicts
-in the baseline-2025-09 run (30.7 % and 3.6 % respectively).  The schema
-previously declared ``report: AnalystReport | None = None``, which made
-``report=None`` *valid*; the prompt instructed the LLM otherwise but the
-schema did not enforce.
+The ``_prose_surface_required_when_data_present`` model_validator (Task 1)
+enforces the exactly-one-prose-surface rule:
 
-This module covers the new ``model_validator`` that rejects the
-``is_no_data=False, report=None`` combination at the contract boundary.
+- Deterministic extractors: ``rationale`` non-empty, ``report=None``.
+- LLM analysts: ``report`` present, ``rationale=""``.
+- Carrying both is the old synthetic-prose pathology — rejected loudly.
+- Carrying neither (non-no-data) is an incomplete verdict — rejected loudly.
+- ``is_no_data=True`` short-circuits the check entirely.
+
+This module pins the expected behaviour at the contract boundary.
 ``llm_retry`` already classifies ``pydantic.ValidationError`` as retryable,
-so an offending LLM response triggers ADK's existing retry path
-automatically.
+so invalid LLM responses trigger ADK's existing retry path automatically.
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ def _valid_report() -> AnalystReport:
     """Build a minimal valid ``AnalystReport`` for round-trip tests."""
 
     return AnalystReport(
-        summary="Test summary — exercises the report-required validator.",
+        summary="Test summary — exercises the prose-surface validator.",
         drivers=[
             ReportDriver(name="driver-one", direction="bull", weight=0.6, body="Body one."),
             ReportDriver(name="driver-two", direction="bear", weight=0.4, body="Body two."),
@@ -33,27 +33,70 @@ def _valid_report() -> AnalystReport:
     )
 
 
-def test_report_required_when_data_present_raises() -> None:
-    """``is_no_data=False`` with ``report=None`` must fail schema validation."""
+def test_prose_surface_exactly_one_enforced() -> None:
+    """The exactly-one-prose-surface invariant is enforced for non-no-data verdicts.
 
-    with pytest.raises(ValidationError) as excinfo:
+    Three cases are tested:
+
+    1. Rationale-only (``report=None``, ``rationale`` non-empty) → valid.
+       This is the deterministic-extractor shape.
+    2. Both surfaces present → raises ``ValidationError`` matching
+       "exactly one prose surface".
+    3. Neither surface present → raises ``ValidationError`` matching
+       "prose surface".
+    """
+
+    # ── Case 1: rationale-only is valid (deterministic-extractor shape) ──────
+    v = AnalystVerdict.model_validate(
+        {
+            "lean":        "bullish",
+            "magnitude":   0.5,
+            "confidence":  0.6,
+            "rationale":   "x",
+            "key_factors": [],
+            "is_no_data":  False,
+            "report":      None,
+        }
+    )
+    assert v.is_no_data is False
+    assert v.report is None, "deterministic verdict must not carry a report"
+    assert v.rationale != "", "rationale carries the deterministic one-liner"
+
+    # ── Case 2: both surfaces → rejected ─────────────────────────────────────
+    with pytest.raises(ValidationError, match="exactly one prose surface"):
         AnalystVerdict.model_validate(
             {
                 "lean":        "bullish",
                 "magnitude":   0.5,
                 "confidence":  0.6,
-                "rationale":   "x",
+                "rationale":   "non-empty rationale alongside a report",
+                "key_factors": [],
+                "is_no_data":  False,
+                "report":      _valid_report().model_dump(),
+            }
+        )
+
+    # ── Case 3: neither surface → rejected ───────────────────────────────────
+    with pytest.raises(ValidationError, match="prose surface"):
+        AnalystVerdict.model_validate(
+            {
+                "lean":        "bullish",
+                "magnitude":   0.5,
+                "confidence":  0.6,
+                "rationale":   "",
                 "key_factors": [],
                 "is_no_data":  False,
                 "report":      None,
             }
         )
 
-    assert "report is required" in str(excinfo.value)
 
+def test_no_data_allows_no_prose_surface() -> None:
+    """``is_no_data=True`` with ``report=None`` is the genuine no-data case.
 
-def test_report_required_when_no_data_allows_none() -> None:
-    """``is_no_data=True`` with ``report=None`` is the genuine no-data case."""
+    The prose-surface check is short-circuited entirely; rationale may hold
+    the no-data reason but is not required to be non-empty.
+    """
 
     v = AnalystVerdict.model_validate(
         {
@@ -71,13 +114,18 @@ def test_report_required_when_no_data_allows_none() -> None:
 
 
 def test_valid_verdict_with_report_round_trips() -> None:
-    """A populated report round-trips through ``model_validate`` unchanged."""
+    """An LLM-style verdict (report present, rationale blank) round-trips unchanged.
+
+    The LLM analyst shape is ``report`` populated and ``rationale=""`` — only
+    one prose surface.  The round-trip confirms the validator accepts it and
+    the report content survives serialisation.
+    """
 
     payload = {
         "lean":        "bullish",
         "magnitude":   0.5,
         "confidence":  0.6,
-        "rationale":   "Positive guidance signal.",
+        "rationale":   "",
         "key_factors": [],
         "is_no_data":  False,
         "report":      _valid_report().model_dump(),

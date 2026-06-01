@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from contract.evidence import AnalystEvidence, AnalystReport, AnalystVerdict, ReportDriver
+from contract.evidence import AnalystEvidence, AnalystVerdict
 from contract.ticker_evidence import AggregateVerdict, TickerEvidence
 
 
@@ -14,17 +14,30 @@ def _now() -> datetime:
     return datetime(2026, 5, 8, 14, 0, tzinfo=UTC)
 
 
-# Stub report satisfying the D1.1 validator for is_no_data=False verdicts.
-_STUB_REPORT = AnalystReport(
-    summary="Stub report for ticker-evidence schema tests.",
-    drivers=[
-        ReportDriver(name="driver-a", direction="bull", weight=0.6, body="Stub body A."),
-        ReportDriver(name="driver-b", direction="bear", weight=0.4, body="Stub body B."),
-    ],
-)
-
-
 def _ev(analyst: str, lean: str, magnitude: float, confidence: float) -> AnalystEvidence:
+    """Build a deterministic-style AnalystEvidence for ticker-evidence schema tests.
+
+    These tests exercise TickerEvidence and AggregateVerdict schema rules, not
+    prose content.  Verdicts are built as deterministic-extractor style:
+    rationale carries the one-liner and ``report`` is ``None``, satisfying the
+    exactly-one-prose-surface invariant.
+
+    Parameters
+    ----------
+    analyst:
+        Analyst key (e.g. ``"technical"``).
+    lean:
+        Direction string — ``"bullish"``, ``"bearish"``, or ``"neutral"``.
+    magnitude:
+        Signal magnitude in ``[0, 1]``.
+    confidence:
+        Model confidence in ``[0, 1]``.
+
+    Returns
+    -------
+    AnalystEvidence
+        Fully-formed evidence object with a rationale-only verdict.
+    """
     return AnalystEvidence(
         ticker="AAPL",
         analyst=analyst,
@@ -33,9 +46,13 @@ def _ev(analyst: str, lean: str, magnitude: float, confidence: float) -> Analyst
         features={},
         feature_warnings=[],
         verdict=AnalystVerdict(
-            lean=lean, magnitude=magnitude, confidence=confidence,
-            rationale="x", key_factors=[], is_no_data=False,
-            report=_STUB_REPORT,
+            lean=lean,
+            magnitude=magnitude,
+            confidence=confidence,
+            rationale="ticker-evidence test deterministic verdict",
+            key_factors=[],
+            is_no_data=False,
+            report=None,
         ),
     )
 

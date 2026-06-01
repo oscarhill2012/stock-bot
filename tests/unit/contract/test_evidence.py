@@ -6,32 +6,55 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from contract.evidence import AnalystEvidence, AnalystReport, AnalystVerdict, ReportDriver
-
-
-# Minimal stub report satisfying the D1.1 validator (report required when
-# is_no_data=False).  These unit tests exercise verdict schema rules, not
-# report content, so a single fixed stub is sufficient.
-_STUB_REPORT = AnalystReport(
-    summary="Stub report for evidence schema tests.",
-    drivers=[
-        ReportDriver(name="driver-a", direction="bull", weight=0.6, body="Stub body A."),
-        ReportDriver(name="driver-b", direction="bear", weight=0.4, body="Stub body B."),
-    ],
-)
+from contract.evidence import AnalystEvidence, AnalystVerdict
 
 
 def _verdict(**overrides) -> AnalystVerdict:
-    base = dict(
+    """Build an AnalystVerdict respecting the exactly-one-prose-surface invariant.
+
+    Defaults to a deterministic-extractor style verdict (rationale non-empty,
+    ``report=None``).  Callers can override any field; the three valid
+    configurations are:
+
+    - ``is_no_data=True``       → no-data short-circuit; ``report`` forced
+                                   to ``None``.
+    - ``report`` is a non-None  → LLM-style; ``rationale`` forced to ``""``
+                                   so the exactly-one check passes.
+    - otherwise (default)       → deterministic; ``report`` stays ``None``
+                                   and ``rationale`` carries the one-liner.
+
+    Parameters
+    ----------
+    **overrides:
+        Field overrides applied on top of the deterministic-style defaults.
+
+    Returns
+    -------
+    AnalystVerdict
+        Fully-formed verdict satisfying the exactly-one-prose-surface invariant.
+    """
+    base: dict = dict(
         lean="bullish",
         magnitude=0.5,
         confidence=0.7,
         rationale="RSI cooled + uptrend intact",
         key_factors=["rsi_14: 42"],
         is_no_data=False,
-        report=_STUB_REPORT,
+        report=None,
     )
     base.update(overrides)
+
+    # Enforce the three mutually-exclusive prose-surface branches.
+    if base["is_no_data"]:
+        # No-data short-circuit — report must be absent.
+        base["report"] = None
+    elif base["report"] is not None:
+        # LLM-style: report is the prose surface; blank rationale field.
+        base["rationale"] = ""
+    else:
+        # Deterministic extractor: rationale is the prose surface; no report.
+        pass  # defaults already correct
+
     return AnalystVerdict(**base)
 
 
