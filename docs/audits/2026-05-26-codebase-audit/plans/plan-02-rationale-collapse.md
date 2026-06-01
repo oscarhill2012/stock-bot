@@ -1364,3 +1364,34 @@ All of the following must hold simultaneously:
   `evidence_view.py` deletion before Task 1 starts; explicitly defers
   `last_reviewed_reason` / `sell_reasons` / `update_reasons` to
   Plans 05/07.
+
+---
+
+## Notes for Plan 05
+
+**Task 7 audit finding (A-015, third site) — recorded here, not actioned
+in Plan 02.**
+
+The original audit described the third A-015 no-data site as the
+"default `no_action` stance when the LLM omits a watchlist ticker".
+Reading `src/agents/strategist/derivation.py` end-to-end confirms this
+site does **not** synthesise an `AnalystVerdict` or `TickerVerdict` — it
+produces portfolio **stance** / weight behaviour. Specifically,
+`derive_decision_fields` (around lines 186–314) operates purely on
+`TickerStance` objects, and for tickers the strategist omits entirely it
+applies a *carry-forward* in Pass 2: padding `target_weights` to the
+ticker's current weight rather than constructing any verdict object.
+There is no `AnalystVerdict` / `TickerVerdict` / `is_no_data`
+construction anywhere in the file.
+
+Because this is stance territory — and Plan 02's prose-surface / no-data
+collapse is about *verdicts*, not stances — Plan 02 deliberately leaves
+it untouched. The single-source treatment the omitted-ticker default
+still warrants belongs to **Plan 05**, which owns the stance schema and
+its defaults.
+
+**Action for Plan 05:** give the omitted-ticker carry-forward / default
+`no_action` path a single canonical construction site, mirroring how
+Plan 02 routed the three verdict no-data sites through
+`_no_data_analyst_verdict` / `build_no_data_verdict`. Do not let the
+default drift across multiple inline call sites.
