@@ -422,7 +422,8 @@ def test_deterministic_verdict_no_longer_fabricates_report() -> None:
     """A-016 / A-049 regression: technical extractor must leave
     report=None and let rationale carry the one-liner.  Previously the
     extractor synthesised an AnalystReport to satisfy the old
-    _report_required_when_data_present validator — that path is gone.
+    report-required validator — that path is gone (the validator now
+    enforces exactly one prose surface instead).
     """
     # All keys from _KEYS plus vol_ratio_20d (which is NaN when history is short,
     # but here we supply a real value so a directional verdict fires).
