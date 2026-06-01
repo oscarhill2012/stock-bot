@@ -73,6 +73,20 @@ def _make_state(*, tickers: list[str], verdicts: list[dict]) -> dict:
     }
 
 
+# A complete, valid verdict dict for TICKER as emitted by the LLM.
+# Defined once here so both tests reference the same literal and cannot
+# silently diverge if the shape is ever updated.
+PRESENT_VERDICT: dict = {
+    "ticker": TICKER,
+    "lean": "bullish",
+    "magnitude": 0.5,
+    "confidence": 0.7,
+    "rationale": "strong momentum",
+    "key_factors": ["rsi"],
+    "is_no_data": False,
+}
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -88,19 +102,9 @@ def test_joiner_missing_ticker_produces_no_data_evidence() -> None:
     - ``analyst`` correctly attached
     """
     # Build a verdict list that covers TICKER but deliberately omits MISSING_TICKER.
-    present_verdict = {
-        "ticker": TICKER,
-        "lean": "bullish",
-        "magnitude": 0.5,
-        "confidence": 0.7,
-        "rationale": "strong momentum",
-        "key_factors": ["rsi"],
-        "is_no_data": False,
-    }
-
     state = _make_state(
         tickers=[TICKER, MISSING_TICKER],
-        verdicts=[present_verdict],
+        verdicts=[PRESENT_VERDICT],
     )
     ctx = SimpleNamespace(state=state)
 
@@ -143,19 +147,9 @@ def test_joiner_present_ticker_is_unaffected() -> None:
     This guards against an accidental over-broad condition that replaces
     valid LLM verdicts with no-data shells.
     """
-    present_verdict = {
-        "ticker": TICKER,
-        "lean": "bullish",
-        "magnitude": 0.5,
-        "confidence": 0.7,
-        "rationale": "strong momentum",
-        "key_factors": ["rsi"],
-        "is_no_data": False,
-    }
-
     state = _make_state(
         tickers=[TICKER, MISSING_TICKER],
-        verdicts=[present_verdict],
+        verdicts=[PRESENT_VERDICT],
     )
     ctx = SimpleNamespace(state=state)
 

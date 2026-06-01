@@ -20,7 +20,7 @@ from typing import Any
 from google.adk.agents.callback_context import CallbackContext
 from google.genai import types as genai_types
 
-from contract.evidence import AnalystEvidence, AnalystName, AnalystVerdict
+from contract.evidence import AnalystEvidence, AnalystName, AnalystVerdict, _no_data_analyst_verdict
 from data.timeguard import resolve_as_of
 
 
@@ -146,12 +146,10 @@ def make_evidence_callback(
             raw_v = verdicts_by_ticker.get(ticker)
 
             if raw_v is None:
-                # LLM omitted this ticker — route through the canonical
-                # builder so every no-data synthesis site uses one shape
-                # (A-015). Reason string is preserved verbatim for any
-                # downstream consumer that key-matches on it.
-                from contract.evidence import _no_data_analyst_verdict  # noqa: PLC0415
-
+                # LLM omitted this ticker — route through the canonical no-data
+                # builder (A-015) so every synthesis site produces an identical
+                # shape.  The reason string is preserved verbatim; downstream
+                # consumers may key-match on it.
                 verdict = _no_data_analyst_verdict(reason="no verdict from LLM")
             else:
                 # Validate the LLM's output dict against the strict schema.
