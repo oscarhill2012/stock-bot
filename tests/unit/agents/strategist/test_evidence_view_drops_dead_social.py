@@ -80,7 +80,7 @@ def test_no_data_social_row_omitted() -> None:
     )
 
 
-@pytest.mark.skip(reason="TODO(plan-07): evidence_view.py and its dual-surface (rationale+report) fixtures are retired when Plan 07 deletes the strategist callback; these tests collide with the Task 1 one-prose-surface invariant until then")
+@pytest.mark.skip(reason="TODO(plan-07): social is a deterministic (rationale-only) analyst, so a realistic populated social verdict has report=None. evidence_view._format_per_analyst (the D1.3 branch) treats report=None on a non-no-data verdict as an 'analyst compliance failure' and renders a placeholder, so it cannot render a realistic populated social row normally — and switching the fixture to report-only would pin unrealistic behaviour (social never emits a report). Both the renderer fix and this fixture are owned by Plan 07, which deletes evidence_view.py.")
 def test_populated_social_row_appears() -> None:
     """A populated Social verdict still renders normally."""
 
