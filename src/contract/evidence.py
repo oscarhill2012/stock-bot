@@ -187,6 +187,71 @@ class TickerVerdict(AnalystVerdict):
     ticker: str
 
 
+def _no_data_analyst_verdict(*, reason: str) -> AnalystVerdict:
+    """Canonical 'we had no data this tick' shape, ticker-free.
+
+    Used by per-analyst extractors which return AnalystVerdict (not
+    TickerVerdict — the joiner attaches the ticker later).
+
+    Parameters:
+        reason:  short prose explanation (must be non-empty).
+
+    Raises:
+        ValueError: if reason is empty or whitespace-only — every
+                    no-data site already has a real reason available;
+                    silent defaults are the recurring bug class
+                    (auto-memory: silent-failures-loud-tests).
+    """
+
+    if not reason or not reason.strip():
+        raise ValueError(
+            "no-data verdict requires a non-empty reason — silent "
+            "fallback strings are the bug class this builder closes"
+        )
+
+    return AnalystVerdict(
+        lean="neutral",
+        magnitude=0.0,
+        confidence=0.0,
+        rationale=reason,
+        key_factors=[],
+        is_no_data=True,
+    )
+
+
+def build_no_data_verdict(ticker: str, *, reason: str) -> TickerVerdict:
+    """Canonical 'we had no data this tick' shape, ticker-attached.
+
+    Single source of truth for the three sites that previously
+    hand-rolled no-data verdicts with drifting confidence / wording /
+    direction (A-015). Strategist derivation and any joiner that needs
+    a per-ticker no-data record should call this.
+
+    Parameters:
+        ticker:  symbol the verdict applies to.
+        reason:  short prose explanation (must be non-empty).
+
+    Raises:
+        ValueError: if reason is empty or whitespace-only.
+    """
+
+    if not reason or not reason.strip():
+        raise ValueError(
+            "no-data verdict requires a non-empty reason — silent "
+            "fallback strings are the bug class this builder closes"
+        )
+
+    return TickerVerdict(
+        ticker=ticker,
+        lean="neutral",
+        magnitude=0.0,
+        confidence=0.0,
+        rationale=reason,
+        key_factors=[],
+        is_no_data=True,
+    )
+
+
 class LlmTickerVerdict(BaseModel):
     """Narrow per-ticker emit-schema for the News + Fundamental LLM analysts.
 
