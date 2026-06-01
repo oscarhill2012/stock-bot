@@ -170,7 +170,7 @@ def test_canned_bad_verdict_dual_surface_rejected() -> None:
             ],
         },
     }
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="exactly one prose surface"):
         AnalystVerdict.model_validate(raw)
 
 

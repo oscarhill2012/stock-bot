@@ -1,4 +1,9 @@
-"""TickerEvidence prompt rendering tests — Tier 1, no LLM."""
+"""TickerEvidence prompt rendering tests — Tier 1, no LLM.
+
+Most tests in this file (7 of 8) are currently skipped pending Plan 07
+(deletion of ``evidence_view.py``); only ``test_empty_evidence_renders_placeholder``
+is active.
+"""
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -11,10 +16,16 @@ from contract.ticker_evidence import AggregateVerdict, TickerEvidence
 
 
 def _stub_report(lean: str, analyst: str) -> AnalystReport:
-    """Build a minimal two-driver AnalystReport for test fixture use.
+    """Build a minimal two-driver AnalystReport for dual-surface test fixtures.
 
-    The D1.1 schema rule requires ``report`` whenever ``is_no_data=False``;
-    test helpers that construct non-no-data verdicts must supply one.
+    This helper is a carry-over from the superseded D1.1 era, which required
+    ``report`` whenever ``is_no_data=False``.  That rule has been replaced by
+    the exactly-one-prose-surface invariant, which explicitly does NOT require
+    ``report`` — deterministic verdicts are valid with ``report=None``.
+
+    This helper is used only by the currently-skipped Plan-07 evidence_view
+    tests (``_ev()`` populates both ``rationale`` and ``report``).  It must
+    not be treated as a template for new fixtures.
     """
     direction = {"bullish": "bull", "bearish": "bear", "neutral": "neutral"}[lean]
     return AnalystReport(
@@ -28,7 +39,19 @@ def _stub_report(lean: str, analyst: str) -> AnalystReport:
 
 def _ev(analyst: str, lean: str, conf: float, features: dict[str, float] | None = None,
         ticker: str = "AAPL") -> AnalystEvidence:
-    """Build a minimal AnalystEvidence for test fixtures."""
+    """Build a minimal AnalystEvidence for test fixtures.
+
+    WARNING — DUAL-SURFACE FIXTURE: this helper deliberately constructs an
+    ``AnalystVerdict`` with BOTH a non-empty ``rationale`` AND a ``report``.
+    That combination violates the exactly-one-prose-surface invariant
+    (``src/contract/evidence.py``) and will raise ``ValidationError`` if
+    executed under the current schema.
+
+    This helper is retained ONLY for the Plan-07 evidence_view tests, which
+    are ALL currently skipped (see ``@pytest.mark.skip`` decorators below).
+    Do NOT un-skip any of those tests until Plan 07 repairs this fixture
+    (and deletes ``evidence_view.py``).
+    """
     return AnalystEvidence(
         ticker=ticker, analyst=analyst,
         tick_id="tick_X",

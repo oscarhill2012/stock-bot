@@ -4,7 +4,8 @@ Social is permanently no-data (no provider wired) — the strategist's
 per-ticker block was rendering 20 dead ``[Social] is_no_data: true`` rows
 per tick, ~600 chars of dead attention.  This test pins the omission
 behaviour and the symmetric "populated row appears when data lands"
-contract.
+contract (note: ``test_populated_social_row_appears`` is currently skipped
+pending Plan 07).
 """
 from __future__ import annotations
 
@@ -80,7 +81,7 @@ def test_no_data_social_row_omitted() -> None:
     )
 
 
-@pytest.mark.skip(reason="TODO(plan-07): social is a deterministic (rationale-only) analyst, so a realistic populated social verdict has report=None. evidence_view._format_per_analyst (the D1.3 branch) treats report=None on a non-no-data verdict as an 'analyst compliance failure' and renders a placeholder, so it cannot render a realistic populated social row normally — and switching the fixture to report-only would pin unrealistic behaviour (social never emits a report). Both the renderer fix and this fixture are owned by Plan 07, which deletes evidence_view.py.")
+@pytest.mark.skip(reason="TODO(plan-07): the fixture carries a dual-surface violation (both rationale and report populated) and raises ValidationError at model_validate before the renderer is even reached; — social is a deterministic (rationale-only) analyst, so a realistic populated social verdict has report=None. evidence_view._format_per_analyst (the D1.3 branch) treats report=None on a non-no-data verdict as an 'analyst compliance failure' and renders a placeholder, so it cannot render a realistic populated social row normally — and switching the fixture to report-only would pin unrealistic behaviour (social never emits a report). Both the renderer fix and this fixture are owned by Plan 07, which deletes evidence_view.py.")
 def test_populated_social_row_appears() -> None:
     """A populated Social verdict still renders normally."""
 
