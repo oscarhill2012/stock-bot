@@ -146,16 +146,13 @@ def make_evidence_callback(
             raw_v = verdicts_by_ticker.get(ticker)
 
             if raw_v is None:
-                # LLM omitted this ticker — synthesise a safe no-data record
-                # so downstream consumers always receive one record per ticker.
-                verdict = AnalystVerdict(
-                    lean="neutral",
-                    magnitude=0.0,
-                    confidence=0.0,
-                    rationale="no verdict from LLM",
-                    key_factors=[],
-                    is_no_data=True,
-                )
+                # LLM omitted this ticker — route through the canonical
+                # builder so every no-data synthesis site uses one shape
+                # (A-015). Reason string is preserved verbatim for any
+                # downstream consumer that key-matches on it.
+                from contract.evidence import _no_data_analyst_verdict  # noqa: PLC0415
+
+                verdict = _no_data_analyst_verdict(reason="no verdict from LLM")
             else:
                 # Validate the LLM's output dict against the strict schema.
                 verdict = AnalystVerdict.model_validate(raw_v)
