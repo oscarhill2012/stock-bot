@@ -72,3 +72,81 @@ def test_social_aggregate_score_back_compat_alias():
     }
     f = extract_social_features(raw, "AAPL")
     assert f["social_aggregate_score"] == pytest.approx(f["aggregate_score"])
+
+
+def test_deterministic_verdict_no_longer_fabricates_report() -> None:
+    """A-016 / A-049 regression: social extractor must leave
+    report=None and let rationale carry the one-liner.
+
+    Feature keys match the real extractor output — mention_count_total,
+    mention_count_reddit, mention_count_twitter (not the 24h/7d aliases
+    that appeared in the plan text which referred to a stale shape).
+    score=0.4 exceeds score_neutral_band=0.05 so lean is bullish.
+    """
+    features = {
+        "mention_count_total":         50.0,
+        "mention_count_reddit":        40.0,
+        "mention_count_twitter":       10.0,
+        "social_aggregate_score":      0.4,
+        "aggregate_score":             0.4,
+        "score_velocity_24h":          0.0,
+        "platform_score_disagreement": 0.2,
+        "is_no_data":                  0.0,
+    }
+
+    # Load heuristics from the real config so thresholds are consistent.
+    import json
+    import pathlib
+
+    from agents.analysts.heuristics import SocialHeuristics
+    from contract.extractors.social import derive_social_verdict
+    raw_cfg = json.loads(
+        (pathlib.Path(__file__).parent.parent.parent.parent.parent
+         / "config" / "analyst_heuristics.json").read_text()
+    )
+    h = SocialHeuristics(**raw_cfg["social"])
+
+    v = derive_social_verdict(features, h)
+
+    assert v.is_no_data is False
+    assert v.report is None
+    assert v.rationale != ""
+
+
+def test_no_data_branches_use_canonical_builder() -> None:
+    """Both empty-input branches yield the canonical no-data shape."""
+    import json
+    import pathlib
+
+    from agents.analysts.heuristics import SocialHeuristics
+    from contract.extractors.social import derive_social_verdict
+    raw_cfg = json.loads(
+        (pathlib.Path(__file__).parent.parent.parent.parent.parent
+         / "config" / "analyst_heuristics.json").read_text()
+    )
+    h = SocialHeuristics(**raw_cfg["social"])
+
+    # Branch 1: is_no_data sentinel — partial feature dict is fine; extractor
+    # short-circuits before touching the other keys.
+    features_sentinel = {"is_no_data": 1.0}
+    v1 = derive_social_verdict(features_sentinel, h)
+    assert v1.is_no_data is True
+    assert v1.report is None
+    assert v1.rationale
+
+    # Branch 2: zero total mentions — all keys present, mention_count_total=0
+    # trips the second no-data guard.
+    features_empty = {
+        "mention_count_total":         0.0,
+        "mention_count_reddit":        0.0,
+        "mention_count_twitter":       0.0,
+        "social_aggregate_score":      0.0,
+        "aggregate_score":             0.0,
+        "score_velocity_24h":          0.0,
+        "platform_score_disagreement": 0.0,
+        "is_no_data":                  0.0,
+    }
+    v2 = derive_social_verdict(features_empty, h)
+    assert v2.is_no_data is True
+    assert v2.report is None
+    assert v2.rationale

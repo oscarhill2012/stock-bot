@@ -190,32 +190,20 @@ def derive_social_verdict(features: dict[str, float], h: SocialHeuristics) -> An
     # Deferred runtime imports — avoids the circular import that arises when
     # loading this module triggers agents.analysts.__init__ (which re-imports
     # this module before it has finished initialising).
-    from contract.evidence import AnalystReport, AnalystVerdict, ReportDriver  # noqa: PLC0415
+    from contract.evidence import AnalystVerdict, _no_data_analyst_verdict  # noqa: PLC0415
 
-    # ── No-data short-circuit ─────────────────────────────────────────────────
+    # ── No-data short-circuit (sentinel) ─────────────────────────────────────
+    # is_no_data may arrive as bool True or as float 1.0 depending on the caller.
     if features.get("is_no_data") is True or features.get("is_no_data", 0.0) >= 1.0:
-        return AnalystVerdict(
-            lean="neutral",
-            magnitude=0.0,
-            confidence=0.0,
-            rationale="no social mentions",
-            key_factors=[],
-            is_no_data=True,
-        )
+        return _no_data_analyst_verdict(reason="no social data available")
 
     # Use aggregate_score (back-compat alias present on both old and new shapes).
     score   = features.get("social_aggregate_score") or features.get("aggregate_score", 0.0)
     n_total = features["mention_count_total"]
 
+    # ── No-data short-circuit (zero mentions) ────────────────────────────────
     if n_total == 0:
-        return AnalystVerdict(
-            lean="neutral",
-            magnitude=0.0,
-            confidence=0.0,
-            rationale="no social mentions",
-            key_factors=[],
-            is_no_data=True,
-        )
+        return _no_data_analyst_verdict(reason="no social mentions")
 
     # ── Lean ──────────────────────────────────────────────────────────────────
     if score > h.score_neutral_band:
@@ -270,53 +258,8 @@ def derive_social_verdict(features: dict[str, float], h: SocialHeuristics) -> An
         factors.append("twitter_dominant")
 
     # Rationale assembled from fired key_factors, capped at 160 chars.
+    # This is the sole prose surface for deterministic (non-LLM) verdicts.
     rationale = ", ".join(factors)[:160]
-
-    # --- Synthetic AnalystReport -----------------------------------------------
-    # Structured analysts have no LLM prose, but the schema requires ``report``
-    # whenever ``is_no_data=False``.  Build a minimal report from the
-    # deterministic signals so the uniform contract holds.
-    direction_map   = {"bullish": "bull", "bearish": "bear", "neutral": "neutral"}
-    driver_direction = direction_map[lean]
-
-    # Evenly distribute weight across factors; guard against empty list.
-    driver_factors = factors if factors else [lean]
-    n_factors      = len(driver_factors)
-    even_weight    = round(1.0 / n_factors, 4)
-
-    # Build one ReportDriver per key_factor.
-    drivers = [
-        ReportDriver(
-            name=factor[:69],
-            direction=driver_direction,
-            weight=even_weight,
-            body=(
-                f"Social signal: {factor} "
-                f"(score={score:.3f}, mentions={n_total})"
-            )[:575],
-        )
-        for factor in driver_factors
-    ]
-
-    # AnalystReport requires at least 2 drivers; pad when only one factor fired.
-    if len(drivers) < 2:
-        drivers.append(
-            ReportDriver(
-                name="overall_lean",
-                direction=driver_direction,
-                weight=even_weight,
-                body=(
-                    f"Aggregate social score {score:.3f} across "
-                    f"{n_total} mention(s)"
-                )[:575],
-            )
-        )
-
-    summary = (
-        f"Social sentiment leans {lean}: {rationale}."
-    )[:1150]
-
-    report = AnalystReport(summary=summary, drivers=drivers[:4])
 
     return AnalystVerdict(
         lean=lean,
@@ -325,5 +268,4 @@ def derive_social_verdict(features: dict[str, float], h: SocialHeuristics) -> An
         rationale=rationale,
         key_factors=factors,
         is_no_data=False,
-        report=report,
     )
