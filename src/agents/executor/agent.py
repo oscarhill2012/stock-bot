@@ -330,10 +330,18 @@ class ExecutorAgent(BaseAgent):
 
             executions.append(exec_record.model_dump())
 
-        # Direct mutation — visible to any later agent in *this* tick that
-        # reads ``ctx.session.state`` (same object reference).
-        state["executions"]            = executions
-        state["last_executed_tick_id"] = tick_id
+        # Direct mutation of ``executions`` — written here so the decision-logger
+        # (``dl.on_executions(dict(state))`` below) can read it from the shared
+        # in-tick state dict this same tick (A-073).  The state_delta below also
+        # carries ``executions`` for cross-tick persistence.
+        #
+        # ``last_executed_tick_id`` is intentionally NOT written here (A-069).
+        # Its only reader is the idempotency guard at the *start* of this method
+        # on the NEXT tick (``state.get("last_executed_tick_id") == tick_id``).
+        # No agent or callback reads it again within the same tick after the
+        # executor runs, so a direct in-tick write would be dead bookkeeping.
+        # The value is carried cross-tick exclusively via the state_delta below.
+        state["executions"] = executions
 
         # Note: ``user:positions`` is intentionally NOT mutated here.  Writing
         # it via a direct dict assignment would make the in-memory value visible
@@ -373,10 +381,11 @@ class ExecutorAgent(BaseAgent):
 
         # Cross-tick propagation — ADK's session service only merges mutations
         # into storage via an Event whose ``actions.state_delta`` carries them.
-        # The mutations above (``executions``, ``last_executed_tick_id``) are
-        # visible to same-tick agents via the shared object reference, but they
-        # never reach ``DatabaseSessionService`` storage unless they also appear
-        # in this delta.
+        # ``executions`` is written both directly (so the decision-logger can read
+        # it same-tick) and here in the delta (so it survives to the next tick).
+        # ``last_executed_tick_id`` is delta-ONLY: it was never needed in in-tick
+        # state because nothing reads it after the executor runs within a tick —
+        # the direct write removed by A-069 was pure dead bookkeeping.
         #
         # ``user:positions`` is intentionally ABSENT from this state_delta.
         # It is the sole responsibility of ``_executor_thesis_writer_callback``
