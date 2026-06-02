@@ -88,15 +88,19 @@ class ExecutorAgent(BaseAgent):
 
         executions: list[dict] = []
 
-        # Resolve the working position book via the Band 4 bare-key bridge.
-        # ``user:positions`` is written by ``_executor_thesis_writer_callback``
-        # (after_agent_callback) AFTER this method completes, so it is not yet
-        # available in state at this point during same-tick execution.  The
-        # bare-key bridge (``"positions"``) carries the cross-tick value and is
-        # the correct source for in-tick reads.  The bridge remains in place as
-        # the BUY→SELL in-tick channel; ``new_positions`` (the strategist's
-        # pre-computed thesis) was the only thing removed in Band 6.
-        positions: dict = dict(state.get("positions", {}))
+        # Recover the prior held book from the canonical cross-tick thesis
+        # store, ``state["user:positions"]`` — written by
+        # ``_executor_thesis_writer_callback`` (after_agent_callback) and
+        # re-hydrated by ADK at each tick start.  This is the source of truth
+        # for positions opened on PRIOR ticks, so a SELL this tick can find
+        # the position it is closing (audit A-014).
+        #
+        # ``positions`` is then mutated locally as orders are processed: a BUY
+        # adds the assembled thesis, a full-close SELL removes it.  Same-tick
+        # BUY → SELL works through this shared local dict — no state key is
+        # needed for in-tick visibility.  We do NOT write ``user:positions``
+        # here; the after-callback is its sole writer-of-record.
+        positions: dict = dict(state.get("user:positions") or {})
 
         for order in orders:
             try:
@@ -116,7 +120,7 @@ class ExecutorAgent(BaseAgent):
                 )
 
                 # BUY: assemble the thesis from the buy-intent stance + fill price
-                # and record it in the *legacy* position book so SELL can recover
+                # and record it in the local position book so SELL can recover
                 # it in the same tick.  The after_agent_callback writes the
                 # new-model ``user:positions`` after the run loop completes.
                 #
@@ -266,7 +270,19 @@ class ExecutorAgent(BaseAgent):
                                     "holding_period_hours": holding_hours,
                                     # ``horizon_intent`` dropped in iter-3 — the field was removed
                                     # from ``TradeLogRow`` (Bug #9: hallucinated 80 % of the time).
-                                    "opened_tag":          thesis.get("opened_tag") if isinstance(thesis, dict) else getattr(thesis, "opened_tag", None),
+                                    # Same-tick BUYs stash ``opened_tag`` on the
+                                    # thesis dict, but a position recovered
+                                    # cross-tick from ``user:positions`` has none
+                                    # (PositionThesis is extra="forbid").  Fall
+                                    # back to the opening tick id — the natural
+                                    # traceability proxy — then the current
+                                    # tick_id, so the non-nullable trade_log
+                                    # column is always populated.
+                                    "opened_tag": (
+                                        (thesis.get("opened_tag") if isinstance(thesis, dict) else getattr(thesis, "opened_tag", None))
+                                        or (thesis.get("opened_tick_id") if isinstance(thesis, dict) else getattr(thesis, "opened_tick_id", None))
+                                        or tick_id
+                                    ),
                                     "closed_tag":          state.get("strategist_decision", {}).get("decision_tag", "unknown"),
                                     "opened_rationale":    thesis.get("rationale") if isinstance(thesis, dict) else thesis.rationale,
                                     "close_reason":        close_reason,
@@ -316,17 +332,16 @@ class ExecutorAgent(BaseAgent):
 
         # Direct mutation — visible to any later agent in *this* tick that
         # reads ``ctx.session.state`` (same object reference).
-        state["executions"]             = executions
-        state["positions"]              = positions    # Band 4 bare-key BUY→SELL bridge
-        state["last_executed_tick_id"]  = tick_id
+        state["executions"]            = executions
+        state["last_executed_tick_id"] = tick_id
 
         # Note: ``user:positions`` is intentionally NOT mutated here.  Writing
         # it via a direct dict assignment would make the in-memory value visible
         # to the after_agent_callback (_executor_thesis_writer_callback), which
         # reads ``user:positions`` to obtain the *prior* held book.  If the
-        # in-tick BUY result is already in the delta, the callback would see
-        # a buy stance against a ticker it thinks is already held — assertion
-        # failure.  Instead, ``user:positions`` is written only by the callback
+        # in-tick BUY result is already in the state dict, the callback would
+        # see a buy stance against a ticker it thinks is already held — incorrect
+        # behaviour.  Instead, ``user:positions`` is written only by the callback
         # (via ADK's delta-tracked state writes) and propagated cross-tick via
         # the state_delta key in the yielded Event below.
 
@@ -358,30 +373,32 @@ class ExecutorAgent(BaseAgent):
 
         # Cross-tick propagation — ADK's session service only merges mutations
         # into storage via an Event whose ``actions.state_delta`` carries them.
-        # The in-tick mutations above (state["positions"]) are visible to
-        # same-tick agents via the shared object reference, but they never reach
-        # ``DatabaseSessionService`` storage unless we also include them here.
-        # Without this, tick T+1 reads the pre-T value of the position book
-        # from a freshly-deserialised session.
+        # The mutations above (``executions``, ``last_executed_tick_id``) are
+        # visible to same-tick agents via the shared object reference, but they
+        # never reach ``DatabaseSessionService`` storage unless they also appear
+        # in this delta.
         #
         # ``user:positions`` is intentionally ABSENT from this state_delta.
         # It is the sole responsibility of ``_executor_thesis_writer_callback``
         # (after_agent_callback), which runs after this method completes and
         # writes the richer stance-derived version via ADK's delta-tracked
         # ``ctx.state`` writes.  Including it here would be a double-write
-        # that violates the Band 4 writer-of-record split.
+        # that violates the writer-of-record split.
         #
-        # ``"positions"`` is the Band 4 bare-key BUY→SELL bridge — kept intentionally.
-        # Include ``user:closed_trades_log`` in the delta only when this tick
-        # actually mutated it (i.e. at least one close happened).  Writing
-        # the key unconditionally would clobber the persisted value with the
-        # current in-memory snapshot on every tick, but since the snapshot
-        # IS the source of truth after the in-tick mutation above this is
-        # safe — kept conditional purely to keep the delta minimal.
-        delta = {
+        # The local ``positions`` dict (seeded from ``user:positions`` at the
+        # top of this method) is mutated in-tick and consumed locally for the
+        # SELL gate — it is NOT propagated to the state_delta.  The after-
+        # callback re-derives the canonical ``user:positions`` from the stance
+        # list + fill prices and is its sole writer-of-record.
+        #
+        # ``user:closed_trades_log`` is included in the delta only when this
+        # tick actually appended to it (i.e. at least one full close happened).
+        # Writing it unconditionally would clobber the persisted value on every
+        # tick even when nothing changed; conditional inclusion keeps the delta
+        # minimal while still guaranteeing the write survives to cross-tick state.
+        delta: dict = {
             "executions":            executions,
             "last_executed_tick_id": tick_id,
-            "positions":             positions,    # Band 4 bare-key BUY→SELL bridge
         }
         if "user:closed_trades_log" in state:
             delta["user:closed_trades_log"] = state["user:closed_trades_log"]

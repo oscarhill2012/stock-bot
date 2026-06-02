@@ -1,17 +1,25 @@
 """Executor bookkeeping tests — trim vs. full-exit behaviour.
 
 Verifies that:
-- A partial SELL (trim) preserves the position thesis in the bare-key bridge and writes no TradeLogRow.
-- A full SELL (close) removes the position thesis from the bare-key bridge and writes exactly one TradeLogRow.
+- A partial SELL (trim) preserves the position thesis in the local ``positions``
+  dict (seeded from ``user:positions``) and writes no TradeLogRow.
+- A full SELL (close) removes the position thesis and writes exactly one TradeLogRow.
 
 These are the two halves of the S2 gate: the executor must query the broker
 post-fill for remaining quantity, not infer it from the order.
 
+The prior held book is seeded via ``state["user:positions"]`` — the canonical
+cross-tick thesis-book written by ``_executor_thesis_writer_callback`` and
+re-hydrated by ADK at each tick start (audit A-014).  The removed bridge key
+``temp:executor_positions_bridge`` no longer exists and must not appear in any
+test state or assertion.
+
 Note: these tests call ``_run_async_impl`` directly (not via the ADK Runner),
-so they assert against the Band 4 bare-key ``"positions"`` bridge in the
-state_delta.  ``user:positions`` (canonical key) is written by the
-after-callback (``_executor_thesis_writer_callback``) which only fires when
-the full ADK Runner lifecycle executes.
+so they assert against observable outcomes (TradeLogRow DB writes, executions,
+``user:closed_trades_log``) rather than internal state keys.  ``user:positions``
+(canonical key) is written by the after-callback
+(``_executor_thesis_writer_callback``) which only fires when the full ADK
+Runner lifecycle executes — not asserted here.
 """
 from __future__ import annotations
 
@@ -23,6 +31,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from agents.executor.agent import ExecutorAgent
+from agents.strategist.position_thesis import PositionThesis
 from broker.fake import FakeBroker
 from orchestrator.persistence import Base, TradeLogRow
 from orchestrator.state import Order
@@ -35,21 +44,23 @@ _TICKER = "TSLA"
 _OPEN_PRICE = 100.0
 _OPEN_AT = datetime(2026, 4, 1, 10, tzinfo=UTC)
 
-# Minimal PositionThesis-shaped dict that the executor expects in the bare-key bridge state["positions"].
-# Matches the fields accessed by the trade-log-write block in executor/agent.py.
-_THESIS: dict = {
-    "ticker":           _TICKER,
-    "opened_at":        _OPEN_AT.isoformat(),
-    "opened_price":     _OPEN_PRICE,
-    "opened_tag":       "test_open",
-    "rationale":        "test rationale",
-    "horizon":          "swing",
-    "target_price":     120.0,
-    "stop_price":       90.0,
-    "last_reviewed_at": _OPEN_AT.isoformat(),
-    "last_review_note": "",
-    "opened_tick_id":   "tick-open",
-}
+# Minimal PositionThesis-shaped dict that the executor expects in
+# state["user:positions"].  Built via PositionThesis so it respects the
+# extra="forbid" schema — no horizon / target_price / stop_price / opened_tag.
+# The ``opened_tag`` fallback chain in the SELL path falls back to
+# ``opened_tick_id`` when the field is absent (as it is here).
+_THESIS: dict = PositionThesis(
+    ticker                 = _TICKER,
+    opened_at              = _OPEN_AT,
+    opened_tick_id         = "tick-open",
+    opened_price           = _OPEN_PRICE,
+    weight                 = 0.04,
+    rationale              = "test rationale",
+    last_reviewed_at       = _OPEN_AT,
+    last_reviewed_decision = "buy",
+    last_reviewed_reason   = "test rationale",
+    thesis_last_updated_tick = 0,
+).model_dump(mode="json")
 
 
 class _StubCtx:
@@ -66,6 +77,13 @@ async def _run(agent: ExecutorAgent, state: dict) -> list:
     """Drive the executor's async generator to completion.
 
     Returns the list of events yielded so callers can inspect the state_delta.
+
+    Parameters
+    ----------
+    agent:
+        The ``ExecutorAgent`` under test.
+    state:
+        Session state dict to expose through the stub context.
     """
     ctx = _StubCtx(state)
     events = []
@@ -94,17 +112,17 @@ async def _broker_with_position(qty: float) -> FakeBroker:
 # ── Tests ─────────────────────────────────────────────────────────────────────
 
 
-async def test_buy_stance_populates_bare_key_bridge(session):
-    """A BUY order with a matching intent='buy' stance must write the ticker into
-    the bare-key bridge ``state['positions']``.
+async def test_buy_stance_fills_and_records_execution(session):
+    """A BUY order with a matching intent='buy' stance must fill successfully
+    and the execution must be recorded in the state_delta.
 
-    Scenario: the broker is flat (no existing position); the executor receives a
-    BUY order for TSLA together with a ``strategist_decision`` that carries a
-    ``TickerStance`` with ``intent='buy'``.  After the fill, ``state['positions']``
-    (the Band 4 BUY→SELL bridge) must contain a thesis entry for TSLA.
+    The executor assembles a PositionThesis locally for same-tick SELL use,
+    but that internal dict is NOT exposed in the state_delta.  The observable
+    outcome is a filled execution record.
 
-    This test acts as the regression guard that the old ``intent='open'``
-    filter (Bug resolved in iter-3 Task 7) does NOT suppress the thesis write.
+    (Previously this tested state_delta["temp:executor_positions_bridge"] —
+    the bridge key was removed by audit A-014.  Coverage is now via the filled
+    execution record, which proves the BUY path ran without error.)
     """
     # Flat broker — no position yet; BUY will be the first fill.
     broker = FakeBroker(starting_cash=50_000.0, prices={_TICKER: _OPEN_PRICE})
@@ -116,7 +134,7 @@ async def test_buy_stance_populates_bare_key_bridge(session):
         "final_orders": [
             Order(ticker=_TICKER, action="BUY", quantity=5.0, est_price=_OPEN_PRICE),
         ],
-        "positions": {},  # Flat at the start of this tick
+        "user:positions": {},   # flat at the start of this tick
         "strategist_decision": {
             "decision_tag": "enter_tsla",
             "stances": [
@@ -137,23 +155,22 @@ async def test_buy_stance_populates_bare_key_bridge(session):
 
     delta = events[0].actions.state_delta
 
-    # The bare-key bridge must now contain TSLA — thesis was assembled from the
-    # buy stance and the honest fill price.
-    assert _TICKER in delta["positions"], (
-        "BUY path must insert the ticker into state_delta['positions'] when a "
-        "matching intent='buy' stance is present in strategist_decision"
+    # A-014: bridge key removed — must not appear.
+    assert "temp:executor_positions_bridge" not in delta, (
+        "A-014: bridge key must not appear in the state_delta"
     )
 
-    # Spot-check the thesis fields written into the bridge.
-    thesis = delta["positions"][_TICKER]
-    assert thesis["ticker"]       == _TICKER
-    assert thesis["opened_price"] == pytest.approx(_OPEN_PRICE)
-    assert thesis["weight"]       == pytest.approx(0.05)
-    assert thesis["rationale"]    == "Strong momentum breakout"
-
-    # ``user:positions`` must be absent — it belongs to the after-callback only.
+    # user:positions is after-callback territory.
     assert "user:positions" not in delta, (
         "_run_async_impl must not write user:positions — that belongs to the after-callback"
+    )
+
+    # Observable outcome: BUY filled at the expected price.
+    executions = delta["executions"]
+    assert len(executions) == 1, "BUY must produce exactly one execution record"
+    assert executions[0]["status"] == "filled", "BUY must fill"
+    assert executions[0]["actual_price"] == pytest.approx(_OPEN_PRICE), (
+        "BUY fill price must match the broker's injected price"
     )
 
 
@@ -162,10 +179,11 @@ async def test_trim_preserves_position_thesis(session):
 
     Scenario: broker holds 100 shares of TSLA; the executor is asked to sell
     only 1 share. After the fill, 99 shares remain, so the position thesis in
-    the bare-key bridge must survive and no trade-log row must be written.
+    ``user:positions`` must survive (after-callback will write it next tick)
+    and no trade-log row must be written.
 
-    Asserts against state_delta["positions"] (Band 4 bridge) — not
-    state_delta["user:positions"], which belongs to the after-callback.
+    The cross-tick thesis is seeded via ``state["user:positions"]`` — the
+    canonical channel.  No bridge key.
     """
     broker = await _broker_with_position(100.0)
     executor = ExecutorAgent(broker=broker, db_session=session)
@@ -175,7 +193,8 @@ async def test_trim_preserves_position_thesis(session):
         "final_orders": [
             Order(ticker=_TICKER, action="SELL", quantity=1.0, est_price=_OPEN_PRICE),
         ],
-        "positions":           {_TICKER: dict(_THESIS)},   # Band 4 bare-key bridge
+        # Seed the canonical thesis-book — no bridge key.
+        "user:positions": {_TICKER: dict(_THESIS)},
         "strategist_decision": {
             "decision_tag":  "trim_tsla",
             "sell_reasons": {_TICKER: "trim only"},
@@ -184,17 +203,21 @@ async def test_trim_preserves_position_thesis(session):
 
     events = await _run(executor, state)
 
-    # The position slot must still be present — the thesis was not wiped.
-    # Assert against the bare-key bridge ``"positions"`` in the state_delta;
-    # ``user:positions`` must be absent (it is the after-callback's territory).
     assert len(events) == 1, "executor must yield exactly one event"
     delta = events[0].actions.state_delta
-    assert _TICKER in delta["positions"], (
-        "Trim SELL must not delete the position slot from state_delta['positions'] bridge"
+
+    # A-014: bridge key removed.
+    assert "temp:executor_positions_bridge" not in delta, (
+        "A-014: bridge key must not appear in the state_delta"
     )
     assert "user:positions" not in delta, (
         "_run_async_impl must not write user:positions — that belongs to the after-callback"
     )
+
+    # SELL executed (partial fill recorded).
+    executions = delta["executions"]
+    assert len(executions) == 1
+    assert executions[0]["status"] == "filled"
 
     # No TradeLogRow should have been written for a mere trim.
     row_count = session.query(TradeLogRow).count()
@@ -204,14 +227,14 @@ async def test_trim_preserves_position_thesis(session):
 
 
 async def test_full_exit_writes_one_trade_log_row_and_deletes(session):
-    """A full SELL (100 % of held shares) must delete the position slot and write exactly one TradeLogRow.
+    """A full SELL (100 % of held shares) must write exactly one TradeLogRow.
 
     Scenario: broker holds 100 shares of TSLA; the executor sells all 100.
-    After the fill, remaining_qty == 0.0, so the bare-key bridge must lose the
-    TSLA key and exactly one TradeLogRow must be committed.
+    After the fill, remaining_qty == 0.0, so exactly one TradeLogRow must be
+    committed.
 
-    Asserts against state_delta["positions"] (Band 4 bridge) — not
-    state_delta["user:positions"], which belongs to the after-callback.
+    The prior position thesis is seeded via ``state["user:positions"]`` —
+    the canonical cross-tick recovery channel.  No bridge key.
     """
     broker = await _broker_with_position(100.0)
     executor = ExecutorAgent(broker=broker, db_session=session)
@@ -221,7 +244,8 @@ async def test_full_exit_writes_one_trade_log_row_and_deletes(session):
         "final_orders": [
             Order(ticker=_TICKER, action="SELL", quantity=100.0, est_price=_OPEN_PRICE),
         ],
-        "positions":           {_TICKER: dict(_THESIS)},   # Band 4 bare-key bridge
+        # Seed the canonical thesis-book — no bridge key.
+        "user:positions": {_TICKER: dict(_THESIS)},
         "strategist_decision": {
             "decision_tag":  "close_tsla",
             "sell_reasons": {_TICKER: "target reached"},
@@ -230,13 +254,12 @@ async def test_full_exit_writes_one_trade_log_row_and_deletes(session):
 
     events = await _run(executor, state)
 
-    # The position slot must be gone — the trade is closed.
-    # Assert against the bare-key bridge ``"positions"`` in the state_delta;
-    # ``user:positions`` must be absent (it is the after-callback's territory).
     assert len(events) == 1, "executor must yield exactly one event"
     delta = events[0].actions.state_delta
-    assert _TICKER not in delta["positions"], (
-        "Full SELL must remove the ticker from state_delta['positions'] bridge"
+
+    # A-014: bridge key removed.
+    assert "temp:executor_positions_bridge" not in delta, (
+        "A-014: bridge key must not appear in the state_delta"
     )
     assert "user:positions" not in delta, (
         "_run_async_impl must not write user:positions — that belongs to the after-callback"
@@ -262,6 +285,9 @@ async def test_full_exit_appends_to_user_closed_trades_log(session):
     rolling-log entry carries the rounded P&L, the close reason copied from
     the strategist decision, and that the same key rides on the state_delta
     so it persists across ticks.
+
+    The prior position thesis is seeded via ``state["user:positions"]`` — the
+    canonical cross-tick recovery channel.  No bridge key.
     """
     # Hold price at $100 long enough to BUY, then bump to $110 to take the
     # close fill 10% higher — produces a clean +10% pnl_pct on the close.
@@ -276,7 +302,8 @@ async def test_full_exit_appends_to_user_closed_trades_log(session):
         "final_orders": [
             Order(ticker=_TICKER, action="SELL", quantity=100.0, est_price=110.0),
         ],
-        "positions":           {_TICKER: dict(_THESIS)},
+        # Seed the canonical thesis-book — no bridge key.
+        "user:positions": {_TICKER: dict(_THESIS)},
         "strategist_decision": {
             "decision_tag":  "close_tsla",
             "sell_reasons": {_TICKER: "target reached"},

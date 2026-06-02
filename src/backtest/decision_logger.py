@@ -171,7 +171,7 @@ class DecisionLogger:
             ``tick_id``, ``temp:ticker_evidence_objects`` (list of per-ticker
             TickerEvidence dumps), ``strategist_decision`` (with ``stances``
             list, ``reasoning``, ``thesis``, ``decision_tag``,
-            ``confidence``), ``positions`` (held-position thesis book keyed
+            ``confidence``), ``user:positions`` (held-position thesis book keyed
             by ticker), ``clamps``.
         """
         executions = state.get("executions", [])
@@ -332,11 +332,12 @@ class DecisionLogger:
                 # kept as a distinct field so the schema can diverge later.
                 "ticker_evidence": _coerce(ev_view),
                 # Full PositionThesis dump for the held position at fill time.
-                # The strategist's context shim writes the structured book
-                # under ``state["positions"]`` (a dict[ticker → thesis_dump]);
-                # ``None`` here means the ticker was flat going into the tick.
+                # A-014: read the persistent thesis-book directly.  The
+                # executor's in-tick bridge lives under
+                # temp:executor_positions_bridge and is NOT the cross-tick
+                # book — using it here would give stale-by-one-tick held views.
                 "held_view_at_decision": _coerce(
-                    (state.get("positions") or {}).get(ticker)
+                    (state.get("user:positions") or {}).get(ticker)
                 ),
             },
 

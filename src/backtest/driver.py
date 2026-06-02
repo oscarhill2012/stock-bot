@@ -268,10 +268,10 @@ class Driver:
             # risk_gate (which DOES read the live broker).  Re-pulling here
             # eliminates that source-of-truth split.
             #
-            # ``state["positions"]`` (the thesis book) is propagated by
-            # the executor's state_delta event (``"positions"`` key) and
-            # does not need a refresh here.
-            # TODO Band 5: drop once reads migrate to user:positions.
+            # state['user:positions'] (the canonical cross-tick thesis-book) is
+            # written by the executor's after_agent_callback and persists /
+            # re-hydrates via DatabaseSessionService — it does not need a
+            # refresh here.
             state["portfolio"] = (
                 await self._broker.get_portfolio()
             ).model_dump(mode="json")

@@ -40,7 +40,7 @@ async def test_executor_no_op_without_decision_logger() -> None:
         "final_orders": [
             Order(ticker="AAPL", action="BUY", quantity=1, est_price=150.0).model_dump()
         ],
-        "positions": {},
+        "user:positions": {},   # prior held book (empty)
         "strategist_decision": {"stances": []},
         # No ``temp:_decision_logger`` key — the hook must not fire.
     }
@@ -71,7 +71,7 @@ async def test_executor_calls_decision_logger_on_fill() -> None:
         "final_orders": [
             Order(ticker="AAPL", action="BUY", quantity=1, est_price=150.0).model_dump()
         ],
-        "positions": {},
+        "user:positions": {},   # prior held book (empty)
         "strategist_decision": {
             # Band 6: executor assembles PositionThesis from the open-intent
             # stance + fill price; ``new_positions`` is no longer needed here.
@@ -122,7 +122,7 @@ async def test_executor_logger_exception_does_not_abort_tick() -> None:
         "final_orders": [
             Order(ticker="AAPL", action="BUY", quantity=1, est_price=150.0).model_dump()
         ],
-        "positions": {},
+        "user:positions": {},   # prior held book (empty)
         "strategist_decision": {"stances": []},
         "temp:_decision_logger": broken_logger,
     }
@@ -159,12 +159,13 @@ async def test_executor_accepts_iso_string_as_of_on_sell() -> None:
         "final_orders": [
             Order(ticker="AAPL", action="SELL", quantity=1, est_price=160.0).model_dump()
         ],
-        "positions": {
+        # Seed the canonical cross-tick thesis-book — no bridge key (A-014).
+        # The iso-as_of test only needs the opened_price and opened_at fields
+        # to be present so the SELL path can compute holding_hours.
+        "user:positions": {
             "AAPL": {
                 "opened_price":   150.0,
-                "horizon":        "swing",
                 "rationale":      "test",
-                "opened_tag":     "test",
                 "opened_at":      "2026-05-01T14:00:00+00:00",
                 "opened_tick_id": "t-open",
             }

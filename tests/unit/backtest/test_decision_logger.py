@@ -25,8 +25,10 @@ def _make_state() -> dict:
       ``confidence``) the snapshot now surfaces.
     - ``temp:ticker_evidence_objects`` — the list of per-ticker TickerEvidence
       dumps the strategist's context shim writes.
-    - ``positions`` — the per-ticker PositionThesis dump book.  Populated for
-      the held ticker (SIVB); absent for the flat-and-being-opened one (AAPL).
+    - ``user:positions`` — the per-ticker PositionThesis dump book (A-014: the
+      decision_logger reads this key, not the old bare ``"positions"`` bridge).
+      Populated for the held ticker (SIVB); absent for the flat-and-being-opened
+      one (AAPL).
     """
 
     return {
@@ -113,7 +115,9 @@ def _make_state() -> dict:
 
         # The held-position book.  SIVB is currently held; AAPL is flat.
         # Uses iter-3 PositionThesis fields (no horizon / target_price / stop_price).
-        "positions": {
+        # A-014: decision_logger reads user:positions (the persistent cross-tick
+        # thesis-book), not the bare "positions" key (the old in-tick bridge).
+        "user:positions": {
             "SIVB": {
                 "ticker":                   "SIVB",
                 "opened_at":                "2023-03-01T14:30:00+00:00",
@@ -228,9 +232,10 @@ def test_skips_rejected_executions(tmp_path: Path) -> None:
         ],
 
         # Empty real-shaped containers — the logger should not crash on absent data.
+        # A-014: decision_logger reads user:positions, not the bare "positions" key.
         "temp:ticker_evidence_objects": [],
         "strategist_decision":          {},
-        "positions":                    {},
+        "user:positions":               {},
         "clamps":                       [],
     }
 

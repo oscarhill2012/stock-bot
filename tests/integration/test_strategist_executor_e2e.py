@@ -228,8 +228,9 @@ async def test_three_verb_single_tick_smoke() -> None:
     1. Pre-seed FakeBroker with AAPL and GOOGL positions.
     2. Build a ``StrategistDecision`` with sell/buy/update stances.
     3. Run ``RiskGateAgent._run_async_impl`` — merges ``final_orders`` into state.
-    4. Run ``ExecutorAgent._run_async_impl`` — submits orders; writes the
-       bare-key ``"positions"`` bridge and the ``user:closed_trades_log``.
+    4. Run ``ExecutorAgent._run_async_impl`` — submits orders; seeds its local
+       ``positions`` dict from ``user:positions``; appends to ``user:closed_trades_log``
+       on full close.
     5. Call ``_executor_thesis_writer_callback`` manually with a simulated
        ``CallbackContext`` — writes ``user:positions`` from the stance + fill data.
     6. Assert:
@@ -260,16 +261,16 @@ async def test_three_verb_single_tick_smoke() -> None:
     assert aapl_current_weight > 0.0, "Pre-condition: AAPL must be held before tick"
 
     # Session state — mirrors what the runner builds at tick start.
+    # A-014: ``temp:executor_positions_bridge`` is removed.  The executor
+    # reads ``state["user:positions"]`` for the prior held book (written by
+    # the after-callback cross-tick via ADK's DatabaseSessionService).
     state: dict = {
         "tick_id":            "tick-smoke-3v",
         "as_of":              _AS_OF.isoformat(),
         "tickers":            ["AAPL", "MSFT", "GOOGL"],
         "portfolio":          portfolio.model_dump(mode="json"),
-        "positions":          {
-            # Bare-key bridge — executor uses this for BUY→SELL cross-detection.
-            # Pre-populate from the PositionThesis dicts so SELL can find AAPL.
-            k: dict(v) for k, v in prior_positions.items()
-        },
+        # Canonical cross-tick thesis-book — the executor reads this at tick
+        # start to seed its local ``positions`` dict for the SELL gate.
         "user:positions":     dict(prior_positions),
         # Staleness counter — executor uses this for thesis_last_updated_tick.
         "user:current_tick_index": 5,
@@ -318,7 +319,6 @@ async def test_three_verb_single_tick_smoke() -> None:
             state.update(ev.actions.state_delta)
 
     assert len(exec_events) == 1, "executor must yield exactly one state-delta event"
-    exec_delta = exec_events[0].actions.state_delta
 
     # Verify all orders filled (not rejected).
     executions = state.get("executions", [])
@@ -330,12 +330,10 @@ async def test_three_verb_single_tick_smoke() -> None:
     assert "AAPL" in filled, "AAPL SELL must fill"
     assert "MSFT" in filled, "MSFT BUY must fill"
 
-    # ── Verify AAPL sell: position removed and closed_trades_log appended ──────
-    # The bare-key bridge ``state["positions"]`` must no longer contain AAPL
-    # (the executor removes the closed ticker in-tick).
-    assert "AAPL" not in state["positions"], (
-        "AAPL must be removed from the bare-key positions bridge after full close"
-    )
+    # ── Verify AAPL sell: position closed and closed_trades_log appended ────────
+    # A-014: the bridge key is removed.  The observable proof that the SELL
+    # closed AAPL is the ``user:closed_trades_log`` entry that the executor
+    # appends when remaining_qty drops to zero.  Assertions follow below.
 
     # closed_trades_log is populated by the executor when remaining_qty → 0.
     closed_log = state.get("user:closed_trades_log", [])

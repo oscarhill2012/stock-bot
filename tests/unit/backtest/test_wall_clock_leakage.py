@@ -229,7 +229,9 @@ def test_executor_closed_at_uses_as_of(db_session) -> None:
         "tick_id": "tick_close",
         "as_of": _HISTORICAL_TS,
         "final_orders": [order.model_dump()],
-        "positions": {"AAPL": thesis},
+        # A-014: executor reads user:positions (canonical cross-tick thesis-book)
+        # for the prior held book.  The bare "positions" key is no longer read.
+        "user:positions": {"AAPL": thesis},
         "strategist_decision": {
             "decision_tag": "close_tag",
             "close_reasons": {"AAPL": "thesis expired"},
