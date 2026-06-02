@@ -34,7 +34,7 @@ def test_template_has_first_tick_flag_slot():
 
 
 def test_template_has_state_slots():
-    """Every state slot the context_shim callback must populate is present.
+    """Every state slot resolved at ADK runtime is present in the template.
 
     Note: ``{tickers}`` now appears once in the template (in the "Your Job"
     section).  The previous trailing ``Watchlist: {tickers}`` line was a
@@ -42,11 +42,19 @@ def test_template_has_state_slots():
     cannot verify a slot is wired correctly; the runtime guard is the
     ``.format(...)`` call in ``test_template_renders_with_all_required_slots``
     which raises ``KeyError`` if any slot is missing.
+
+    A-086: the thesis placeholder was renamed from the bare ``{thesis}`` to
+    ``{user:thesis?}`` so ADK resolves it from ``state["user:thesis"]``
+    directly.  The bare ``{thesis}`` placeholder must NOT appear.
     """
     assert "{portfolio}" in STRATEGIST_INSTRUCTION
     assert "{memory_buffer}" in STRATEGIST_INSTRUCTION
     assert "{day_digest}" in STRATEGIST_INSTRUCTION
-    assert "{thesis}" in STRATEGIST_INSTRUCTION
+    # A-086: optional user-scoped placeholder — resolves to empty string on cold start.
+    assert "{user:thesis?}" in STRATEGIST_INSTRUCTION
+    assert "{thesis}" not in STRATEGIST_INSTRUCTION, (
+        "Bare {thesis} placeholder found — use {user:thesis?} instead (A-086)"
+    )
     assert "{tickers}" in STRATEGIST_INSTRUCTION
 
 
@@ -276,13 +284,18 @@ def test_template_renders_with_all_required_slots():
 
     Python's ``str.format`` / ``str.format_map`` both interpret the colon in
     ``temp:key`` as the field/format-spec separator, so neither can fill
-    ``temp:``-prefixed keys directly.
+    ``temp:``- or ``user:``-prefixed keys directly.
 
-    Workaround: use ``str.replace`` to substitute the ``temp:``-prefixed
-    placeholders first, then call ``.format()`` in the normal way.  Any
-    *missing* slot still raises ``KeyError`` before the assertions execute.
+    Workaround: use ``str.replace`` to substitute the ADK-resolved placeholders
+    first, then call ``.format()`` for the plain slots.  Any *missing* slot
+    still raises ``KeyError`` before the assertions execute.
+
+    A-086: ``{thesis}`` was renamed to ``{user:thesis?}`` (ADK optional
+    user-scoped placeholder).  We pre-substitute it here along with the other
+    ADK-namespaced placeholders before calling ``.format()``.
     """
-    # Pre-substitute all temp:-prefixed slots so .format() can handle them.
+    # Pre-substitute all ADK-namespaced slots (temp: and user:) so Python's
+    # .format() can handle the remaining plain slots without colon confusion.
     template = (
         STRATEGIST_INSTRUCTION
         .replace("{temp:strategist_mode}",     "Cold start — your portfolio is empty.")
@@ -290,14 +303,14 @@ def test_template_renders_with_all_required_slots():
         .replace("{temp:ticker_evidence}",     "AAPL\n  Aggregate: bullish (magnitude 0.42)")
         .replace("{temp:recent_trades_view}",  "(No closed positions yet this run.)")
         .replace("{temp:_last_schema_error}",  "")
-        # Task 8 — FIRST_TICK_FLAG slot; Task 9 will wire this from context_shim.
         .replace("{temp:first_tick_flag}",     "True")
+        # A-086: optional user-scoped thesis — resolves to empty string on cold start.
+        .replace("{user:thesis?}",             "(empty)")
     )
     rendered = template.format(
         portfolio="cash=100, positions={}",
         memory_buffer="[]",
         day_digest="(empty)",
-        thesis="(empty)",
         tickers="['AAPL','MSFT']",
     )
 

@@ -132,9 +132,9 @@ class MemoryWriter(BaseAgent):
         # via json.dumps and will raise TypeError on bare datetime objects.
         memory_buffer_payload = [e.model_dump(mode="json") for e in updated_buffer]
 
-        # NOTE (Band 4): MemoryWriter no longer reads or writes ``thesis`` /
-        # ``state["thesis"]``.  The bare-key ``thesis`` write has been removed;
-        # ``user:thesis`` is now the sole canonical key, written by
+        # NOTE: MemoryWriter no longer reads or writes the thesis at all.
+        # The bare ``thesis`` state key has been fully removed; the sole
+        # canonical key is ``user:thesis``, written exclusively by
         # ``_executor_thesis_writer_callback`` in executor/agent.py.
         # The ``decision.thesis`` read that used to live here is also gone —
         # the executor after-callback is the sole consumer of ``decision.thesis``

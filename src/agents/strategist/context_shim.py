@@ -280,16 +280,13 @@ class StrategistContextShim(BaseAgent):
         # Surface trace — no-op unless state["temp:_trace"] is set.
         _trace_maybe(state, "04_digest", ticker_evidence_objects)
 
-        # ── Resolve thesis for the prompt placeholder ────────────────────
-        # The strategist instruction uses ``{thesis}`` which ADK's
-        # ``inject_session_state`` resolves from ``state["thesis"]``.
-        # Spec B (Band 2) moved the persisted value to ``state["user:thesis"]``
-        # (the ADK user-scoped namespace); this shim bridges the stored value
-        # into the bare-key slot that the prompt template expects, so the
-        # resolver finds it without a bare-key seed in the runner.
-        # Plan 2 will rename the placeholder to ``{user:thesis}`` and remove
-        # this bridge — for now we keep the placeholder name unchanged.
-        thesis: str = state.get("user:thesis") or ""
+        # ── Thesis placeholder ───────────────────────────────────────────
+        # The strategist instruction uses the optional ``{user:thesis?}``
+        # placeholder.  ADK's ``inject_session_state`` resolves it directly
+        # from ``state["user:thesis"]``; when the key is absent (first tick /
+        # cold start) the ``?`` suffix causes it to resolve to an empty string
+        # rather than raising ``KeyError``.  No bridge from this shim into a
+        # bare key is needed.
 
         # ── Recent round-trips view ──────────────────────────────────────
         # Render the rolling log written by the Executor on every close.
@@ -313,10 +310,6 @@ class StrategistContextShim(BaseAgent):
                 "temp:ticker_evidence":         ticker_evidence_rendered,
                 "temp:ticker_evidence_objects": ticker_evidence_objects,
                 "temp:recent_trades_view":      recent_trades_view,
-                # Bridge user:thesis → {thesis} placeholder for this tick's
-                # LlmAgent call.  Written here (not as a seed) so the value
-                # is always fresh from the user-scoped namespace.
-                "thesis":                       thesis,
                 # Schema-error feedback slot — empty on the first attempt;
                 # the RetryingAgentWrapper overwrites it with the formatted
                 # Pydantic validation error before each schema retry so the

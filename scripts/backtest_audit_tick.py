@@ -107,14 +107,18 @@ def main() -> None:
 
     # Seed minimal state — a proper replay would restore the tick's snapshot
     # from the run's db.sqlite; for v1 we accept the minimal seed.
+    # Keys use the canonical namespaced form:
+    #   - "user:positions" (the live pipeline reads state["user:positions"])
+    #   - "user:thesis"    (the strategist prompt resolves {user:thesis?})
+    # The bare "positions" and "thesis" keys are dead and are NOT seeded here.
     state: dict = {
-        "watchlist": [],
-        "tickers":   [],
-        "portfolio":       {},
-        "positions":       {},
-        "memory_buffer":   [],
-        "day_digest":      "",
-        "thesis":          {},
+        "watchlist":        [],
+        "tickers":          [],
+        "portfolio":        {},
+        "user:positions":   {},
+        "memory_buffer":    [],
+        "day_digest":       "",
+        "user:thesis":      "",
     }
 
     asyncio.run(driver.run(state, [tick]))

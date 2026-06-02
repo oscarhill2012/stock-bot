@@ -130,7 +130,7 @@ per-ticker stance for the next trading hour.
 Portfolio:    {portfolio}
 Memory Buffer (last 8 ticks): {memory_buffer}
 Day Digest:   {day_digest}
-Thesis:       {thesis}
+Thesis:       {user:thesis?}
 
 ## Recent Round-trips (your last closed positions — outcomes you should weigh before re-entering the same tickers)
 {temp:recent_trades_view}

@@ -80,8 +80,9 @@ def test_shim_yields_one_event_with_temp_prefixed_keys(populated_state: dict) ->
         # Past-trades memory addition — rendered from user:closed_trades_log
         # (empty-state copy when no closes have happened yet this run).
         "temp:recent_trades_view",
-        # Spec B Band 2: shim bridges user:thesis → thesis for the prompt placeholder.
-        "thesis",
+        # A-086: the bare "thesis" key is NOT emitted here — the strategist
+        # prompt uses {user:thesis?} which ADK resolves from state["user:thesis"]
+        # directly.  No bridge into a bare key is needed or permitted.
         # Seeded empty so the RetryingAgentWrapper's schema-error feedback
         # slot resolves on the first attempt (overwritten on schema retry).
         "temp:_last_schema_error",
@@ -132,16 +133,16 @@ def test_shim_accepts_iso_string_as_of(populated_state: dict) -> None:
     assert len(events) == 1, "Shim must still yield one event with an ISO-string as_of"
 
 
-def test_shim_bridges_user_thesis_to_bare_thesis_key(populated_state: dict) -> None:
-    """Spec B Band 2: shim must read ``user:thesis`` and write it as ``thesis``.
+def test_shim_does_not_bridge_thesis_into_state_delta(populated_state: dict) -> None:
+    """A-086: shim must NOT write a bare ``thesis`` key into state_delta.
 
-    The strategist prompt template uses the ``{thesis}`` placeholder; ADK's
-    ``inject_session_state`` resolves that from ``state["user:thesis"]``.  After
-    Spec B, the persisted value lives at ``state["user:thesis"]``.  The shim
-    bridges the two so the prompt fills correctly without a bare-key seed in
-    the runner.
+    After A-086, the strategist prompt template uses the ``{user:thesis?}``
+    placeholder.  ADK's ``inject_session_state`` resolves that directly from
+    ``state["user:thesis"]``; no bridge from the shim is needed or permitted.
+    Emitting a bare ``thesis`` key would be a regression to the old pattern.
 
-    This test covers the warm-start case: ``user:thesis`` is populated.
+    This test covers the warm-start case: ``user:thesis`` is populated.  The
+    value must NOT appear under the bare ``thesis`` key in state_delta.
     """
     shim = StrategistContextShim()
 
@@ -162,22 +163,25 @@ def test_shim_bridges_user_thesis_to_bare_thesis_key(populated_state: dict) -> N
     events = asyncio.run(_drain())
     delta = events[0].actions.state_delta
 
-    # The bare-key ``thesis`` must be present so ADK can resolve ``{thesis}``
-    # in the strategist instruction template.
-    assert "thesis" in delta, "state_delta must carry 'thesis' for the prompt placeholder"
-    assert delta["thesis"] == "AAPL momentum trade — target $225", (
-        f"thesis in state_delta should mirror user:thesis; got {delta['thesis']!r}"
+    # The bare ``thesis`` key must NOT be present in state_delta — ADK resolves
+    # {user:thesis?} from state["user:thesis"] directly.
+    assert "thesis" not in delta, (
+        "state_delta must NOT carry bare 'thesis' key; the prompt uses {user:thesis?} "
+        "which ADK resolves from state['user:thesis'] without a shim bridge"
     )
 
 
-def test_shim_thesis_cold_start_defaults_to_empty_string(populated_state: dict) -> None:
-    """Spec B Band 2: when ``user:thesis`` is absent (first tick / cold start),
-    the shim must write an empty string to ``thesis`` so the prompt placeholder
-    does not raise ``KeyError``.
+def test_shim_cold_start_does_not_bridge_thesis_key(populated_state: dict) -> None:
+    """A-086: on cold start (no ``user:thesis``), shim must NOT write a bare ``thesis`` key.
+
+    The optional ``{user:thesis?}`` placeholder in the strategist prompt resolves
+    to an empty string when ``state["user:thesis"]`` is absent — ADK handles the
+    cold-start case natively.  The shim must not emit a bare ``thesis`` key for
+    any reason; doing so would re-introduce the legacy bare-key pattern.
     """
     shim = StrategistContextShim()
 
-    # Ensure user:thesis is not present in the state.
+    # Ensure user:thesis is not present in the state (cold start / first tick).
     populated_state.pop("user:thesis", None)
 
     fake_session = MagicMock()
@@ -195,9 +199,11 @@ def test_shim_thesis_cold_start_defaults_to_empty_string(populated_state: dict) 
     events = asyncio.run(_drain())
     delta = events[0].actions.state_delta
 
-    assert "thesis" in delta, "state_delta must carry 'thesis' even on cold start"
-    assert delta["thesis"] == "", (
-        f"cold-start thesis must be empty string; got {delta['thesis']!r}"
+    # The bare ``thesis`` key must NOT appear — the optional {user:thesis?}
+    # placeholder handles the empty case at the ADK layer, not the shim layer.
+    assert "thesis" not in delta, (
+        "state_delta must NOT carry bare 'thesis' key on cold start; "
+        "the optional {user:thesis?} placeholder resolves to empty string natively"
     )
 
 
