@@ -24,6 +24,10 @@ pip-wheel-metadata/
 venv/
 env/
 ENV/
+# Also ignore a root-level .venv *symlink* (git worktrees often link to the
+# primary checkout's venv); the trailing-slash pattern above matches only a
+# real directory, so the symlink form needs this anchored, slash-less entry.
+/.venv
 
 # Testing / coverage
 .pytest_cache/
@@ -69,6 +73,11 @@ data/raw/
 # LLM report cache — hash-memoised verdicts written by the News + Fundamental
 # analysts. Never commit; each developer's cache is an isolated local artefact.
 cache/
+# Also ignore a root-level cache *symlink* (git worktrees often link to the
+# primary checkout's cache); the trailing-slash pattern above matches only a
+# real directory, so the symlink form needs this anchored, slash-less entry.
+# Root-anchored so it cannot shadow the tracked nested cache packages below.
+/cache
 # Exception: the backtest cache *source package* must be tracked.
 !src/backtest/cache/
 # Exception: unit tests for the cache module must also be tracked.
