@@ -67,28 +67,6 @@ from observability.trace import _trace_maybe
 logger = logging.getLogger(__name__)
 
 
-# ── pure helper ───────────────────────────────────────────────────────────────
-
-
-def _coerce_portfolio(value: Portfolio | dict | None) -> Portfolio:
-    """Return a Portfolio regardless of whether state stores it as an object or a dump.
-
-    Args:
-        value: ``Portfolio`` instance, dict produced by
-            ``Portfolio.model_dump(mode="json")``, or ``None``.
-
-    Returns:
-        A ``Portfolio`` instance.  ``None`` yields an empty portfolio
-        (cash=0.0, no positions) so cold-start ticks don't NPE here.
-    """
-
-    if isinstance(value, Portfolio):
-        return value
-    if value is None:
-        return Portfolio(cash=0.0)
-    return Portfolio.model_validate(value)
-
-
 def _log_offending_decision(
     tick_id: str,
     decision: StrategistDecision | StrategistLLMDecision,
@@ -171,7 +149,7 @@ def validate_and_enrich(state: dict) -> dict | None:
         llm_decision = raw                                                          # already StrategistLLMDecision
 
     tickers: list[str] = state.get("tickers", []) or []
-    portfolio = _coerce_portfolio(state.get("portfolio"))
+    portfolio = Portfolio.from_state_value(state.get("portfolio"))
     current_weights = portfolio.current_weights()
     tick_id: str = state.get("tick_id") or state.get("recorded_at", "unknown")
 
