@@ -24,9 +24,18 @@ def _make_ctx(state: dict) -> MagicMock:
 
 @pytest.mark.asyncio
 async def test_snapshotter_writes_state():
+    from broker.portfolio import Portfolio
+
     broker = FakeBroker(starting_cash=10_000.0, prices={})
     snapper = build_snapshotter(broker)
-    state = {"tick_id": "tick-001"}
+
+    # A-072: Snapshotter reads state["portfolio"] (Phase 2 canonical) rather
+    # than calling broker.get_portfolio().  Seed it with the expected value.
+    portfolio = Portfolio(cash=10_000.0)
+    state = {
+        "tick_id":   "tick-001",
+        "portfolio": portfolio.model_dump(mode="json"),
+    }
     ctx = _make_ctx(state)
     with patch("yfinance.Ticker") as mock_yf:
         mock_ticker = MagicMock()
@@ -53,12 +62,19 @@ async def test_snapshotter_accepts_iso_string_as_of():
     """
     from datetime import datetime
 
+    from broker.portfolio import Portfolio
+
     broker = FakeBroker(starting_cash=10_000.0, prices={})
     snapper = build_snapshotter(broker)
     iso_as_of = "2026-05-08T14:00:00+00:00"
+
+    # A-072: Snapshotter reads state["portfolio"] (Phase 2 canonical) rather
+    # than calling broker.get_portfolio().  Seed it with a minimal portfolio.
+    portfolio = Portfolio(cash=10_000.0)
     state = {
-        "tick_id": "tick-iso",
-        "as_of":   iso_as_of,          # ISO string, not datetime
+        "tick_id":   "tick-iso",
+        "as_of":     iso_as_of,          # ISO string, not datetime
+        "portfolio": portfolio.model_dump(mode="json"),
     }
     ctx = _make_ctx(state)
 

@@ -8,6 +8,7 @@ from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event, EventActions
 
+from broker.portfolio import Portfolio
 from data.timeguard import resolve_as_of
 
 
@@ -35,7 +36,10 @@ class SnapshotterAgent(BaseAgent):
         state = ctx.session.state
         tick_id = state.get("tick_id", "unknown")
 
-        portfolio = await self.broker.get_portfolio()
+        # A-072: read the Phase 2 canonical snapshot rather than re-pulling
+        # from the broker mid-tick.  Same rationale as risk_gate — the
+        # broker remains source-of-truth, but Phase 2 already published it.
+        portfolio = Portfolio.from_state_value(state.get("portfolio"))
         bot_total          = portfolio.total_value
         bot_cash           = portfolio.cash
         bot_positions_value = bot_total - bot_cash

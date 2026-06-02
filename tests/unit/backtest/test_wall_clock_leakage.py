@@ -108,7 +108,7 @@ def test_decision_writer_uses_as_of(db_session) -> None:
 
 def test_snapshotter_uses_as_of(db_session) -> None:
     """SnapshotterAgent should stamp portfolio snapshots with state["as_of"]."""
-    from unittest.mock import AsyncMock, MagicMock
+    from unittest.mock import MagicMock
 
     from agents.snapshot.agent import SnapshotterAgent
     from broker.portfolio import Portfolio
@@ -116,11 +116,12 @@ def test_snapshotter_uses_as_of(db_session) -> None:
     # Fake broker returns a trivial portfolio.
     portfolio = Portfolio(cash=10_000.0)
     mock_broker = MagicMock()
-    mock_broker.get_portfolio = AsyncMock(return_value=portfolio)
 
     state = {
-        "tick_id": "tick_snap",
-        "as_of": _HISTORICAL_TS,
+        "tick_id":   "tick_snap",
+        "as_of":     _HISTORICAL_TS,
+        # A-072: Snapshotter now reads from state["portfolio"] (Phase 2 canonical).
+        "portfolio": portfolio.model_dump(mode="json"),
     }
 
     agent = SnapshotterAgent(broker=mock_broker, db_session=db_session)
