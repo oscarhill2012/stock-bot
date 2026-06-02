@@ -10,8 +10,9 @@ This guard scans ``tests/`` for the subscript and ``.get(`` forms of these
 bare keys and asserts no un-allowlisted offenders remain.
 
 Allowlist rationale (narrow, documented):
-- ``test_no_bare_thesis_keys.py``  — the src/ guard; its own regex patterns and
-  docstrings contain the bare-key literals by design.
+- ``test_no_bare_thesis_keys.py``  — the guard that scans ``src/`` for bare-key
+  access; its own regex patterns and docstrings contain the bare-key literals
+  by design.
 - ``test_no_bare_state_keys_in_fixtures.py``  — THIS file; ``_PATTERN`` and this
   docstring contain the bare-key literals by design.
 - ``test_decision_logger_held_view.py``  — the A-014 negative-control test;
@@ -52,7 +53,8 @@ _TESTS_ROOT = Path(__file__).resolve().parent.parent
 
 _ALLOWLIST: frozenset[Path] = frozenset(
     {
-        # The src/ guard file — contains the bare-key literals in its own patterns.
+        # The guard that scans src/ for bare-key access — its own regex patterns
+        # contain the bare-key literals by design, so it legitimately matches here.
         _TESTS_ROOT / "unit" / "test_no_bare_thesis_keys.py",
 
         # This file itself — _PATTERN and the module docstring reference bare keys.
@@ -70,7 +72,7 @@ def test_no_bare_state_keys_in_test_fixtures() -> None:
     Scans every ``*.py`` under ``tests/`` for the subscript and ``.get(`` forms
     of the bare ``positions``, ``cash``, and ``thesis`` state keys.  Excludes
     the narrow allowlist of files that legitimately reference the patterns (the
-    src/ guard, this file itself, and the A-014 negative-control).
+    guard that scans ``src/``, this file itself, and the A-014 negative-control).
 
     A bare-key seed in a test fixture is a silent-regression fixture: the live
     pipeline reads the ``user:``-prefixed versions, so seeding the bare key
@@ -86,9 +88,18 @@ def test_no_bare_state_keys_in_test_fixtures() -> None:
         Asserts an empty offender list; fails with a descriptive listing if any
         bare-key subscript / ``.get(`` forms are found outside the allowlist.
     """
+    py_files = sorted(_TESTS_ROOT.rglob("*.py"))
+
+    # Fail loudly if the scan root resolved wrong — an empty file list would
+    # otherwise let this guard pass vacuously without scanning anything.
+    assert py_files, (
+        f"No Python files found under {_TESTS_ROOT} — the scan root resolved "
+        "incorrectly; this guard would otherwise pass without checking anything."
+    )
+
     offenders: list[str] = []
 
-    for py_file in sorted(_TESTS_ROOT.rglob("*.py")):
+    for py_file in py_files:
 
         # Skip allowlisted files — they contain the pattern intentionally.
         if py_file.resolve() in _ALLOWLIST:

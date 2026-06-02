@@ -62,7 +62,16 @@ def _scan_src(pattern: str) -> list[str]:
     # Anchor to __file__ so the scan is cwd-independent.
     # tests/unit/test_no_bare_thesis_keys.py -> tests/unit/ -> tests/ -> project root
     src_root = Path(__file__).parent.parent.parent / "src"
-    for py_file in sorted(src_root.rglob("*.py")):
+    py_files = sorted(src_root.rglob("*.py"))
+
+    # Fail loudly if the scan root resolved wrong — an empty file list would
+    # otherwise let this guard pass vacuously without scanning anything.
+    assert py_files, (
+        f"No Python files found under {src_root} — the scan root resolved "
+        "incorrectly; this guard would otherwise pass without checking anything."
+    )
+
+    for py_file in py_files:
         for lineno, line in enumerate(py_file.read_text(encoding="utf-8").splitlines(), start=1):
             if compiled.search(line):
                 offenders.append(f"{py_file}:{lineno}: {line.rstrip()}")
