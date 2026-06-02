@@ -48,9 +48,9 @@ async def test_driver_uses_tickers_for_price_refresh(tmp_path: Path) -> None:
     # driver would read state.get("watchlist", []) and pass [] to the
     # refresh helper.
     state: dict = {
-        "tickers":   ["AAPL"],
-        "portfolio": (await broker.get_portfolio()).model_dump(mode="json"),
-        "positions": {},
+        "tickers":        ["AAPL"],
+        "portfolio":      (await broker.get_portfolio()).model_dump(mode="json"),
+        "user:positions": {},
     }
 
     # Capture the symbol list the driver hands to _refresh_broker_prices.

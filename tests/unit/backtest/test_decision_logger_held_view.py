@@ -1,10 +1,15 @@
 """Test that decision_logger reads user:positions for held_view_at_decision.
 
-Audit finding A-014: the executor's in-tick BUY→SELL bridge must live under
-``temp:executor_positions_bridge`` so external readers cannot accidentally
-consume it.  ``decision_logger`` must read ``user:positions`` (the persistent
-cross-tick thesis-book), NOT the bare ``state["positions"]`` key (which was
-the bridge) or ``temp:executor_positions_bridge``.
+Audit finding A-014: ``decision_logger`` must read ``user:positions`` (the
+persistent cross-tick thesis-book), NOT the bare ``state["positions"]`` key
+(the old pre-migration bridge key) nor ``temp:executor_positions_bridge``
+(a separate bridge key that was removed entirely from the executor in the
+Task 6 refactor).
+
+Three divergent sources are seeded so any wrong read produces a concrete,
+unambiguous wrong value rather than a silent None.  The ``temp:`` key is a
+dead-key negative-control — it no longer exists in the live executor, but
+seeding it here proves the logger ignores it.
 
 Running this test against unmodified source code should FAIL because the old
 code reads ``state.get("positions")`` — which in this fixture is seeded with
@@ -26,6 +31,10 @@ def _make_held_view_state() -> dict:
     - ``state["user:positions"]``                  → rationale = "real"
     - ``state["temp:executor_positions_bridge"]``  → rationale = "bridge-leak"
     - ``state["positions"]``                       → rationale = "bridge-leak-bare"
+
+    ``temp:executor_positions_bridge`` was removed from the executor in the
+    Task 6 refactor.  Seeding it here is a dead-key negative-control: it proves
+    that if the key were ever re-introduced, the logger would still ignore it.
 
     The old code reads ``state.get("positions")`` → produces "bridge-leak-bare".
     The corrected code reads ``state.get("user:positions")`` → produces "real".
@@ -96,8 +105,9 @@ def _make_held_view_state() -> dict:
             "AAPL": {"rationale": "real"},
         },
 
-        # Executor's in-tick bridge (temp: namespace, executor-internal).
-        # After the rename, this should NOT be read by decision_logger.
+        # Removed bridge key (temp: namespace, deleted in executor Task 6 refactor).
+        # Seeded as a dead-key negative-control: proves the logger does not read it
+        # even if it were somehow re-introduced.
         "temp:executor_positions_bridge": {
             "AAPL": {"rationale": "bridge-leak"},
         },

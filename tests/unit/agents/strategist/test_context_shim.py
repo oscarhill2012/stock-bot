@@ -335,8 +335,9 @@ def test_context_shim_ignores_bare_positions_key() -> None:
     """The shim must read user:positions exclusively — no bare-key fallback.
 
     Audit finding A-014: external readers used to silently fall back to
-    state['positions'] (the executor's in-tick bridge), which would
-    persist stale BUY->SELL intermediate state across ticks.
+    the bare ``positions`` state key (a legacy in-tick bridge that has since
+    been removed), which would persist stale BUY->SELL intermediate state
+    across ticks.
     """
     from agents.strategist.context_shim import StrategistContextShim
     from broker.portfolio import Portfolio

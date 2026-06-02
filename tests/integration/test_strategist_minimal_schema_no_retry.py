@@ -85,7 +85,7 @@ def _build_initial_state() -> dict:
 
     return {
         "tickers":             ["AAPL", "MSFT"],
-        "positions":           {},
+        "user:positions":      {},
         "portfolio":           portfolio.model_dump(mode="json"),
         "tick_id":             "t-no-retry",
         # The stub LLM writes the decision here on its first (and only) call.

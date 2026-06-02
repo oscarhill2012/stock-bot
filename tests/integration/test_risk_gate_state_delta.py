@@ -62,7 +62,7 @@ async def test_risk_gate_yields_state_delta_with_orders_and_clamps() -> None:
             "confidence":     0.7,
             "close_reasons":  {},
         },
-        "positions": {},
+        "user:positions": {},
         # A-072: seed state["portfolio"] so the risk gate reads from state
         # rather than broker.get_portfolio (which no longer exists as the
         # canonical path after the audit fix).
