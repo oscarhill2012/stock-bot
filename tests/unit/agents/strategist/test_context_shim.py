@@ -161,6 +161,9 @@ def test_shim_does_not_bridge_thesis_into_state_delta(populated_state: dict) -> 
         return events
 
     events = asyncio.run(_drain())
+
+    assert len(events) == 1, f"Shim must yield exactly one event; got {len(events)}"
+
     delta = events[0].actions.state_delta
 
     # The bare ``thesis`` key must NOT be present in state_delta — ADK resolves
@@ -168,6 +171,13 @@ def test_shim_does_not_bridge_thesis_into_state_delta(populated_state: dict) -> 
     assert "thesis" not in delta, (
         "state_delta must NOT carry bare 'thesis' key; the prompt uses {user:thesis?} "
         "which ADK resolves from state['user:thesis'] without a shim bridge"
+    )
+
+    # Positive companion: the canonical user-scoped key remains readable from
+    # session state — ADK resolves the {user:thesis?} placeholder from there
+    # directly, so the warm-start value must still be present.
+    assert fake_session.state.get("user:thesis") == "AAPL momentum trade — target $225", (
+        "user:thesis must remain readable from session state after the shim runs"
     )
 
 
@@ -197,6 +207,9 @@ def test_shim_cold_start_does_not_bridge_thesis_key(populated_state: dict) -> No
         return events
 
     events = asyncio.run(_drain())
+
+    assert len(events) == 1, f"Shim must yield exactly one event; got {len(events)}"
+
     delta = events[0].actions.state_delta
 
     # The bare ``thesis`` key must NOT appear — the optional {user:thesis?}
@@ -204,6 +217,13 @@ def test_shim_cold_start_does_not_bridge_thesis_key(populated_state: dict) -> No
     assert "thesis" not in delta, (
         "state_delta must NOT carry bare 'thesis' key on cold start; "
         "the optional {user:thesis?} placeholder resolves to empty string natively"
+    )
+
+    # Positive companion: confirm the cold-start condition is real — user:thesis
+    # is absent, which is exactly the case the optional {user:thesis?} placeholder
+    # resolves to an empty string (no KeyError) at the ADK layer.
+    assert fake_session.state.get("user:thesis") is None, (
+        "cold-start test must actually exercise the missing-user:thesis path"
     )
 
 
