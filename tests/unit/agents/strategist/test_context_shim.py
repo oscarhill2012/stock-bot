@@ -214,8 +214,15 @@ def test_first_tick_sets_flag_true() -> None:
     rendered value should be "True".
     """
     from agents.strategist.context_shim import StrategistContextShim
+    from broker.portfolio import Portfolio
 
-    state = {"user:positions": {}, "user:active_stances_initialised": False}
+    state = {
+        "user:positions":                  {},
+        "user:active_stances_initialised": False,
+        # Portfolio must always be present in state — from_state_value raises
+        # on None (audit fix: silent-empty portfolio is a contract violation).
+        "portfolio":                       Portfolio(cash=0.0).model_dump(mode="json"),
+    }
     shim = StrategistContextShim()
     rendered = shim.render(state)
     assert rendered["temp:first_tick_flag"] == "True"
@@ -229,8 +236,13 @@ def test_subsequent_tick_sets_flag_false() -> None:
     ``render()`` should produce ``"False"`` for ``temp:first_tick_flag``.
     """
     from agents.strategist.context_shim import StrategistContextShim
+    from broker.portfolio import Portfolio
 
-    state = {"user:positions": {}, "user:active_stances_initialised": True}
+    state = {
+        "user:positions":                  {},
+        "user:active_stances_initialised": True,
+        "portfolio":                       Portfolio(cash=0.0).model_dump(mode="json"),
+    }
     shim = StrategistContextShim()
     rendered = shim.render(state)
     assert rendered["temp:first_tick_flag"] == "False"
@@ -244,6 +256,7 @@ def test_held_view_shows_thesis_staleness() -> None:
     Staleness is computed as ``current_tick_index - thesis_last_updated_tick``.
     """
     from agents.strategist.context_shim import StrategistContextShim
+    from broker.portfolio import Portfolio
 
     state = {
         "user:positions": {
@@ -255,6 +268,7 @@ def test_held_view_shows_thesis_staleness() -> None:
             }
         },
         "user:current_tick_index": 5,
+        "portfolio":               Portfolio(cash=0.0).model_dump(mode="json"),
     }
     shim = StrategistContextShim()
     rendered = shim.render(state)
@@ -270,6 +284,7 @@ def test_held_view_omits_horizon_target_stop() -> None:
     rendered by ``context_shim`` must not leak them back into the prompt.
     """
     from agents.strategist.context_shim import StrategistContextShim
+    from broker.portfolio import Portfolio
 
     state = {
         "user:positions": {
@@ -280,6 +295,7 @@ def test_held_view_omits_horizon_target_stop() -> None:
             }
         },
         "user:current_tick_index": 1,
+        "portfolio":               Portfolio(cash=0.0).model_dump(mode="json"),
     }
     shim = StrategistContextShim()
     rendered = shim.render(state)
@@ -287,3 +303,27 @@ def test_held_view_omits_horizon_target_stop() -> None:
     assert "horizon" not in held.lower()
     assert "target" not in held.lower()
     assert "stop" not in held.lower()
+
+
+def test_context_shim_ignores_bare_positions_key() -> None:
+    """The shim must read user:positions exclusively — no bare-key fallback.
+
+    Audit finding A-014: external readers used to silently fall back to
+    state['positions'] (the executor's in-tick bridge), which would
+    persist stale BUY->SELL intermediate state across ticks.
+    """
+    from agents.strategist.context_shim import StrategistContextShim
+    from broker.portfolio import Portfolio
+
+    shim = StrategistContextShim()
+    state = {
+        "user:positions":                  {},
+        "positions":                       {"AAPL": {"rationale": "bridge-leak"}},
+        "portfolio":                       Portfolio(cash=1.0).model_dump(mode="json"),
+        "user:active_stances_initialised": True,
+    }
+
+    out = shim.render(state)
+
+    # The bridge value must NOT appear in the rendered held-view.
+    assert "bridge-leak" not in out["temp:held_positions_view"]

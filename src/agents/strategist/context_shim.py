@@ -52,26 +52,6 @@ from data.timeguard import resolve_as_of
 from observability.trace import _trace_maybe
 
 
-def _coerce_portfolio(value) -> Portfolio:
-    """Return a Portfolio whether ``value`` is an instance, dict, or None.
-
-    Mirrors the helper in ``agents.strategist.agent`` so the shim is
-    self-contained and does not pull in callback-flavoured code.
-
-    Args:
-        value: A ``Portfolio``, a ``Portfolio.model_dump(mode="json")``
-            dict, or ``None``.
-
-    Returns:
-        A ``Portfolio`` instance.  ``None`` produces an empty portfolio.
-    """
-    if isinstance(value, Portfolio):
-        return value
-    if value is None:
-        return Portfolio(cash=0.0)
-    return Portfolio.model_validate(value)
-
-
 def _index_evidence(state, key: str) -> dict[str, AnalystEvidence]:
     """Index a per-analyst evidence list by ticker.
 
@@ -150,13 +130,17 @@ class StrategistContextShim(BaseAgent):
         first_tick_flag: str = "True" if not initialised else "False"
 
         # ── Lightweight held-positions view with staleness ────────────────
-        positions = state.get("user:positions") or state.get("positions") or {}
+        # A-014: read only the canonical user-namespaced key.  The
+        # executor's bridge (temp:executor_positions_bridge) is
+        # executor-internal and must never leak into the strategist's
+        # held-view.
+        positions = state.get("user:positions") or {}
         current_tick_index: int = state.get("user:current_tick_index", 0) or 0
 
         # Portfolio carries live ``last_price`` per held ticker and the cash
         # balance — feed it through so the thesis-book renderer can compute
         # current weight and unrealised P&L without needing extra state keys.
-        portfolio = _coerce_portfolio(state.get("portfolio"))
+        portfolio = Portfolio.from_state_value(state.get("portfolio"))
 
         held_view = _render_positions_shim(
             positions,
@@ -226,7 +210,11 @@ class StrategistContextShim(BaseAgent):
         # Cold start: portfolio is empty; encourage 1-3 fresh opens.
         # Incremental: emit a stance per held position with a 'what's
         # changed' reason.  See Principle 4 in the spec.
-        positions = state.get("user:positions") or state.get("positions") or {}
+        # A-014: read only the canonical user-namespaced key.  The
+        # executor's bridge (temp:executor_positions_bridge) is
+        # executor-internal and must never leak into the strategist's
+        # held-view.
+        positions = state.get("user:positions") or {}
         if not positions:
             mode_text = COLD_START_MODE_TEMPLATE
         else:
@@ -246,7 +234,7 @@ class StrategistContextShim(BaseAgent):
         # held tickers — the most authoritative source since the broker syncs
         # it every tick.  For non-held tickers we fall back to the technical
         # extractor's ``last_close`` feature.
-        portfolio = _coerce_portfolio(state.get("portfolio"))
+        portfolio = Portfolio.from_state_value(state.get("portfolio"))
 
         # Build one TickerEvidence per watchlist ticker.
         ticker_evidence: list[TickerEvidence] = []
