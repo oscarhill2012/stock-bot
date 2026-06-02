@@ -12,13 +12,14 @@ inspect the yielded ``state_delta`` to confirm the verb-aware logic.
 """
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
 from agents.risk_gate.agent import _NO_RISK_GATE_INTENTS, RiskGateAgent
 from agents.strategist.schema import StrategistDecision
 from agents.strategist.stance_schema import TickerStance
+from broker.portfolio import Portfolio
 from orchestrator.state import MAX_POSITION_WEIGHT
 
 # ---------------------------------------------------------------------------
@@ -38,7 +39,29 @@ def _make_ctx(state: dict) -> MagicMock:
 
 
 async def _collect_deltas(agent: RiskGateAgent, state: dict) -> list[dict]:
-    """Drive the risk gate and collect all state_delta dicts from yielded events."""
+    """Drive the risk gate and collect all state_delta dicts from yielded events.
+
+    Automatically seeds ``state["portfolio"]`` with an empty-portfolio snapshot
+    if the caller hasn't supplied one.  After audit A-072, the risk gate raises
+    ``RuntimeError`` if ``state["portfolio"]`` is absent — this helper provides
+    a sensible default so individual tests that are not testing portfolio logic
+    don't need to set it explicitly.
+
+    Parameters
+    ----------
+    agent:
+        The ``RiskGateAgent`` instance to drive.
+    state:
+        Session-state dict; modified in place with the portfolio seed if absent.
+
+    Returns
+    -------
+    list[dict]
+        All ``state_delta`` dicts yielded by the agent.
+    """
+    # Ensure the portfolio seed is present; do not overwrite if already set.
+    if "portfolio" not in state:
+        state["portfolio"] = Portfolio(cash=0.0).model_dump(mode="json")
 
     ctx = _make_ctx(state)
     deltas = []

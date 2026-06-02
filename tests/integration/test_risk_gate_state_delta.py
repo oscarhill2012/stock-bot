@@ -14,6 +14,7 @@ import pytest
 
 from agents.risk_gate.agent import RiskGateAgent
 from broker.fake import FakeBroker
+from broker.portfolio import Portfolio
 
 
 def _make_ctx(state: dict) -> MagicMock:
@@ -62,6 +63,10 @@ async def test_risk_gate_yields_state_delta_with_orders_and_clamps() -> None:
             "close_reasons":  {},
         },
         "positions": {},
+        # A-072: seed state["portfolio"] so the risk gate reads from state
+        # rather than broker.get_portfolio (which no longer exists as the
+        # canonical path after the audit fix).
+        "portfolio": Portfolio(cash=10_000.0).model_dump(mode="json"),
     }
     ctx = _make_ctx(state)
 

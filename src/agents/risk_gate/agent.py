@@ -8,6 +8,7 @@ from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event, EventActions
 
+from broker.portfolio import Portfolio
 from observability.trace import _trace_maybe
 from orchestrator.state import MIN_HELD_WEIGHT
 
@@ -92,20 +93,33 @@ class RiskGateAgent(BaseAgent):
         # Surface trace — record the weights entering the clamp loop.
         _trace_maybe(state, "06_risk_gate_in", {"proposed_weights": proposed})
 
-        if self.broker:
-            portfolio = await self.broker.get_portfolio()
-            current_weights = portfolio.current_weights()
+        # A-072: consume state['portfolio'] (refreshed at Phase 2) rather
+        # than re-pulling from the broker mid-tick.  The broker remains
+        # the source of truth, but the Phase 2 refresh already canonicalised
+        # it into state for every downstream agent.
+        portfolio_value = state.get("portfolio")
+        if portfolio_value is None:
+            # Cold-start carve-out: no portfolio seeded yet → no historical
+            # weights to clamp against.  Raise rather than silently allow
+            # unbounded weights — cold-start callers should seed
+            # state['portfolio'] explicitly.
+            raise RuntimeError(
+                "risk_gate: state['portfolio'] missing — Phase 2 seed "
+                "did not run."
+            )
 
-            # Build a price map from portfolio positions, then fill any gaps
-            # from FakeBroker's injected _prices (used in tests).
-            prices = {t: pos.last_price for t, pos in portfolio.positions.items()}
-            if hasattr(self.broker, "_prices"):
-                for t, p in self.broker._prices.items():
-                    if t not in prices:
-                        prices[t] = p
-        else:
-            current_weights = {}
-            prices = {}
+        portfolio = Portfolio.from_state_value(portfolio_value)
+        current_weights = portfolio.current_weights()
+
+        # Build a price map from portfolio positions, then fill any gaps
+        # from FakeBroker's injected _prices (used in tests).  The broker
+        # reference is still kept on the agent so test fakes can publish
+        # synthetic prices; we just no longer re-pull the full portfolio.
+        prices = {t: pos.last_price for t, pos in portfolio.positions.items()}
+        if self.broker is not None and hasattr(self.broker, "_prices"):
+            for t, p in self.broker._prices.items():
+                if t not in prices:
+                    prices[t] = p
 
         # Sell stances with no explicit weight (full close) bypass the
         # downstream weight-level clamps — an audited "sell" is a deliberate,
