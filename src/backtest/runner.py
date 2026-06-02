@@ -528,10 +528,10 @@ class Runner:
             # provides on live runs.  The strategist prompt template references
             # ``{portfolio}`` directly (resolved by ADK's instruction-variable
             # machinery), and several before-callbacks read ``portfolio``,
-            # ``positions``, ``memory_buffer``, ``day_digest``, and ``thesis``
-            # at the start of each tick.  Without these keys the ADK runner
-            # raises ``KeyError: 'Context variable not found: portfolio'``
-            # before the pipeline can execute even one agent.
+            # ``memory_buffer``, and ``day_digest`` at the start of each tick.
+            # Without these keys the ADK runner raises
+            # ``KeyError: 'Context variable not found: portfolio'`` before the
+            # pipeline can execute even one agent.
             portfolio = await broker.get_portfolio()
 
             # Populate reference_prices from the cache so the technical extractor
@@ -562,10 +562,12 @@ class Runner:
                 # to persist it there.
                 #
                 # ``thesis`` is intentionally absent — it has migrated to
-                # ``user:thesis`` (Spec B, Band 2).  The StrategistContextShim
-                # bridges ``user:thesis`` → ``thesis`` on each tick via its
-                # yielded state_delta so the prompt placeholder resolves
-                # without a bare-key seed here.
+                # ``user:thesis`` (Spec B, Band 2).  The strategist prompt
+                # template resolves the optional placeholder ``{user:thesis?}``
+                # directly from ``state["user:thesis"]`` (ADK's instruction-
+                # variable machinery), yielding an empty string on cold start
+                # when the key is absent — so no bare ``thesis`` seed is needed
+                # here and the prior context-shim bridge has been removed.
                 "memory_buffer":    [],
                 "day_digest":       "",
                 # Dump each PriceHistory to a JSON-safe dict so the ADK
