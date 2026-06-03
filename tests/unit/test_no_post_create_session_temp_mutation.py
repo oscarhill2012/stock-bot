@@ -53,8 +53,9 @@ def _temp_key_assignments(tree: ast.AST) -> list[tuple[int, str]]:
 
     out: list[tuple[int, str]] = []
     for node in ast.walk(tree):
-        # Catches both ``state["temp:_x"] = y`` (Assign) and augmented
-        # forms; we keep it simple and only check plain Assign.
+        # Only plain ``Assign`` (``state["temp:x"] = …``) is checked.
+        # ``AugAssign`` (``+=``, ``|=``) is intentionally excluded: handles are
+        # set once at injection time, never incremented — no install path uses +=.
         if isinstance(node, ast.Assign):
             for target in node.targets:
                 if isinstance(target, ast.Subscript) and isinstance(target.slice, ast.Constant):
@@ -65,11 +66,25 @@ def _temp_key_assignments(tree: ast.AST) -> list[tuple[int, str]]:
 
 
 def _iter_py_files() -> list[Path]:
+    """Collect every ``.py`` file under ``src/`` and ``scripts/``.
+
+    Excludes ``__pycache__`` artefacts.  Raises ``AssertionError`` if no
+    files are found — an empty result would cause the parametrised lint to
+    collect zero cases and silently pass, defeating the guard entirely.
+    """
+
     files: list[Path] = []
     for root in SCAN_ROOTS:
         if not root.exists():
             continue
         files.extend(p for p in root.rglob("*.py") if "__pycache__" not in p.parts)
+
+    # A zero-length result would make @pytest.mark.parametrize collect no
+    # cases, so the lint would vacuously "pass". Fail loudly instead.
+    assert files, (
+        f"_iter_py_files found no .py files under {[str(r) for r in SCAN_ROOTS]}; "
+        "at least one scan root must exist or the lint is a silent no-op."
+    )
     return files
 
 
