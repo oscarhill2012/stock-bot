@@ -949,7 +949,7 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 - `risk_clamps_applied` contains no entry for any ticker that ended at `0.0` via the full-close path.
 - `fill_prices` is built from `actual_price` only; rejected rows do not appear.
 - One backtest tick runs end-to-end without `RiskGateInputError` or missing-price `ValueError`.
-- `docs/contract-invariants.md` / graphify-out delta: not in scope for this plan (Plan 11/12 own doc reconciliation). If you spot a stale invariant line in §A while editing, leave a `# TODO(plan-11): ...` only — do not edit cross-plan docs.
+- `docs/contract-invariants.md`: not in scope for this plan (Plan 11/12 own doc reconciliation). If you spot a stale invariant line in §A while editing, leave a `# TODO(plan-11): ...` only — do not edit cross-plan docs.
 
 ---
 

@@ -937,27 +937,6 @@ Expected: green. Skip count must not have risen from the post-Plan-12 baseline.
 Run: `.venv/bin/python -m ruff check src/ tests/`
 Expected: clean.
 
-- [ ] **Step 3: Append a dated entry to `graphify-out/graph_delta.md`.**
-
-Per `.claude/CLAUDE.md`, log the new method (`LlmTickerVerdict.to_ticker_verdict`), the deleted helper (`_extract_insider_features_legacy`), and the new/deleted field on `AnalystEvidence` (Task 6 vs Task 7 — record whichever landed).
-
-- [ ] **Step 4: Commit the delta entry.**
-
-```bash
-git add graphify-out/graph_delta.md
-git commit -m "$(cat <<'EOF'
-chore(graphify): record Plan 13 structural deltas
-
-- LlmTickerVerdict.to_ticker_verdict added (A-051 sole inflate path)
-- TickerEvidence.last_price tightened to PositiveFloat | None (A-055)
-- AnalystEvidence.feature_warnings <wired | deleted> (A-053 — branch <A | B>)
-- _extract_insider_features_legacy removed (A-054)
-
-Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
-EOF
-)"
-```
-
 ---
 
 ## 6. Test strategy
@@ -1005,7 +984,6 @@ The plan does NOT add cementing tests for the dead behaviour — under `feedback
 - [ ] `_extract_insider_features_legacy` is removed; every producer emits the flat-list `insider_trades` / `insider_derivative_trades` shape; the extractor raises `KeyError` on the legacy `insider:` key.
 - [ ] Full `pytest tests/ -q` is green.
 - [ ] Full `ruff check src/ tests/` is clean.
-- [ ] `graphify-out/graph_delta.md` has a dated entry recording the structural changes.
 - [ ] PR description cross-references Plan 11's Block E hand-off table and ticks off the A-051 entry.
 
 ---

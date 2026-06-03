@@ -825,10 +825,6 @@ try: set_active_provider('news', 'bogus'); print('FAIL — accepted unknown')
 except ValueError as e: print('OK —', str(e)[:80])"`
 Expected: `guards unknown name: OK — no provider registered for 'news', 'bogus'; …`.
 
-- [ ] **Step 6: Manual graphify-delta entry**
-
-Per project convention, append a dated entry to `/home/oscarhill2012/Documents/Repository/StockBot/graphify-out/graph_delta.md` (if the file exists) summarising: 4 domains removed, 1 provider removed, 1 duplicate registration removed, 2 dead-helper modules slimmed, 1 dead executor function removed, 1 registry-validation guard added. If `graphify-out/` is absent, skip this step — the directory is gitignored.
-
 ---
 
 ## Test strategy
