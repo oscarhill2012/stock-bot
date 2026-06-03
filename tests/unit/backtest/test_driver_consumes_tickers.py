@@ -71,9 +71,12 @@ async def test_driver_uses_tickers_for_price_refresh(tmp_path: Path) -> None:
 
     schedule = [Tick(as_of=datetime(2025, 9, 2, 13, 30, tzinfo=UTC), phase="open")]
 
+    # The driver obtains its ADK Runner via lifecycle_runner.build_runner
+    # (function-local import), so we stub the factory rather than the
+    # Runner constructor which no longer lives in backtest.driver.
     with patch.object(driver, "_refresh_broker_prices", _spy_refresh), \
          patch(
-             "backtest.driver.Runner",
+             "orchestrator.lifecycle_runner.build_runner",
              return_value=MagicMock(run_async=_noop_runner),
          ):
         await driver.run(state, schedule)
