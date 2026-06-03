@@ -18,14 +18,13 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from backtest.driver import Driver
 from backtest.schedule import Tick
 from broker.fake import FakeBroker
-
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -74,11 +73,10 @@ async def test_keyboard_interrupt_propagates(tmp_path: Path) -> None:
         yield  # pragma: no cover — makes this an async generator
 
     with patch(
-        "backtest.driver.Runner",
+        "orchestrator.lifecycle_runner.build_runner",
         return_value=MagicMock(run_async=_raise_kbi),
-    ):
-        with pytest.raises(KeyboardInterrupt):
-            await driver.run({"watchlist": [], "tickers": []}, _one_tick())
+    ), pytest.raises(KeyboardInterrupt):
+        await driver.run({"watchlist": [], "tickers": []}, _one_tick())
 
     # No failed tick should have been recorded — the interrupt aborted before
     # the exception-handling accounting loop in ``Driver.run`` could fire.
@@ -102,7 +100,7 @@ async def test_attribute_error_is_absorbed(tmp_path: Path) -> None:
         yield  # pragma: no cover
 
     with patch(
-        "backtest.driver.Runner",
+        "orchestrator.lifecycle_runner.build_runner",
         return_value=MagicMock(run_async=_raise_attr_err),
     ):
         # Should NOT raise — AttributeError is silently absorbed.

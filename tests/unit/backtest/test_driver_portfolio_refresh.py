@@ -38,7 +38,7 @@ from broker.fake import FakeBroker
 def _make_driver(tmp_path: Path, broker: FakeBroker) -> Driver:
     """Build a minimal Driver wired to ``broker``.
 
-    The Snapshotter never runs (we patch the Runner to a no-op), so
+    The Snapshotter never runs (we patch build_runner to return a no-op runner), so
     ``enforce_pipeline_completion=False`` is essential — otherwise the
     driver would treat each tick as failed.
     """
@@ -112,7 +112,7 @@ async def test_portfolio_is_refreshed_at_tick_start(tmp_path: Path) -> None:
         "user:positions":  {},
     }
 
-    # Patch the ADK Runner the driver instantiates per tick to return our
+    # Patch the build_runner factory the driver calls per tick to return our
     # no-op runner.  Side-effect (the BUY) is wedged in via a wrapper around
     # ``_refresh_broker_prices`` so it fires *between* tick 1 and tick 2:
     # the wrapper runs at the start of every tick, and we trigger the fill
@@ -142,7 +142,7 @@ async def test_portfolio_is_refreshed_at_tick_start(tmp_path: Path) -> None:
 
     with patch.object(driver, "_refresh_broker_prices", _wrapped_refresh), \
          patch(
-             "backtest.driver.Runner",
+             "orchestrator.lifecycle_runner.build_runner",
              return_value=MagicMock(run_async=_runner_run_async),
          ):
         await driver.run(state, _two_tick_schedule())
@@ -196,7 +196,7 @@ async def test_portfolio_refreshed_even_when_initial_dump_already_present(
     schedule = [Tick(as_of=datetime(2025, 9, 2, 13, 30, tzinfo=UTC), phase="open")]
 
     with patch(
-        "backtest.driver.Runner",
+        "orchestrator.lifecycle_runner.build_runner",
         return_value=MagicMock(run_async=_noop_runner),
     ):
         await driver.run(state, schedule)
