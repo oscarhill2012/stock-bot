@@ -20,6 +20,22 @@ from data.models import Form4Bundle, InsiderDerivativeTrade, InsiderTrade
 # Helpers
 # ---------------------------------------------------------------------------
 
+# Pin a deterministic reference clock near the May-2026 fixtures below.  Without
+# it, extract_fundamental_features falls back to wall-clock now() (see
+# fundamental.py:64,68) and the 30-day insider window slides past the fixtures
+# as real time advances — every windowed assertion silently rots ~30 days after
+# the fixture date.  An absolute pin (not relative to now()) keeps these tests
+# deterministic for good.  Passed as state={"as_of": ...} to mirror how the
+# pipeline actually calls the extractor.
+#
+# NB: the legacy-Form4Bundle-path tests guarded by this pin are slated for
+# deletion by audit finding A-054 (Plan 13 — retire the legacy ``insider:``
+# branch in src/contract/extractors/fundamental.py).  The pin is an interim
+# measure to keep the suite green through plans 04→12.  The one flat-list test
+# it also guards (test_senior_officer_aggregate_via_flat_list) exercises the
+# survivor path and remains valid after A-054 lands.
+_AS_OF_ISO = "2026-05-15T00:00:00+00:00"   # cutoff = 2026-04-15; May-2 fixtures sit inside the 30d window
+
 _BASE_BUY = {
     "ticker": "AAPL",
     "side": "buy",
@@ -127,7 +143,7 @@ def test_extractor_cluster_buy_flag_fires_with_three_distinct_officers():
         "filings": [],
         "insider": _bundle_with_cluster_buys(),
     }
-    features = extract_fundamental_features(raw, "AAPL")
+    features = extract_fundamental_features(raw, "AAPL", state={"as_of": _AS_OF_ISO})
 
     assert features["insider_cluster_buy_flag"] == 1.0
     assert features["insider_n_buys_30d"] == 3.0
@@ -144,7 +160,8 @@ def test_cluster_buy_flag_off_with_two_buyers():
         derivatives=[],
     )
     features = extract_fundamental_features(
-        {"ratios": {}, "filings": [], "insider": bundle}, "AAPL"
+        {"ratios": {}, "filings": [], "insider": bundle}, "AAPL",
+        state={"as_of": _AS_OF_ISO},
     )
     assert features["insider_cluster_buy_flag"] == 0.0
     assert features["insider_n_buys_30d"] == 2.0
@@ -162,7 +179,8 @@ def test_cluster_sell_flag_fires_with_three_distinct_sellers():
         derivatives=[],
     )
     features = extract_fundamental_features(
-        {"ratios": {}, "filings": [], "insider": bundle}, "AAPL"
+        {"ratios": {}, "filings": [], "insider": bundle}, "AAPL",
+        state={"as_of": _AS_OF_ISO},
     )
     assert features["insider_cluster_sell_flag"] == 1.0
 
@@ -182,7 +200,8 @@ def test_extractor_planned_sale_ratio_counts_10b5_1_correctly():
         derivatives=[],
     )
     features = extract_fundamental_features(
-        {"ratios": {}, "filings": [], "insider": bundle}, "AAPL"
+        {"ratios": {}, "filings": [], "insider": bundle}, "AAPL",
+        state={"as_of": _AS_OF_ISO},
     )
     assert abs(features["insider_planned_sale_ratio"] - (2 / 3)) < 1e-6
 
@@ -216,7 +235,7 @@ def test_senior_officer_aggregate_via_flat_list():
         "filed_at": datetime(2026, 5, 2, tzinfo=UTC).isoformat(),
     }
     raw = {"ratios": {}, "filings": [], "insider_trades": [officer_trade]}
-    features = extract_fundamental_features(raw, "AAPL")
+    features = extract_fundamental_features(raw, "AAPL", state={"as_of": _AS_OF_ISO})
     # 1000 × 150 = 150,000 officer buy.
     assert features["senior_officer_buy_dollars_30d"] == pytest.approx(150_000.0)
 
@@ -241,7 +260,8 @@ def test_net_dollars_buy_minus_sell():
 
     bundle = Form4Bundle(trades=[buy_trade, sell_trade], derivatives=[])
     features = extract_fundamental_features(
-        {"ratios": {}, "filings": [], "insider": bundle}, "AAPL"
+        {"ratios": {}, "filings": [], "insider": bundle}, "AAPL",
+        state={"as_of": _AS_OF_ISO},
     )
     # Expected: 150_000 - 30_000 = 120_000
     assert abs(features["insider_net_dollars_30d"] - 120_000.0) < 1.0
