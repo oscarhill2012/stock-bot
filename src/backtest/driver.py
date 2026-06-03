@@ -1,14 +1,17 @@
 """Tick-loop driver — runs the unchanged live pipeline once per scheduled tick.
 
 The driver is deliberately thin: pre-tick setup (compute ``as_of``, attach a
-fresh ``TraceWriter``), call the pipeline via ADK Runner, post-tick flush the
-trace.  Mid-tick failures are caught, recorded in the manifest, and the driver
-advances to the next tick unless the configured failure ratio is exceeded.
+fresh ``TraceWriter``), call the pipeline via the shared lifecycle runner,
+post-tick flush the trace.  Mid-tick failures are caught, recorded in the
+manifest, and the driver advances to the next tick unless the configured
+failure ratio is exceeded.
 
 Adaptation notes vs plan:
-- Uses ``google.adk.Runner`` + fresh ``InMemorySessionService`` (same pattern
-  as ``orchestrator/tick.py``) rather than ``InMemoryRunner.session_service``
-  — both work identically, but this mirrors the tested live path.
+- Runner construction and session-seed preparation are delegated to
+  ``orchestrator.lifecycle_runner`` (``build_runner`` / ``build_seed_state``),
+  keeping the backtest and live paths structurally identical.  Sessions are
+  backed by ``make_session_service(db_url=…)`` (a per-run SQLite-backed
+  ``DatabaseSessionService``) so user-scoped state persists across ticks.
 - ADK runners sometimes raise ``AttributeError`` or ``BaseExceptionGroup``
   after the pipeline finishes (known ADK 1.32 cleanup bug).  Those are caught
   and logged; the tick result is still readable from the session service.
@@ -24,13 +27,11 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from google.adk import Runner
 from google.genai import types as genai_types
 
 from backtest.schedule import Tick
 from data.timeguard import drain_wallclock_fallback_count
 from observability.drain import drain_tick
-from observability.handle_injector_plugin import HandleInjectorPlugin
 from observability.otel_setup import install_observability
 from observability.trace import TraceWriter
 from orchestrator.persistence import make_session_service
@@ -499,31 +500,24 @@ class Driver:
         # isolated from other windows and from live/paper runs.
         app_name = f"StockBot-backtest-{self._window_key}"
 
+        from orchestrator.lifecycle_runner import build_runner, build_seed_state
+
         # One shared session service instance per tick — backed by the
         # per-run SQLite file so user-scoped state (user:positions,
         # user:thesis) persists across ticks within this run.
         session_service = make_session_service(db_url=self._session_db_url)
 
-        # Per-invocation observability handles (TraceWriter, DecisionLogger)
-        # are NOT installed by mutating ``adk_session.state`` after
-        # ``create_session`` — ADK's ``Runner.run_async`` calls
-        # ``session_service.get_session`` for every invocation, which
-        # rebuilds session state from persisted storage and discards any
-        # in-memory mutation made by the driver (temp:-prefixed keys are
-        # stripped from persistence by design).  The correct hook is the
-        # plugin manager's ``before_run_callback``, which fires AFTER the
-        # session is resolved and BEFORE the root agent runs, with access
-        # to the live invocation state dict every sub-agent will read from.
-        handle_injector = HandleInjectorPlugin(
-            trace_writer    = tw,
-            decision_logger = self._dl,
-        )
-
-        runner = Runner(
+        # Parity: build the runner through the shared helper.  The
+        # HandleInjectorPlugin is the *only* sanctioned way to install
+        # per-invocation observability handles — direct mutation of
+        # ``adk_session.state`` after ``create_session`` is silently
+        # discarded by ADK (see src/observability/handle_injector_plugin.py).
+        runner = build_runner(
             agent           = pipeline,
             app_name        = app_name,
             session_service = session_service,
-            plugins         = [handle_injector],
+            trace_writer    = tw,
+            decision_logger = self._dl,
         )
 
         # Use a UUID suffix to guarantee session uniqueness even if the
@@ -531,32 +525,14 @@ class Driver:
         # parallel test processes).
         session_id = f"{state['tick_id']}-{uuid.uuid4().hex[:8]}"
 
-        # Build the seed dict for ADK's create_session.  Rules:
-        # 1. Strip temp:-prefixed keys — ADK's extract_state_delta discards
-        #    them at persistence time anyway; per-invocation handles like
-        #    ``temp:_trace`` / ``temp:_decision_logger`` are injected by the
-        #    HandleInjectorPlugin's before_run_callback (see Runner above).
-        # 2. Coerce datetime objects to ISO strings — DatabaseSessionService
-        #    serialises state via json.dumps, which cannot handle native
-        #    datetime objects.  The live path's ``state["as_of"]`` and the
-        #    driver's per-tick ``state["as_of"]`` are both datetimes; agents
-        #    that read ``as_of`` must tolerate either datetime or ISO string
-        #    and coerce as needed.
-        from datetime import datetime as _dt
-        seed_state = {
-            k: (v.isoformat() if isinstance(v, _dt) else v)
-            for k, v in state.items()
-            if not k.startswith("temp:")
-        }
-
-        # Create the session up-front so ``runner.run_async`` can locate it
-        # by ``session_id``.  We only need the returned session's ``.id`` —
-        # observability handles are injected by :class:`HandleInjectorPlugin`
-        # at ``before_run_callback`` time (see Runner construction above).
+        # build_seed_state strips temp:-prefixed keys (ADK discards them
+        # at persistence time anyway; handles are injected by the plugin)
+        # and ISO-coerces datetime values (DatabaseSessionService
+        # serialises via json.dumps).
         adk_session = await session_service.create_session(
             app_name   = app_name,
             user_id    = "stockbot",
-            state      = seed_state,
+            state      = build_seed_state(state),
             session_id = session_id,
         )
 
