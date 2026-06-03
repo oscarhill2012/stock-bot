@@ -1,6 +1,6 @@
 # tests/unit/orchestrator/test_handle_injector_install.py
 """Regression test for A-010 / A-047 — proves ``HandleInjectorPlugin``
-is installed via ``Runner(plugins=…)`` and survives ``DatabaseSessionService``
+is installed via ``App(plugins=…)`` and survives ``DatabaseSessionService``
 rehydration.
 
 The bug this test pins: prior to this plan, the live lifecycle never
@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+from google.adk.agents import SequentialAgent
+
 from orchestrator.lifecycle_runner import build_runner
 
 
@@ -20,7 +22,9 @@ def test_build_runner_always_installs_handle_injector_plugin() -> None:
     registered so the install path is structurally identical to the
     backtest path."""
 
-    pipeline = MagicMock(name="pipeline")
+    # ADK 1.34's ``App`` validates ``root_agent`` as a real ``BaseAgent``
+    # (a MagicMock no longer passes), so use a minimal empty SequentialAgent.
+    pipeline = SequentialAgent(name="probe", sub_agents=[])
     session_service = MagicMock(name="session_service")
 
     runner = build_runner(
@@ -50,7 +54,9 @@ def test_build_runner_passes_handles_through_to_plugin() -> None:
     """When handles are supplied, the plugin must hold them by closure
     for ``before_run_callback`` to install onto the live invocation state."""
 
-    pipeline = MagicMock(name="pipeline")
+    # ADK 1.34's ``App`` validates ``root_agent`` as a real ``BaseAgent``
+    # (a MagicMock no longer passes), so use a minimal empty SequentialAgent.
+    pipeline = SequentialAgent(name="probe", sub_agents=[])
     session_service = MagicMock(name="session_service")
     tw = MagicMock(name="trace_writer")
     dl = MagicMock(name="decision_logger")

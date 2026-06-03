@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 
 import pytest
 from google.adk import Runner
+from google.adk.apps import App
 from google.adk.sessions import DatabaseSessionService
 from google.genai import types as genai_types
 
@@ -44,7 +45,12 @@ async def test_user_positions_and_thesis_written_after_executor_tick():
     broker    = FakeBroker(starting_cash=50_000.0, prices={"AAPL": 200.0})
     executor  = build_executor(broker)
     svc       = DatabaseSessionService(db_url="sqlite+aiosqlite:///:memory:")
-    runner    = Runner(agent=executor, app_name="test-e2e", session_service=svc)
+    # ADK 1.34: wrap the agent in an ``App`` rather than passing ``agent=``.
+    # ``App.name`` must be identifier-safe, but the partition key here is the
+    # hyphenated ``"test-e2e"`` (matched at ``create_session`` below), so the
+    # real name rides on the ``app_name`` override.
+    app       = App(name="test_e2e_app", root_agent=executor)
+    runner    = Runner(app=app, app_name="test-e2e", session_service=svc)
 
     open_ts   = datetime(2026, 5, 23, 9, 30, tzinfo=UTC).isoformat()
 

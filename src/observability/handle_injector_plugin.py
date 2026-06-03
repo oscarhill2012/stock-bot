@@ -36,9 +36,10 @@ executes.  Anything we mutate on ``invocation_context.session.state`` from
 inside the callback is the SAME dict the sub-agents will read from for the
 duration of this invocation, so the handles propagate cleanly.
 
-The plugin is constructed per-tick by the driver and passed to
-``Runner(plugins=[…])``; the per-tick :class:`TraceWriter` and per-run
-:class:`DecisionLogger` are captured by closure on the plugin instance.
+The plugin is constructed per-tick by the driver and registered on the
+runner via ``App(plugins=[…])`` (see ``orchestrator.lifecycle_runner``);
+the per-tick :class:`TraceWriter` and per-run :class:`DecisionLogger` are
+captured by closure on the plugin instance.
 """
 
 from __future__ import annotations
@@ -47,7 +48,6 @@ from typing import Any
 
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.plugins.base_plugin import BasePlugin
-
 
 # ---------------------------------------------------------------------------
 # Plugin

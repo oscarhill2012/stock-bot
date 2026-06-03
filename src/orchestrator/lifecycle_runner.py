@@ -144,6 +144,7 @@ def build_runner(
     # mock the ADK Runner entirely (and avoids forcing google-adk at
     # tooling-import time).
     from google.adk import Runner
+    from google.adk.apps import App
 
     from observability.handle_injector_plugin import HandleInjectorPlugin
 
@@ -158,9 +159,24 @@ def build_runner(
     if extra_plugins:
         plugins.extend(extra_plugins)
 
+    # ADK 1.34 deprecated the ``Runner(agent=…, plugins=…)`` construction in
+    # favour of wrapping the agent and plugins in an ``App``.  One wrinkle:
+    # ``App.name`` must be a valid Python identifier (letters, digits,
+    # underscores — no hyphens), but our partition keys are hyphenated
+    # (``StockBot-live``, ``StockBot-backtest-{window}``).  So we give the App
+    # a fixed identifier-safe name and pass the real, hyphenated partition key
+    # through the ``Runner`` ``app_name`` override — the documented escape
+    # hatch for "the resource name differs from the app identifier".
+    # ``runner.app_name`` therefore still equals the ``app_name`` used at
+    # ``create_session`` time, so session partitioning is unchanged.
+    app = App(
+        name       = "StockBot_runner",
+        root_agent = agent,
+        plugins    = plugins,
+    )
+
     return Runner(
-        agent           = agent,
+        app             = app,
         app_name        = app_name,
         session_service = session_service,
-        plugins         = plugins,
     )

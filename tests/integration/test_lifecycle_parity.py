@@ -91,9 +91,13 @@ def test_both_lifecycles_install_handle_injector_plugin() -> None:
     HandleInjectorPlugin must end up installed on the runner's plugin
     manager."""
 
+    from google.adk.agents import SequentialAgent
+
     from observability.handle_injector_plugin import HandleInjectorPlugin
 
-    pipeline = MagicMock(name="pipeline")
+    # ADK 1.34's ``App`` validates ``root_agent`` as a real ``BaseAgent``,
+    # so a MagicMock no longer suffices — use a minimal SequentialAgent.
+    pipeline = SequentialAgent(name="probe", sub_agents=[])
     session_service = MagicMock(name="session_service")
 
     live_runner = build_runner(

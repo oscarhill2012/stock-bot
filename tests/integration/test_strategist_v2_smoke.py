@@ -129,6 +129,7 @@ async def test_strategist_v2_emits_per_ticker_stances_with_held_position():
         - Both AAPL and MSFT appear in ``decision.stances``.
         - Both AAPL and MSFT appear in ``decision.target_weights``.
     """
+    from google.adk.apps import App
     from google.adk.runners import Runner
     from google.adk.sessions import InMemorySessionService
     from google.genai import types as genai_types
@@ -207,9 +208,12 @@ async def test_strategist_v2_emits_per_ticker_stances_with_held_position():
         state=initial_state,
     )
 
+    # ADK 1.34: wrap the agent in an ``App``.  ``APP_NAME`` is already
+    # identifier-safe (``"strategist_v2_smoke"``), so it doubles as the App
+    # name and the partition key — no ``app_name`` override needed.
+    app = App(name=APP_NAME, root_agent=strategist_agent)
     runner = Runner(
-        agent=strategist_agent,
-        app_name=APP_NAME,
+        app=app,
         session_service=session_service,
     )
 

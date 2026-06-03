@@ -32,8 +32,15 @@ async def test_pipeline_built_per_tick_with_current_watchlist(tmp_path: Path) ->
     # before we can assert on build_pipeline call count.
     (tmp_path / "manifest.json").write_text("{}")
 
+    # ``build_runner`` is patched alongside ``build_pipeline`` because ADK
+    # 1.34's ``App`` validates ``root_agent`` as a real ``BaseAgent`` — a
+    # MagicMock pipeline would raise ``ValidationError`` inside the real
+    # ``build_runner`` before we reach the assertions.  Patching it here
+    # keeps the test focused on the per-tick rebuild contract without
+    # touching real ADK runner infrastructure.
     with patch("backtest.driver.build_pipeline") as mock_build, \
-         patch("backtest.driver.install_observability"):
+         patch("backtest.driver.install_observability"), \
+         patch("orchestrator.lifecycle_runner.build_runner") as mock_build_runner:
 
         mock_build.return_value = MagicMock()
 
@@ -49,13 +56,15 @@ async def test_pipeline_built_per_tick_with_current_watchlist(tmp_path: Path) ->
         mock_build.assert_not_called()
 
         # Stub the ADK runner so _run_one_tick exercises the build path
-        # without touching real ADK infrastructure.
+        # without touching real ADK infrastructure.  The stub is attached to
+        # the *runner* the driver actually iterates (``build_runner``'s
+        # return value), not the pipeline.
         async def _stub_runner_run(*args, **kwargs):
             """No-op ADK runner — yields nothing."""
             if False:  # pragma: no cover — generator stub
                 yield
 
-        mock_build.return_value.run_async = _stub_runner_run
+        mock_build_runner.return_value.run_async = _stub_runner_run
 
         from observability.trace import TraceWriter
 
