@@ -141,11 +141,18 @@ async def _build_initial_state(broker, tick_id: str, tickers: list[str]) -> dict
         # authoritative writer of ``as_of`` and ``tick_phase``.  Backtest
         # sets the equivalents in ``src/backtest/driver.py``.  These
         # keys are documented in ``docs/contract-invariants.md`` §A.
-        # Note: ``STOCKBOT_STRICT_AS_OF=1`` is
-        # set by backtest runs to veto wall-clock fallback at consumers
-        # like ``data.timeguard.resolve_as_of``; live must NOT set that
-        # env var, so this wall-clock seed lands cleanly.
-        "as_of":      datetime.now(tz=UTC),
+        #
+        # ISO-stringified at the state boundary — DatabaseSessionService
+        # JSON-serialises state and cannot persist raw datetime objects.
+        # Parity invariant: backtest writes the same shape; every consumer
+        # reads via ``data.timeguard.resolve_as_of`` which round-trips the
+        # string back to a tz-aware ``datetime``.  See plan 04.
+        #
+        # ``STOCKBOT_STRICT_AS_OF=1`` is set by backtest runs to veto the
+        # wall-clock fallback in ``resolve_as_of``; live must NOT set that
+        # env var — this seeded ISO instant is the wall-clock truth for the
+        # tick, so the fallback is never reached anyway.
+        "as_of":      datetime.now(tz=UTC).isoformat(),
         "tick_phase": "live",
         "tickers": tickers,
         "memory_buffer": [],
@@ -180,7 +187,6 @@ async def run_once(broker, session=None, *, tick_label: str | None = None) -> di
     """
     import time as _time
 
-    from google.adk import Runner
     from google.genai import types as genai_types
 
     from observability.terminal_log import _TICK_LOGGER
@@ -226,11 +232,23 @@ async def run_once(broker, session=None, *, tick_label: str | None = None) -> di
     _broker_mode = BrokerMode(_raw_mode) if _raw_mode in BrokerMode._value2member_map_ else BrokerMode.PAPER
     _app_name = _dispatch_app_name(_broker_mode)
 
+    from orchestrator.lifecycle_runner import build_runner, build_seed_state
+
     session_service = make_session_service()
-    runner = Runner(
-        agent=pipeline,
-        app_name=_app_name,
-        session_service=session_service,
+
+    # Parity: build the runner through the shared helper so the
+    # HandleInjectorPlugin is always installed on the same code path
+    # the backtest driver uses.  Live currently has no TraceWriter or
+    # DecisionLogger wired in (both default to None) — the plugin
+    # registers as a structural no-op, but the install pathway is
+    # symmetric with the backtest driver so future handle wiring lands
+    # in exactly one place.
+    runner = build_runner(
+        agent           = pipeline,
+        app_name        = _app_name,
+        session_service = session_service,
+        trace_writer    = None,
+        decision_logger = None,
     )
 
     # Create a fresh session with the minimal state every tick needs.
@@ -240,10 +258,12 @@ async def run_once(broker, session=None, *, tick_label: str | None = None) -> di
     # ADK's user_state merge hydrates it from the DB row on session create
     # (Spec B: docs/Phase10-post-first-backtest/specs/foundational-thesis-memory.md).
     initial_state = await _build_initial_state(broker, tick_id, tickers)
+    # build_seed_state strips temp: keys and ISO-coerces datetimes —
+    # parity with backtest.driver.Driver.run_tick.
     adk_session = await session_service.create_session(
-        app_name=_app_name,
-        user_id="stockbot",
-        state=initial_state,
+        app_name = _app_name,
+        user_id  = "stockbot",
+        state    = build_seed_state(initial_state),
     )
 
     events = runner.run_async(
