@@ -123,8 +123,12 @@ async def _build_initial_state(broker, tick_id: str, tickers: list[str]) -> dict
     Returns:
         A dict containing all keys the pipeline expects at startup,
         including a JSON-serialisable portfolio snapshot under
-        ``"portfolio"`` and a wall-clock UTC ``as_of`` datetime under
-        ``"as_of"`` (tick_phase is the literal string ``"live"``).
+        ``"portfolio"`` and a wall-clock UTC ``as_of`` ISO-8601 string
+        under ``"as_of"`` (tick_phase is the literal string ``"live"``).
+        ``as_of`` is ISO-stringified at this boundary because
+        ``DatabaseSessionService`` JSON-serialises state and cannot
+        persist raw ``datetime`` objects; consumers read it back via
+        ``data.timeguard.resolve_as_of``.
     """
     portfolio = await broker.get_portfolio()
 
