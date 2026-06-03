@@ -8,6 +8,7 @@ from typing import Any
 
 from sqlalchemy import inspect, text
 
+from lifecycle._tables import STOCKBOT_TABLES as _STOCKBOT_TABLES
 from orchestrator.persistence import (
     create_all,
     make_engine,
@@ -18,7 +19,6 @@ from orchestrator.persistence import (
 from . import scheduler
 
 _REQUIRED_ENV = ("TRADING212_API_KEY", "FINNHUB_API_KEY")
-_STOCKBOT_TABLES = ("trade_log", "portfolio_snapshots")
 
 
 class NonEmptyTablesError(RuntimeError):

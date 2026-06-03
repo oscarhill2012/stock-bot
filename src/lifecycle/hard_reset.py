@@ -10,11 +10,10 @@ from typing import Any
 
 from sqlalchemy import inspect, text
 
+from lifecycle._tables import STOCKBOT_TABLES as _STOCKBOT_TABLES
 from orchestrator.persistence import make_engine, make_session_factory
 
 from . import scheduler
-
-_STOCKBOT_TABLES = ("trade_log", "portfolio_snapshots")
 
 
 @dataclass(frozen=True)
