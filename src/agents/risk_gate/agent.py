@@ -15,11 +15,12 @@ from orchestrator.state import MIN_HELD_WEIGHT
 from .constraints import apply_buy_delta_clamp, apply_constraints
 from .orders import weights_to_orders
 
-# Update is a no-trade stance — risk caps are irrelevant.
-# Hold has been replaced by the three-verb schema (buy / sell / update);
-# this set is kept here for defensive filtering in case old serialised
-# state from a pre-iter-3 session surfaces during a transition.
-_NO_RISK_GATE_INTENTS: Final[frozenset[str]] = frozenset({"hold", "update"})
+# Stances whose intent is non-trading (update = thesis refresh, no_action =
+# explicit hold). Risk caps are irrelevant for these — they must bypass the
+# weight-clamp path entirely. Canonical four-verb vocabulary: buy / sell /
+# update / no_action (see src/agents/strategist/schema.py). No compatibility
+# shim for the pre-iter-3 "hold" verb — strategist will never emit it.
+_NO_RISK_GATE_INTENTS: Final[frozenset[str]] = frozenset({"update", "no_action"})
 
 
 class RiskGateAgent(BaseAgent):
