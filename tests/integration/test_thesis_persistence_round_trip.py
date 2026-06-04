@@ -48,7 +48,6 @@ async def test_thesis_persistence_round_trips_across_sessions():
         "rationale":                "AI capex thesis intact — test fixture",
         "last_reviewed_at":         "2026-05-23T00:00:00+00:00",
         "last_reviewed_decision":   "buy",
-        "last_reviewed_reason":     "Initial entry on AI capex thesis.",
         "thesis_last_updated_tick": 0,
     }
 

@@ -64,10 +64,10 @@ def _run(coro_gen):
 def _narrow_llm_output(tickers: list[str]) -> dict:
     """Build the *narrow* StrategistLLMDecision dump the LLM emits via output_key.
 
-    Crucially this dict has NO ``target_weights`` / ``sell_reasons`` /
-    ``update_reasons`` keys — those are derived downstream by the enricher.
-    A fresh ``StrategistLLMDecision`` matches exactly what arrives at the
-    enricher after the LlmAgent's ``output_key`` write lands in state.
+    Crucially this dict has NO ``target_weights`` key — that is derived
+    downstream by the enricher.  A fresh ``StrategistLLMDecision`` matches
+    exactly what arrives at the enricher after the LlmAgent's ``output_key``
+    write lands in state.
 
     Uses the iter-3 three-verb schema: intent is ``buy`` (not ``open``), and
     the deprecated horizon/target_price/stop_price fields are absent.
@@ -120,8 +120,6 @@ def test_enricher_transforms_narrow_llm_output_into_full_decision():
     # The narrow shape must NOT contain target_weights — this is the
     # pre-enrichment state that downstream agents currently see (and break on).
     assert "target_weights" not in narrow
-    assert "sell_reasons" not in narrow
-    assert "update_reasons" not in narrow
 
     state = _state(tickers=tickers, decision=narrow)
 
@@ -136,10 +134,11 @@ def test_enricher_transforms_narrow_llm_output_into_full_decision():
 
     enriched = delta["strategist_decision"]
     assert isinstance(enriched, dict)
-    # All derived dicts must be present in the enriched shape.
+    # target_weights must be derived and present in the enriched shape.
     assert "target_weights" in enriched
-    assert "sell_reasons" in enriched
-    assert "update_reasons" in enriched
+    # Deleted fields must NOT appear in the enriched shape.
+    assert "sell_reasons"   not in enriched
+    assert "update_reasons" not in enriched
     # Buy stance on AAPL → target_weights["AAPL"] == 0.05; flat tickers
     # padded to 0.0 by the active-stances derivation carry-forward.
     assert enriched["target_weights"]["AAPL"] == pytest.approx(0.05)

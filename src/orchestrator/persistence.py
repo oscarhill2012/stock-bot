@@ -78,8 +78,8 @@ class TickerStanceRow(Base):
     # horizon / target_price / stop_price dropped in iter-3 — the audit
     # found they were hallucinated 80 % of the time and never consumed
     # downstream (Bug #9, docs/backtest-audits/baseline-window-2025-09-iter-2.md).
-    # close_reason / trim_reason also dropped in iter-3: the split-reason design
-    # was replaced by the unified ``sell_reasons`` dict on ``StrategistDecision``.
+    # close_reason / trim_reason also dropped in iter-3; sell rationale now
+    # lives exclusively on TickerStance.rationale (A-013 tail collapse).
     lifecycle_action: Mapped[str]   = mapped_column(String, index=True)
     decision_tag: Mapped[str]       = mapped_column(String, index=True)
 

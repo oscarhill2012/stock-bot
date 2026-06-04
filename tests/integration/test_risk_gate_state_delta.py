@@ -59,7 +59,6 @@ async def test_risk_gate_yields_state_delta_with_orders_and_clamps() -> None:
             "reasoning":      "ok",
             "thesis": "ok",
             "confidence":     0.7,
-            "close_reasons":  {},
         },
         "user:positions": {},
         # A-072: seed state["portfolio"] so the risk gate reads from state

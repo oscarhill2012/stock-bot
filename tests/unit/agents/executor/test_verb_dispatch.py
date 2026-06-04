@@ -57,7 +57,6 @@ def _make_prior_row(**kwargs) -> PositionThesis:
         "rationale":              "Original rationale — must not be mutated",
         "last_reviewed_at":       ts,
         "last_reviewed_decision": "buy",
-        "last_reviewed_reason":   "opened",
     }
     defaults.update(kwargs)
     return PositionThesis(**defaults)
@@ -256,7 +255,9 @@ def test_apply_stance_sell_trim_updates_weight_preserves_rationale():
     assert result.weight == pytest.approx(0.05), "sell trim must update the weight"
     assert result.last_reviewed_decision == "sell"
     assert result.last_reviewed_at == _TS
-    assert result.last_reviewed_reason == "Partial profit-take"
+    # last_reviewed_reason was removed (A-013 tail); trim reasons are not
+    # independently tracked — the stance.rationale is not written to the thesis
+    # on sell (rationale is preserved from the last buy/update).
 
 
 # ---------------------------------------------------------------------------
@@ -315,7 +316,9 @@ def test_apply_stance_update_refreshes_rationale_and_review_trail():
     # Review fields updated:
     assert result.last_reviewed_at       == new_ts
     assert result.last_reviewed_decision == "update"
-    assert result.last_reviewed_reason   == "Revised macro view"
+    # last_reviewed_reason was removed (A-013 tail); the update reason now
+    # lives exclusively in ``rationale`` — the verb-dispatch ``update`` branch
+    # sets rationale = stance.rationale.
 
     # Rationale refreshes to the new reason — the agent's standing view
     # is what we record going forward.

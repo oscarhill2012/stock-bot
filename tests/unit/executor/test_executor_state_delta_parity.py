@@ -94,7 +94,6 @@ async def test_executor_last_tick_id_is_delta_only():
         "user:positions": {},
         "strategist_decision": {
             "decision_tag": "buy_msft",
-            "sell_reasons": {},
             "stances": [
                 {
                     "ticker":    "MSFT",

@@ -45,7 +45,6 @@ async def test_user_positions_scoped_to_app_name():
             "rationale":               "Paper trading test position",
             "last_reviewed_at":        "2026-05-23T00:00:00+00:00",
             "last_reviewed_decision":  "open",
-            "last_reviewed_reason":    "Initial open",
         },
     }
 

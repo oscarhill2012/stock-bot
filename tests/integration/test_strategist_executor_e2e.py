@@ -190,7 +190,6 @@ def _build_prior_positions() -> dict:
         rationale               = "strong momentum entering earnings",
         last_reviewed_at        = datetime(2026, 5, 24, 9, 30, 0, tzinfo=UTC),
         last_reviewed_decision  = "buy",
-        last_reviewed_reason    = "strong momentum entering earnings",
         thesis_last_updated_tick = 3,
     )
 
@@ -204,7 +203,6 @@ def _build_prior_positions() -> dict:
         rationale               = "secular AI capex beneficiary",
         last_reviewed_at        = datetime(2026, 5, 23, 9, 30, 0, tzinfo=UTC),
         last_reviewed_decision  = "buy",
-        last_reviewed_reason    = "secular AI capex beneficiary",
         thesis_last_updated_tick = 1,      # old tick index — should advance after update
     )
 
@@ -303,8 +301,8 @@ async def test_three_verb_single_tick_smoke() -> None:
 
     # ── Step 1: risk gate ──────────────────────────────────────────────────────
     # After running ``derive_decision_fields`` (via validate_and_enrich in the
-    # enricher), the decision already carries ``target_weights`` and
-    # ``sell_reasons``.  The risk gate consumes those to generate final_orders.
+    # enricher), the decision already carries ``target_weights``.
+    # The risk gate consumes those to generate final_orders.
     #
     # In the real pipeline the StrategistEnricher runs before the risk gate and
     # enriches the decision.  Here we call validate_and_enrich explicitly to
@@ -439,8 +437,10 @@ async def test_three_verb_single_tick_smoke() -> None:
     assert googl_thesis["last_reviewed_decision"] == "update", (
         "GOOGL last_reviewed_decision must be 'update' after an update stance"
     )
-    assert "still bullish" in googl_thesis["last_reviewed_reason"], (
-        "GOOGL last_reviewed_reason must contain the update reason"
+    # last_reviewed_reason was removed (A-013 tail); the update reason now lives
+    # in rationale — the verb-dispatch ``update`` branch sets rationale = stance.rationale.
+    assert "still bullish" in googl_thesis["rationale"], (
+        "GOOGL rationale must contain the update reason (last_reviewed_reason removed A-013)"
     )
 
     # thesis_last_updated_tick must have advanced to the current tick index (5),

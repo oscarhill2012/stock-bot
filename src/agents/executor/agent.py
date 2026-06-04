@@ -249,12 +249,14 @@ class ExecutorAgent(BaseAgent):
                                 (closed_at - opened_at_dt).total_seconds() / 3600
                             )
                             pnl_pct = (fill.price - opened_price) / opened_price * 100
-                            # Retrieve the sell reason from the iter-3 canonical key.
+                            # Derive the sell reason for this ticker from the stances
+                            # list (A-013 tail — sell_reasons dict was deleted).
                             _sd = state.get("strategist_decision", {})
-                            close_reason = (
-                                (_sd.get("sell_reasons") or {})
-                                .get(order.ticker, "")
-                            )
+                            close_reason = {
+                                s["ticker"]: s["rationale"]
+                                for s in _sd.get("stances", [])
+                                if s.get("intent") == "sell"
+                            }.get(order.ticker, "")
 
                             if self.db_session:
                                 from orchestrator.persistence import save_trade_log_entry

@@ -202,8 +202,6 @@ async def test_risk_gate_caps_open_at_max_position_weight():
         decision_tag   = "test",
         reasoning      = "test",
         confidence     = 0.5,
-        sell_reasons   = {},
-        update_reasons = {},
     )
 
     agent = RiskGateAgent(broker=None)

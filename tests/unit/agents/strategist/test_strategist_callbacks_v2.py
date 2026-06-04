@@ -161,7 +161,7 @@ def test_after_raises_on_sell_without_rationale():
         ticker="AAPL", opened_at=datetime.now(tz=UTC),
         opened_tick_id="tick_001", opened_price=192.40, weight=0.05,
         rationale="x", last_reviewed_at=datetime.now(tz=UTC),
-        last_reviewed_decision="buy", last_reviewed_reason="Initial entry.",
+        last_reviewed_decision="buy",
     )
     # Build a sell stance with no reason, bypassing schema validation.
     # ``model_construct`` sets fields without running validators — this
@@ -178,8 +178,6 @@ def test_after_raises_on_sell_without_rationale():
         reasoning="x",
         thesis="y",
         confidence=0.5,
-        sell_reasons={},
-        update_reasons={},
     )
     state = _State(
         tickers=["AAPL"],
@@ -204,7 +202,7 @@ def test_after_raises_on_update_without_rationale():
         ticker="MSFT", opened_at=datetime.now(tz=UTC),
         opened_tick_id="tick_001", opened_price=410.0, weight=0.05,
         rationale="x", last_reviewed_at=datetime.now(tz=UTC),
-        last_reviewed_decision="buy", last_reviewed_reason="Initial entry.",
+        last_reviewed_decision="buy",
     )
     # Build an update stance with no reason, bypassing schema validation.
     bad_stance = TickerStance.model_construct(
@@ -219,8 +217,6 @@ def test_after_raises_on_update_without_rationale():
         reasoning="x",
         thesis="y",
         confidence=0.5,
-        sell_reasons={},
-        update_reasons={},
     )
     state = _State(
         tickers=["MSFT"],
@@ -234,11 +230,11 @@ def test_after_raises_on_update_without_rationale():
 
 
 def test_after_derives_decision_fields_on_valid_input():
-    """The validation callback derives target_weights / sell_reasons / update_reasons from stances.
+    """The validation callback derives target_weights from stances.
 
-    ``new_positions`` is no longer derived by the strategist callback;
-    that assembly was moved to the executor's BUY-path where the real fill
-    price is known.  We assert only on target_weights and the reason dicts.
+    ``new_positions``, ``sell_reasons``, and ``update_reasons`` are no longer
+    derived fields — they were removed (A-013 tail collapse).  We assert only
+    on ``target_weights`` and confirm the deleted keys are absent.
     """
     state = _State(
         tickers=["AAPL"],
@@ -257,8 +253,7 @@ def test_after_derives_decision_fields_on_valid_input():
     assert out is None
     decided = state["strategist_decision"]
     assert decided["target_weights"] == {"AAPL": 0.05}
-    # new_positions is no longer a field on StrategistDecision; the
-    # executor assembles the PositionThesis from the fill price + stance.
-    assert "new_positions" not in decided
-    assert decided["sell_reasons"] == {}
-    assert decided["update_reasons"] == {}
+    # Deleted fields must not appear in the enriched dump.
+    assert "new_positions"  not in decided
+    assert "sell_reasons"   not in decided
+    assert "update_reasons" not in decided

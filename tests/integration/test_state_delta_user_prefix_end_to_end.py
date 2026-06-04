@@ -84,7 +84,6 @@ async def test_user_positions_and_thesis_written_after_executor_tick():
                     },
                 ],
                 "target_weights": {"AAPL": 0.04},
-                "sell_reasons":   {},
             },
         },
     )

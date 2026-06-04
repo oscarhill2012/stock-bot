@@ -108,7 +108,6 @@ def _make_prior_thesis(
         rationale              = "strong momentum",
         last_reviewed_at       = opened_at,
         last_reviewed_decision = "buy",
-        last_reviewed_reason   = "strong momentum",
         thesis_last_updated_tick = 0,
     )
     return thesis.model_dump(mode="json")
@@ -157,7 +156,6 @@ async def test_buy_writes_thesis_to_state_positions():
         "user:positions": {},   # prior held book — empty at tick start
         "strategist_decision": {
             "decision_tag": "buy_aapl",
-            "sell_reasons": {},
             # Band 6 / iter-3: executor assembles PositionThesis from the
             # buy-intent stance + fill price.  No horizon / target_price /
             # stop_price — those were removed in iter-3.
@@ -234,7 +232,7 @@ async def test_sell_removes_ticker_from_state_positions():
         "user:positions": {"AAPL": prior_thesis},
         "strategist_decision": {
             "decision_tag": "close_aapl",
-            "sell_reasons": {"AAPL": "target reached"},
+            # sell_reasons removed (A-013 tail); sell reason lives on the stance.
         },
     }
 
@@ -296,7 +294,7 @@ async def test_sell_writes_tick_id_fks_to_trade_log(session):
         "user:positions": {"AAPL": prior_thesis},
         "strategist_decision": {
             "decision_tag": "close_aapl",
-            "sell_reasons": {"AAPL": "target reached"},
+            # sell_reasons removed (A-013 tail); sell reason lives on the stance.
         },
     }
 

@@ -1,11 +1,10 @@
 """Derive canonical decision fields from per-ticker stances.
 
 The strategist's after-callback runs ``derive_decision_fields`` to populate
-``StrategistDecision.target_weights`` / ``sell_reasons`` / ``update_reasons``
-from the LLM-emitted ``stances``.  Downstream agents (risk_gate, executor,
-memory_writer) keep their existing input shape, so this function acts as the
-translation layer between the richer per-ticker stance model and the flat
-derived fields.
+``StrategistDecision.target_weights`` from the LLM-emitted ``stances``.
+Downstream agents (risk_gate, executor, memory_writer) keep their existing
+input shape, so this function acts as the translation layer between the
+richer per-ticker stance model and the derived weight dict.
 
 Three-verb vocabulary (iter-3 schema rewrite)
 ---------------------------------------------
@@ -156,17 +155,16 @@ class DerivedFields:
     confirms the BUY.  The strategist never had an honest fill price, so
     pre-computing it here was always a leaky abstraction.
 
+    A-013 tail (collapsed): ``sell_reasons`` and ``update_reasons`` were
+    removed — they duplicated ``TickerStance.rationale`` verbatim.  Consumers
+    that need the sell prose for a ticker should find the matching stance in
+    ``StrategistDecision.stances`` directly.
+
     Args:
         target_weights: Target portfolio weight for every stance ticker,
             including carries (weight unchanged) and closes (weight → 0.0).
             Padded for every watchlist ticker so downstream agents always see
             an exhaustive dict.
-        sell_reasons: Human-readable reason for each sell (full or partial),
-            keyed by ticker.  Populated by ``sell`` stances.  Replaces the
-            former ``close_reasons`` + ``trim_reasons`` split — both full closes
-            and partial trims now share this dict (iter-3 schema rewrite).
-        update_reasons: Prose rationale for each update stance, keyed by ticker.
-            No trade occurs on update; this is surfaced in traces only.
         decision_tags: Per-ticker intent tag derived from the (prior, new)
             weight pair — one of ``entry``, ``ramp``, ``trim``, ``exit``,
             ``hold_flat``, ``hold``.  Carry-forward tickers are included with
@@ -178,8 +176,6 @@ class DerivedFields:
     """
 
     target_weights: dict[str, float]
-    sell_reasons: dict[str, str]
-    update_reasons: dict[str, str]
     decision_tags: dict[str, str]
 
 
@@ -204,14 +200,15 @@ def derive_decision_fields(
                       (enforced by ``TickerStance`` validator).
     - ``sell``      — reductive delta.  Absent weight ⇒ full close
                       (target 0.0); present weight ⇒ reduce current by
-                      that delta, clamped ≥ 0.  Populates ``sell_reasons``
-                      with ``stance.rationale``.
+                      that delta, clamped ≥ 0.  The rationale lives on
+                      the stance itself (A-013 tail — ``sell_reasons`` dict
+                      was deleted).
     - ``update``    — prose-only revision.  No trade; current weight
-                      carries forward verbatim.  Populates
-                      ``update_reasons``.
+                      carries forward verbatim.  The rationale lives on
+                      the stance itself (``update_reasons`` dict was
+                      deleted).
     - ``no_action`` — explicit "considered, no change."  No trade; current
-                      weight carries forward.  Nothing recorded in the
-                      reason dicts (there's no prose to capture).
+                      weight carries forward.
 
     Carry-forward
     -------------
@@ -251,8 +248,6 @@ def derive_decision_fields(
         every stance must carry an explicit intent verb).
     """
     target_weights: dict[str, float] = {}
-    sell_reasons: dict[str, str] = {}
-    update_reasons: dict[str, str] = {}
     decision_tags: dict[str, str] = {}
 
     # ── Pass 1: emitted stances ───────────────────────────────────────────────
@@ -284,18 +279,16 @@ def derive_decision_fields(
             case "sell":
                 # weight absent ⇒ full close; weight present ⇒ reduce by delta
                 # (clamped to current; risk gate will surface clamps as audit).
+                # Rationale lives on the stance itself (A-013 tail — no dict).
                 if stance.weight is None:
                     target_weights[stance.ticker] = 0.0
                 else:
                     target_weights[stance.ticker] = max(0.0, current - stance.weight)
-                sell_reasons[stance.ticker] = stance.rationale
 
             case "update":
-                # No trade — current weight carries forward verbatim.  The
-                # revised thesis prose is captured separately for the trace;
-                # not surfaced in target_weights or sell_reasons.
+                # No trade — current weight carries forward verbatim.
+                # Rationale lives on the stance itself (A-013 tail — no dict).
                 target_weights[stance.ticker] = current
-                update_reasons[stance.ticker] = stance.rationale
 
             case "no_action":
                 # Explicit "considered, no change" — carry the current weight
@@ -342,7 +335,5 @@ def derive_decision_fields(
 
     return DerivedFields(
         target_weights=target_weights,
-        sell_reasons=sell_reasons,
-        update_reasons=update_reasons,
         decision_tags=decision_tags,
     )

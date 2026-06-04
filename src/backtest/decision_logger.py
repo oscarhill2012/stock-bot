@@ -269,11 +269,13 @@ class DecisionLogger:
             (s for s in stances_list if isinstance(s, dict) and s.get("ticker") == ticker),
             {},
         )
-        # Retrieve the sell reason from the iter-3 canonical key.
-        sell_reason  = (
-            (decision.get("sell_reasons") or {})
-            .get(ticker, "")
-        )
+        # Derive the sell reason for this ticker from the stances list
+        # (A-013 tail — sell_reasons dict was deleted; rationale lives on the stance).
+        sell_reason = {
+            s["ticker"]: s["rationale"]
+            for s in decision.get("stances", [])
+            if s.get("intent") == "sell"
+        }.get(ticker, "")
 
         # Risk-gate clamps that concern this ticker specifically.
         all_clamps = state.get("clamps", []) or []

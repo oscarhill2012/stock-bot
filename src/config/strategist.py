@@ -7,7 +7,7 @@ to live as magic numbers in the schemas themselves; centralising them here
 makes them tunable without a code change.
 
 The iter-3 rewrite replaced the ``close_reason`` / ``trim_reason`` per-stance
-fields with a unified ``sell_reasons`` dict on ``StrategistDecision``.  The
+fields with a unified ``rationale`` field on ``TickerStance``.  The
 ``StanceCaps.close_reason_max_chars`` and ``StanceCaps.trim_reason_max_chars``
 fields were removed accordingly — the narrative for a ``sell`` stance travels
 through ``rationale``, which is capped by ``rationale_max_chars``.

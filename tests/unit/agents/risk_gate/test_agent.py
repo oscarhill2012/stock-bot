@@ -241,21 +241,12 @@ async def test_full_close_does_not_appear_in_clamp_telemetry(
     # The two buys push total turnover to 0.60 (> max_total_turnover 0.50),
     # triggering the max_turnover clamp.  Under the old code that clamp would
     # also produce a false ClampRecord for AAPL.
-    # Build the stances manually.  We need AAPL in sell_reasons so the
-    # lifecycle check (which requires a reason for any closing position)
-    # does not fire before we reach the clamp-telemetry assertion.
-    # ``_decision_with_stances`` hardcodes sell_reasons={}, so we build
-    # the StrategistDecision directly here.
-    #
-    # NOTE (Task 8): when Task 8 deletes ``sell_reasons`` from
-    # ``StrategistDecision``, revert this inline construction back to the
-    # ``_decision_with_stances`` helper and drop the ``sell_reasons`` field
-    # entirely.  Search for "sell_reasons" in this file to find all
-    # affected sites.
+    # Build the stances directly.  sell_reasons / update_reasons were removed
+    # (A-013 tail); the sell reason lives on the stance itself.
     from agents.strategist.schema import StrategistDecision
 
     stances = [
-        TickerStance(ticker="AAPL", intent="sell", weight=None, rationale="thesis broken"),
+        TickerStance(ticker="AAPL", intent="sell", weight=None, rationale="thesis broken — exiting fully"),
         TickerStance(ticker="NVDA", intent="buy",  weight=0.20, rationale="strong momentum"),
         TickerStance(ticker="MSFT", intent="buy",  weight=0.20, rationale="earnings catalyst"),
     ]
@@ -266,9 +257,6 @@ async def test_full_close_does_not_appear_in_clamp_telemetry(
         decision_tag   = "test_a034",
         reasoning      = "A-034 telemetry regression test",
         confidence     = 0.5,
-        # sell_reasons must include AAPL so the lifecycle guard does not raise.
-        sell_reasons   = {"AAPL": "thesis broken — exiting fully"},
-        update_reasons = {},
     )
 
     # ── Seed reference_prices so NVDA and MSFT can be priced for order sizing

@@ -92,10 +92,10 @@ def _make_state() -> dict:
         "strategist_decision": {
             "stances": [
                 {
-                    "ticker":   "SIVB",
-                    "intent":   "sell",
-                    "reason":   "Thesis broken",
-                    "catalyst": None,
+                    "ticker":    "SIVB",
+                    "intent":    "sell",
+                    "rationale": "Thesis broken",
+                    "catalyst":  None,
                 },
                 {
                     "ticker":    "AAPL",
@@ -105,12 +105,12 @@ def _make_state() -> dict:
                     "catalyst":  "Earnings beat expected next week",
                 },
             ],
-            "sell_reasons":   {"SIVB": "Thesis broken"},
-            "update_reasons": {},
-            "reasoning":      "Rotating out of regional banks into mega-cap tech on the back of the SIVB blowup.",
-            "thesis": "Regional bank stress is the dominant risk; rotate to balance-sheet-strong mega-caps.",
-            "decision_tag":   "rotate_to_megacap",
-            "confidence":     0.78,
+            # sell_reasons / update_reasons removed (A-013 tail);
+            # sell rationale lives on the stance itself.
+            "reasoning":    "Rotating out of regional banks into mega-cap tech on the back of the SIVB blowup.",
+            "thesis":       "Regional bank stress is the dominant risk; rotate to balance-sheet-strong mega-caps.",
+            "decision_tag": "rotate_to_megacap",
+            "confidence":   0.78,
         },
 
         # The held-position book.  SIVB is currently held; AAPL is flat.
@@ -128,7 +128,6 @@ def _make_state() -> dict:
                 "catalyst":                 "Q1 earnings",
                 "last_reviewed_at":         "2023-03-13T09:30:00+00:00",
                 "last_reviewed_decision":   "buy",
-                "last_reviewed_reason":     "Initial entry on NIM thesis.",
                 "thesis_last_updated_tick": 0,
             },
         },
@@ -173,7 +172,8 @@ def test_logs_one_file_per_filled_execution_with_populated_content(tmp_path: Pat
     sd = sivb["strategist_decision"]
     assert sd["stance"]["ticker"]       == "SIVB"
     assert sd["stance"]["intent"]       == "sell"   # iter-3 verb (was "close")
-    assert sd["stance"]["reason"]       == "Thesis broken"
+    # A-013 tail: sell reason now lives on stance["rationale"] (not the old "reason" key).
+    assert sd["stance"]["rationale"]    == "Thesis broken"
     assert sd["sell_reason"]            == "Thesis broken"
     assert sd["reasoning"].startswith("Rotating out of regional banks")
     assert sd["thesis"].startswith("Regional bank stress")
@@ -200,7 +200,7 @@ def test_logs_one_file_per_filled_execution_with_populated_content(tmp_path: Pat
     assert sd_a["stance"]["ticker"]  == "AAPL"
     assert sd_a["stance"]["intent"]  == "buy"   # iter-3 verb (was "open")
     assert sd_a["stance"]["weight"]  == 0.05
-    assert sd_a["sell_reason"]       == ""  # AAPL not in sell_reasons
+    assert sd_a["sell_reason"]       == ""  # AAPL has no sell stance this tick
     assert sd_a["reasoning"].startswith("Rotating out of regional banks")  # tick-level field shared across both fills
 
     # AAPL is flat — held_view_at_decision is None because no prior thesis exists.

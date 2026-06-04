@@ -41,7 +41,7 @@ class RiskGateAgent(BaseAgent):
        using the same config field).
     2. Clamp target weights to satisfy hard risk rules (concentration, cash
        floor, total turnover).
-    3. Validate position lifecycle contracts (sell_reasons for any closing).
+    3. Validate position lifecycle contracts (sell stance required for any closing).
     4. Convert the clamped weights into concrete broker Orders.
 
     No LLM calls — this agent is fast and fully deterministic.
@@ -231,17 +231,17 @@ class RiskGateAgent(BaseAgent):
         for _t in _close_tickers:
             proposed[_t] = 0.0
 
-        # Lifecycle check — only closing positions need a recorded reason.
-        # New-open validation is handled earlier by the Strategist callback.
-        # ``sell_reasons`` replaces the former ``close_reasons`` + ``trim_reasons``
-        # split (iter-3 schema rewrite — see StrategistDecision.sell_reasons).
+        # Lifecycle check — only closing positions need an explicit sell stance.
+        # The rationale lives on the stance now (A-013 tail collapse — the
+        # sell_reasons dict was deleted); derive the closing set from stances.
+        selling = {s.ticker for s in (decision.stances or []) if s.intent == "sell"}
         for t, new_w in original_weights.items():
             was_open     = current_weights.get(t, 0.0) >= MIN_HELD_WEIGHT
             will_be_open = new_w >= MIN_HELD_WEIGHT
-            if was_open and not will_be_open and t not in decision.sell_reasons:
+            if was_open and not will_be_open and t not in selling:
                 from agents.strategist.derivation import StrategistContractViolation
                 raise StrategistContractViolation(
-                    f"Closing {t} ({current_weights.get(t)} -> {new_w}) without sell_reason"
+                    f"Closing {t} ({current_weights.get(t)} -> {new_w}) without sell stance"
                 )
 
         orders = weights_to_orders(proposed, portfolio, prices) if self.broker else []

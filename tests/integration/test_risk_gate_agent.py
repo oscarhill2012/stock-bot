@@ -52,7 +52,6 @@ async def test_risk_gate_applies_constraints_and_sets_orders():
             "reasoning":      "ok",
             "thesis":         "ok",
             "confidence":     0.7,
-            "close_reasons":  {},
         },
         # Portfolio with no open positions — matches the broker's starting state.
         "portfolio": Portfolio(cash=10_000.0).model_dump(mode="json"),
@@ -115,7 +114,6 @@ async def test_risk_gate_uses_state_portfolio_not_broker() -> None:
             "reasoning":      "ok",
             "thesis":         "ok",
             "confidence":     0.7,
-            "close_reasons":  {},
         },
         # Canonical portfolio seed — the risk gate must read from here, not
         # from broker.get_portfolio.

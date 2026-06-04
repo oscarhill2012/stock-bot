@@ -1,12 +1,14 @@
 """iter-3 derivation path tests — three-verb contract (buy / sell / update).
 
+A-013 tail note: ``sell_reasons`` and ``update_reasons`` were removed from
+``DerivedFields``.  Tests that previously asserted on those dicts now assert on
+``target_weights`` and the stance's own ``rationale`` field instead —
+preserving the same semantic coverage via the correct new source.
+
 NOTE: The pre-iter-3 test classes (TestTargetWeightsReadIntentPath,
 TestCloseReasonFromIntent, TestTrimReasonFromIntent, TestHeldCoverageInvariantPreserved)
 that exercised the old open / close / trim / hold verb set were deleted in
 the iter-3 sweep — those verbs no longer exist in the schema.
-
-The coverage they provided is replaced by the equivalent three-verb tests
-below, plus the tests in ``test_derivation.py`` (iter-3 section).
 """
 from __future__ import annotations
 
@@ -54,31 +56,38 @@ class TestBuyTargetWeightPath:
         result = derive_decision_fields(stances, ctx)
         assert result.target_weights["AVGO"] == 0.04
 
-    def test_buy_stance_not_in_sell_reasons(self):
-        """A buy stance must not add an entry to sell_reasons."""
+    def test_buy_stance_tagged_as_entry(self):
+        """A buy stance from a flat start is tagged 'entry' in decision_tags."""
         stances = [TickerStance(ticker="AVGO", intent="buy", weight=0.04, rationale="ok")]
         ctx = _ctx(watchlist=("AVGO",))
         result = derive_decision_fields(stances, ctx)
-        assert "AVGO" not in result.sell_reasons
+        # Buy from zero = entry, not exit — confirm the sell path was NOT taken.
+        assert result.decision_tags.get("AVGO") == "entry"
 
 
 # ---------------------------------------------------------------------------
-# Sell path — sell_reasons populated from stance.reason
+# Sell path — target_weights reflects reduction; rationale on the stance
 # ---------------------------------------------------------------------------
 
 
-class TestSellReasonFromIntent:
-    """sell_reasons must be populated from stance.reason on a sell stance."""
+class TestSellRationaleOnStance:
+    """Sell rationale is preserved on the TickerStance after A-013 tail collapse.
 
-    def test_sell_with_reason_populates_sell_reasons(self):
-        """A full sell with a reason must populate sell_reasons[ticker]."""
+    The former ``sell_reasons`` dict duplicated TickerStance.rationale verbatim.
+    These tests verify the derivation still sets target_weights correctly and
+    that the rationale is accessible from the stance object.
+    """
+
+    def test_sell_full_close_sets_target_weight_to_zero(self):
+        """A full sell (no weight) must set target_weight to 0.0."""
         stances = [TickerStance(
             ticker="AVGO", intent="sell", rationale="guidance cut invalidates thesis",
         )]
         ctx = _ctx(current_weights={"AVGO": 0.05}, watchlist=("AVGO",))
         result = derive_decision_fields(stances, ctx)
-        assert result.sell_reasons["AVGO"] == "guidance cut invalidates thesis"
         assert result.target_weights["AVGO"] == 0.0
+        # Rationale is on the stance directly.
+        assert stances[0].rationale == "guidance cut invalidates thesis"
 
     def test_partial_sell_reduces_weight(self):
         """A partial sell (sell + weight) reduces current weight by the stated delta."""
@@ -89,7 +98,8 @@ class TestSellReasonFromIntent:
         ctx = _ctx(current_weights={"AVGO": 0.05}, watchlist=("AVGO",))
         result = derive_decision_fields(stances, ctx)
         assert result.target_weights["AVGO"] == pytest.approx(0.03)
-        assert result.sell_reasons["AVGO"] == "taking partial profits at 50% to target"
+        # Rationale is on the stance directly.
+        assert stances[0].rationale == "taking partial profits at 50% to target"
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +118,8 @@ class TestUpdateCarryForward:
         ctx = _ctx(current_weights={"AVGO": 0.05}, watchlist=("AVGO",))
         result = derive_decision_fields(stances, ctx)
         assert result.target_weights["AVGO"] == 0.05
-        assert "AVGO" not in result.sell_reasons
+        # Update leaves the position open — decision tag is 'hold'.
+        assert result.decision_tags.get("AVGO") == "hold"
 
 
 # ---------------------------------------------------------------------------

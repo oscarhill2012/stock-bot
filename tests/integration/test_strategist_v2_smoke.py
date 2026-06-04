@@ -162,7 +162,6 @@ async def test_strategist_v2_emits_per_ticker_stances_with_held_position():
         rationale="FCF + insider buying",
         last_reviewed_at=datetime(2026, 4, 22, 14, tzinfo=UTC),
         last_reviewed_decision="buy",
-        last_reviewed_reason="Initial entry on FCF thesis.",
     )
 
     # ── Build portfolio with AAPL position ───────────────────────────────────

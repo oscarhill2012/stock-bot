@@ -121,7 +121,7 @@ async def test_executor_stamps_opened_price_on_buy():
                     "rationale": "earnings beat + insider buying",
                 },
             ],
-            "sell_reasons": {"AAPL": "immediate reversal"},
+            # sell_reasons removed (A-013 tail); sell reason is on the stance itself.
         },
     }
 
@@ -246,7 +246,6 @@ async def test_cross_tick_buy_then_sell_produces_trade_log_row():
         rationale              = "strong_momentum",
         last_reviewed_at       = open_ts,
         last_reviewed_decision = "buy",
-        last_reviewed_reason   = "strong_momentum",
         thesis_last_updated_tick = 0,
     )
 
@@ -266,7 +265,7 @@ async def test_cross_tick_buy_then_sell_produces_trade_log_row():
         },
         "strategist_decision": {
             "decision_tag": "take_profit",
-            "sell_reasons": {"AAPL": "target reached"},
+            # sell_reasons removed (A-013 tail); sell reason lives on the stance.
         },
     }
 

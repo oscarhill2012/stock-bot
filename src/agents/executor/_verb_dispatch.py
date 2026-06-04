@@ -232,7 +232,6 @@ def apply_stance_to_thesis(
                     rationale                 = stance.rationale,
                     last_reviewed_at          = as_of,
                     last_reviewed_decision    = "buy",
-                    last_reviewed_reason      = stance.rationale or "",
                     thesis_last_updated_tick  = current_tick_index,
                 )
 
@@ -248,7 +247,6 @@ def apply_stance_to_thesis(
                     "rationale":                 stance.rationale,
                     "last_reviewed_at":          as_of,
                     "last_reviewed_decision":    "buy",
-                    "last_reviewed_reason":      stance.rationale or "",
                     "thesis_last_updated_tick":  current_tick_index,
                 })
 
@@ -288,7 +286,6 @@ def apply_stance_to_thesis(
                     "weight":                 stance.weight,
                     "last_reviewed_at":       as_of,
                     "last_reviewed_decision": "sell",
-                    "last_reviewed_reason":   stance.rationale or "",
                 })
 
         case "update":
@@ -308,7 +305,6 @@ def apply_stance_to_thesis(
                     rationale                 = stance.rationale or "",
                     last_reviewed_at          = as_of,
                     last_reviewed_decision    = "update",
-                    last_reviewed_reason      = stance.rationale or "",
                     thesis_last_updated_tick  = current_tick_index,
                 )
 
@@ -320,7 +316,6 @@ def apply_stance_to_thesis(
                     "rationale":                 stance.rationale or "",
                     "last_reviewed_at":          as_of,
                     "last_reviewed_decision":    "update",
-                    "last_reviewed_reason":      stance.rationale or "",
                     "thesis_last_updated_tick":  current_tick_index,
                 })
 
@@ -345,7 +340,6 @@ def apply_stance_to_thesis(
             return prior_row.model_copy(update={
                 "last_reviewed_at":       as_of,
                 "last_reviewed_decision": "no_action",
-                "last_reviewed_reason":   "",
                 # thesis_last_updated_tick deliberately NOT refreshed.
             })
 

@@ -4,9 +4,8 @@ The wrapped Strategist LlmAgent emits the *narrow* :class:`StrategistLLMDecision
 shape (stances + decision_tag + reasoning + thesis + confidence) via ADK's
 ``output_key`` mechanism.  Downstream agents (RiskGate, Executor,
 StrategistDecisionWriter) need the *full* :class:`StrategistDecision` shape,
-which adds the derived ``target_weights`` / ``sell_reasons`` / ``update_reasons``
-dicts.  This enricher runs that derivation and overwrites
-``state["strategist_decision"]`` with the enriched dump.
+which adds the derived ``target_weights`` dict.  This enricher runs that
+derivation and overwrites ``state["strategist_decision"]`` with the enriched dump.
 
 Why this is a separate BaseAgent rather than an ``after_agent_callback`` on
 the LlmAgent
@@ -174,10 +173,9 @@ def validate_and_enrich(state: dict) -> dict | None:
         action_counts[action] = action_counts.get(action, 0) + 1
 
     # ── Pass 3: derive decision fields ───────────────────────────────────────
-    # All validation passed — derive ``target_weights`` / ``sell_reasons`` /
-    # ``update_reasons`` from the stances.  Reads intent + weight directly;
-    # raises ``StrategistContractViolation`` on intent=None or missing
-    # reason on sell/update (no silent legacy fallback).
+    # All validation passed — derive ``target_weights`` from the stances.
+    # Reads intent + weight directly; raises ``StrategistContractViolation``
+    # on intent=None (no silent legacy fallback).
     raw_as_of = state.get("as_of")
     derivation_now = resolve_as_of(
         raw_as_of,
@@ -195,6 +193,8 @@ def validate_and_enrich(state: dict) -> dict | None:
     derived = derive_decision_fields(llm_decision.stances, ctx)
 
     # Construct the full StrategistDecision downstream agents consume.
+    # Sell/update rationale lives on each TickerStance directly — the
+    # sell_reasons and update_reasons dicts were deleted (A-013 tail).
     decision = StrategistDecision(
         stances        = llm_decision.stances,
         decision_tag   = llm_decision.decision_tag,
@@ -202,8 +202,6 @@ def validate_and_enrich(state: dict) -> dict | None:
         thesis         = llm_decision.thesis,
         confidence     = llm_decision.confidence,
         target_weights = derived.target_weights,
-        sell_reasons   = derived.sell_reasons,
-        update_reasons = derived.update_reasons,
     )
 
     # ── Per-tick success summary ─────────────────────────────────────────────

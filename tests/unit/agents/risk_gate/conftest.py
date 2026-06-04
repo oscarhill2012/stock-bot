@@ -213,8 +213,6 @@ def _decision_with_buy():
             decision_tag   = "test_buy",
             reasoning      = "Test decision — single buy stance",
             confidence     = 0.5,
-            sell_reasons   = {},
-            update_reasons = {},
         )
 
     return make
@@ -263,8 +261,6 @@ def _decision_with_stances():
             decision_tag   = "test",
             reasoning      = "Test run — stances fixture",
             confidence     = 0.5,
-            sell_reasons   = {},
-            update_reasons = {},
         )
 
     return make

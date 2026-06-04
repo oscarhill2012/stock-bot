@@ -58,7 +58,6 @@ _THESIS: dict = PositionThesis(
     rationale              = "test rationale",
     last_reviewed_at       = _OPEN_AT,
     last_reviewed_decision = "buy",
-    last_reviewed_reason   = "test rationale",
     thesis_last_updated_tick = 0,
 ).model_dump(mode="json")
 
@@ -197,7 +196,6 @@ async def test_trim_preserves_position_thesis(session):
         "user:positions": {_TICKER: dict(_THESIS)},
         "strategist_decision": {
             "decision_tag":  "trim_tsla",
-            "sell_reasons": {_TICKER: "trim only"},
         },
     }
 
@@ -248,7 +246,6 @@ async def test_full_exit_writes_one_trade_log_row_and_deletes(session):
         "user:positions": {_TICKER: dict(_THESIS)},
         "strategist_decision": {
             "decision_tag":  "close_tsla",
-            "sell_reasons": {_TICKER: "target reached"},
         },
     }
 
@@ -306,7 +303,13 @@ async def test_full_exit_appends_to_user_closed_trades_log(session):
         "user:positions": {_TICKER: dict(_THESIS)},
         "strategist_decision": {
             "decision_tag":  "close_tsla",
-            "sell_reasons": {_TICKER: "target reached"},
+            "stances": [
+                {
+                    "ticker":    _TICKER,
+                    "intent":    "sell",
+                    "rationale": "target reached",
+                },
+            ],
         },
     }
 

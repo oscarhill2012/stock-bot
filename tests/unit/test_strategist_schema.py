@@ -56,7 +56,6 @@ def test_position_thesis_valid():
         rationale="Strong momentum",
         last_reviewed_at=_now(),
         last_reviewed_decision="buy",
-        last_reviewed_reason="Initial entry.",
     )
     assert pt.ticker == "AAPL"
     assert pt.rationale == "Strong momentum"
@@ -80,6 +79,5 @@ def test_position_thesis_rejects_old_fields():
             rationale="Strong momentum",
             last_reviewed_at=_now(),
             last_reviewed_decision="buy",
-            last_reviewed_reason="Initial entry.",
             horizon="swing",        # removed in iter-3 — must be rejected
         )
