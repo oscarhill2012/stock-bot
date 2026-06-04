@@ -44,10 +44,9 @@ async def test_risk_gate_yields_state_delta_with_orders_and_clamps() -> None:
     treats co-emitted writes as one atomic update.
     """
 
-    broker = FakeBroker(
-        starting_cash=10_000.0,
-        prices={"AAPL": 200.0, "MSFT": 300.0},
-    )
+    # Broker no longer supplies prices to the risk gate (A-002/A-005 fix).
+    # Prices for unheld BUY tickers are seeded via state["reference_prices"].
+    broker = FakeBroker(starting_cash=10_000.0, prices={})
     agent = RiskGateAgent(broker=broker)
 
     # The decision shape matches the existing integration test in
@@ -67,6 +66,22 @@ async def test_risk_gate_yields_state_delta_with_orders_and_clamps() -> None:
         # rather than broker.get_portfolio (which no longer exists as the
         # canonical path after the audit fix).
         "portfolio": Portfolio(cash=10_000.0).model_dump(mode="json"),
+        # A-002/A-005: reference_prices is the canonical price source for
+        # unheld BUY tickers (bars-array shape, last-bar close used).
+        "reference_prices": {
+            "AAPL": {
+                "ticker": "AAPL",
+                "bars": [{"timestamp": "2026-05-26T00:00:00",
+                          "open": 195.0, "high": 205.0, "low": 193.0,
+                          "close": 200.0, "volume": 5_000_000}],
+            },
+            "MSFT": {
+                "ticker": "MSFT",
+                "bars": [{"timestamp": "2026-05-26T00:00:00",
+                          "open": 295.0, "high": 305.0, "low": 293.0,
+                          "close": 300.0, "volume": 3_000_000}],
+            },
+        },
     }
     ctx = _make_ctx(state)
 

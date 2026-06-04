@@ -127,15 +127,65 @@ class RiskGateAgent(BaseAgent):
         portfolio = Portfolio.from_state_value(portfolio_value)
         current_weights = portfolio.current_weights()
 
-        # Build a price map from portfolio positions, then fill any gaps
-        # from FakeBroker's injected _prices (used in tests).  The broker
-        # reference is still kept on the agent so test fakes can publish
-        # synthetic prices; we just no longer re-pull the full portfolio.
+        # ── Step 2: build price map (A-002, A-005) ──────────────────────────────
+        # Prices for already-held positions come from portfolio.positions
+        # (each Position carries the last_price refreshed in Phase 2).
+        #
+        # Prices for unheld BUY tickers come from state["reference_prices"],
+        # which is seeded by:
+        #   • live:    orchestrator/tick.py _build_initial_state / _fetch_reference_prices
+        #   • backtest: backtest/driver.py _seed_reference_prices
+        #
+        # state["reference_prices"] shape (one entry per symbol):
+        #   {
+        #     "NVDA": {
+        #       "ticker": "NVDA",
+        #       "bars": [
+        #         {"timestamp": "...", "open": 940.0, "high": 955.0,
+        #          "low": 938.0, "close": 950.0, "volume": 1000000},
+        #         ...
+        #       ]
+        #     }
+        #   }
+        # PIT clamping trims bars to ≤ as_of on every tick, so bars[-1]
+        # is always the correct point-in-time last bar; close is the price.
+        #
+        # The old hasattr(self.broker, "_prices") block was removed (A-002/A-005):
+        # it reached into a FakeBroker-only private attribute that has no
+        # Trading 212 equivalent, producing silently wrong prices in production
+        # for any ticker not already in portfolio.positions.
         prices = {t: pos.last_price for t, pos in portfolio.positions.items()}
-        if self.broker is not None and hasattr(self.broker, "_prices"):
-            for t, p in self.broker._prices.items():
-                if t not in prices:
-                    prices[t] = p
+
+        reference_prices: dict = state.get("reference_prices") or {}
+        for sym, payload in reference_prices.items():
+            # Skip tickers the portfolio already prices via last_price.
+            if sym in prices:
+                continue
+
+            # Guard: payload must be a dict with a non-empty "bars" list.
+            bars = payload.get("bars") if isinstance(payload, dict) else None
+            if not bars:
+                continue
+
+            # Guard: bars[-1] must be a dict before calling .get — a malformed
+            # payload (e.g. a bare number or None) would otherwise raise an
+            # opaque AttributeError rather than a clear failure.
+            #
+            # Note: skipping here is NOT silent degradation.  Any ticker that
+            # falls out of ``prices`` will trigger
+            # ``ValueError("no price for <ticker>")`` inside
+            # ``weights_to_orders``, so the malformed payload surfaces loudly
+            # on the very same tick rather than being swallowed.
+            last_bar = bars[-1]
+            if not isinstance(last_bar, dict):
+                continue
+
+            # bars[-1]["close"] is the PIT-clamped last close.
+            close = last_bar.get("close")
+            if close is None:
+                continue
+
+            prices[sym] = float(close)
 
         # Sell stances with no explicit weight (full close) bypass the
         # downstream weight-level clamps — an audited "sell" is a deliberate,
