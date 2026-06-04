@@ -52,7 +52,7 @@ _MAX_POSITION_PCT = int(round(_RISK.max_position_weight * 100))
 # is the percentage integer (e.g. 20).  Both are injected into the prompt so
 # neither the prose section nor the JSON example need hard-coded numbers.
 # The same field also drives the ``TickerStance`` schema validator and the
-# ``apply_buy_delta_clamp`` defence — three callsites, one config value.
+# buy-delta step inside ``apply_constraints`` — three callsites, one config value.
 _MAX_BUY_DELTA     = _RISK.max_delta_per_buy
 _MAX_BUY_DELTA_PCT = int(round(_MAX_BUY_DELTA * 100))
 

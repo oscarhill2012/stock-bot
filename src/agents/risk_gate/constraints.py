@@ -1,18 +1,20 @@
 """The risk gate's clamping steps, in fixed order.
 
-Two categories of constraint live here:
+A single entry point — ``apply_constraints`` — owns the full clamp sequence:
 
-1. **Stance-level** — ``apply_buy_delta_clamp`` fires on ``TickerStance``
-   objects before the target weights are written into the proposed dict.
+1. **Stance-level buy-delta** — fires first on ``TickerStance`` objects.
    This is defence-in-depth against callers that bypass the schema-level
    validator (e.g. via ``model_construct``); both layers read the same
-   ``max_delta_per_buy`` value from ``config/risk_gate.json``.
+   ``max_delta_per_buy`` value from ``config/risk_gate.json``.  Only buy
+   stances carry a weight delta; sell and update stances pass through
+   unchanged.
 
-2. **Weight-level** — ``apply_constraints`` operates on the proposed
-   ``{ticker: float}`` weight dict and enforces concentration, cash-floor,
-   and turnover caps.  There is no per-ticker net-delta cap: sells are
-   intentionally unrestricted on a per-stance basis and the buy direction
-   is already bounded upstream by ``apply_buy_delta_clamp``.
+2. **Weight-level constraints** — operates on the proposed
+   ``{ticker: float}`` weight dict and enforces four hard rules in order:
+   no-short, concentration cap, cash floor, and total-turnover cap.
+   There is no per-ticker net-delta cap: sells are intentionally
+   unrestricted on a per-stance basis; the buy direction is bounded by
+   the buy-delta step above.
 """
 from __future__ import annotations
 
@@ -31,17 +33,17 @@ if TYPE_CHECKING:
     from config.risk_gate import RiskGateConfig
 
 
-def apply_buy_delta_clamp(
-    stances: list["TickerStance"],
-    config: "RiskGateConfig",
-) -> list[ClampRecord]:
+def _clamp_buy_deltas(
+    stances: list[TickerStance],
+    config: RiskGateConfig,
+    clamps: list[ClampRecord],
+) -> None:
     """Clamp any buy stance whose weight exceeds the configured per-trade cap.
 
     This is the risk-gate's defence-in-depth layer.  ``TickerStance`` already
-    forbids ``weight > 0.05`` at construction time, but that validation is
-    bypassable via ``model_construct``.  This function catches any leakage.
-
-    Mutates each offending stance's ``weight`` in-place.
+    forbids ``weight > max_delta_per_buy`` at construction time, but that
+    validation is bypassable via ``model_construct``.  This helper catches any
+    leakage and mutates each offending stance's ``weight`` in-place.
 
     Parameters
     ----------
@@ -51,15 +53,12 @@ def apply_buy_delta_clamp(
         through unchanged.
     config:
         Loaded ``RiskGateConfig`` — supplies ``max_delta_per_buy``.
-
-    Returns
-    -------
-    list[ClampRecord]
-        One ``ClampRecord(rule='buy_delta_exceeded')`` for each stance that
-        was clamped.  Empty if no stances exceeded the cap.
+    clamps:
+        The shared clamp-record accumulator.  One
+        ``ClampRecord(rule='buy_delta_exceeded')`` is appended for each
+        stance that was clamped.
     """
     cap = config.max_delta_per_buy
-    clamps: list[ClampRecord] = []
 
     for stance in stances:
         # Only buy stances carry a weight delta; sell and update pass through.
@@ -78,8 +77,6 @@ def apply_buy_delta_clamp(
             # Mutate in-place — the stance object is used directly by the
             # caller to build the proposed-weights dict.
             stance.weight = cap
-
-    return clamps
 
 
 def _clamp_negatives(weights: dict[str, float], clamps: list[ClampRecord]) -> None:
@@ -144,17 +141,64 @@ def _clamp_max_turnover(
 def apply_constraints(
     proposed: dict[str, float],
     current: dict[str, float],
+    *,
+    stances: list[TickerStance],
+    config: RiskGateConfig,
 ) -> list[ClampRecord]:
-    """Mutate `proposed` in-place to satisfy all hard rules. Returns clamp telemetry.
+    """Mutate ``proposed`` in-place to satisfy all hard rules. Returns clamp telemetry.
 
-    Rules are applied in order: negatives → max position → cash floor →
-    max turnover.  Each step may further constrain the weights that a
-    previous step already modified.  The per-buy delta cap fires earlier
-    in the pipeline (``apply_buy_delta_clamp``) and is not repeated here.
+    Rules are applied in fixed order:
+
+    1. **Buy-delta** (stance-level) — mutates ``stance.weight`` in-place for
+       any buy stance exceeding ``config.max_delta_per_buy``; does NOT touch
+       the ``proposed`` dict (the two are intentionally decoupled).
+       Emits ``buy_delta_exceeded`` records.
+    2. **No-short** — zeros any negative weight in ``proposed``.
+    3. **Max position** — caps each ticker at ``MAX_POSITION_WEIGHT``.
+    4. **Cash floor** — scales all weights so at least ``CASH_FLOOR_WEIGHT``
+       remains as cash.
+    5. **Max turnover** — scales deltas so total one-tick churn stays within
+       ``MAX_TOTAL_TURNOVER``.
+
+    Parameters
+    ----------
+    proposed:
+        Target weight dict ``{ticker: float}``.  Mutated in-place by the
+        weight-level rules.
+    current:
+        Current portfolio weight dict.  Read-only — used for turnover
+        delta calculations.
+    stances:
+        List of ``TickerStance`` objects from the strategist.  The
+        buy-delta step mutates weights in-place; non-buy stances are
+        skipped.  Pass ``[]`` when there are no stances (buy-delta becomes
+        a no-op).  Required keyword argument — omitting it would silently
+        bypass the buy-delta clamp, which is the project's recurring
+        silent-degradation bug class.
+    config:
+        Loaded ``RiskGateConfig`` — supplies ``max_delta_per_buy`` and the
+        other threshold values.  Required keyword argument for the same
+        reason as ``stances``.
+
+    Returns
+    -------
+    list[ClampRecord]
+        All clamp records in order: ``buy_delta_exceeded`` records first,
+        then ``no_short``, ``max_position``, ``cash_floor``, ``max_turnover``.
+        Empty if no constraint fired.
     """
     clamps: list[ClampRecord] = []
+
+    # Step 1 — buy-delta (stance-level, defence-in-depth).
+    # Must run first so records appear before the weight-level records in the
+    # returned list (Guardrail 2).  Note: this mutates stance.weight but does
+    # NOT touch proposed — the two are intentionally decoupled (Guardrail 1).
+    _clamp_buy_deltas(stances, config, clamps)
+
+    # Steps 2–5 — weight-level constraints, in documented order.
     _clamp_negatives(proposed, clamps)
     _clamp_max_position(proposed, clamps)
     _clamp_cash_floor(proposed, clamps)
     _clamp_max_turnover(proposed, current, clamps)
+
     return clamps

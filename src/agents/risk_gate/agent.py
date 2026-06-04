@@ -12,7 +12,7 @@ from broker.portfolio import Portfolio
 from observability.trace import _trace_maybe
 from orchestrator.state import MIN_HELD_WEIGHT
 
-from .constraints import apply_buy_delta_clamp, apply_constraints
+from .constraints import apply_constraints
 from .orders import weights_to_orders
 
 # Stances whose intent is non-trading (update = thesis refresh, no_action =
@@ -74,14 +74,10 @@ class RiskGateAgent(BaseAgent):
             else decision_raw
         )
 
-        # ── Step 1: stance-level buy-delta clamp (defence-in-depth) ─────────────
-        # Clamp any buy stance whose weight exceeds max_delta_per_buy before
-        # we read the weights into ``proposed``.  This fires even when the
-        # TickerStance schema validator was bypassed (e.g. model_construct).
-        # Clamp records are merged with the weight-level clamps below.
+        # ── Load risk-gate config (passed into apply_constraints below) ─────────
+        # Used to drive both the buy-delta clamp and the weight-level rules.
         from config.risk_gate import get_risk_gate_config as _get_rg_cfg
         _rg_config = _get_rg_cfg()
-        _stance_clamps = apply_buy_delta_clamp(decision.stances or [], _rg_config)
 
         proposed = dict(decision.target_weights)
 
@@ -216,13 +212,17 @@ class RiskGateAgent(BaseAgent):
         # guarantees a full close reaches exactly 0.0, not a scaled delta).
         proposed_for_clamp = {t: w for t, w in proposed.items() if t not in _close_tickers}
 
-        # Apply all weight-level hard constraints in order; returns telemetry.
-        # Full-close tickers are absent so no clamp record can be produced for them.
-        weight_clamps = apply_constraints(proposed_for_clamp, current_weights)
-
-        # Merge stance-level and weight-level clamp records so the audit trail
-        # captures both categories in a single list.
-        clamps = _stance_clamps + weight_clamps
+        # Apply all constraints in order: buy-delta (stance-level) first, then
+        # the four weight-level rules.  Full-close tickers are absent from
+        # proposed_for_clamp so no clamp record can be produced for them.
+        # stances/config are required keyword args — omitting either would
+        # silently skip the buy-delta clamp.
+        clamps = apply_constraints(
+            proposed_for_clamp,
+            current_weights,
+            stances=decision.stances or [],
+            config=_rg_config,
+        )
 
         # Reassemble final proposed: clamped non-close weights + full-close
         # targets pinned at exactly 0.0 (no restoration needed — they were

@@ -61,8 +61,9 @@ class RiskGateConfig(BaseModel):
         it: the ``TickerStance`` schema validator rejects any buy whose
         ``weight`` exceeds this value, the strategist prompt renders the
         cap into the model's instructions, and
-        ``constraints.apply_buy_delta_clamp`` clamps anything that slips
-        through the schema (e.g. via ``model_construct``).  Sells are
+        the buy-delta step inside ``constraints.apply_constraints`` clamps
+        anything that slips through the schema (e.g. via ``model_construct``).
+        Sells are
         intentionally uncapped on a per-stance basis — the strategist may
         close any held position in a single tick — so only the buy
         direction needs a per-stance ceiling.
