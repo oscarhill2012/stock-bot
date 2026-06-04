@@ -36,6 +36,7 @@ object.  This lets individual tests supply the state / positions they need:
 """
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 import pytest
@@ -43,6 +44,13 @@ import pytest
 from agents.strategist.schema import StrategistDecision
 from agents.strategist.stance_schema import TickerStance
 from broker.portfolio import Portfolio, Position
+
+if TYPE_CHECKING:
+    # ``FakeBroker`` is imported lazily inside ``fake_broker_factory`` at
+    # call time (to keep collection light); this guarded import exists only
+    # so the ``-> "FakeBroker"`` return annotation resolves for type checkers
+    # and linters without pulling the broker module in at import time.
+    from broker.fake import FakeBroker
 
 
 # ---------------------------------------------------------------------------
@@ -119,7 +127,7 @@ def fake_broker_factory():
     def make(
         positions: dict | None = None,
         prices: dict[str, float] | None = None,
-    ) -> "FakeBroker":
+    ) -> FakeBroker:
         """Construct and return a ``FakeBroker``.
 
         Parameters

@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import pytest
 
-
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _make_buy_stance(ticker: str, weight: float):
@@ -224,8 +223,8 @@ async def test_full_close_does_not_appear_in_clamp_telemetry(
     Cash: £80 000.
     Total: £100 000 → AAPL weight = 0.20.
     """
-    from agents.strategist.stance_schema import TickerStance
     from agents.risk_gate.agent import RiskGateAgent
+    from agents.strategist.stance_schema import TickerStance
     from broker.portfolio import Portfolio, Position
 
     # ── Build a portfolio where AAPL is held at exactly 0.20 weight ──────────
