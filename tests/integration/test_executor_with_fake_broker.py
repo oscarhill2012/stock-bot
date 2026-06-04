@@ -1,6 +1,7 @@
 """Executor integration tests with FakeBroker."""
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
@@ -8,7 +9,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from agents.executor.agent import build_executor
+from agents.executor.agent import _executor_thesis_writer_callback, build_executor
 from agents.strategist.position_thesis import PositionThesis
 from broker.fake import FakeBroker
 from orchestrator.persistence import Base, TradeLogRow
@@ -306,3 +307,100 @@ async def test_cross_tick_buy_then_sell_produces_trade_log_row():
     )
 
     db_session.close()
+
+
+# ---------------------------------------------------------------------------
+# A-008 — thesis-writer callback must use logger.error(..., exc_info=True)
+# ---------------------------------------------------------------------------
+
+
+class _CallbackCtx:
+    """Minimal callback-context shim used to exercise the thesis-writer callback.
+
+    ``_executor_thesis_writer_callback`` only accesses ``callback_context.state``,
+    so a plain object carrying a mutable dict is sufficient — no ADK internals
+    needed.
+    """
+
+    def __init__(self, state: dict) -> None:
+        """Initialise with a pre-built state dict.
+
+        Parameters
+        ----------
+        state:
+            The session-state dict the callback will read from and write to.
+        """
+        self.state = state
+
+
+def test_thesis_writer_callback_logs_assertion_through_logger(caplog):
+    """A-008 — apply_stance_to_thesis raising AssertionError must surface via
+    ``logger.error`` with ``exc_info=True``, not via a bare ``print()`` to
+    stderr (which bypasses ``caplog`` and structured log aggregators).
+
+    Mechanism
+    ---------
+    ``apply_stance_to_thesis`` raises ``AssertionError`` when a ``buy`` stance
+    is processed but ``fill_price is None`` (line 219 of ``_verb_dispatch.py``).
+    The callback derives ``fill_prices`` from ``state["executions"]``.  Providing
+    a ``buy`` stance in ``strategist_decision`` with an empty ``executions`` list
+    means ``fill_price`` will be ``None`` when the dispatcher runs — triggering
+    the assertion without any monkeypatching.
+
+    The test MUST fail before the fix (the bare ``print()`` handler is invisible
+    to ``caplog``) and MUST pass after the fix (``logger.error`` routes through
+    the standard logging machinery that ``caplog`` captures).
+    """
+
+    # Direct ``caplog`` at the module logger named by ``__name__`` in
+    # ``agents/executor/agent.py``.  When imported under ``PYTHONPATH=src``,
+    # ``__name__`` resolves to ``agents.executor.agent``.
+    caplog.set_level(logging.ERROR, logger="agents.executor.agent")
+
+    # Build a state that triggers the AssertionError path:
+    # - ``strategist_decision`` carries one ``intent="buy"`` stance for AAPL.
+    # - ``executions`` is empty (no fill record), so ``fill_prices["AAPL"]``
+    #   will be absent and ``fill_price`` will be ``None`` when
+    #   ``apply_stance_to_thesis`` runs for the buy case.
+    state: dict = {
+        "tick_id": "tick-assert-test",
+        "as_of":   "2026-06-01T10:00:00+00:00",
+        "strategist_decision": {
+            "decision_tag": "assert_test",
+            "thesis":       "test thesis",
+            "reasoning":    "test reasoning",
+            "confidence":   0.5,
+            "stances": [
+                {
+                    "ticker":    "AAPL",
+                    "intent":    "buy",
+                    "weight":    0.05,
+                    "rationale": "triggers assert path",
+                },
+            ],
+        },
+        # Empty executions → fill_prices will have no entry for AAPL.
+        "executions":       [],
+        "user:positions":   {},
+    }
+
+    cb_ctx = _CallbackCtx(state)
+    _executor_thesis_writer_callback(cb_ctx)
+
+    # Filter to ERROR records that mention the thesis-writer or the ticker.
+    error_records = [
+        r for r in caplog.records
+        if r.levelno == logging.ERROR
+        and ("apply_stance_to_thesis" in r.getMessage() or "thesis" in r.getMessage())
+    ]
+
+    assert error_records, (
+        "A-008: AssertionError from apply_stance_to_thesis must be routed through "
+        "logger.error so caplog and log aggregators capture it.  "
+        "A bare print(file=sys.stderr) is invisible here — replace it with "
+        "logger.error(..., exc_info=True)."
+    )
+    assert error_records[0].exc_info is not None, (
+        "A-008: the logger.error call must pass exc_info=True so the full "
+        "traceback is attached to the log record."
+    )

@@ -535,19 +535,18 @@ def _executor_thesis_writer_callback(callback_context) -> None:
             )
         except AssertionError:
             # Caller bug (e.g. ``buy`` reaching the dispatcher with no fill
-            # price).  Strategist hallucinations are now reported via the
-            # HALLUCINATED sentinel — they don't raise.  An AssertionError
-            # here means our wiring is wrong, not the LLM's output, so we
-            # log loudly with the full traceback and continue rather than
-            # abort the tick.
-            import sys
-            import traceback as _tb
-            print(
-                f"[executor/_executor_thesis_writer_callback] "
-                f"apply_stance_to_thesis raised for {ticker!r} "
-                f"(intent={stance.intent!r}): "
-                f"{_tb.format_exc()}",
-                file=sys.stderr,
+            # price). Strategist hallucinations are reported via the HALLUCINATED
+            # sentinel — they do not raise. An AssertionError here means our
+            # wiring is wrong, not the LLM's output, so log loudly with the full
+            # traceback and continue rather than abort the tick.
+            # A-008 — previously used print(file=sys.stderr) which bypassed the
+            # structured logger and caplog. Routing through logger.error makes
+            # the failure visible to log aggregators and tests.
+            logger.error(
+                "thesis_writer_callback: apply_stance_to_thesis raised for "
+                "ticker=%s intent=%s — wiring bug, skipping row",
+                ticker, stance.intent,
+                exc_info=True,
             )
             continue
 
