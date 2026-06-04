@@ -387,11 +387,13 @@ def test_thesis_writer_callback_logs_assertion_through_logger(caplog):
     cb_ctx = _CallbackCtx(state)
     _executor_thesis_writer_callback(cb_ctx)
 
-    # Filter to ERROR records that mention the thesis-writer or the ticker.
+    # Filter to ERROR records that originate from the thesis-writer callback
+    # specifically — match on the unique "thesis_writer_callback" prefix so
+    # unrelated future log lines containing "thesis" can't cause a false-positive.
     error_records = [
         r for r in caplog.records
         if r.levelno == logging.ERROR
-        and ("apply_stance_to_thesis" in r.getMessage() or "thesis" in r.getMessage())
+        and "thesis_writer_callback" in r.getMessage()
     ]
 
     assert error_records, (

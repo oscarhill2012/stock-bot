@@ -464,6 +464,8 @@ def _build_fill_prices(state: dict) -> dict[str, float]:
         # dispatcher receives a clean miss rather than an explicit None,
         # keeping the AssertionError on buy-without-price as the only signal.
         if ticker and actual_price is not None:
+            # Coerce to float: model_dump(mode="json") serialises whole-number
+            # Decimal/int prices as plain ints, so an explicit cast is required.
             fill_prices[ticker] = float(actual_price)
 
     return fill_prices

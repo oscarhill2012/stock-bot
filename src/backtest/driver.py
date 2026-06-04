@@ -289,8 +289,11 @@ class Driver:
             # The window bounds are set to the whole window so warm-up bars
             # before tick.as_of are still available for rolling calculations.
             try:
+                from datetime import UTC, timedelta
+
                 from backtest.providers._store_handle import get_store as _get_ref_store
                 from backtest.runner import _seed_reference_prices
+                from data.models import PriceHistory
 
                 _ref_store = _get_ref_store()
 
@@ -298,7 +301,6 @@ class Driver:
                 # conservative 365-day lookback window so warm-up bars are
                 # included.  Bars after ``tick.as_of`` are stripped by the
                 # PIT clamp inside ``_seed_reference_prices``.
-                from datetime import timedelta
                 _wstart = tick.as_of.date() - timedelta(days=365)
 
                 _ref = _seed_reference_prices(
@@ -307,6 +309,38 @@ class Driver:
                     window_end=tick.as_of.date(),
                     as_of=tick.as_of,
                 )
+
+                # Also add watchlist tickers to reference_prices so that the
+                # risk gate can price unheld BUY tickers.  On a live run the
+                # broker holds last_price for every current position, but a
+                # ticker that is flat (not yet bought) has no position entry
+                # and therefore no price via portfolio.positions — it needs to
+                # come from reference_prices instead.  Without this, any tick
+                # that proposes a BUY on a currently-unheld watchlist ticker
+                # raises ``ValueError("no price for <ticker>")`` inside
+                # ``weights_to_orders``.
+                #
+                # PIT clamp: strip bars that postdate tick.as_of so we never
+                # serve future close prices to the risk gate.  Defined once
+                # here (not per-iteration) to mirror _seed_reference_prices.
+                def _as_utc(ts):
+                    """Attach UTC tzinfo to a naive datetime; pass through aware ones."""
+                    return ts.replace(tzinfo=UTC) if ts.tzinfo is None else ts
+
+                for _ticker in state.get("tickers") or []:
+                    # Skip tickers already present (e.g. SPY happens to be in
+                    # the watchlist — unlikely but guard it).
+                    if _ticker in _ref:
+                        continue
+
+                    _bars = _ref_store.read_ohlcv(_ticker, _wstart, tick.as_of.date())
+
+                    # Apply the same PIT clamp used by _seed_reference_prices.
+                    _bars = [b for b in _bars if _as_utc(b.timestamp) <= tick.as_of]
+
+                    if _bars:
+                        _ref[_ticker] = PriceHistory(ticker=_ticker, bars=_bars)
+
                 # Dump to JSON-safe dicts — mirrors how Runner._run_async
                 # seeds the initial state (SqlSessionService cannot serialise
                 # Pydantic objects; the technical extractor coerces back on read).
