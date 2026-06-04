@@ -20,7 +20,6 @@ def _thesis(**kwargs) -> PositionThesis:
         rationale="x",
         last_reviewed_at=datetime.now(tz=UTC),
         last_reviewed_decision="buy",
-        last_reviewed_reason="Initial entry.",
     )
     return PositionThesis(**(defaults | kwargs))
 

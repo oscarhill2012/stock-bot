@@ -137,7 +137,6 @@ async def test_multi_tick_backtest_produces_diverse_rationale() -> None:
         "rationale":                "Cloud-AI margin expansion thesis",
         "last_reviewed_at":         "2026-05-01T14:00:00+00:00",
         "last_reviewed_decision":   "buy",
-        "last_reviewed_reason":     "opened on entry signal",
         "thesis_last_updated_tick": 1,
     }
 

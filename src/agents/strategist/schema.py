@@ -1,7 +1,7 @@
 """Strategist output schemas."""
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from agents.strategist.stance_schema import TickerStance
 from config.strategist import get_strategist_config
@@ -35,9 +35,9 @@ class StrategistLLMDecision(BaseModel):
     Two-class split (introduced after the 2026-05-24 degenerate-decoding
     investigation): the LLM's ``response_schema`` must be a narrow shape that
     matches what the prompt actually instructs the model to produce.  The
-    previous monolithic ``StrategistDecision`` exposed
-    ``target_weights`` / ``sell_reasons`` / ``update_reasons`` to the model via
-    the JSON Schema even though those fields are filled in by the after-callback
+    previous monolithic ``StrategistDecision`` exposed derived fields like
+    ``target_weights`` to the model via the JSON Schema even though those
+    fields are populated by the after-callback
     — the prompt never mentioned them, so the model was constrained to emit
     three top-level fields with zero guidance.  That ambiguity correlated with
     repetition-attractor failures during structured-output decoding (responses
@@ -70,7 +70,7 @@ class StrategistLLMDecision(BaseModel):
 
 
 class StrategistDecision(BaseModel):
-    """Full strategist output — LLM-emitted fields plus derived dicts.
+    """Full strategist output — LLM-emitted fields plus derived weights.
 
     The LLM emits a ``StrategistLLMDecision`` (the narrow shape above).  The
     after-callback runs ``derive_decision_fields`` on the stance list and
@@ -80,7 +80,18 @@ class StrategistDecision(BaseModel):
     ``new_positions`` was removed in Band 6.  The executor now assembles the
     ``PositionThesis`` for each ``buy`` stance itself from the fill price +
     stance, using ``apply_stance_to_thesis`` in ``executor._verb_dispatch``.
+
+    A-013 tail (collapsed): ``sell_reasons`` and ``update_reasons`` were
+    byte-identical duplicates of ``TickerStance.rationale`` that lived on
+    this class.  They have been removed; every consumer now reads the sell
+    or update rationale directly from the matching ``TickerStance``.
+    ``extra="forbid"`` ensures the deleted kwargs cannot be silently
+    reintroduced by stale callers.
     """
+
+    # Unknown kwargs — including the deleted sell_reasons / update_reasons —
+    # are rejected loudly at construction time.
+    model_config = ConfigDict(extra="forbid")
 
     # Per-ticker stances emitted directly by the LLM; the primary substrate.
     stances: list[TickerStance] = Field(default_factory=list)
@@ -106,10 +117,3 @@ class StrategistDecision(BaseModel):
     )
 
     confidence: float = Field(ge=0.0, le=1.0)
-
-    # Populated by sell stances — covers both full closes and partial trims.
-    # Replaces the former close_reasons + trim_reasons split (iter-3 rewrite).
-    sell_reasons: dict[str, str] = Field(default_factory=dict)
-
-    # Populated by update stances — prose rationale with no associated trade.
-    update_reasons: dict[str, str] = Field(default_factory=dict)

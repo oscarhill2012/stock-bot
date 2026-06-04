@@ -95,7 +95,6 @@ async def test_shim_emits_incremental_mode_when_positions_present() -> None:
                 "rationale":              "Cloud-AI margin expansion",
                 "last_reviewed_at":       "2026-05-01T14:00:00+00:00",
                 "last_reviewed_decision": "open",
-                "last_reviewed_reason":   "opened on entry signal",
             },
         },
         "portfolio":               Portfolio(cash=950.0).model_dump(mode="json"),
@@ -129,7 +128,6 @@ async def test_shim_n_substitution_in_incremental_text() -> None:
                 "rationale":              "r1",
                 "last_reviewed_at":       "2026-05-01T14:00:00+00:00",
                 "last_reviewed_decision": "open",
-                "last_reviewed_reason":   "x",
             },
             "MSFT": {
                 "ticker":                 "MSFT",
@@ -141,7 +139,6 @@ async def test_shim_n_substitution_in_incremental_text() -> None:
                 "rationale":              "r2",
                 "last_reviewed_at":       "2026-05-02T14:00:00+00:00",
                 "last_reviewed_decision": "open",
-                "last_reviewed_reason":   "x",
             },
             "XOM": {
                 "ticker":                 "XOM",
@@ -153,7 +150,6 @@ async def test_shim_n_substitution_in_incremental_text() -> None:
                 "rationale":              "r3",
                 "last_reviewed_at":       "2026-05-03T14:00:00+00:00",
                 "last_reviewed_decision": "open",
-                "last_reviewed_reason":   "x",
             },
         },
         "portfolio":               Portfolio(cash=900.0).model_dump(mode="json"),

@@ -198,7 +198,6 @@ def test_callback_sell_stance_deletes_ticker():
         rationale              = "Data-centre demand",
         last_reviewed_at       = datetime(2026, 1, 1, tzinfo=UTC),
         last_reviewed_decision = "buy",
-        last_reviewed_reason   = "opened on buy signal",
     ).model_dump(mode="json")
 
     sell_stance = TickerStance(
@@ -233,7 +232,6 @@ def test_callback_update_stance_refreshes_rationale_no_trade():
         rationale              = "Cloud segment margin expansion",
         last_reviewed_at       = prior_dt,
         last_reviewed_decision = "buy",
-        last_reviewed_reason   = "opened on buy signal",
     ).model_dump(mode="json")
 
     update_stance = TickerStance(
@@ -254,7 +252,10 @@ def test_callback_update_stance_refreshes_rationale_no_trade():
 
     # Review fields must have been updated:
     assert row.last_reviewed_decision == "update"
-    assert row.last_reviewed_reason   == "No new information; thesis intact"
+    # last_reviewed_reason was removed (A-013 tail); the update reason now
+    # lives in rationale — the verb-dispatch ``update`` branch sets
+    # rationale = stance.rationale.
+    assert row.rationale == "No new information; thesis intact"
 
     # Commitment fields must be preserved unchanged:
     assert row.weight        == 0.12

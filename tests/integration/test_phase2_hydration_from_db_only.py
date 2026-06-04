@@ -51,7 +51,6 @@ async def test_phase2_hydration_comes_from_db_not_in_process_state(tmp_path):
             "rationale":               "Azure growth rate inflecting upward",
             "last_reviewed_at":        "2026-05-23T00:00:00+00:00",
             "last_reviewed_decision":  "open",
-            "last_reviewed_reason":    "Initial open",
         },
     }
 

@@ -37,10 +37,14 @@ def _make_ctx(state: dict) -> MagicMock:
 async def test_risk_gate_applies_constraints_and_sets_orders():
     """risk_gate produces final_orders and risk_clamps_applied in state_delta."""
 
-    broker = FakeBroker(starting_cash=10_000.0, prices={"AAPL": 200.0, "MSFT": 300.0})
+    # Broker no longer supplies prices to the risk gate (A-002/A-005 fix).
+    # Prices are seeded via state["reference_prices"] (bars-array shape) instead.
+    broker = FakeBroker(starting_cash=10_000.0, prices={})
     agent = RiskGateAgent(broker=broker)
 
-    # Seed state["portfolio"] so the new A-072 read path finds it.
+    # Seed state["portfolio"] so the A-072 read path finds it, and
+    # state["reference_prices"] so the A-002/A-005 price path finds prices for
+    # unheld BUY tickers (AAPL @ 200.0).  Shape matches PriceHistory.model_dump.
     state = {
         "strategist_decision": {
             "target_weights": {"AAPL": 0.05, "MSFT": 0.0},
@@ -48,10 +52,24 @@ async def test_risk_gate_applies_constraints_and_sets_orders():
             "reasoning":      "ok",
             "thesis":         "ok",
             "confidence":     0.7,
-            "close_reasons":  {},
         },
         # Portfolio with no open positions — matches the broker's starting state.
         "portfolio": Portfolio(cash=10_000.0).model_dump(mode="json"),
+        # Reference prices for unheld BUY tickers (A-002/A-005: canonical source).
+        "reference_prices": {
+            "AAPL": {
+                "ticker": "AAPL",
+                "bars": [{"timestamp": "2026-05-26T00:00:00",
+                          "open": 195.0, "high": 205.0, "low": 193.0,
+                          "close": 200.0, "volume": 5_000_000}],
+            },
+            "MSFT": {
+                "ticker": "MSFT",
+                "bars": [{"timestamp": "2026-05-26T00:00:00",
+                          "open": 295.0, "high": 305.0, "low": 293.0,
+                          "close": 300.0, "volume": 3_000_000}],
+            },
+        },
     }
     ctx = _make_ctx(state)
 
@@ -96,7 +114,6 @@ async def test_risk_gate_uses_state_portfolio_not_broker() -> None:
             "reasoning":      "ok",
             "thesis":         "ok",
             "confidence":     0.7,
-            "close_reasons":  {},
         },
         # Canonical portfolio seed — the risk gate must read from here, not
         # from broker.get_portfolio.

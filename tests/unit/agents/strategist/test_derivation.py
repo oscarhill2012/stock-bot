@@ -2,10 +2,14 @@
 
 Covers the iter-3 three-verb (buy / sell / update) derivation paths:
   - buy stance → target_weights
-  - sell (full)    → target_weights (0.0) + sell_reasons
-  - sell (partial) → target_weights reduced  + sell_reasons
+  - sell (full)    → target_weights (0.0); rationale on stance
+  - sell (partial) → target_weights reduced; rationale on stance
   - update stance  → target_weights unchanged (carry-forward)
   - held ticker omitted → carry-forward (implicit hold)
+
+A-013 tail note: ``sell_reasons`` and ``update_reasons`` were removed from
+``DerivedFields``.  The rationale for a sell or update stance lives directly
+on the ``TickerStance.rationale`` field; tests below access it there.
 
 NOTE: The pre-iter-3 tests that used the old verb set
 (open / add / trim / close / hold) were deleted in the iter-3 sweep —
@@ -44,11 +48,17 @@ def test_derivation_dispatches_buy_to_target_weight():
     stances = [TickerStance(ticker="AAPL", intent="buy", weight=0.03, rationale="iPhone launch catalyst")]
     derived = derive_decision_fields(stances, ctx)
     assert derived.target_weights["AAPL"] == 0.03
-    assert "AAPL" not in derived.sell_reasons
+
+    # Confirm AAPL is not recorded in decision_tags as a sell (it's a buy/entry).
+    assert derived.decision_tags.get("AAPL") == "entry"
 
 
 def test_derivation_dispatches_sell_full_close():
-    """A sell stance with no weight is a full close — target_weight = 0."""
+    """A sell stance with no weight is a full close — target_weight = 0.
+
+    Rationale is preserved on the TickerStance itself (A-013 tail —
+    sell_reasons dict removed).
+    """
     from agents.strategist.derivation import derive_decision_fields, TickContext
     from agents.strategist.stance_schema import TickerStance
 
@@ -56,11 +66,17 @@ def test_derivation_dispatches_sell_full_close():
     stances = [TickerStance(ticker="AAPL", intent="sell", rationale="thesis invalidated")]
     derived = derive_decision_fields(stances, ctx)
     assert derived.target_weights["AAPL"] == 0.0
-    assert derived.sell_reasons["AAPL"] == "thesis invalidated"
+
+    # The rationale is accessible from the stance directly, not a derived dict.
+    assert stances[0].rationale == "thesis invalidated"
 
 
 def test_derivation_dispatches_sell_partial():
-    """A sell stance with weight=0.03 reduces current weight by 0.03."""
+    """A sell stance with weight=0.03 reduces current weight by 0.03.
+
+    Rationale is preserved on the TickerStance itself (A-013 tail —
+    sell_reasons dict removed).
+    """
     from agents.strategist.derivation import derive_decision_fields, TickContext
     from agents.strategist.stance_schema import TickerStance
 
@@ -68,7 +84,9 @@ def test_derivation_dispatches_sell_partial():
     stances = [TickerStance(ticker="AAPL", intent="sell", weight=0.03, rationale="trimming on overbought")]
     derived = derive_decision_fields(stances, ctx)
     assert derived.target_weights["AAPL"] == 0.05
-    assert derived.sell_reasons["AAPL"] == "trimming on overbought"
+
+    # The rationale is accessible from the stance directly, not a derived dict.
+    assert stances[0].rationale == "trimming on overbought"
 
 
 def test_derivation_update_does_not_change_weight():
@@ -80,7 +98,9 @@ def test_derivation_update_does_not_change_weight():
     stances = [TickerStance(ticker="AAPL", intent="update", rationale="revising AI catalyst timeline downward but still holding")]
     derived = derive_decision_fields(stances, ctx)
     assert derived.target_weights["AAPL"] == 0.08
-    assert "AAPL" not in derived.sell_reasons
+
+    # Update does not cause an exit tag.
+    assert derived.decision_tags.get("AAPL") == "hold"
 
 
 def test_derivation_held_omission_carries_weight_forward():

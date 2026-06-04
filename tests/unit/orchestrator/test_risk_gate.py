@@ -2,7 +2,7 @@
 
 Three cases:
 
-1. test_risk_gate_passes_hold_through_unchanged
+1. test_risk_gate_passes_no_action_through_unchanged
 2. test_risk_gate_passes_update_through_unchanged
 3. test_risk_gate_caps_open_at_max_position_weight
 
@@ -75,11 +75,11 @@ def _decision_with_stances(stances: list[TickerStance]) -> StrategistDecision:
     """Build a minimal ``StrategistDecision`` from a list of stances."""
 
     # Build target_weights from stance weights (only for weight-bearing stances).
-    # update stances carry no weight — they are prose-only.
+    # update and no_action stances carry no weight — they are non-trading verbs.
     target_weights = {
         s.ticker: (s.weight or 0.0)
         for s in stances
-        if s.intent not in ("update",)
+        if s.intent not in ("update", "no_action")
     }
 
     return StrategistDecision(
@@ -96,35 +96,30 @@ def _decision_with_stances(stances: list[TickerStance]) -> StrategistDecision:
 # ---------------------------------------------------------------------------
 
 
-def test_no_risk_gate_intents_constant_contains_hold_and_update():
-    """The frozenset constant must contain exactly hold and update."""
+def test_no_risk_gate_intents_constant_is_update_and_no_action():
+    """Constant carries the canonical four-verb non-trade subset."""
 
-    assert "hold"   in _NO_RISK_GATE_INTENTS
-    assert "update" in _NO_RISK_GATE_INTENTS
-    # Ensure open/close/add/trim are NOT in the skip set.
+    assert _NO_RISK_GATE_INTENTS == frozenset({"update", "no_action"})
+    # Defensive — old verbs must be gone (no compat).
+    assert "hold"  not in _NO_RISK_GATE_INTENTS
     assert "open"  not in _NO_RISK_GATE_INTENTS
     assert "close" not in _NO_RISK_GATE_INTENTS
-    assert "add"   not in _NO_RISK_GATE_INTENTS
-    assert "trim"  not in _NO_RISK_GATE_INTENTS
 
 
 @pytest.mark.asyncio
-async def test_risk_gate_passes_hold_through_unchanged():
-    """``update`` stances must not be touched by the clamping logic.
+async def test_risk_gate_passes_no_action_through_unchanged():
+    """``no_action`` stances must not be touched by the clamping logic.
 
-    (Test name preserved for backwards compatibility with CI history;
-    "hold" was the old verb, "update" is the iter-3 replacement.)
-
-    The ticker for an update stance should not appear in ``final_orders``
-    (no broker call) and should not be clipped in any way.
+    The ticker for a no_action stance should not appear in ``final_orders``
+    (no broker call) and should not appear in ``risk_clamps_applied``.
+    ``update`` is already covered by ``test_risk_gate_passes_update_through_unchanged``.
     """
 
-    hold_stance = TickerStance(
+    no_action_stance = TickerStance(
         ticker = "MSFT",
-        intent = "update",
-        rationale = "No new information",
+        intent = "no_action",
     )
-    decision = _decision_with_stances([hold_stance])
+    decision = _decision_with_stances([no_action_stance])
 
     agent = RiskGateAgent(broker=None)
     deltas = await _collect_deltas(agent, {"strategist_decision": decision})
@@ -134,17 +129,15 @@ async def test_risk_gate_passes_hold_through_unchanged():
     delta = deltas[0]
 
     # MSFT must not appear in final_orders — no trade was generated.
-    orders = delta.get("final_orders", [])
-    msft_orders = [o for o in orders if o.get("ticker") == "MSFT"]
-    assert len(msft_orders) == 0, (
-        "hold stance must not produce any broker order in final_orders"
+    final_orders = delta.get("final_orders", [])
+    assert final_orders == [], (
+        "no_action stance must produce an empty final_orders list"
     )
 
-    # No clamp record for MSFT either.
-    clamps = delta.get("risk_clamps_applied", [])
-    msft_clamps = [c for c in clamps if c.get("ticker") == "MSFT"]
-    assert len(msft_clamps) == 0, (
-        "hold stance must not produce any clamp record"
+    # No clamp record either — the stance bypassed the weight-clamp path.
+    risk_clamps_applied = delta.get("risk_clamps_applied", [])
+    assert risk_clamps_applied == [], (
+        "no_action stance must produce an empty risk_clamps_applied list"
     )
 
 
@@ -209,8 +202,6 @@ async def test_risk_gate_caps_open_at_max_position_weight():
         decision_tag   = "test",
         reasoning      = "test",
         confidence     = 0.5,
-        sell_reasons   = {},
-        update_reasons = {},
     )
 
     agent = RiskGateAgent(broker=None)

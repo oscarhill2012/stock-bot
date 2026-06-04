@@ -249,12 +249,14 @@ class ExecutorAgent(BaseAgent):
                                 (closed_at - opened_at_dt).total_seconds() / 3600
                             )
                             pnl_pct = (fill.price - opened_price) / opened_price * 100
-                            # Retrieve the sell reason from the iter-3 canonical key.
+                            # Derive the sell reason for this ticker from the stances
+                            # list (A-013 tail — sell_reasons dict was deleted).
                             _sd = state.get("strategist_decision", {})
-                            close_reason = (
-                                (_sd.get("sell_reasons") or {})
-                                .get(order.ticker, "")
-                            )
+                            close_reason = {
+                                s["ticker"]: s["rationale"]
+                                for s in _sd.get("stances", [])
+                                if s.get("intent") == "sell"
+                            }.get(order.ticker, "")
 
                             if self.db_session:
                                 from orchestrator.persistence import save_trade_log_entry
@@ -419,6 +421,58 @@ class ExecutorAgent(BaseAgent):
         )
 
 
+def _build_fill_prices(state: dict) -> dict[str, float]:
+    """Build a fill-price lookup from successful execution rows in *state*.
+
+    Reads ``state["executions"]`` and returns a mapping of ticker → actual
+    fill price.  Only rows that carry the canonical ``actual_price`` key with
+    a non-``None`` value are included.
+
+    A-068 fixes applied here:
+    - Reads ONLY the canonical ``actual_price`` key (the historical
+      ``fill_price`` alias is dropped).
+    - Omits rejected rows entirely — no ``None`` entries enter the dict, so
+      downstream callers (``apply_stance_to_thesis``) never see a spurious
+      buy-without-price path.
+    - Drops the dead ``row["stance"]["ticker"]`` fallback; Execution records
+      always carry ``order``, never ``stance``.
+
+    Parameters
+    ----------
+    state
+        Raw session state dict (or dict-like) from the callback context.
+        Expected to have an ``"executions"`` list of dicts produced by
+        ``Execution.model_dump(mode="json")``.
+
+    Returns
+    -------
+    dict[str, float]
+        Ticker → fill price.  Never contains ``None`` values.
+    """
+
+    fill_prices: dict[str, float] = {}
+
+    for row in state.get("executions", []):
+        if not row:
+            continue
+
+        # Execution records always carry ``order``; ``stance`` is a dead key
+        # left over from an earlier schema iteration and must not be used.
+        ticker = (row.get("order") or {}).get("ticker")
+        actual_price = row.get("actual_price")
+
+        # Only include rows where the broker confirmed a price.  Rejected
+        # fills have actual_price=None — we omit them so the downstream
+        # dispatcher receives a clean miss rather than an explicit None,
+        # keeping the AssertionError on buy-without-price as the only signal.
+        if ticker and actual_price is not None:
+            # Coerce to float: model_dump(mode="json") serialises whole-number
+            # Decimal/int prices as plain ints, so an explicit cast is required.
+            fill_prices[ticker] = float(actual_price)
+
+    return fill_prices
+
+
 def _executor_thesis_writer_callback(callback_context) -> None:
     """Assemble user:positions / user:thesis from this tick's stances + fills.
 
@@ -466,21 +520,10 @@ def _executor_thesis_writer_callback(callback_context) -> None:
         else decision_raw
     )
 
-    # Build a fill-price lookup by reading the actual_price field from each
-    # execution record.  Execution records use the ``actual_price`` field
-    # (from ``Execution.actual_price`` after model_dump).
-    fill_prices: dict[str, float | None] = {}
-    for row in state.get("executions", []):
-        if not row:
-            continue
-        # Execution records carry actual_price (from Execution.actual_price).
-        ticker = (
-            (row.get("order") or {}).get("ticker") or
-            (row.get("stance") or {}).get("ticker") or
-            ""
-        )
-        if ticker:
-            fill_prices[ticker] = row.get("fill_price") or row.get("actual_price")
+    # Build a clean fill-price lookup from this tick's execution records.
+    # Delegated to the module-level helper so the logic is independently
+    # testable.  A-068: only canonical actual_price is read; no None entries.
+    fill_prices = _build_fill_prices(state)
 
     # ---- prior persisted thesis book (Phase 2 merge) -------------------
     # Shallow copy so we can mutate without affecting the merged dict
@@ -535,19 +578,18 @@ def _executor_thesis_writer_callback(callback_context) -> None:
             )
         except AssertionError:
             # Caller bug (e.g. ``buy`` reaching the dispatcher with no fill
-            # price).  Strategist hallucinations are now reported via the
-            # HALLUCINATED sentinel — they don't raise.  An AssertionError
-            # here means our wiring is wrong, not the LLM's output, so we
-            # log loudly with the full traceback and continue rather than
-            # abort the tick.
-            import sys
-            import traceback as _tb
-            print(
-                f"[executor/_executor_thesis_writer_callback] "
-                f"apply_stance_to_thesis raised for {ticker!r} "
-                f"(intent={stance.intent!r}): "
-                f"{_tb.format_exc()}",
-                file=sys.stderr,
+            # price). Strategist hallucinations are reported via the HALLUCINATED
+            # sentinel — they do not raise. An AssertionError here means our
+            # wiring is wrong, not the LLM's output, so log loudly with the full
+            # traceback and continue rather than abort the tick.
+            # A-008 — previously used print(file=sys.stderr) which bypassed the
+            # structured logger and caplog. Routing through logger.error makes
+            # the failure visible to log aggregators and tests.
+            logger.error(
+                "thesis_writer_callback: apply_stance_to_thesis raised for "
+                "ticker=%s intent=%s — wiring bug, skipping row",
+                ticker, stance.intent,
+                exc_info=True,
             )
             continue
 

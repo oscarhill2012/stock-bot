@@ -230,7 +230,7 @@ async def test_clean_intent_form_produces_zero_schema_retries() -> None:
     - No retry-counter events in the wrapper's output stream.
     - ``target_weights["AAPL"] == 0.04`` (buy stance at 4 % weight).
     - ``target_weights["MSFT"] == 0.0`` (update stance on flat ticker).
-    - ``sell_reasons == {}`` (no sells this tick).
+    - No sell stances this tick (sell_reasons removed; derived from stances).
     """
     # Construct the initial state — pre-loaded with the clean decision so the
     # stub agent's write is idempotent (the callback reads from state after the
@@ -300,7 +300,13 @@ async def test_clean_intent_form_produces_zero_schema_retries() -> None:
         f"Expected MSFT target_weight=0.0 (update, flat); got {derived['target_weights']}"
     )
 
-    # No sells in this tick — sell_reasons must be empty.
-    assert derived["sell_reasons"] == {}, (
-        f"Expected no sell_reasons; got {derived['sell_reasons']}"
+    # No sells in this tick — the stance-derived sell map must be empty.
+    # sell_reasons was removed (A-013 tail); derive from stances directly.
+    sell_map = {
+        s["ticker"]: s.get("rationale", "")
+        for s in derived.get("stances", [])
+        if s.get("intent") == "sell"
+    }
+    assert sell_map == {}, (
+        f"Expected no sell stances; got {sell_map}"
     )

@@ -10,8 +10,8 @@ from agents.risk_gate.constraints import (
 )
 from orchestrator.state import (
     CASH_FLOOR_WEIGHT,
-    ClampRecord,
     MAX_TOTAL_TURNOVER,
+    ClampRecord,
 )
 
 
@@ -114,12 +114,15 @@ def test_apply_constraints_runs_in_documented_order():
     #      — fires only when CASH_FLOOR_WEIGHT > 0 and the post-position sum
     #      is over threshold; we don't pin the count here.
     #   4. max_turnover scales any leftover excess delta.
-    # The per-ticker net-delta clamp has been removed — the buy direction is
-    # bounded by ``apply_buy_delta_clamp`` upstream, and sells are unbounded
-    # on a per-stance basis by design.
+    # No stances passed → buy-delta step is a no-op.  The buy direction is
+    # bounded by apply_constraints's buy-delta step upstream; sells are
+    # unbounded on a per-stance basis by design.
+    from config.risk_gate import load_risk_gate_config
+
+    cfg = load_risk_gate_config()
     proposed = {"AAPL": -0.05, "MSFT": 0.50, "NVDA": 0.45}
     current  = {"AAPL": 0.0,   "MSFT": 0.0,  "NVDA": 0.0}
-    clamps = apply_constraints(proposed, current)
+    clamps = apply_constraints(proposed, current, stances=[], config=cfg)
 
     # AAPL clamped to 0 (no_short).
     assert proposed["AAPL"] == 0.0
@@ -132,3 +135,29 @@ def test_apply_constraints_runs_in_documented_order():
     rules = [c.rule for c in clamps]
     assert "no_short"    in rules
     assert "max_position" in rules
+
+
+def test_apply_constraints_runs_buy_delta_clamp_first():
+    """A-058: apply_constraints now owns the per-stance buy-delta clamp.
+
+    A buy stance whose weight exceeds max_delta_per_buy must come out
+    clamped, and the clamp record must appear in apply_constraints's return.
+    """
+    from agents.risk_gate.constraints import apply_constraints
+    from agents.strategist.stance_schema import TickerStance
+    from config.risk_gate import load_risk_gate_config
+
+    cfg = load_risk_gate_config()
+    over_cap = cfg.max_delta_per_buy + 0.01
+    # model_construct bypasses the schema validator on purpose, to prove the
+    # risk-gate's defence-in-depth layer catches a weight the schema would reject.
+    stance = TickerStance.model_construct(
+        ticker="AAPL", intent="buy", weight=over_cap, rationale="x",
+    )
+    proposed: dict[str, float] = {"AAPL": over_cap}
+    current:  dict[str, float] = {}
+
+    clamps = apply_constraints(proposed, current, stances=[stance], config=cfg)
+
+    assert stance.weight == cfg.max_delta_per_buy
+    assert any(c.rule == "buy_delta_exceeded" and c.ticker == "AAPL" for c in clamps)

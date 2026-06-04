@@ -12,14 +12,24 @@ from broker.portfolio import Portfolio
 from observability.trace import _trace_maybe
 from orchestrator.state import MIN_HELD_WEIGHT
 
-from .constraints import apply_buy_delta_clamp, apply_constraints
+from .constraints import apply_constraints
 from .orders import weights_to_orders
 
-# Update is a no-trade stance — risk caps are irrelevant.
-# Hold has been replaced by the three-verb schema (buy / sell / update);
-# this set is kept here for defensive filtering in case old serialised
-# state from a pre-iter-3 session surfaces during a transition.
-_NO_RISK_GATE_INTENTS: Final[frozenset[str]] = frozenset({"hold", "update"})
+# Stances whose intent is non-trading (update = thesis refresh, no_action =
+# explicit hold). Risk caps are irrelevant for these — they must bypass the
+# weight-clamp path entirely. Canonical four-verb vocabulary: buy / sell /
+# update / no_action (see src/agents/strategist/schema.py). No compatibility
+# shim for the pre-iter-3 "hold" verb — strategist will never emit it.
+_NO_RISK_GATE_INTENTS: Final[frozenset[str]] = frozenset({"update", "no_action"})
+
+
+class RiskGateInputError(RuntimeError):
+    """Raised when RiskGate is invoked with missing or malformed inputs.
+
+    These are wiring bugs — the strategist contract guarantees a decision
+    object on every tick (even one with stances=[]). Falling through silently
+    would hide pipeline breakage as 'no orders this tick'.
+    """
 
 
 class RiskGateAgent(BaseAgent):
@@ -31,7 +41,7 @@ class RiskGateAgent(BaseAgent):
        using the same config field).
     2. Clamp target weights to satisfy hard risk rules (concentration, cash
        floor, total turnover).
-    3. Validate position lifecycle contracts (sell_reasons for any closing).
+    3. Validate position lifecycle contracts (sell stance required for any closing).
     4. Convert the clamped weights into concrete broker Orders.
 
     No LLM calls — this agent is fast and fully deterministic.
@@ -50,7 +60,13 @@ class RiskGateAgent(BaseAgent):
         state = ctx.session.state
         decision_raw = state.get("strategist_decision")
         if not decision_raw:
-            return
+            # A-001 — silent return masked upstream wiring breakage. The strategist
+            # contract guarantees a decision (even one with stances=[]) on every
+            # tick; absence here means the pipeline is broken, not "no orders".
+            raise RiskGateInputError(
+                "risk_gate invoked without strategist_decision — strategist "
+                "must produce a (possibly empty) StrategistDecision every tick"
+            )
 
         decision = (
             StrategistDecision.model_validate(decision_raw)
@@ -58,14 +74,10 @@ class RiskGateAgent(BaseAgent):
             else decision_raw
         )
 
-        # ── Step 1: stance-level buy-delta clamp (defence-in-depth) ─────────────
-        # Clamp any buy stance whose weight exceeds max_delta_per_buy before
-        # we read the weights into ``proposed``.  This fires even when the
-        # TickerStance schema validator was bypassed (e.g. model_construct).
-        # Clamp records are merged with the weight-level clamps below.
+        # ── Load risk-gate config (passed into apply_constraints below) ─────────
+        # Used to drive both the buy-delta clamp and the weight-level rules.
         from config.risk_gate import get_risk_gate_config as _get_rg_cfg
         _rg_config = _get_rg_cfg()
-        _stance_clamps = apply_buy_delta_clamp(decision.stances or [], _rg_config)
 
         proposed = dict(decision.target_weights)
 
@@ -87,10 +99,32 @@ class RiskGateAgent(BaseAgent):
                 # we simply leave it absent from ``proposed`` too.
                 proposed.pop(_ticker, None)
 
-        # Snapshot pre-clamp weights for lifecycle validation below.
+        # A-034 — full closes (sell with weight=None) bypass clamps because
+        # capping them at a max-turnover or cash-floor scale would leave
+        # dust shares behind (D3 contract trap).  Excluding them from
+        # ``proposed`` before ``apply_constraints`` means the clamp
+        # telemetry reflects what actually constrained output — the old
+        # post-clamp restoration write that used to live here distorted
+        # telemetry and is now removed.
+        _close_tickers = {
+            s.ticker
+            for s in (decision.stances or [])
+            if s.intent == "sell" and s.weight is None   # absent weight = full close
+        }
+
+        # Snapshot the full proposed dict (including full-close tickers at 0.0)
+        # BEFORE exclusion — the lifecycle check below iterates ``original_weights``
+        # to detect closings and needs to see AAPL (weight → 0.0) even though it
+        # will be excluded from the clamping domain.
         original_weights = dict(proposed)
 
         # Surface trace — record the weights entering the clamp loop.
+        # NOTE: ``proposed`` at this point still includes full-close tickers at
+        # 0.0 (e.g. AAPL when the strategist emits a weight=None sell stance).
+        # Those tickers are excluded from ``proposed_for_clamp`` (built below)
+        # and therefore never enter the clamp domain — they will not generate
+        # any ClampRecord.  The trace key is intentionally kept as
+        # ``"06_risk_gate_in"`` so dashboards are not broken by a rename.
         _trace_maybe(state, "06_risk_gate_in", {"proposed_weights": proposed})
 
         # A-072: consume state['portfolio'] (refreshed at Phase 2) rather
@@ -111,55 +145,103 @@ class RiskGateAgent(BaseAgent):
         portfolio = Portfolio.from_state_value(portfolio_value)
         current_weights = portfolio.current_weights()
 
-        # Build a price map from portfolio positions, then fill any gaps
-        # from FakeBroker's injected _prices (used in tests).  The broker
-        # reference is still kept on the agent so test fakes can publish
-        # synthetic prices; we just no longer re-pull the full portfolio.
+        # ── Step 2: build price map (A-002, A-005) ──────────────────────────────
+        # Prices for already-held positions come from portfolio.positions
+        # (each Position carries the last_price refreshed in Phase 2).
+        #
+        # Prices for unheld BUY tickers come from state["reference_prices"],
+        # which is seeded by:
+        #   • live:    orchestrator/tick.py _build_initial_state / _fetch_reference_prices
+        #   • backtest: backtest/driver.py _seed_reference_prices
+        #
+        # state["reference_prices"] shape (one entry per symbol):
+        #   {
+        #     "NVDA": {
+        #       "ticker": "NVDA",
+        #       "bars": [
+        #         {"timestamp": "...", "open": 940.0, "high": 955.0,
+        #          "low": 938.0, "close": 950.0, "volume": 1000000},
+        #         ...
+        #       ]
+        #     }
+        #   }
+        # PIT clamping trims bars to ≤ as_of on every tick, so bars[-1]
+        # is always the correct point-in-time last bar; close is the price.
+        #
+        # The old hasattr(self.broker, "_prices") block was removed (A-002/A-005):
+        # it reached into a FakeBroker-only private attribute that has no
+        # Trading 212 equivalent, producing silently wrong prices in production
+        # for any ticker not already in portfolio.positions.
         prices = {t: pos.last_price for t, pos in portfolio.positions.items()}
-        if self.broker is not None and hasattr(self.broker, "_prices"):
-            for t, p in self.broker._prices.items():
-                if t not in prices:
-                    prices[t] = p
 
-        # Sell stances with no explicit weight (full close) bypass the
-        # downstream weight-level clamps — an audited "sell" is a deliberate,
-        # reasoned full exit and must land at exactly 0.0 even if a clamp
-        # (cash-floor scaling, max-turnover scaling) would otherwise leave
-        # dust shares behind and diverge broker holdings from
-        # ``user:positions`` on the next tick (Spec B / D3 contract trap).
-        # Snapshot the full-close tickers BEFORE clamping; restore target=0.0
-        # AFTER so any incidental clamp rewrite is undone for full closes
-        # only.  Partial trims (sell with explicit weight) remain bound by
-        # the downstream clamps — intended behaviour.
-        _close_tickers = {
-            s.ticker
-            for s in (decision.stances or [])
-            if s.intent == "sell" and s.weight is None   # absent weight = full close
-        }
+        reference_prices: dict = state.get("reference_prices") or {}
+        for sym, payload in reference_prices.items():
+            # Skip tickers the portfolio already prices via last_price.
+            if sym in prices:
+                continue
 
-        # Apply all weight-level hard constraints in order; returns telemetry.
-        weight_clamps = apply_constraints(proposed, current_weights)
+            # Guard: payload must be a dict with a non-empty "bars" list.
+            bars = payload.get("bars") if isinstance(payload, dict) else None
+            if not bars:
+                continue
 
-        # Merge stance-level and weight-level clamp records so the audit trail
-        # captures both categories in a single list.
-        clamps = _stance_clamps + weight_clamps
+            # Guard: bars[-1] must be a dict before calling .get — a malformed
+            # payload (e.g. a bare number or None) would otherwise raise an
+            # opaque AttributeError rather than a clear failure.
+            #
+            # Note: skipping here is NOT silent degradation.  Any ticker that
+            # falls out of ``prices`` will trigger
+            # ``ValueError("no price for <ticker>")`` inside
+            # ``weights_to_orders``, so the malformed payload surfaces loudly
+            # on the very same tick rather than being swallowed.
+            last_bar = bars[-1]
+            if not isinstance(last_bar, dict):
+                continue
 
-        # Restore full exits — sell-with-no-weight always targets 0.0 regardless
-        # of any post-clamp rewrite above.
+            # bars[-1]["close"] is the PIT-clamped last close.
+            close = last_bar.get("close")
+            if close is None:
+                continue
+
+            prices[sym] = float(close)
+
+        # Remove full-close tickers from the clamping domain — they will be
+        # re-added at 0.0 after clamping.  This prevents a max-turnover or
+        # cash-floor rescale from generating a false ClampRecord for a ticker
+        # whose emitted weight is unconditionally 0.0 (the D3 contract
+        # guarantees a full close reaches exactly 0.0, not a scaled delta).
+        proposed_for_clamp = {t: w for t, w in proposed.items() if t not in _close_tickers}
+
+        # Apply all constraints in order: buy-delta (stance-level) first, then
+        # the four weight-level rules.  Full-close tickers are absent from
+        # proposed_for_clamp so no clamp record can be produced for them.
+        # stances/config are required keyword args — omitting either would
+        # silently skip the buy-delta clamp.
+        clamps = apply_constraints(
+            proposed_for_clamp,
+            current_weights,
+            stances=decision.stances or [],
+            config=_rg_config,
+        )
+
+        # Reassemble final proposed: clamped non-close weights + full-close
+        # targets pinned at exactly 0.0 (no restoration needed — they were
+        # never in the clamping domain to begin with).
+        proposed = dict(proposed_for_clamp)
         for _t in _close_tickers:
             proposed[_t] = 0.0
 
-        # Lifecycle check — only closing positions need a recorded reason.
-        # New-open validation is handled earlier by the Strategist callback.
-        # ``sell_reasons`` replaces the former ``close_reasons`` + ``trim_reasons``
-        # split (iter-3 schema rewrite — see StrategistDecision.sell_reasons).
+        # Lifecycle check — only closing positions need an explicit sell stance.
+        # The rationale lives on the stance now (A-013 tail collapse — the
+        # sell_reasons dict was deleted); derive the closing set from stances.
+        selling = {s.ticker for s in (decision.stances or []) if s.intent == "sell"}
         for t, new_w in original_weights.items():
             was_open     = current_weights.get(t, 0.0) >= MIN_HELD_WEIGHT
             will_be_open = new_w >= MIN_HELD_WEIGHT
-            if was_open and not will_be_open and t not in decision.sell_reasons:
+            if was_open and not will_be_open and t not in selling:
                 from agents.strategist.derivation import StrategistContractViolation
                 raise StrategistContractViolation(
-                    f"Closing {t} ({current_weights.get(t)} -> {new_w}) without sell_reason"
+                    f"Closing {t} ({current_weights.get(t)} -> {new_w}) without sell stance"
                 )
 
         orders = weights_to_orders(proposed, portfolio, prices) if self.broker else []
@@ -195,7 +277,3 @@ class RiskGateAgent(BaseAgent):
                 "risk_clamps_applied": risk_clamps_applied,
             }),
         )
-
-
-# Module-level singleton — pipeline uses RiskGateAgent(broker=...) factory instead.
-risk_gate_agent = RiskGateAgent()

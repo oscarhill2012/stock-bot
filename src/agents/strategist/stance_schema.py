@@ -31,8 +31,8 @@ Verb vocabulary
                 close; the thesis row is removed and the trade lands in
                 the trade log.  The standing thesis prose on the row is
                 NOT overwritten — sell is a sizing change, use ``update``
-                to revise the view.  The sell ``rationale`` is captured
-                in ``last_reviewed_reason`` for the audit trail.
+                to revise the view.  The sell ``rationale`` lives on the
+                stance and lands in the audit trail.
 
     update    — revise the prose thesis without trading.  Works whether
                 or not the agent holds a position; if no thesis row exists

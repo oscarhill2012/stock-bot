@@ -71,8 +71,6 @@ class PositionThesis(BaseModel):
     - ``last_reviewed_at`` / ``last_reviewed_decision`` track the most
       recent tick that touched this row.  ``no_action`` touches them on
       held rows so the audit shows the agent re-examined the position.
-    - ``last_reviewed_reason`` is persisted for the audit trail but is
-      NOT rendered into the next tick's prompt (Principle 2).
     - ``thesis_last_updated_tick`` resets only on ``buy``/``update`` —
       never on ``no_action``, so the staleness counter measures real
       revisions, not passive confirmations.
@@ -153,15 +151,6 @@ class PositionThesis(BaseModel):
             "full close deletes the row rather than updating it."
         ),
     )
-    last_reviewed_reason: str = Field(
-        ...,
-        description=(
-            "The strategist's articulation of what's changed on the most "
-            "recent review.  Persisted to the audit trail; NOT rendered "
-            "back into the next tick's prompt."
-        ),
-    )
-
     # ---- Staleness tracking ---------------------------------------------
     thesis_last_updated_tick: int = Field(
         default=0,

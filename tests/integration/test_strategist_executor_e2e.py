@@ -190,7 +190,6 @@ def _build_prior_positions() -> dict:
         rationale               = "strong momentum entering earnings",
         last_reviewed_at        = datetime(2026, 5, 24, 9, 30, 0, tzinfo=UTC),
         last_reviewed_decision  = "buy",
-        last_reviewed_reason    = "strong momentum entering earnings",
         thesis_last_updated_tick = 3,
     )
 
@@ -204,7 +203,6 @@ def _build_prior_positions() -> dict:
         rationale               = "secular AI capex beneficiary",
         last_reviewed_at        = datetime(2026, 5, 23, 9, 30, 0, tzinfo=UTC),
         last_reviewed_decision  = "buy",
-        last_reviewed_reason    = "secular AI capex beneficiary",
         thesis_last_updated_tick = 1,      # old tick index — should advance after update
     )
 
@@ -264,6 +262,25 @@ async def test_three_verb_single_tick_smoke() -> None:
     # A-014: ``temp:executor_positions_bridge`` is removed.  The executor
     # reads ``state["user:positions"]`` for the prior held book (written by
     # the after-callback cross-tick via ADK's DatabaseSessionService).
+    # reference_prices provides the close price for unheld BUY tickers.
+    # MSFT is not in the portfolio, so the risk gate can't derive its price
+    # from portfolio.positions.last_price — it must come from this dict.
+    # AAPL and GOOGL are already held so they are priced via last_price and
+    # don't need an entry here, but including them is harmless (the risk gate
+    # skips tickers already present in the portfolio-derived price map).
+    #
+    # Shape: {ticker: {"ticker": str, "bars": [{"close": float, ...}, ...]}}
+    # — bars[-1]["close"] is the PIT-clamped last close used by the risk gate.
+    _as_of_iso = _AS_OF.isoformat()
+    reference_prices: dict = {
+        sym: {
+            "ticker": sym,
+            "bars": [{"timestamp": _as_of_iso, "open": price, "high": price,
+                      "low": price, "close": price, "volume": 0}],
+        }
+        for sym, price in _PRICES.items()
+    }
+
     state: dict = {
         "tick_id":            "tick-smoke-3v",
         "as_of":              _AS_OF.isoformat(),
@@ -275,14 +292,17 @@ async def test_three_verb_single_tick_smoke() -> None:
         # Staleness counter — executor uses this for thesis_last_updated_tick.
         "user:current_tick_index": 5,
         "strategist_decision": _build_decision(),
+        # Prices for unheld BUY tickers (MSFT).  Required by the risk gate
+        # after the broker._prices reach-in was removed (A-002/A-005).
+        "reference_prices":   reference_prices,
     }
 
     ctx = _make_ctx(state)
 
     # ── Step 1: risk gate ──────────────────────────────────────────────────────
     # After running ``derive_decision_fields`` (via validate_and_enrich in the
-    # enricher), the decision already carries ``target_weights`` and
-    # ``sell_reasons``.  The risk gate consumes those to generate final_orders.
+    # enricher), the decision already carries ``target_weights``.
+    # The risk gate consumes those to generate final_orders.
     #
     # In the real pipeline the StrategistEnricher runs before the risk gate and
     # enriches the decision.  Here we call validate_and_enrich explicitly to
@@ -417,8 +437,10 @@ async def test_three_verb_single_tick_smoke() -> None:
     assert googl_thesis["last_reviewed_decision"] == "update", (
         "GOOGL last_reviewed_decision must be 'update' after an update stance"
     )
-    assert "still bullish" in googl_thesis["last_reviewed_reason"], (
-        "GOOGL last_reviewed_reason must contain the update reason"
+    # last_reviewed_reason was removed (A-013 tail); the update reason now lives
+    # in rationale — the verb-dispatch ``update`` branch sets rationale = stance.rationale.
+    assert "still bullish" in googl_thesis["rationale"], (
+        "GOOGL rationale must contain the update reason (last_reviewed_reason removed A-013)"
     )
 
     # thesis_last_updated_tick must have advanced to the current tick index (5),
