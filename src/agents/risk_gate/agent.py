@@ -23,6 +23,15 @@ from .orders import weights_to_orders
 _NO_RISK_GATE_INTENTS: Final[frozenset[str]] = frozenset({"update", "no_action"})
 
 
+class RiskGateInputError(RuntimeError):
+    """Raised when RiskGate is invoked with missing or malformed inputs.
+
+    These are wiring bugs — the strategist contract guarantees a decision
+    object on every tick (even one with stances=[]). Falling through silently
+    would hide pipeline breakage as 'no orders this tick'.
+    """
+
+
 class RiskGateAgent(BaseAgent):
     """Pure-Python deterministic agent that sits between the Strategist and the Executor.
 
@@ -51,7 +60,13 @@ class RiskGateAgent(BaseAgent):
         state = ctx.session.state
         decision_raw = state.get("strategist_decision")
         if not decision_raw:
-            return
+            # A-001 — silent return masked upstream wiring breakage. The strategist
+            # contract guarantees a decision (even one with stances=[]) on every
+            # tick; absence here means the pipeline is broken, not "no orders".
+            raise RiskGateInputError(
+                "risk_gate invoked without strategist_decision — strategist "
+                "must produce a (possibly empty) StrategistDecision every tick"
+            )
 
         decision = (
             StrategistDecision.model_validate(decision_raw)
