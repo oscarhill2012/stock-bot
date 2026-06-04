@@ -277,7 +277,3 @@ class RiskGateAgent(BaseAgent):
                 "risk_clamps_applied": risk_clamps_applied,
             }),
         )
-
-
-# Module-level singleton — pipeline uses RiskGateAgent(broker=...) factory instead.
-risk_gate_agent = RiskGateAgent()
