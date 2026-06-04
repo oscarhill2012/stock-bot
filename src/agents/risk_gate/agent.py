@@ -103,10 +103,32 @@ class RiskGateAgent(BaseAgent):
                 # we simply leave it absent from ``proposed`` too.
                 proposed.pop(_ticker, None)
 
-        # Snapshot pre-clamp weights for lifecycle validation below.
+        # A-034 — full closes (sell with weight=None) bypass clamps because
+        # capping them at a max-turnover or cash-floor scale would leave
+        # dust shares behind (D3 contract trap).  Excluding them from
+        # ``proposed`` before ``apply_constraints`` means the clamp
+        # telemetry reflects what actually constrained output — the old
+        # post-clamp restoration write that used to live here distorted
+        # telemetry and is now removed.
+        _close_tickers = {
+            s.ticker
+            for s in (decision.stances or [])
+            if s.intent == "sell" and s.weight is None   # absent weight = full close
+        }
+
+        # Snapshot the full proposed dict (including full-close tickers at 0.0)
+        # BEFORE exclusion — the lifecycle check below iterates ``original_weights``
+        # to detect closings and needs to see AAPL (weight → 0.0) even though it
+        # will be excluded from the clamping domain.
         original_weights = dict(proposed)
 
         # Surface trace — record the weights entering the clamp loop.
+        # NOTE: ``proposed`` at this point still includes full-close tickers at
+        # 0.0 (e.g. AAPL when the strategist emits a weight=None sell stance).
+        # Those tickers are excluded from ``proposed_for_clamp`` (built below)
+        # and therefore never enter the clamp domain — they will not generate
+        # any ClampRecord.  The trace key is intentionally kept as
+        # ``"06_risk_gate_in"`` so dashboards are not broken by a rename.
         _trace_maybe(state, "06_risk_gate_in", {"proposed_weights": proposed})
 
         # A-072: consume state['portfolio'] (refreshed at Phase 2) rather
@@ -187,31 +209,25 @@ class RiskGateAgent(BaseAgent):
 
             prices[sym] = float(close)
 
-        # Sell stances with no explicit weight (full close) bypass the
-        # downstream weight-level clamps — an audited "sell" is a deliberate,
-        # reasoned full exit and must land at exactly 0.0 even if a clamp
-        # (cash-floor scaling, max-turnover scaling) would otherwise leave
-        # dust shares behind and diverge broker holdings from
-        # ``user:positions`` on the next tick (Spec B / D3 contract trap).
-        # Snapshot the full-close tickers BEFORE clamping; restore target=0.0
-        # AFTER so any incidental clamp rewrite is undone for full closes
-        # only.  Partial trims (sell with explicit weight) remain bound by
-        # the downstream clamps — intended behaviour.
-        _close_tickers = {
-            s.ticker
-            for s in (decision.stances or [])
-            if s.intent == "sell" and s.weight is None   # absent weight = full close
-        }
+        # Remove full-close tickers from the clamping domain — they will be
+        # re-added at 0.0 after clamping.  This prevents a max-turnover or
+        # cash-floor rescale from generating a false ClampRecord for a ticker
+        # whose emitted weight is unconditionally 0.0 (the D3 contract
+        # guarantees a full close reaches exactly 0.0, not a scaled delta).
+        proposed_for_clamp = {t: w for t, w in proposed.items() if t not in _close_tickers}
 
         # Apply all weight-level hard constraints in order; returns telemetry.
-        weight_clamps = apply_constraints(proposed, current_weights)
+        # Full-close tickers are absent so no clamp record can be produced for them.
+        weight_clamps = apply_constraints(proposed_for_clamp, current_weights)
 
         # Merge stance-level and weight-level clamp records so the audit trail
         # captures both categories in a single list.
         clamps = _stance_clamps + weight_clamps
 
-        # Restore full exits — sell-with-no-weight always targets 0.0 regardless
-        # of any post-clamp rewrite above.
+        # Reassemble final proposed: clamped non-close weights + full-close
+        # targets pinned at exactly 0.0 (no restoration needed — they were
+        # never in the clamping domain to begin with).
+        proposed = dict(proposed_for_clamp)
         for _t in _close_tickers:
             proposed[_t] = 0.0
 

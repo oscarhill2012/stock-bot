@@ -1,4 +1,5 @@
-"""Unit tests for the risk-gate buy-delta clamp (Task 10 — iter-3 schema rewrite).
+"""Unit tests for the risk-gate buy-delta clamp (Task 10 — iter-3 schema rewrite),
+and for the full-close clamp-telemetry fix (A-034).
 
 The risk gate's ``apply_buy_delta_clamp`` helper enforces a per-trade delta
 cap on buy stances before their target weights reach the constraint loop.
@@ -6,6 +7,15 @@ This is defence-in-depth: the ``TickerStance`` schema already forbids
 ``weight > 0.05`` at construction time; the risk-gate clamp fires if a
 caller ever bypasses that validation (e.g. by constructing the object via
 ``model_construct`` without validators).
+
+A-034 fix — full-close bypass
+------------------------------
+Full-close stances (sell with weight=None) must be excluded from the
+clamping domain entirely.  The old code included them in ``proposed`` before
+calling ``apply_constraints``, then restored 0.0 afterwards — meaning a
+max_turnover rescale could produce a false ClampRecord for the ticker even
+though the emitted weight was forced back to 0.0.  The fix excludes them
+up-front so no clamp record is generated.
 
 Interface under test
 --------------------
@@ -175,3 +185,133 @@ def test_position_cap_clamp_fires_via_apply_constraints():
     assert position_clamps, "expected a max_position ClampRecord"
     assert position_clamps[0].ticker == "AAPL"
     assert position_clamps[0].after == pytest.approx(0.20)
+
+
+# ── A-034: full-close clamp-telemetry fix ────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_full_close_does_not_appear_in_clamp_telemetry(
+    fake_broker_factory,
+    _invocation_context_with_state,
+):
+    """A-034 — full-close (sell with weight=None) must bypass clamp logic
+    entirely.  ``risk_clamps_applied`` must NOT contain a record for the
+    closed ticker.
+
+    Scenario
+    --------
+    AAPL is held at weight ~0.20 in the portfolio.  The strategist emits a
+    full-close sell stance for AAPL (weight=None) alongside two max-sized buy
+    stances (NVDA 0.20, MSFT 0.20).  Total turnover = 0.20 (AAPL close
+    delta) + 0.20 (NVDA) + 0.20 (MSFT) = 0.60, which exceeds
+    ``max_total_turnover = 0.50``.
+
+    OLD behaviour: ``apply_constraints`` ran with AAPL at 0.0 in the
+    proposed dict; the max-turnover rescale changed AAPL's weight to a
+    positive dust value and emitted a ``max_turnover`` ClampRecord for it;
+    the restoration loop wrote it back to 0.0 but the false ClampRecord
+    persisted in telemetry.
+
+    FIXED behaviour: AAPL is excluded from ``proposed`` before
+    ``apply_constraints`` runs, so no clamp record for AAPL is ever
+    generated.  The emitted order is still a full SELL.
+
+    Portfolio construction
+    ----------------------
+    Portfolio total = £100 000.
+    AAPL position: 20 shares × £1 000 = £20 000 market value.
+    Cash: £80 000.
+    Total: £100 000 → AAPL weight = 0.20.
+    """
+    from agents.strategist.stance_schema import TickerStance
+    from agents.risk_gate.agent import RiskGateAgent
+    from broker.portfolio import Portfolio, Position
+
+    # ── Build a portfolio where AAPL is held at exactly 0.20 weight ──────────
+    # Total portfolio = cash (£80 000) + AAPL (20 shares × £1 000 = £20 000)
+    # → AAPL weight = 20 000 / 100 000 = 0.20.
+    aapl_position = Position(quantity=20, avg_cost=1000.0, last_price=1000.0)
+    portfolio = Portfolio(
+        cash=80_000.0,
+        positions={"AAPL": aapl_position},
+    )
+
+    # ── Stances: full close AAPL + two max-delta buys (NVDA, MSFT) ──────────
+    # The two buys push total turnover to 0.60 (> max_total_turnover 0.50),
+    # triggering the max_turnover clamp.  Under the old code that clamp would
+    # also produce a false ClampRecord for AAPL.
+    # Build the stances manually.  We need AAPL in sell_reasons so the
+    # lifecycle check (which requires a reason for any closing position)
+    # does not fire before we reach the clamp-telemetry assertion.
+    # ``_decision_with_stances`` hardcodes sell_reasons={}, so we build
+    # the StrategistDecision directly here.
+    #
+    # NOTE (Task 8): when Task 8 deletes ``sell_reasons`` from
+    # ``StrategistDecision``, revert this inline construction back to the
+    # ``_decision_with_stances`` helper and drop the ``sell_reasons`` field
+    # entirely.  Search for "sell_reasons" in this file to find all
+    # affected sites.
+    from agents.strategist.schema import StrategistDecision
+
+    stances = [
+        TickerStance(ticker="AAPL", intent="sell", weight=None, rationale="thesis broken"),
+        TickerStance(ticker="NVDA", intent="buy",  weight=0.20, rationale="strong momentum"),
+        TickerStance(ticker="MSFT", intent="buy",  weight=0.20, rationale="earnings catalyst"),
+    ]
+    decision = StrategistDecision(
+        stances        = stances,
+        # Full close lands at 0.0; buys contribute their delta weights.
+        target_weights = {"AAPL": 0.0, "NVDA": 0.20, "MSFT": 0.20},
+        decision_tag   = "test_a034",
+        reasoning      = "A-034 telemetry regression test",
+        confidence     = 0.5,
+        # sell_reasons must include AAPL so the lifecycle guard does not raise.
+        sell_reasons   = {"AAPL": "thesis broken — exiting fully"},
+        update_reasons = {},
+    )
+
+    # ── Seed reference_prices so NVDA and MSFT can be priced for order sizing
+    reference_prices = {
+        "NVDA": {"bars": [{"close": 500.0}]},
+        "MSFT": {"bars": [{"close": 300.0}]},
+    }
+
+    ctx = _invocation_context_with_state(state={
+        "strategist_decision": decision.model_dump(mode="json"),
+        "portfolio":           portfolio.model_dump(mode="json"),
+        "reference_prices":    reference_prices,
+    })
+
+    # Broker is required for orders to be generated (passed as non-None).
+    broker = fake_broker_factory(
+        positions={"AAPL": {"quantity": 20, "avg_cost": 1000.0, "last_price": 1000.0}},
+        prices={"AAPL": 1000.0, "NVDA": 500.0, "MSFT": 300.0},
+    )
+    agent = RiskGateAgent(broker=broker)
+
+    # ── Run the agent and collect the single emitted event ───────────────────
+    events = [e async for e in agent._run_async_impl(ctx)]
+    assert len(events) == 1, "risk gate must emit exactly one event"
+
+    delta = events[0].actions.state_delta
+
+    # ── Assert: AAPL must NOT appear in clamp telemetry ──────────────────────
+    # ClampRecords are serialised to dicts via model_dump() in the agent —
+    # the state_delta contains plain dicts, not ClampRecord objects.
+    risk_clamps_applied = delta.get("risk_clamps_applied", [])
+    aapl_clamps = [c for c in risk_clamps_applied if c.get("ticker") == "AAPL"]
+    assert aapl_clamps == [], (
+        "Full-close must not produce clamp telemetry — clamping a full-close "
+        "ticker distorts the audit trail (the restoration to 0.0 meant the "
+        "clamp did not constrain the emitted weight)."
+    )
+
+    # ── Assert: a SELL order must still be emitted for AAPL ──────────────────
+    final_orders = delta.get("final_orders", [])
+    aapl_orders = [o for o in final_orders if o.get("ticker") == "AAPL"]
+    assert len(aapl_orders) == 1, "expected exactly one AAPL order"
+    assert aapl_orders[0]["action"] == "SELL", (
+        "full-close must still generate a SELL order even though it bypasses "
+        "the clamp domain"
+    )
