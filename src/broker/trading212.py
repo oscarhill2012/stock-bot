@@ -107,11 +107,21 @@ class Trading212Broker:
 
         # Reverse the instrument map so we can convert T212 codes back to tickers.
         rev = {v: k for k, v in self._instruments.items()}
+
+        # Detect unknown instrument codes up-front and raise so concentration
+        # clamps + BUY->SELL bridge cannot operate on a silently-shrunken
+        # portfolio.  A stale instrument_map is a deployment bug, not a
+        # per-position degradation to be swallowed.
+        unknown_codes = [it["ticker"] for it in items if it["ticker"] not in rev]
+        if unknown_codes:
+            raise BrokerRejection(
+                f"Trading 212 returned positions for unknown instrument codes: "
+                f"{sorted(unknown_codes)}. Refresh instrument_map at startup."
+            )
+
         positions: dict[str, Position] = {}
         for it in items:
             code = it["ticker"]
-            if code not in rev:
-                continue
             positions[rev[code]] = Position(
                 quantity=float(it["quantity"]),
                 avg_cost=float(it["averagePrice"]),

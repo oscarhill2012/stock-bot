@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from broker.protocol import BrokerRejection
 from broker.trading212 import Trading212Broker
 
 
@@ -127,3 +128,36 @@ async def test_submit_market_does_not_await_sync_json():
     # `await resp.json()`, awaiting a MagicMock's return value would raise
     # TypeError before we ever reach these assertions — that failure is the signal.
     response.json.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_get_portfolio_raises_on_unknown_instrument_code():
+    """T212 may return positions in instruments the local map does not know
+    about (instrument map stale).  Silently dropping them shrinks the
+    portfolio that concentration clamps + BUY->SELL bridge see, causing
+    over-allocation.  The fix raises BrokerRejection listing the offenders.
+    """
+    cash_resp = MagicMock()
+    cash_resp.raise_for_status = MagicMock(return_value=None)
+    cash_resp.json = MagicMock(return_value={"free": 5_000.0})
+
+    port_resp = MagicMock()
+    port_resp.raise_for_status = MagicMock(return_value=None)
+    port_resp.json = MagicMock(return_value=[
+        {"ticker": "AAPL_US_EQ", "quantity": 1.0,
+         "averagePrice": 100.0, "currentPrice": 110.0},
+        # Unknown instrument code — not in the local instrument_map.
+        {"ticker": "XYZ_US_EQ",  "quantity": 5.0,
+         "averagePrice": 50.0,  "currentPrice": 55.0},
+    ])
+
+    client = MagicMock()
+    client.get = AsyncMock(side_effect=[cash_resp, port_resp])
+
+    b = Trading212Broker(
+        mode="paper", api_key="K",
+        http_client=client, instrument_map={"AAPL": "AAPL_US_EQ"},
+    )
+
+    with pytest.raises(BrokerRejection, match="XYZ_US_EQ"):
+        await b.get_portfolio()
