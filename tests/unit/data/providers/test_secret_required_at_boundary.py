@@ -11,7 +11,8 @@ from data.secrets import SecretMissingError
 
 
 @pytest.mark.asyncio
-async def test_tiingo_news_raises_without_api_key(monkeypatch):
+async def test_tiingo_news_raises_without_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Missing ``TIINGO_API_KEY`` must raise ``SecretMissingError``, never return ``[]``."""
     monkeypatch.delenv("TIINGO_API_KEY", raising=False)
     from data.providers.news import tiingo
     with pytest.raises(SecretMissingError, match="TIINGO_API_KEY"):
@@ -24,7 +25,8 @@ async def test_tiingo_news_raises_without_api_key(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_quiver_politician_trades_raises_without_api_key(monkeypatch):
+async def test_quiver_politician_trades_raises_without_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Missing ``QUIVER_QUANT_API_KEY`` must raise ``SecretMissingError``, never return ``[]``."""
     monkeypatch.delenv("QUIVER_QUANT_API_KEY", raising=False)
     from data.providers.politician_trades import quiver
     with pytest.raises(SecretMissingError, match="QUIVER_QUANT_API_KEY"):
@@ -36,7 +38,8 @@ async def test_quiver_politician_trades_raises_without_api_key(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_fmp_politician_trades_raises_without_api_key(monkeypatch):
+async def test_fmp_politician_trades_raises_without_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Missing ``FMP_API_KEY`` must raise ``SecretMissingError``, never return ``[]``."""
     monkeypatch.delenv("FMP_API_KEY", raising=False)
     from data.providers.politician_trades import fmp
     with pytest.raises(SecretMissingError, match="FMP_API_KEY"):

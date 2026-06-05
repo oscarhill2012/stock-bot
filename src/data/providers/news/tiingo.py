@@ -15,7 +15,6 @@ rather than leaving the key absent.
 from __future__ import annotations
 
 import asyncio
-import logging
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -26,8 +25,6 @@ from data.retry import with_retry
 from data.secrets import require_key
 
 from ...models import NewsArticle
-
-logger = logging.getLogger(__name__)
 
 _BASE_URL     = "https://api.tiingo.com/tiingo/news"
 _HTTP_TIMEOUT = 15.0

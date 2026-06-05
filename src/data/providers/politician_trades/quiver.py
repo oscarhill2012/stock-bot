@@ -6,7 +6,6 @@ mis-configuration is surfaced loudly rather than silently returning no data.
 from __future__ import annotations
 
 import asyncio
-import logging
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -20,8 +19,6 @@ from data.secrets import require_key
 from ...models import PoliticianTrade, TradeSide
 
 _BASE_URL = "https://api.quiverquant.com/beta"
-
-logger = logging.getLogger(__name__)
 
 _SIDE_MAP: dict[str, TradeSide] = {
     "purchase": "buy",

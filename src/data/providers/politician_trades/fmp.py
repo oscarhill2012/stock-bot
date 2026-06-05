@@ -14,7 +14,6 @@ mis-configuration is surfaced loudly rather than silently returning no data.
 from __future__ import annotations
 
 import asyncio
-import logging
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -25,8 +24,6 @@ from data.retry import with_retry
 from data.secrets import require_key
 
 from ...models import PoliticianTrade, TradeSide
-
-logger = logging.getLogger(__name__)
 
 _BASE_URL     = "https://financialmodelingprep.com/api/v4"
 _HTTP_TIMEOUT = 15.0
