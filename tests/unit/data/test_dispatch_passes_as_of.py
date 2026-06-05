@@ -81,18 +81,20 @@ async def test_get_stock_news_dispatches_cleanly(monkeypatch: pytest.MonkeyPatch
 async def test_get_public_figure_trades_dispatches_cleanly(monkeypatch: pytest.MonkeyPatch) -> None:
     """``get_public_figure_trades`` must not TypeError when calling the active provider.
 
-    The active provider is ``fmp`` (Financial Modeling Prep), whose
-    ``/senate-disclosure`` endpoint returns 403 on the free tier — any
-    real HTTP call here yields a false fail.  Mirror the original
-    intent (which unset Quiver's key) by unsetting ``FMP_API_KEY`` so
-    the provider hits its documented soft-fail branch and returns ``[]``
-    without issuing any request.  The wrapper's ``as_of`` plumbing is
-    still exercised; only the network layer is skipped.
+    The active provider is ``fmp`` (Financial Modeling Prep).  We stub
+    ``require_key`` and both network functions so no HTTP call or real key is
+    needed.  The wrapper's ``as_of`` plumbing is what is being exercised here.
     """
+    import data.providers.politician_trades.fmp as fmp_mod
     from data import get_public_figure_trades
 
-    monkeypatch.delenv("FMP_API_KEY",         raising=False)
-    monkeypatch.delenv("QUIVER_QUANT_API_KEY", raising=False)
+    # Stub key lookup — returns a dummy string without touching .env.
+    monkeypatch.setattr(fmp_mod, "require_key", lambda _env_var: "test-key")
+
+    # Stub both network calls — return empty lists so the fetch completes
+    # cleanly without issuing any real HTTP request.
+    monkeypatch.setattr(fmp_mod, "_fetch_senate", lambda symbol, key: [])
+    monkeypatch.setattr(fmp_mod, "_fetch_house",  lambda symbol, key: [])
 
     out = await get_public_figure_trades("AAPL", as_of=datetime(2023, 3, 15, tzinfo=UTC))
     assert out == []

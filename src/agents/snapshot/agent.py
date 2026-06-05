@@ -1,6 +1,7 @@
 """Snapshotter — records equity curve after every tick."""
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncGenerator
 from typing import Any
 
@@ -10,6 +11,8 @@ from google.adk.events import Event, EventActions
 
 from broker.portfolio import Portfolio
 from data.timeguard import resolve_as_of
+
+logger = logging.getLogger(__name__)
 
 
 class SnapshotterAgent(BaseAgent):
@@ -58,13 +61,23 @@ class SnapshotterAgent(BaseAgent):
         # Fetch the latest SPY close via the registered price-history provider
         # so the call honours STOCKBOT_STRICT_AS_OF and goes through the cache
         # in backtest replays (instead of leaking the wall-clock SPY price into
-        # historical snapshots).  Live runs dispatch to the yfinance provider
-        # and degrade cleanly to "today's close".  Falls back to 0.0 on any
-        # provider failure so a single bad bar can never abort the tick.
-        spy_price = 0.0
+        # historical snapshots).  Live runs dispatch to the yfinance provider.
+        #
+        # A bare ``except: spy_price = 0.0`` silently destroys every return
+        # calc, because the first tick anchors ``spy_start_price``; a 0.0
+        # anchor turns every subsequent ``(spy_price - 0) / 0 * 100`` into
+        # nonsense.  Policy:
+        #   * First tick (no ``spy_start_price`` yet) — re-raise, since the
+        #     anchor is load-bearing and cannot be reconstructed later.
+        #   * Subsequent ticks — log a WARNING with traceback and reuse
+        #     ``state["last_spy_price"]`` (the prior tick's value).  Never
+        #     silently substitute 0.0.
+        from data import get_price_history
+
+        tick_phase = state.get("tick_phase")
+        first_tick = "spy_start_price" not in state
+
         try:
-            from data import get_price_history
-            tick_phase = state.get("tick_phase")
             spy_hist = await get_price_history(
                 "SPY",
                 period   = "5d",
@@ -72,10 +85,37 @@ class SnapshotterAgent(BaseAgent):
                 as_of    = recorded_at,
                 phase    = tick_phase,
             )
-            if spy_hist.bars:
-                spy_price = float(spy_hist.bars[-1].close)
-        except Exception:  # noqa: BLE001 — defensive; never crash the tick
-            spy_price = 0.0
+            if not spy_hist.bars:
+                raise RuntimeError(
+                    f"SPY price history returned no bars at "
+                    f"as_of={recorded_at.isoformat()}"
+                )
+            spy_price = float(spy_hist.bars[-1].close)
+        except Exception:
+            if first_tick:
+                # Re-raise — anchoring at 0.0 would permanently break the run.
+                logger.exception(
+                    "snapshotter: SPY fetch failed on first tick at %s; "
+                    "refusing to anchor spy_start_price at 0.0",
+                    recorded_at.isoformat(),
+                )
+                raise
+            prior = state.get("last_spy_price")
+            if prior is None or float(prior) <= 0.0:
+                logger.exception(
+                    "snapshotter: SPY fetch failed at %s and no prior anchor "
+                    "available", recorded_at.isoformat(),
+                )
+                raise
+            logger.warning(
+                "snapshotter: SPY fetch failed at %s; reusing "
+                "last_spy_price=%.4f", recorded_at.isoformat(), float(prior),
+                exc_info=True,
+            )
+            spy_price = float(prior)
+
+        # Cache for the next tick's fallback path.
+        state["last_spy_price"] = spy_price
 
         # Anchor starting capital and SPY price on the very first tick.
         if "starting_capital" not in state:

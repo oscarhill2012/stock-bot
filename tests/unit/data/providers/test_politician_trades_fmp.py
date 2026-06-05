@@ -9,15 +9,6 @@ from data.models import PoliticianTrade
 
 
 @pytest.mark.asyncio
-async def test_fmp_soft_fails_without_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    import data.providers.politician_trades.fmp as mod
-    monkeypatch.delenv("FMP_API_KEY", raising=False)
-
-    out = await mod.fetch("AAPL", as_of=datetime(2023, 3, 15, tzinfo=UTC))
-    assert out == []
-
-
-@pytest.mark.asyncio
 async def test_fmp_merges_senate_and_house(monkeypatch: pytest.MonkeyPatch) -> None:
     import data.providers.politician_trades.fmp as mod
     monkeypatch.setenv("FMP_API_KEY", "fake")

@@ -721,11 +721,13 @@ async def test_alpha_vantage_accepts_datetime_for_from_date(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_alpha_vantage_reversed_window_returns_empty(monkeypatch):
-    """A reversed window (``from_date > to_date``) returns ``[]`` without an API call.
+async def test_alpha_vantage_reversed_window_raises(monkeypatch):
+    """A reversed window (``from_date > to_date``) raises ``ValueError`` without an API call.
 
-    Defensive guard — prevents ``_chunk_window`` from looping forever and
-    avoids burning a request on an obviously-broken caller.
+    The previous behaviour was to silently return ``[]``, which masked backtest
+    mis-windowing — an inexplicably empty newsfeed was indistinguishable from a
+    genuine zero-article window.  Raising means the offending bounds surface
+    immediately in the caller's stack trace.
     """
     from data.providers.news import alpha_vantage as mod
 
@@ -746,12 +748,13 @@ async def test_alpha_vantage_reversed_window_returns_empty(monkeypatch):
     monkeypatch.setattr(mod, "require_key", lambda _: "test-token")
     monkeypatch.setattr(mod.httpx, "AsyncClient", lambda *a, **k: _TrackingCM())
 
-    out = await mod.fetch(
-        "AAPL",
-        as_of=date(2023, 3, 12),
-        from_date=date(2023, 3, 20),
-        to_date=date(2023, 3, 10),
-    )
+    with pytest.raises(ValueError, match="reversed news window"):
+        await mod.fetch(
+            "AAPL",
+            as_of=date(2023, 3, 12),
+            from_date=date(2023, 3, 20),
+            to_date=date(2023, 3, 10),
+        )
 
-    assert out == []
+    # The raise must happen before any API call — no request should escape.
     assert call_count == 0

@@ -17,6 +17,15 @@ from ...models import SocialSentiment, SocialSentimentSnapshot
 logger = logging.getLogger(__name__)
 
 
+class PremiumGatedError(RuntimeError):
+    """Raised when Finnhub returns a 403 on the premium-only social
+    sentiment endpoint.
+
+    Distinct from arbitrary API errors so consumers may choose to soft-fail
+    this specific case without masking real auth/rate-limit/server failures.
+    """
+
+
 def _client() -> finnhub.Client:
     return finnhub.Client(api_key=require_key("FINNHUB_API_KEY"))
 
@@ -77,12 +86,15 @@ async def fetch(
     try:
         payload = await asyncio.to_thread(_fetch_social, symbol)
     except finnhub.FinnhubAPIException as exc:
-        # Premium-only endpoint — free-tier accounts receive a 403.  Soft-fail
-        # to an empty SocialSentiment so the pipeline continues without crashing.
-        logger.warning(
-            "social_sentiment/finnhub: soft-fail for %s (%s)", symbol, exc
-        )
-        return SocialSentiment(ticker=symbol, snapshots=[], aggregate_score=0.0)
+        # The premium-only endpoint returns 403 on the free tier.  Promote
+        # exactly that condition to a typed PremiumGatedError; every other API
+        # error (auth, 429, 5xx) raises through so the operator notices instead
+        # of silently receiving an empty SocialSentiment.
+        if getattr(exc, "status_code", None) == 403:
+            raise PremiumGatedError(
+                f"social_sentiment/finnhub: premium-gated for {symbol} ({exc})"
+            ) from exc
+        raise
 
     snapshots = [
         _summarise(payload.get("reddit") or [], "reddit"),
