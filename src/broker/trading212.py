@@ -55,7 +55,10 @@ class Trading212Broker:
                 headers=self._headers(),
             )
             resp.raise_for_status()
-            data = await resp.json() if callable(getattr(resp, "json", None)) else resp.json()
+            # httpx.Response.json() is synchronous even on AsyncClient.  The previous
+            # "await ... if callable(...)" hedge papered over an AsyncMock-shaped test
+            # and would TypeError against real httpx.
+            data = resp.json()
         except httpx.HTTPStatusError as e:
             raise BrokerRejection(f"HTTP {e.response.status_code}: {e.response.text}") from e
 
@@ -74,7 +77,10 @@ class Trading212Broker:
             headers=self._headers(),
         )
         resp.raise_for_status()
-        data = await resp.json() if callable(getattr(resp, "json", None)) else resp.json()
+        # httpx.Response.json() is synchronous even on AsyncClient.  The previous
+        # "await ... if callable(...)" hedge papered over an AsyncMock-shaped test
+        # and would TypeError against real httpx.
+        data = resp.json()
 
         code = self._instrument(ticker)
         for pos in data:
@@ -89,7 +95,10 @@ class Trading212Broker:
             headers=self._headers(),
         )
         acct.raise_for_status()
-        acct_data = await acct.json() if callable(getattr(acct, "json", None)) else acct.json()
+        # httpx.Response.json() is synchronous even on AsyncClient.  The previous
+        # "await ... if callable(...)" hedge papered over an AsyncMock-shaped test
+        # and would TypeError against real httpx.
+        acct_data = acct.json()
         cash = float(acct_data["free"])
 
         port = await self._client.get(
@@ -97,7 +106,10 @@ class Trading212Broker:
             headers=self._headers(),
         )
         port.raise_for_status()
-        items = await port.json() if callable(getattr(port, "json", None)) else port.json()
+        # httpx.Response.json() is synchronous even on AsyncClient.  The previous
+        # "await ... if callable(...)" hedge papered over an AsyncMock-shaped test
+        # and would TypeError against real httpx.
+        items = port.json()
 
         # Reverse the instrument map so we can convert T212 codes back to tickers.
         rev = {v: k for k, v in self._instruments.items()}
