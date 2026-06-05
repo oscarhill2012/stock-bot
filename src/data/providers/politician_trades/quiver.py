@@ -1,9 +1,12 @@
-"""Quiver Quant congressional-trades provider (soft-fail when key is unset)."""
+"""Quiver Quant congressional-trades provider.
+
+Raises ``SecretMissingError`` when ``QUIVER_QUANT_API_KEY`` is unset so that
+mis-configuration is surfaced loudly rather than silently returning no data.
+"""
 from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -12,6 +15,7 @@ import requests
 from data.config import get_config
 from data.registry import register
 from data.retry import with_retry
+from data.secrets import require_key
 
 from ...models import PoliticianTrade, TradeSide
 
@@ -133,8 +137,8 @@ async def fetch(
     """Congressional trades for ``ticker`` reported within ``(as_of - lookback_days, as_of]``.
 
     Anchored on ``as_of`` so backfill never returns trades that did not yet
-    exist at the historical moment.  Soft-fails to ``[]`` when
-    ``QUIVER_QUANT_API_KEY`` is unset (free tier unavailable).
+    exist at the historical moment.  Raises ``SecretMissingError`` when
+    ``QUIVER_QUANT_API_KEY`` is unset.
 
     Parameters
     ----------
@@ -150,12 +154,7 @@ async def fetch(
         (e.g. ``window_start``, ``window_end``) so callers need not know the
         exact signature of each registered provider.
     """
-    api_key = os.getenv("QUIVER_QUANT_API_KEY")
-    if not api_key:
-        # Soft-fail: free tier unavailable. EDGAR's notable_holders carries
-        # the smart-money signal until the key returns.
-        logger.debug("QUIVER_QUANT_API_KEY unset — fetch returning []")
-        return []
+    api_key = require_key("QUIVER_QUANT_API_KEY")
 
     symbol  = ticker.upper() if ticker else None
     payload = await asyncio.to_thread(_load_rows, symbol, api_key)

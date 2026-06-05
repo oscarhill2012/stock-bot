@@ -8,13 +8,13 @@ Both feeds use the same JSON row shape (``transactionDate``, ``disclosureDate``,
 ``firstName``, ``lastName``, ``office``, ``type``, ``amount``).  This provider
 merges them, then applies the standard ``as_of`` cutoff + lookback window.
 
-Soft-fails to ``[]`` when ``FMP_API_KEY`` is unset.
+Raises ``SecretMissingError`` when ``FMP_API_KEY`` is unset so that
+mis-configuration is surfaced loudly rather than silently returning no data.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -22,6 +22,7 @@ import requests
 
 from data.registry import register
 from data.retry import with_retry
+from data.secrets import require_key
 
 from ...models import PoliticianTrade, TradeSide
 
@@ -226,7 +227,9 @@ async def fetch(
     the same PIT cutoff as the cache reader: the effective date is
     ``COALESCE(disclosure_date, transaction_date)`` — whichever is known first.
 
-    Soft-fails to ``[]`` when ``FMP_API_KEY`` is unset (no credentials configured).
+    Raises ``SecretMissingError`` when ``FMP_API_KEY`` is unset.  Raises
+    ``ValueError`` when ``ticker`` is empty — FMP requires a symbol and an
+    empty ticker is a caller bug, not a recoverable condition.
 
     Parameters
     ----------
@@ -248,14 +251,12 @@ async def fetch(
     list[PoliticianTrade]
         Filtered, merged trades from both FMP congressional-disclosure feeds.
     """
-    api_key = os.getenv("FMP_API_KEY")
-    if not api_key:
-        logger.debug("FMP_API_KEY unset — fetch returning []")
-        return []
+    api_key = require_key("FMP_API_KEY")
 
     symbol = (ticker or "").upper()
     if not symbol:
-        return []
+        # Empty ticker is a caller bug, not an API-key issue.
+        raise ValueError("fmp.politician_trades: ticker is required and was empty")
 
     # Fetch both endpoints concurrently to minimise latency.
     senate, house = await asyncio.gather(

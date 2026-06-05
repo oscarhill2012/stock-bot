@@ -7,14 +7,15 @@ Returns up to 1000 articles per call.  We pass ``startDate``/``endDate`` from
 ``from_date``/``to_date`` so backfill receives PIT-correct news.  Live callers
 that omit those defaults to ``(as_of - 7d, as_of.date())`` via the wrapper.
 
-Soft-fails to ``[]`` when ``TIINGO_API_KEY`` is unset so the live pipeline can
-fall back to another news provider via config.
+Raises ``SecretMissingError`` when ``TIINGO_API_KEY`` is unset so that
+mis-configuration is surfaced loudly rather than silently returning no data.
+To use a different news provider, switch ``config/data.json`` providers[news]
+rather than leaving the key absent.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -22,6 +23,7 @@ import requests
 
 from data.registry import register
 from data.retry import with_retry
+from data.secrets import require_key
 
 from ...models import NewsArticle
 
@@ -121,7 +123,8 @@ async def fetch(
     """News articles for ``ticker`` published in ``[from_date, to_date]``.
 
     Tiingo applies the date filter server-side so we only need to project
-    each row into a ``NewsArticle``.  Returns ``[]`` on missing API key.
+    each row into a ``NewsArticle``.  Raises ``SecretMissingError`` when
+    ``TIINGO_API_KEY`` is unset.
 
     Parameters
     ----------
@@ -142,12 +145,13 @@ async def fetch(
     Returns
     -------
     list[NewsArticle]
-        Parsed articles, or ``[]`` if ``TIINGO_API_KEY`` is unset.
+        Parsed articles.  Raises ``SecretMissingError`` if ``TIINGO_API_KEY`` is unset.
     """
-    api_key = os.getenv("TIINGO_API_KEY")
-    if not api_key:
-        logger.debug("TIINGO_API_KEY unset — fetch returning []")
-        return []
+    # Raise loudly via require_key.  Returning [] here was indistinguishable
+    # from "no articles" downstream and hid mis-configuration in fresh dev
+    # environments.  Callers that want to soft-fail must catch SecretMissingError
+    # explicitly.
+    api_key = require_key("TIINGO_API_KEY")
 
     symbol     = ticker.upper()
     page_limit = limit or _PAGE_LIMIT

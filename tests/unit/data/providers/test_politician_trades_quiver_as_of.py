@@ -13,24 +13,22 @@ from datetime import UTC, datetime
 
 import pytest
 
+from data.secrets import SecretMissingError
+
 
 @pytest.mark.asyncio
-async def test_fetch_uses_as_of_for_cutoff(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The cutoff must be ``as_of - lookback``, not ``date.today() - lookback``."""
+async def test_fetch_raises_without_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Missing ``QUIVER_QUANT_API_KEY`` must raise ``SecretMissingError``, never return ``[]``."""
     import data.providers.politician_trades.quiver as mod
 
-    # Force the soft-fail path so we don't need a real API key — but we still
-    # want to see fetch happily accept the as_of kwarg.
     monkeypatch.delenv("QUIVER_QUANT_API_KEY", raising=False)
 
-    out = await mod.fetch(
-        "AAPL",
-        lookback_days=90,
-        as_of=datetime(2023, 3, 15, tzinfo=UTC),
-    )
-
-    # Soft-fail returns [] when the API key is missing.
-    assert out == []
+    with pytest.raises(SecretMissingError, match="QUIVER_QUANT_API_KEY"):
+        await mod.fetch(
+            "AAPL",
+            lookback_days=90,
+            as_of=datetime(2023, 3, 15, tzinfo=UTC),
+        )
 
 
 @pytest.mark.asyncio

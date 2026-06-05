@@ -251,14 +251,12 @@ async def _call_live_provider(domain: str, monkeypatch: pytest.MonkeyPatch) -> o
         return await mod.fetch("AAPL", as_of=_as_of, lookback_days=30)
 
     # ── politician_trades ─────────────────────────────────────────────────────
-    # Quiver provider uses requests; patch _fetch_trades.
+    # Quiver provider uses requests; stub require_key and patch _fetch_trades.
     if domain == "politician_trades":
         from data.providers.politician_trades import quiver as mod
 
+        monkeypatch.setattr(mod, "require_key", lambda _k: "stub")
         monkeypatch.setattr(mod, "_fetch_trades", lambda *_a, **_k: [])
-        # quiver.fetch checks for QUIVER_API_KEY via os.environ; give it a stub.
-        import os
-        monkeypatch.setattr(os, "environ", {**os.environ, "QUIVER_API_KEY": "stub"})
         return await mod.fetch("AAPL", as_of=_as_of, lookback_days=30)
 
     # ── notable_holders ───────────────────────────────────────────────────────

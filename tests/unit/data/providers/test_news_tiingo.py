@@ -1,4 +1,4 @@
-"""``news/tiingo.fetch`` returns NewsArticles, soft-fails without an API key."""
+"""``news/tiingo.fetch`` returns NewsArticles."""
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
@@ -6,23 +6,6 @@ from datetime import UTC, date, datetime
 import pytest
 
 from data.models import NewsArticle
-
-
-@pytest.mark.asyncio
-async def test_tiingo_soft_fails_without_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Missing ``TIINGO_API_KEY`` must yield ``[]``, never raise."""
-    import data.providers.news.tiingo as mod
-
-    monkeypatch.delenv("TIINGO_API_KEY", raising=False)
-
-    out = await mod.fetch(
-        "AAPL",
-        from_date=date(2023, 3, 1),
-        to_date=date(2023, 3, 15),
-        as_of=datetime(2023, 3, 15, tzinfo=UTC),
-    )
-
-    assert out == []
 
 
 @pytest.mark.asyncio
