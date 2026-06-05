@@ -17,6 +17,7 @@ from google.adk.agents.callback_context import CallbackContext
 from google.genai import types as genai_types
 
 from data import get_social_sentiment
+from data.providers.social_sentiment.finnhub import PremiumGatedError
 from data.timeguard import resolve_as_of
 from observability.trace import _trace_maybe
 
@@ -59,7 +60,6 @@ async def social_fetch_callback(
         except Exception as exc:
             # Premium-gate is the only documented soft-fail path; anything else
             # is a real provider failure and the warning should surface it.
-            from data.providers.social_sentiment.finnhub import PremiumGatedError
             if isinstance(exc, PremiumGatedError):
                 logger.info("social_sentiment premium-gated for %s", ticker)
             else:
