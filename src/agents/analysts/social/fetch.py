@@ -57,7 +57,13 @@ async def social_fetch_callback(
         try:
             sentiment = await get_social_sentiment(ticker, as_of=as_of)
         except Exception as exc:
-            logger.warning("social_sentiment fetch failed for %s: %s", ticker, exc)
+            # Premium-gate is the only documented soft-fail path; anything else
+            # is a real provider failure and the warning should surface it.
+            from data.providers.social_sentiment.finnhub import PremiumGatedError
+            if isinstance(exc, PremiumGatedError):
+                logger.info("social_sentiment premium-gated for %s", ticker)
+            else:
+                logger.warning("social_sentiment fetch failed for %s: %s", ticker, exc)
             sentiment = None
 
         # Pass the typed snapshots through as a list — the extractor reads
