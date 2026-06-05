@@ -38,18 +38,22 @@ The factory patch installs the mock callback by walking each branch's
 ``sub_agents`` and setting ``before_model_callback`` on every ``LlmAgent``
 whose name starts with ``"NewsAnalyst_"`` or ``"FundamentalAnalyst_"``.
 
-yfinance
---------
-``SnapshotterAgent`` calls ``yfinance.Ticker("SPY").history(period="1d")`` for
-the SPY benchmark price.  That is patched so no network request leaves the
-test process.
+SPY benchmark
+-------------
+``SnapshotterAgent`` fetches the SPY benchmark close via
+``data.get_price_history("SPY", period="5d", interval="1d", as_of=...)`` — the
+same registered price-history provider every other read goes through (it is
+pinned to the cache provider during a backtest replay).  The fixture cache
+therefore seeds SPY OHLCV bars alongside AAPL so the lookup resolves from the
+golden cache; no network request leaves the test process and no ``yfinance``
+patch is needed.
 """
 from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -201,7 +205,7 @@ def _make_per_ticker_analyst_llm_response(agent_name: str):
 
 @pytest.fixture
 def fixture_cache(tmp_path: Path) -> Path:
-    """Materialise a 1-tick OHLCV + CompanyRatios cache for AAPL.
+    """Materialise a 1-tick OHLCV + CompanyRatios cache for AAPL and SPY.
 
     The cache is written to ``tmp_path/backtests/baseline-2025-09/store.sqlite``
     and the path to that file is returned for injection into the Runner
@@ -255,6 +259,27 @@ def fixture_cache(tmp_path: Path) -> Path:
             volume=1_000_000,
         ))
     store.write_ohlcv("AAPL", _aapl_bars)
+
+    # Seed SPY benchmark bars over the same date span.  The SnapshotterAgent
+    # fetches the SPY close via ``data.get_price_history("SPY", period="5d",
+    # interval="1d", as_of=...)``, which routes to the cache provider during a
+    # replay.  Without these rows the lookup returns no bars and — post-A-006 —
+    # the snapshotter raises on the first tick (it refuses to anchor the
+    # benchmark return at 0.0).  Prices sit around 450.0 to mirror the value
+    # the old (now-removed) yfinance mock returned, so downstream return calcs
+    # see a realistic anchor.
+    _spy_bars = []
+    for i, ts in enumerate(_all_days):
+        _spy_close = 450.0 + i * 0.10   # gently trending, like the AAPL series
+        _spy_bars.append(OHLCBar(
+            timestamp=ts,
+            open=_spy_close - 0.5,
+            high=_spy_close + 1.0,
+            low=_spy_close - 1.0,
+            close=_spy_close,
+            volume=5_000_000,
+        ))
+    store.write_ohlcv("SPY", _spy_bars)
 
     # Write one CompanyRatios snapshot so the fundamental cache provider
     # can satisfy point-in-time reads during the backtest window.
@@ -331,8 +356,9 @@ def test_end_to_end_run_produces_full_artefact_tree(
 
     LLM agents (Strategist, Fundamental, News) are short-circuited via a
     synthetic ``before_model_callback`` so no Gemini calls are made.
-    yfinance (SPY lookup in Snapshotter) is monkeypatched to return a flat
-    450.0 price without hitting the network.
+    The Snapshotter's SPY benchmark lookup resolves from the seeded cache
+    (``fixture_cache`` writes SPY bars around 450.0), so no network request is
+    made.
     """
     from backtest.runner import Runner
 
@@ -508,15 +534,8 @@ def test_end_to_end_run_produces_full_artefact_tree(
             ],
         )
 
-    # ── Patch yfinance so SnapshotterAgent doesn't call the network ───────────
-    mock_yf_ticker = MagicMock()
-    mock_yf_ticker.history.return_value = MagicMock(
-        empty=False,
-        __getitem__=lambda self, key: MagicMock(
-            iloc=MagicMock(__getitem__=lambda self2, idx: 450.0)
-        ),
-    )
-
+    # The SnapshotterAgent's SPY benchmark lookup resolves from the seeded
+    # cache (see ``fixture_cache``), so no yfinance patch is required here.
     with (
         patch(
             "orchestrator.pipeline._build_strategist",
@@ -526,7 +545,6 @@ def test_end_to_end_run_produces_full_artefact_tree(
             "orchestrator.pipeline._build_analyst_pool",
             side_effect=_patched_build_analyst_pool,
         ),
-        patch("yfinance.Ticker", return_value=mock_yf_ticker),
     ):
         runner = Runner(
             settings=settings_obj,
