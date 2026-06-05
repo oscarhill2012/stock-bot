@@ -231,8 +231,8 @@ async def fetch(
     Parameters
     ----------
     ticker:
-        Stock ticker symbol to filter trades by.  ``None`` is accepted but
-        will return an empty list (FMP requires a symbol).
+        Stock ticker symbol to filter trades by.  ``None`` or empty raises
+        ``ValueError`` — FMP requires a symbol.
     as_of:
         The historical reference point.  Trades with an effective PIT date
         after this moment are excluded to prevent lookahead bias.
