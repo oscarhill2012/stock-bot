@@ -77,9 +77,7 @@ class Trading212Broker:
             headers=self._headers(),
         )
         resp.raise_for_status()
-        # httpx.Response.json() is synchronous even on AsyncClient.  The previous
-        # "await ... if callable(...)" hedge papered over an AsyncMock-shaped test
-        # and would TypeError against real httpx.
+        # Sync call — see submit_market for why .json() is not awaited.
         data = resp.json()
 
         code = self._instrument(ticker)
@@ -95,9 +93,7 @@ class Trading212Broker:
             headers=self._headers(),
         )
         acct.raise_for_status()
-        # httpx.Response.json() is synchronous even on AsyncClient.  The previous
-        # "await ... if callable(...)" hedge papered over an AsyncMock-shaped test
-        # and would TypeError against real httpx.
+        # Sync call — see submit_market for why .json() is not awaited.
         acct_data = acct.json()
         cash = float(acct_data["free"])
 
@@ -106,9 +102,7 @@ class Trading212Broker:
             headers=self._headers(),
         )
         port.raise_for_status()
-        # httpx.Response.json() is synchronous even on AsyncClient.  The previous
-        # "await ... if callable(...)" hedge papered over an AsyncMock-shaped test
-        # and would TypeError against real httpx.
+        # Sync call — see submit_market for why .json() is not awaited.
         items = port.json()
 
         # Reverse the instrument map so we can convert T212 codes back to tickers.

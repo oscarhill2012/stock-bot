@@ -89,11 +89,17 @@ async def test_live_uses_live_base_url():
 
 @pytest.mark.asyncio
 async def test_submit_market_does_not_await_sync_json():
-    """Real httpx returns a dict (sync) from .json(); awaiting it raises TypeError.
+    """Cement that ``submit_market`` calls ``.json()`` as a plain sync callable.
 
-    Cementing-test fix: previous tests set ``client.post.return_value.json =
-    AsyncMock(...)`` which papered over the bug.  Use ``MagicMock`` here so
-    ``.json()`` returns a plain dict, exactly like real httpx.
+    ``response.json`` is a ``MagicMock`` (not ``AsyncMock``), which mirrors real
+    httpx behaviour where ``Response.json()`` is synchronous.  If the
+    implementation re-introduced ``await resp.json()``, awaiting a
+    ``MagicMock``'s return value would raise ``TypeError`` before the fill
+    assertions are reached — that failure is the signal.
+
+    The explicit ``assert_called_once()`` at the end additionally confirms that
+    ``.json`` was invoked exactly once as a plain callable, not zero times (dead
+    code) and not more than once (spurious extra reads).
     """
     response = MagicMock()
     response.raise_for_status = MagicMock(return_value=None)
@@ -115,3 +121,9 @@ async def test_submit_market_does_not_await_sync_json():
 
     assert fill.price == 200.0
     assert fill.quantity == 1.5
+
+    # Cement the no-await contract explicitly: .json must be invoked exactly
+    # once as a plain synchronous callable.  If the implementation re-introduced
+    # `await resp.json()`, awaiting a MagicMock's return value would raise
+    # TypeError before we ever reach these assertions — that failure is the signal.
+    response.json.assert_called_once()
