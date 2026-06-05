@@ -96,3 +96,58 @@ async def test_snapshotter_accepts_iso_string_as_of():
     actual_dt = datetime.fromisoformat(snap["recorded_at"])
     # Compare naive (SQLite-friendly) datetimes.
     assert actual_dt.replace(tzinfo=None) == expected_dt.replace(tzinfo=None)
+
+
+@pytest.mark.asyncio
+async def test_snapshotter_raises_when_spy_fetch_fails_on_first_tick():
+    """First tick anchors spy_start_price; a 0.0 anchor permanently
+    invalidates every subsequent return calc.  The snapshotter must
+    raise rather than anchor at 0.0.
+    """
+    from broker.portfolio import Portfolio
+
+    broker = FakeBroker(starting_cash=10_000.0, prices={})
+    snapper = build_snapshotter(broker)
+    portfolio = Portfolio(cash=10_000.0)
+    state = {
+        "tick_id":   "tick-001",                # no spy_start_price yet
+        "portfolio": portfolio.model_dump(mode="json"),
+    }
+    ctx = _make_ctx(state)
+
+    with (
+        patch("data.get_price_history",
+              side_effect=RuntimeError("spy upstream down")),
+        pytest.raises(RuntimeError, match="spy upstream down"),
+    ):
+        async for _ in snapper._run_async_impl(ctx):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_snapshotter_reuses_prior_anchor_when_spy_fetch_fails_later():
+    """Subsequent ticks log a loud WARNING and reuse the prior anchor;
+    never silently substitute 0.0.
+    """
+    from broker.portfolio import Portfolio
+
+    broker = FakeBroker(starting_cash=10_000.0, prices={})
+    snapper = build_snapshotter(broker)
+    portfolio = Portfolio(cash=10_000.0)
+    state = {
+        "tick_id":          "tick-002",
+        "portfolio":        portfolio.model_dump(mode="json"),
+        "starting_capital": 10_000.0,
+        "spy_start_price":  470.0,
+        "last_spy_price":   480.0,              # carried from prior tick
+    }
+    ctx = _make_ctx(state)
+
+    with patch("data.get_price_history",
+               side_effect=RuntimeError("transient")):
+        async for _ in snapper._run_async_impl(ctx):
+            pass
+
+    snap = state["last_snapshot"]
+    # Anchor preserved; spy_price falls back to last good value, never 0.0.
+    assert snap["spy_price"] == 480.0
