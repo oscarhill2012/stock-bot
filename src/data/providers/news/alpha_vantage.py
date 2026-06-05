@@ -337,11 +337,16 @@ async def fetch(
     # PIT leak, so the cap is unconditional.
     window_end = min(explicit_end, as_of_date) if explicit_end is not None else as_of_date
 
-    # Defensive: if window_start > window_end (caller passed a reversed
-    # range, or `from_date` is after `as_of`) treat as an empty window
-    # rather than letting `_chunk_window` loop forever.
+    # A reversed window (caller passed a reversed range, or `from_date` is
+    # after `as_of`) is a caller bug.  The previous ``return []`` masked
+    # backtest mis-windowing; raise so the offending bounds surface.
     if window_start > window_end:
-        return []
+        raise ValueError(
+            f"news.alpha_vantage: reversed news window for {symbol}: "
+            f"window_start={window_start.isoformat()} > "
+            f"window_end={window_end.isoformat()} "
+            f"(from_date={from_date}, to_date={to_date}, as_of={as_of_date})"
+        )
 
     chunks = _chunk_window(window_start, window_end, _MAX_CHUNK_DAYS)
 

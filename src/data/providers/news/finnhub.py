@@ -341,10 +341,14 @@ async def fetch(
     window_start = _coerce_date(from_date)
     explicit_end = _coerce_date(to_date)
 
-    # Defensive: if either bound failed to coerce (caller passed something
-    # exotic), abort cleanly rather than chunking through unknown types.
+    # Defensive: caller-supplied bounds must coerce cleanly.  Garbage in →
+    # loud raise rather than silently empty results that downstream code
+    # cannot distinguish from "no news".
     if window_start is None or explicit_end is None:
-        return []
+        raise ValueError(
+            f"news.finnhub: could not coerce window bounds "
+            f"from_date={from_date!r} to_date={to_date!r}"
+        )
 
     # Upper bound: caller's ``to_date``, but never past ``as_of`` — this is
     # the provider's last-line-of-defence PIT cap.  The cap is unconditional
@@ -352,11 +356,16 @@ async def fetch(
     # backtest tick.
     window_end = min(explicit_end, as_of_date)
 
-    # Defensive: a reversed window (``from_date > to_date`` after clipping)
-    # would loop forever inside ``_chunk_window``.  Return early with no
-    # API calls.
+    # A reversed window (``from_date > to_date`` after clipping) is a caller
+    # bug.  The previous ``return []`` hid backtest mis-windowing for hours;
+    # raise so the offending bounds surface immediately.
     if window_start > window_end:
-        return []
+        raise ValueError(
+            f"news.finnhub: reversed news window for {symbol}: "
+            f"window_start={window_start.isoformat()} > "
+            f"window_end={window_end.isoformat()} "
+            f"(from_date={from_date}, to_date={to_date}, as_of={as_of_date})"
+        )
 
     chunks = _chunk_window(window_start, window_end, _MAX_CHUNK_DAYS)
 

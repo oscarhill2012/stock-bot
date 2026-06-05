@@ -342,8 +342,14 @@ async def test_response_side_pit_filter_drops_future_dated_articles(
 
 
 @pytest.mark.asyncio
-async def test_reversed_window_returns_empty(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A reversed window (``from_date > to_date``) returns ``[]`` without an API call."""
+async def test_reversed_window_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A reversed window (``from_date > to_date``) raises ``ValueError`` without an API call.
+
+    The previous behaviour was to silently return ``[]``, which masked backtest
+    mis-windowing — an inexplicably empty newsfeed was indistinguishable from a
+    genuine zero-article window.  Raising means the offending bounds surface
+    immediately in the caller's stack trace.
+    """
     import data.providers.news.finnhub as mod
 
     call_count = 0
@@ -355,14 +361,15 @@ async def test_reversed_window_returns_empty(monkeypatch: pytest.MonkeyPatch) ->
 
     monkeypatch.setattr(mod, "_fetch_company_news", fake_fetch)
 
-    out = await mod.fetch(
-        "AAPL",
-        from_date=date(2023, 3, 20),
-        to_date=date(2023, 3, 10),
-        as_of=datetime(2023, 3, 25, tzinfo=UTC),
-    )
+    with pytest.raises(ValueError, match="reversed news window"):
+        await mod.fetch(
+            "AAPL",
+            from_date=date(2023, 3, 20),
+            to_date=date(2023, 3, 10),
+            as_of=datetime(2023, 3, 25, tzinfo=UTC),
+        )
 
-    assert out == []
+    # The raise must happen before any API call — no request should escape.
     assert call_count == 0
 
 
