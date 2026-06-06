@@ -324,7 +324,7 @@ class DecisionLogger:
                 "social": state.get("temp:social_data", {}).get(ticker) if state.get("temp:social_data") else None,
             },
 
-            # Per-analyst verdict + rationale emitted into evidence_view.
+            # Per-analyst verdict + rationale — the rendered analyst-output view.
             # In phase F this is a dict keyed by analyst domain; richer
             # structured typing (TickerEvidence) is an iteration-surface item.
             "analyst_outputs": _coerce(ev_view),

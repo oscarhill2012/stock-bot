@@ -10,9 +10,9 @@ derivation and overwrites ``state["strategist_decision"]`` with the enriched dum
 Why this is a separate BaseAgent rather than an ``after_agent_callback`` on
 the LlmAgent
 ------------------------------------------------------------------------
-Originally the enrichment lived inside ``_strategist_validation_callback``
-wired as the LlmAgent's ``after_agent_callback``.  That coupled the
-enrichment to the LLM call's lifecycle and broke under schema-retry:
+Originally the enrichment lived inside an ``after_agent_callback`` on the
+LlmAgent.  That coupled the enrichment to the LLM call's lifecycle and
+broke under schema-retry:
 
 1. The :class:`RetryingAgentWrapper` buffers events from the inner LLM
    agent across attempts.
@@ -328,11 +328,3 @@ class StrategistEnricher(BaseAgent):
                 "user:active_stances_initialised": True,
             }),
         )
-
-
-def build_strategist_enricher() -> StrategistEnricher:
-    """Factory for the StrategistEnricher — kept for symmetry with the
-    other strategist factories (``build_strategist_decision_writer``).
-    """
-
-    return StrategistEnricher()

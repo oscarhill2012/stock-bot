@@ -2,7 +2,7 @@
 
 Replaces the two ``before_agent_callback`` direct-mutation sites on the
 Strategist ``LlmAgent`` (``_held_view_before_callback`` and
-``_evidence_view_before_callback`` in ``agents/strategist/agent.py``).
+``render_all_ticker_blocks`` in ``contract/strategist_prompt.py``).
 
 ADK callbacks cannot yield ``Event``s (contract Rule 3) but the contract
 requires every state write to ride on a yielded
