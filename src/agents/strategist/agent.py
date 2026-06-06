@@ -26,68 +26,12 @@ output.  RiskGate then saw the narrow shape, read
 orders, and the executor's after-callback asserted ``open without fill
 price`` for every open stance on the tick.  See the docstring on
 :class:`StrategistEnricher` for the full incident analysis.
-
-The legacy ``_strategist_validation_callback`` function still exists
-below as a thin shim — it now delegates to
-:func:`agents.strategist.enricher.validate_and_enrich` and writes back
-to ``callback_context.state``.  Production no longer wires it (the
-sequenced enricher does the work), but legacy integration tests that
-build their own LlmAgent with ``after_agent_callback=_strategist_validation_callback``
-continue to exercise the same logic through the shim — no parallel
-implementation to drift.
 """
 from __future__ import annotations
 
 import logging
 
-from google.adk.agents.callback_context import CallbackContext
-from google.genai import types as genai_types
-
-from agents.strategist.enricher import validate_and_enrich
-
 logger = logging.getLogger(__name__)
-
-
-# ── Legacy callback shim ──────────────────────────────────────────────────────
-
-
-def _strategist_validation_callback(
-    callback_context: CallbackContext,
-) -> genai_types.Content | None:
-    """Legacy ``after_agent_callback`` shim — delegates to the enricher.
-
-    The production strategist branch sequences a :class:`StrategistEnricher`
-    BaseAgent after the wrapped LlmAgent, so this callback is **no longer
-    wired into the production pipeline**.  It remains here purely as a thin
-    shim for legacy integration tests
-    (``tests/integration/test_strategist_minimal_schema_no_retry.py``,
-    ``tests/integration/backtest/test_end_to_end_smoke.py``,
-    ``tests/integration/backtest/test_fresh_run_starts_clean.py``) that build
-    their own LlmAgent and wire ``after_agent_callback=_strategist_validation_callback``
-    explicitly.  Those tests now exercise the same derivation pipeline as the
-    enricher does, so there is no parallel-logic-drift risk.
-
-    On success: writes the enriched ``StrategistDecision`` dump back to
-    ``callback_context.state["strategist_decision"]`` and returns ``None``.
-
-    On contract violation: re-raises :class:`StrategistContractViolation`
-    (or :class:`pydantic.ValidationError`) so the offending tick aborts
-    loudly rather than degrading silently.
-    """
-
-    state = callback_context.state
-    enriched = validate_and_enrich(state)
-    if enriched is None:
-        # No decision in state — cold-start tick or strategist did not run.
-        return None
-
-    # Write through the CallbackContext's state.  In real ADK this is a
-    # tracked mutation that the SessionService will persist; in the test
-    # shims it's a plain dict write.  Per contract Rule 1, production
-    # writes go through ``StrategistEnricher``'s ``state_delta`` Event
-    # instead — this shim is the carve-out for the legacy callback path.
-    state["strategist_decision"] = enriched
-    return None
 
 
 # ── Agent factory ─────────────────────────────────────────────────────────────
