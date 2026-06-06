@@ -34,6 +34,10 @@ JSON), not a ``VerdictBatch``.  The mock helper
 ``_make_per_ticker_analyst_llm_response`` extracts the ticker from the agent
 name and emits the matching single-verdict payload.
 
+The patched strategist is a three-sub-agent
+``SequentialAgent[ContextShim, mock LlmAgent, StrategistEnricher]``,
+mirroring the production topology (minus ``RetryingAgentWrapper``).
+
 The factory patch installs the mock callback by walking each branch's
 ``sub_agents`` and setting ``before_model_callback`` on every ``LlmAgent``
 whose name starts with ``"NewsAnalyst_"`` or ``"FundamentalAnalyst_"``.
@@ -65,12 +69,19 @@ from data.models import CompanyRatios, Filing, NewsArticle, OHLCBar
 # ---------------------------------------------------------------------------
 
 def _make_strategist_llm_response(tickers: list[str]):
-    """Return a synthetic ``LlmResponse`` containing a valid ``StrategistDecision``.
+    """Return a synthetic ``LlmResponse`` containing a valid ``StrategistLLMDecision``.
 
     The strategist's ``before_model_callback``, when it returns a non-None
     ``LlmResponse``, causes ADK to skip the real Gemini call and treat the
     returned content as the model's response.  ADK then validates the JSON
-    text against ``output_schema=StrategistDecision`` and writes it to state.
+    text against ``output_schema=StrategistLLMDecision`` and writes it to state.
+
+    Note: the payload also carries a ``target_weights`` field, which is a
+    ``StrategistDecision``-level field not present on the narrow
+    ``StrategistLLMDecision`` schema.  It is harmlessly ignored at ADK
+    validation time (``StrategistLLMDecision`` has no ``extra="forbid"``), and
+    the ``StrategistEnricher`` re-derives the real ``target_weights`` from the
+    stances downstream — so the value embedded here has no effect on the run.
 
     Parameters
     ----------
@@ -80,7 +91,7 @@ def _make_strategist_llm_response(tickers: list[str]):
     Returns
     -------
     google.adk.models.LlmResponse
-        A synthetic response with a ``StrategistDecision`` JSON payload.
+        A synthetic response with a ``StrategistLLMDecision`` JSON payload.
     """
     from google.adk.models import LlmResponse
     from google.genai import types as genai_types
@@ -410,16 +421,23 @@ def test_end_to_end_run_produces_full_artefact_tree(
     tickers = ["AAPL"]
 
     def _patched_build_strategist():
-        """Build strategist as SequentialAgent[ContextShim, mock LlmAgent]."""
+        """Build strategist as SequentialAgent[ContextShim, mock LlmAgent, Enricher].
+
+        Mirrors the live shape (minus RetryingAgentWrapper) so the test
+        exercises the production enrichment path rather than the retired
+        ``_strategist_validation_callback`` shim.  The mock LlmAgent emits the
+        narrow ``StrategistLLMDecision`` via ``output_key``; ``StrategistEnricher``
+        then derives ``target_weights`` and rewrites ``state["strategist_decision"]``.
+        """
         from google.adk.agents import LlmAgent, SequentialAgent
 
-        from agents.strategist.agent import _strategist_validation_callback
         from agents.strategist.context_shim import StrategistContextShim
+        from agents.strategist.enricher import StrategistEnricher
         from agents.strategist.prompts import STRATEGIST_INSTRUCTION
-        from agents.strategist.schema import StrategistDecision
+        from agents.strategist.schema import StrategistLLMDecision
 
         def _mock_before(callback_context, llm_request):
-            """Return a synthetic StrategistDecision without calling Gemini."""
+            """Return a synthetic StrategistLLMDecision without calling Gemini."""
             current_tickers = (
                 callback_context.state.get("tickers") or tickers
             )
@@ -429,15 +447,14 @@ def test_end_to_end_run_produces_full_artefact_tree(
             name="Strategist",
             model="gemini-2.5-pro",
             instruction=STRATEGIST_INSTRUCTION,
-            output_schema=StrategistDecision,
+            output_schema=StrategistLLMDecision,
             output_key="strategist_decision",
-            after_agent_callback=_strategist_validation_callback,
             before_model_callback=_mock_before,
         )
 
         return SequentialAgent(
             name="StrategistBranch",
-            sub_agents=[StrategistContextShim(), llm],
+            sub_agents=[StrategistContextShim(), llm, StrategistEnricher()],
         )
 
     def _patched_build_analyst_pool(tick_tickers: list[str]):
