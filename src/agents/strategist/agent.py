@@ -169,7 +169,7 @@ def build_strategist():
     if probe_dir:
         from pathlib import Path
 
-        from observability.trace import _extract_content_text                    # reuse the existing text walker
+        from observability.trace import _extract_content_text  # reuse the existing text walker
 
         _probe_path = Path(probe_dir)
         _probe_path.mkdir(parents=True, exist_ok=True)
