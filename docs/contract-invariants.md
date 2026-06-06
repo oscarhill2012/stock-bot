@@ -231,23 +231,10 @@ It writes via `ctx.state[key] = …`; ADK's
 `_handle_after_agent_callback` auto-yields the accumulated delta as a
 state-delta event (see sub-section below).
 
-**In-tick callback carve-out (added 2026-05-20).**  ADK
-``after_agent_callback``s cannot yield Events (Rule 3) but are the only
-place certain LLM-output validation + derivation can run (they need
-runtime access to ``state["portfolio"]`` and ``state["tickers"]``, which
-``output_schema`` does not see).  Where such a callback writes to a
-state key whose only consumer is **another agent in the same tick**,
-that direct write is conformant.  The carve-out does NOT apply if the
-key escapes the tick — cross-tick keys must still go through
-``state_delta``.
-
-The canonical instance today is the Strategist's
-``_strategist_validation_callback`` (see
-``src/agents/strategist/agent.py:383``), which rewrites
-``state["strategist_decision"]`` with the derived legacy fields
-(``target_weights``, ``new_positions``, ``close_reasons``,
-``trim_reasons``).  Its only consumer is the downstream RiskGate agent
-in the same tick.
+**Strategist enrichment.**  The strategist branch performs validation
+and derivation in a sequenced `StrategistEnricher` BaseAgent that
+yields a single `Event(state_delta=…)` per tick — fully conformant
+with Rule 1, no carve-out required.
 
 #### Auto-yielded delta-tracked callback writes (added 2026-05-23, Spec B)
 
@@ -264,27 +251,16 @@ accumulated `state_delta` and the runner yields it through
 `DatabaseSessionService` persists `app:` / `user:`-prefixed keys to
 their respective tables on that ingestion path.
 
-**Clarification for Rule 1's in-tick callback carve-out.** The carve-out
-exists because *direct dict mutation* of a Pydantic object held in state
-(e.g. the Strategist `_strategist_validation_callback` mutating
-`decision.target_weights = ...` on the object referenced by
-`state["strategist_decision"]`) does not produce a `state_delta` event
-and is therefore not durable on serialising backends.  That kind of
-mutation is conformant only for in-tick consumers reading the same
-reference.  The Spec B Executor `after_agent_callback`'s
-`ctx.state["user:positions"] = …` write is a *different* mechanism:
-it goes through ADK's delta-tracking and is auto-yielded as a real
+**Executor persistence write — auto-yielded delta, not a carve-out.** The
+Spec B Executor `after_agent_callback`'s `ctx.state["user:positions"] = …`
+write goes through ADK's delta-tracking and is auto-yielded as a real
 `state_delta` event.  Cross-tick `user:`-prefixed writes via this
 auto-yield path are conformant with Rule 1 by construction — the write
 rides on an explicit event, just one ADK emits on the callback's behalf.
-
-The Strategist validation carve-out (in-tick reference mutation) and
-the Executor persistence write (cross-tick delta-tracked auto-yield)
-are two distinct patterns; the carve-out applies to the former, the
-new clarification covers the latter.  Executor's `after_agent_callback`
-is the **writer-of-record** for `user:positions` and `user:thesis` — the
-persistence event for the thesis book rides on ADK's auto-yielded
-state-delta, not on a separate writer agent.
+Executor's `after_agent_callback` is the **writer-of-record** for
+`user:positions` and `user:thesis` — the persistence event for the
+thesis book rides on ADK's auto-yielded state-delta, not on a separate
+writer agent.
 
 ### Rule 2 — `temp:` is invocation-scoped only
 
