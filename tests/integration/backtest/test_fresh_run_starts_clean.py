@@ -159,20 +159,36 @@ def test_fresh_deletes_session_sqlite(
     tickers = ["AAPL"]
 
     def _patched_build_strategist():
+        """Build strategist as SequentialAgent[ContextShim, stub LlmAgent, Enricher].
+
+        See ``test_end_to_end_smoke.py`` for the migration rationale — the
+        legacy ``_strategist_validation_callback`` was retired in Plan 07 and
+        this test now constructs the same shape as production (minus the retry
+        wrapper).  The stub emits a narrow ``StrategistLLMDecision``;
+        ``StrategistEnricher`` widens it.  This test only exercises the
+        ``--fresh`` SQLite plumbing — the stub is constructed but the tick
+        does not complete — yet the payload is kept schema-valid regardless.
+        """
         from google.adk.agents import LlmAgent, SequentialAgent
         from google.adk.models import LlmResponse
         from google.genai import types as genai_types
 
-        from agents.strategist.agent import _strategist_validation_callback
         from agents.strategist.context_shim import StrategistContextShim
+        from agents.strategist.enricher import StrategistEnricher
         from agents.strategist.prompts import STRATEGIST_INSTRUCTION
-        from agents.strategist.schema import StrategistDecision
+        from agents.strategist.schema import StrategistLLMDecision
 
-        stances = [{"ticker": t, "intent": "hold", "reason": "fresh-test stub"} for t in tickers]
+        # Narrow-shape stub payload.  ``no_action`` is the explicit
+        # "considered, no change" verb (ticker + intent only — rationale and
+        # weight are forbidden on no_action).  decision_tag / reasoning /
+        # confidence are required by StrategistLLMDecision; thesis is optional
+        # and target_weights is wide-only (the enricher derives it).
+        stances = [{"ticker": t, "intent": "no_action"} for t in tickers]
         decision = {
-            "stances": stances, "target_weights": {t: 0.0 for t in tickers},
-            "decision_tag": "fresh_test_hold", "reasoning": "stub",
-            "thesis": "stub", "confidence": 0.5,
+            "stances":      stances,
+            "decision_tag": "fresh_test_no_action",
+            "reasoning":    "stub",
+            "confidence":   0.5,
         }
 
         def _mock_before(ctx, req):
@@ -182,12 +198,11 @@ def test_fresh_deletes_session_sqlite(
 
         llm = LlmAgent(
             name="Strategist", model="gemini-2.5-pro",
-            instruction=STRATEGIST_INSTRUCTION, output_schema=StrategistDecision,
+            instruction=STRATEGIST_INSTRUCTION, output_schema=StrategistLLMDecision,
             output_key="strategist_decision",
-            after_agent_callback=_strategist_validation_callback,
             before_model_callback=_mock_before,
         )
-        return SequentialAgent(name="StrategistBranch", sub_agents=[StrategistContextShim(), llm])
+        return SequentialAgent(name="StrategistBranch", sub_agents=[StrategistContextShim(), llm, StrategistEnricher()])
 
     def _patched_build_analyst_pool(tick_tickers):
         import json as _json
