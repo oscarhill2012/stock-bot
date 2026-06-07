@@ -35,7 +35,6 @@ without first routing through the ``pit_composite`` provider.
 from __future__ import annotations
 
 import asyncio
-import math
 from datetime import date, datetime
 from functools import lru_cache
 from typing import Any
@@ -47,34 +46,6 @@ from data.registry import register
 from data.retry import with_retry
 
 from ...models import OHLCBar, PriceHistory
-
-
-def _f(d: dict[str, Any], *keys: str) -> float | None:
-    """Try each key in order; return the first finite float found, or ``None``.
-
-    Parameters
-    ----------
-    d:
-        Source dict (e.g. yfinance ``info`` or ``fast_info``).
-    *keys:
-        Key names to try in order.
-
-    Returns
-    -------
-    float | None
-        First finite float value found, or ``None`` if none qualify.
-    """
-    for k in keys:
-        v = d.get(k)
-        if v is None:
-            continue
-        try:
-            f = float(v)
-        except (TypeError, ValueError):
-            continue
-        if math.isfinite(f):
-            return f
-    return None
 
 
 @lru_cache(maxsize=128)
@@ -276,29 +247,6 @@ def _fetch_price_history(
             )
 
     return PriceHistory(ticker=symbol, bars=bars)
-
-
-def _fetch_info_dict(symbol: str, period: str, interval: str) -> dict[str, Any]:
-    """Return the raw yfinance ``info`` dict for ``symbol``.
-
-    Extracted as a separate, monkeypatchable function so that unit tests can
-    inject a synthetic ``info`` payload without touching the LRU-cached
-    ``_yt_raw`` call.
-
-    Parameters
-    ----------
-    symbol:
-        Upper-cased ticker symbol.
-    period, interval:
-        Forwarded to ``_yt_raw`` — determines the cache key for the shared
-        yfinance payload.
-
-    Returns
-    -------
-    dict[str, Any]
-        The ``yt.info`` dict, or ``{}`` when yfinance raises.
-    """
-    return _yt_raw(symbol, period, interval)["info"]
 
 
 def _sync_bulk_download(

@@ -12,12 +12,13 @@ from dataclasses import dataclass
 from typing import Any, Literal, Protocol, TypeVar
 
 from .config import get_config
-from .models.company_ratios import CompanyRatios
-from .models.filings import Filing
-from .models.news import NewsArticle
+
 # ---------------------------------------------------------------------------
 # Payload-type imports — each canonical model used in DOMAIN_SHAPES below.
 # ---------------------------------------------------------------------------
+from .models.company_ratios import CompanyRatios
+from .models.filings import Filing
+from .models.news import NewsArticle
 from .models.price_history import PriceHistory
 from .models.sentiment import SocialSentiment
 from .models.trades import Form4Bundle, NotableHolder, PoliticianTrade
