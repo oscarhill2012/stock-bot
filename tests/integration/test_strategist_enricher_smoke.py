@@ -110,11 +110,16 @@ async def test_enricher_rewrites_decision_to_enriched_dump() -> None:
             # Seed the keys the enricher reads — same shape as production.
             # ``portfolio`` is mandatory: Portfolio.from_state_value raises
             # on None (no silent empties — audit A-014/A-071).
-            # ``as_of`` is intentionally absent — the enricher falls back to
-            # wall-clock time via resolve_as_of(..., allow_wallclock=True).
+            # ``as_of`` is seeded with a fixed ISO-8601 UTC string — exactly
+            # the shape the live tick writes (``datetime.now(tz=UTC).isoformat()``
+            # in orchestrator/tick.py).  This keeps the test self-contained and
+            # off the wall-clock fallback in resolve_as_of, so it never touches
+            # the process-wide thread-local fallback counter (no cross-test
+            # pollution).
             "tickers":   ["AAPL", "MSFT"],
             "watchlist": ["AAPL", "MSFT"],
             "portfolio": Portfolio(cash=1000.0).model_dump(mode="json"),
+            "as_of":     "2026-03-10T14:30:00+00:00",
             "tick_id":   "tick-001",
             "user:active_stances": {},
             "user:active_stances_initialised": False,
