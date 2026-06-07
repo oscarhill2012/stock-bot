@@ -1,8 +1,8 @@
 """Finnhub news provider — ``company_news`` endpoint (rate-limited via registry).
 
 **Backtest context**
-Finnhub is a candidate news source for backtest cache-fill when Alpha Vantage
-is exhausted or IP-blocked.  Empirical probes (2026-05-18) confirmed:
+Finnhub is the active news source for backtest cache-fill.  Empirical probes
+(2026-05-18) confirmed:
 
 - The free tier exposes the ``/company-news`` endpoint with ~1 year of
   retention from "today" — older windows (e.g. SVB March 2023 from a 2026
@@ -131,10 +131,9 @@ def _fetch_company_news(symbol: str, from_iso: str, to_iso: str) -> list[dict]:
 def _coerce_date(value: Any) -> date | None:
     """Return ``value`` as a ``date``, accepting ``date``, ``datetime``, or ``None``.
 
-    Mirrors ``data.providers.news.alpha_vantage._coerce_date``.  Callers of
-    the news dispatcher may hand the provider either a ``date`` (backtest
-    fetcher) or a ``datetime`` (live pipeline tick), so coerce once here
-    rather than scatter ``isinstance`` checks through the call body.
+    Callers of the news dispatcher may hand the provider either a ``date``
+    (backtest fetcher) or a ``datetime`` (live pipeline tick), so coerce once
+    here rather than scatter ``isinstance`` checks through the call body.
 
     Parameters
     ----------

@@ -2,7 +2,6 @@
 from . import company_ratios as _company_ratios  # noqa: F401
 from .filings import edgar as _filings_edgar  # noqa: F401
 from .insider_trades import edgar as _insider_trades_edgar  # noqa: F401
-from .news import alpha_vantage as _news_alpha_vantage  # noqa: F401  — Task 3.2
 from .news import finnhub as _news_finnhub  # noqa: F401
 from .notable_holders import edgar as _notable_holders_edgar  # noqa: F401
 from .politician_trades import quiver as _politician_trades_quiver  # noqa: F401

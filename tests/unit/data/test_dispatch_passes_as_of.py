@@ -50,23 +50,23 @@ async def test_get_company_filings_dispatches_cleanly(monkeypatch: pytest.Monkey
 async def test_get_stock_news_dispatches_cleanly(monkeypatch: pytest.MonkeyPatch) -> None:
     """``get_stock_news`` must not TypeError when calling the active provider.
 
-    Patches the active provider (``alpha_vantage``) so no API key or HTTP
-    call is needed.  Updated from ``finnhub`` in Phase 6 when the active
-    news provider was swapped from ``tiingo`` → ``alpha_vantage`` in
-    data.json.
+    Patches the active provider (``finnhub``) so no API key or HTTP call is
+    needed.  Finnhub is the active news provider; ``alpha_vantage`` was culled
+    in the plan-08 provider cull (A-037).
 
     Strategy: stub ``require_key`` (so key lookup short-circuits) and
-    ``_chunk_window`` (so fetch produces no chunks and returns immediately
-    with an empty list).  Both names are resolved in the provider module's
-    own namespace at call time, so ``monkeypatch.setattr`` intercepts them.
+    ``_fetch_articles`` (the per-symbol HTTP call) so the fetch completes
+    immediately with an empty list.  Both names are resolved in the provider
+    module's own namespace at call time, so ``monkeypatch.setattr`` intercepts
+    them.
     """
-    import data.providers.news.alpha_vantage as mod
+    import data.providers.news.finnhub as mod
     from data import get_stock_news
 
     # Stub key lookup — returns a dummy string without touching .env.
     monkeypatch.setattr(mod, "require_key", lambda _env_var: "test-key")
-    # Stub chunk generator — no chunks → no HTTP calls → empty result.
-    monkeypatch.setattr(mod, "_chunk_window", lambda *_a, **_kw: [])
+    # Stub the sync HTTP helper — returns [] so no network call is made.
+    monkeypatch.setattr(mod, "_fetch_company_news", lambda *_a, **_kw: [])
 
     out = await get_stock_news(
         "AAPL",

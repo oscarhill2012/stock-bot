@@ -185,73 +185,6 @@ def probe_finnhub_earnings(env: dict[str, str]) -> ProbeResult:
     )
 
 
-def probe_alpha_vantage_news(env: dict[str, str]) -> ProbeResult:
-    """AV NEWS_SENTIMENT — verify archive depth across the full 2023 calendar.
-
-    Multi-window probe (Jan / Jun / Dec 2023) provides broader coverage than
-    the single SVB window in the original version.  Confirms there are no
-    seasonal archive gaps that would silently starve the backtest.
-
-    Budget note: free tier allows 25 requests/day — this probe consumes 3
-    of that allowance per smoke run.  Row #12.
-    """
-
-    name = "alpha_vantage NEWS_SENTIMENT"
-    apikey = env.get("ALPHA_VANTAGE_API_KEY", "").strip()
-    if not apikey or "your_" in apikey:
-        return ProbeResult(
-            name, "SKIP",
-            "ALPHA_VANTAGE_API_KEY not set (free at alphavantage.co)",
-        )
-
-    # Three representative 2023 windows — spread across the calendar year to
-    # catch any seasonal archive gaps.  AV timestamps are UTC, no TZ suffix.
-    windows = [
-        ("20230110T0000", "20230117T2359"),
-        ("20230610T0000", "20230617T2359"),
-        ("20231210T0000", "20231217T2359"),
-    ]
-    counts: list[int] = []
-    notices: list[str] = []
-
-    for ts_from, ts_to in windows:
-        params = {
-            "function": "NEWS_SENTIMENT",
-            "tickers": "AAPL",
-            "time_from": ts_from,
-            "time_to": ts_to,
-            "limit": 50,
-            "apikey": apikey,
-        }
-        r = httpx.get(
-            "https://www.alphavantage.co/query",
-            params=params,
-            timeout=_TIMEOUT,
-        )
-        r.raise_for_status()
-        body = r.json() or {}
-
-        # AV returns `Information` or `Note` when rate-limited or
-        # archive-truncated; both signal a problem we must surface.
-        if msg := body.get("Information") or body.get("Note"):
-            notices.append(f"{ts_from}: {str(msg)[:100]}")
-
-        counts.append(len(body.get("feed") or []))
-
-    # Any empty window or rate-limit notice is a hard failure — the backtest
-    # fill would silently produce zero articles for that slice of history.
-    if any(c == 0 for c in counts) or notices:
-        return ProbeResult(
-            name, "FAIL",
-            f"counts={counts} notices={notices}",
-        )
-
-    return ProbeResult(
-        name, "OK",
-        f"per-window articles: {counts}",
-    )
-
-
 def probe_stocktwits(env: dict[str, str]) -> ProbeResult:
     """GET /streams/symbol/AAPL.json — Row #13.
 
@@ -423,7 +356,6 @@ def main() -> int:
 
     probes: list[Callable[[dict[str, str]], ProbeResult]] = [
         probe_finnhub_earnings,
-        probe_alpha_vantage_news,
         probe_stocktwits,
         probe_yfinance_analyst,
         probe_yfinance_bulk,
