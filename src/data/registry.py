@@ -205,10 +205,22 @@ def set_active_provider(domain: str, name: str) -> Callable[[], None]:
     Raises
     ------
     ValueError
-        If ``domain`` is not a member of ``DOMAINS``.
+        If ``domain`` is not a member of ``DOMAINS``, or if ``name`` does not
+        correspond to a registered ``(domain, name)`` pair.
     """
     if domain not in DOMAINS:
         raise ValueError(f"unknown domain: {domain!r}")
+
+    # Provider name must correspond to a real @register'd entry for this
+    # domain. Silent acceptance defers the failure to the next dispatch,
+    # which surfaces as a confusing KeyError far from the swap call site
+    # (audit A-041).
+    if (domain, name) not in _REGISTRY:
+        registered = sorted(n for d, n in _REGISTRY if d == domain)
+        raise ValueError(
+            f"no provider registered for ({domain!r}, {name!r}); "
+            f"registered providers for {domain!r}: {registered}"
+        )
 
     cfg = get_config()
     previous = cfg.providers[domain]
