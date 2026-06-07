@@ -31,17 +31,13 @@ shared by all providers. Adding a new provider is a one-file drop in
 | Setting | Type | Meaning |
 |---|---|---|
 | `providers.price_history` | string | Active provider name for OHLCV price history. |
-| `providers.company_ratios` | string | Active provider for company fundamentals/ratios (active: `pit_composite`, fallback: `yfinance`) — XBRL fundamentals via edgartools + sliced yfinance OHLCV for price-derived technicals. PIT-correct. |
-| `providers.news` | string | Active provider name for news articles (active: `finnhub`, fallback: `alpha_vantage`) — Finnhub `/company-news` endpoint with ~1-year retention. **Sentiment is dropped**: the free tier returns no per-article sentiment, so `NewsArticle.sentiment` is always `None` and the downstream extractor defaults missing sentiment to `0.0`. Swapped from `alpha_vantage` 2026-05-19 to unblock backtest cache-fills on windows within the last year. |
+| `providers.company_ratios` | string | Active provider for company fundamentals/ratios (active: `pit_composite`) — XBRL fundamentals via edgartools + sliced yfinance OHLCV for price-derived technicals. PIT-correct. |
+| `providers.news` | string | Active provider name for news articles (active: `finnhub`, fallback: `tiingo`) — Finnhub `/company-news` endpoint with ~1-year retention. **Sentiment is dropped**: the free tier returns no per-article sentiment, so `NewsArticle.sentiment` is always `None` and the downstream extractor defaults missing sentiment to `0.0`. Swapped from `alpha_vantage` 2026-05-19 to unblock backtest cache-fills on windows within the last year. |
 | `providers.social_sentiment` | string | Active provider name for social-sentiment scores (active: `finnhub`). Stays on `finnhub` for v1 — StockTwits (Row #13) deferred; social analyst soft-fails to `is_no_data=True` when data is unavailable. |
 | `providers.insider_trades` | string | Active provider name for insider transactions. |
 | `providers.politician_trades` | string | Active provider name for politician trades (active: `fmp`, fallback: `quiver`) — Financial Modeling Prep `/senate-trading` + `/senate-disclosure` (free 250/day). |
 | `providers.notable_holders` | string | Active provider name for notable holders. |
 | `providers.filings` | string | Active provider name for SEC filings. |
-| `providers.earnings` | string | Active provider name for quarterly EPS / revenue history (active: `finnhub`). Returns the last four quarters of actuals (provider-internal default). PIT-correct on `report_date`. |
-| `providers.analyst_consensus` | string | Active provider name for analyst target prices and rating revisions (active: `yfinance`). **Snapshot-only** — not PIT-correct for `as_of` older than ~7 days. |
-| `providers.short_interest` | string | Active provider name for FINRA exchange-listed short-interest snapshots (active: `finra`). PIT-gated on `report_publish_date`. |
-| `providers.options` | string | Active provider name for options chain data (active: `yfinance`). **Live-only shell** — backtest `as_of` calls return an empty dict. Row dropped from v1 per spec decision 7.1. |
 | `defaults.news_lookback_days` | int | Default lookback window for news fetch. |
 | `defaults.insider_lookback_days` | int | Default lookback window for insider trades. |
 | `defaults.politician_lookback_days` | int | Default lookback window for politician trades. |
@@ -58,12 +54,15 @@ unregistered names refuse to import the `data` package.
 
 **Phase 6 notes:**
 
-- `providers.news` was `tiingo`; swapped to `alpha_vantage` in Phase 6 for
-  richer per-article sentiment scores and per-ticker relevance filtering,
-  then swapped again to `finnhub` (2026-05-19) for the recent-window
-  backtest fills. Sentiment richness is traded away for retention reach —
-  Finnhub's free tier covers ~1 year of history but exposes no per-article
-  sentiment, so the News analyst runs on headline + summary text only.
+- `providers.news` was originally `tiingo`; swapped to `alpha_vantage` in
+  Phase 6 for richer per-article sentiment scores and per-ticker relevance
+  filtering, then swapped again to `finnhub` (2026-05-19) for the
+  recent-window backtest fills. Sentiment richness is traded away for
+  retention reach — Finnhub's free tier covers ~1 year of history but
+  exposes no per-article sentiment, so the News analyst runs on headline +
+  summary text only. `tiingo` is retained as the registered fallback shell.
+  `alpha_vantage` was removed entirely in the 2026-05-26 data-provider cull
+  (audit A-037); `tiingo` remains the registered fallback shell.
 - `providers.social_sentiment` stays on `finnhub` for v1 — Row #13
   (StockTwits) is deferred to the live-implementation plan because StockTwits
   requires a 30-day forward-cache warm-up before it is useful in backtesting.
