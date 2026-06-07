@@ -5,8 +5,8 @@ Phase 7.6 lands this test with xfail markers on every domain whose live
 and cache implementations are not yet aligned (per audit).  Each Phase B
 task removes one xfail by aligning live and cache providers.
 
-Live-only domains (``earnings``, ``analyst_consensus``, ``short_interest``,
-``options``) skip the cache half entirely.
+Live-only domains (``earnings``, ``analyst_consensus``, ``short_interest``)
+skip the cache half entirely.
 
 Mocking strategy
 ----------------
@@ -345,14 +345,6 @@ async def _call_live_provider(domain: str, monkeypatch: pytest.MonkeyPatch) -> o
         monkeypatch.setitem(mod._token_cache, "expires_at", 0.0)
         return await mod.fetch("AAPL", as_of=_as_of_date, lookback_days=30)
 
-    # ── options ───────────────────────────────────────────────────────────────
-    # Shell provider returns ``[]`` (Task 12 aligned); no mocking needed —
-    # it never touches the network.
-    if domain == "options":
-        from data.providers.options import yfinance as mod
-
-        return await mod.fetch("AAPL", as_of=_as_of_date)
-
     raise ValueError(f"no live-provider stub defined for domain: {domain!r}")
 
 
@@ -543,7 +535,7 @@ async def _call_cache_provider(domain: str, store_path: Path) -> object:
 
 # Domains with no cache provider registered today.
 # Cache test is skipped for these; only the live half runs.
-_LIVE_ONLY: set[str] = {"earnings", "analyst_consensus", "short_interest", "options"}
+_LIVE_ONLY: set[str] = {"earnings", "analyst_consensus", "short_interest"}
 
 # Domains whose **live** provider return type diverges from the canonical
 # DOMAIN_SHAPES entry.  Source: audit column "Drift fix needed = live".

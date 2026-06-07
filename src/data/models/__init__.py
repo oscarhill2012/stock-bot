@@ -13,7 +13,6 @@ from .filings import Filing
 from .market import OHLCBar
 from .missing import MISSING_TIMESTAMP, is_missing_timestamp  # noqa: F401
 from .news import NewsArticle
-from .options import OptionContract
 from .price_history import PriceHistory
 from .sentiment import SocialSentiment, SocialSentimentSnapshot
 from .short_interest import ShortInterestSnapshot
@@ -41,7 +40,6 @@ __all__ = [
     "NewsArticle",
     "NotableHolder",
     "OHLCBar",
-    "OptionContract",
     "PoliticianTrade",
     "PriceHistory",
     "ShortInterestSnapshot",

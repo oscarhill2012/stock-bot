@@ -31,7 +31,7 @@ def test_config_data_json_provider_names_resolve_in_registry() -> None:
 
 
 def test_config_data_json_lists_phase3_domains() -> None:
-    """All four Phase 3 domains must be present in config/data.json providers block.
+    """Surviving Phase 3 domains must be present in config/data.json providers block.
 
     Ensures the config keeps pace with registry expansion — a domain can be
     registered but silently absent from config, which would leave the live
@@ -39,7 +39,7 @@ def test_config_data_json_lists_phase3_domains() -> None:
     """
     cfg = json.loads(Path("config/data.json").read_text())
 
-    for domain in ("earnings", "analyst_consensus", "short_interest", "options"):
+    for domain in ("earnings", "analyst_consensus", "short_interest"):
         assert domain in cfg["providers"], (
             f"Phase 3 domain {domain!r} missing from config/data.json providers block"
         )

@@ -17,8 +17,6 @@ from .models.company_ratios import CompanyRatios
 from .models.earnings import EarningsHistory
 from .models.filings import Filing
 from .models.news import NewsArticle
-from .models.options import OptionContract
-
 # ---------------------------------------------------------------------------
 # Payload-type imports — each canonical model used in DOMAIN_SHAPES below.
 # ---------------------------------------------------------------------------
@@ -94,7 +92,6 @@ DOMAIN_SHAPES: dict[str, DomainShape] = {
     "earnings":          DomainShape("single", EarningsHistory),
     "analyst_consensus": DomainShape("bundle", AnalystConsensusBundle),
     "short_interest":    DomainShape("list",   ShortInterestSnapshot),
-    "options":           DomainShape("list",   OptionContract),
 }
 
 
@@ -112,7 +109,6 @@ DOMAINS: frozenset[str] = frozenset({
     "earnings",            # Finnhub earnings calendar / actuals
     "analyst_consensus",   # yfinance analyst ratings aggregation
     "short_interest",      # FINRA short-interest (bi-monthly)
-    "options",             # yfinance options chain (live-only shell)
 })
 
 

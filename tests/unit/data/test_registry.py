@@ -50,8 +50,8 @@ def test_domains_set_has_expected_slots() -> None:
 
 
 def test_registry_knows_phase3_domains() -> None:
-    """DOMAINS includes the four Phase 3 domains added in Task 3.0."""
-    for d in ("earnings", "analyst_consensus", "short_interest", "options"):
+    """DOMAINS includes the surviving Phase 3 domains."""
+    for d in ("earnings", "analyst_consensus", "short_interest"):
         assert d in DOMAINS, f"expected domain {d!r} in DOMAINS"
 
 
@@ -114,11 +114,10 @@ def test_dispatch_calls_active_provider(monkeypatch: pytest.MonkeyPatch, registr
             "politician_trades": "fake_a",
             "notable_holders": "fake_a",
             "filings": "fake_a",
-            # Phase 3 (Task 3.0) — four new domains must be present in any DataConfig.
+            # Phase 3 (Task 3.0) — three remaining domains must be present in any DataConfig.
             "earnings": "fake_a",
             "analyst_consensus": "fake_a",
             "short_interest": "fake_a",
-            "options": "fake_a",
         },
     )
     monkeypatch.setattr(data_config, "_cache", fake_cfg)

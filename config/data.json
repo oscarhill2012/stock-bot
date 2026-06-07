@@ -10,8 +10,7 @@
     "filings": "edgar",
     "earnings": "finnhub",
     "analyst_consensus": "yfinance",
-    "short_interest": "finra",
-    "options": "yfinance"
+    "short_interest": "finra"
   },
   "defaults": {
     "news_lookback_days": 7,

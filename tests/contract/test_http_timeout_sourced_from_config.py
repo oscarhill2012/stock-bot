@@ -35,7 +35,6 @@ def _sentinel_config() -> DataConfig:
             "earnings":           "finnhub",
             "analyst_consensus":  "yfinance",
             "short_interest":     "finra",
-            "options":            "yfinance",
         },
         defaults                    = FetchDefaults(),
         quiver_http_timeout_seconds = SENTINEL_TIMEOUT,
