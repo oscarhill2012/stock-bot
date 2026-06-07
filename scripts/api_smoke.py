@@ -24,7 +24,6 @@ import time
 import traceback
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import date, timedelta
 from pathlib import Path
 
 import httpx
@@ -112,79 +111,6 @@ _TIMEOUT = httpx.Timeout(15.0)
 # ===========================================================================
 
 
-def probe_finnhub_earnings(env: dict[str, str]) -> ProbeResult:
-    """GET /calendar/earnings — Row #6 Finnhub earnings provider.
-
-    Two-pass probe:
-      1. Recent-history window (past 120 days) — confirms historical data is
-         available and inspects the observed field names.
-      2. Future window (today → today+90d) — asserts the API does NOT
-         auto-filter unannounced events (epsActual=null rows must exist),
-         which validates the PIT dual-filter requirement documented in the
-         Phase -1 verification pass (2026-05-17).
-    """
-
-    name = "finnhub /calendar/earnings"
-    token = env.get("FINNHUB_API_KEY", "").strip()
-    if not token or "your_" in token:
-        return ProbeResult(name, "SKIP", "FINNHUB_API_KEY not set")
-
-    today = date.today()
-
-    # --- Pass 1: recent-history check (past 120 days) ---
-    start = today - timedelta(days=120)
-    params = {
-        "symbol": "AAPL",
-        "from": start.isoformat(),
-        "to": today.isoformat(),
-        "token": token,
-    }
-    r = httpx.get(
-        "https://finnhub.io/api/v1/calendar/earnings",
-        params=params,
-        timeout=_TIMEOUT,
-    )
-    r.raise_for_status()
-    rows = (r.json() or {}).get("earningsCalendar") or []
-    if not rows:
-        return ProbeResult(name, "FAIL", "empty earningsCalendar array")
-    sample = rows[0]
-
-    # --- Pass 2: future window — verify PIT behaviour ---
-    # The API must include rows with epsActual=null for future (unannounced)
-    # dates.  If it filters them out, the Task 3.1 PIT-dual-filter assumption
-    # breaks and must be re-verified before that code lands.
-    future_params = {
-        "symbol": "AAPL",
-        "from": today.isoformat(),
-        "to": (today + timedelta(days=90)).isoformat(),
-        "token": token,
-    }
-    future_r = httpx.get(
-        "https://finnhub.io/api/v1/calendar/earnings",
-        params=future_params,
-        timeout=_TIMEOUT,
-    )
-    future_r.raise_for_status()
-    future_cal = (future_r.json() or {}).get("earningsCalendar") or []
-
-    # At least one row should have epsActual=None or "" (unannounced quarter).
-    unannounced = [row for row in future_cal if row.get("epsActual") in (None, "")]
-    if not unannounced:
-        return ProbeResult(
-            name, "FAIL",
-            "no unannounced future rows in 90d window — "
-            "API behaviour may have changed; re-verify Task 3.1 PIT filter",
-        )
-
-    return ProbeResult(
-        name, "OK",
-        f"{len(rows)} rows; latest {sample.get('date')} EPS={sample.get('epsActual')}; "
-        f"{len(unannounced)} unannounced in next-90d (PIT check OK)",
-        payload={"sample": sample},
-    )
-
-
 def probe_stocktwits(env: dict[str, str]) -> ProbeResult:
     """GET /streams/symbol/AAPL.json — Row #13.
 
@@ -218,23 +144,6 @@ def probe_stocktwits(env: dict[str, str]) -> ProbeResult:
         name, "OK",
         f"{len(msgs)} messages; X-RateLimit-Remaining={rl}",
     )
-
-
-def probe_yfinance_analyst(env: dict[str, str]) -> ProbeResult:
-    """yfinance .analyst_price_targets — Row #10."""
-
-    name = "yfinance analyst targets"
-    try:
-        import yfinance as yf
-    except ImportError:
-        return ProbeResult(name, "FAIL", "yfinance not installed")
-
-    targets = yf.Ticker("AAPL").analyst_price_targets
-    if not isinstance(targets, dict) or not targets:
-        return ProbeResult(name, "FAIL", "no targets returned")
-
-    keys = ", ".join(sorted(targets.keys())[:6])
-    return ProbeResult(name, "OK", f"keys: {keys}")
 
 
 def probe_yfinance_bulk(env: dict[str, str]) -> ProbeResult:
@@ -355,9 +264,7 @@ def main() -> int:
     env = _load_dotenv(root / ".env")
 
     probes: list[Callable[[dict[str, str]], ProbeResult]] = [
-        probe_finnhub_earnings,
         probe_stocktwits,
-        probe_yfinance_analyst,
         probe_yfinance_bulk,
         probe_edgartools_8k,
         probe_stock_watcher,

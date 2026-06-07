@@ -60,9 +60,9 @@ unregistered names refuse to import the `data` package.
   recent-window backtest fills. Sentiment richness is traded away for
   retention reach — Finnhub's free tier covers ~1 year of history but
   exposes no per-article sentiment, so the News analyst runs on headline +
-  summary text only. `tiingo` is retained as the registered fallback shell.
-  `alpha_vantage` was removed entirely in the 2026-05-26 data-provider cull
-  (audit A-037); `tiingo` remains the registered fallback shell.
+  summary text only. `alpha_vantage` was removed entirely in the
+  2026-05-26 data-provider cull (audit A-037); `tiingo` remains the
+  registered fallback shell.
 - `providers.social_sentiment` stays on `finnhub` for v1 — Row #13
   (StockTwits) is deferred to the live-implementation plan because StockTwits
   requires a 30-day forward-cache warm-up before it is useful in backtesting.
