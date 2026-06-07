@@ -46,7 +46,7 @@ from typing import Any, Literal
 from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event, EventActions
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -162,17 +162,12 @@ def _is_schema_error(exc: BaseException) -> bool:
         the cause chain.
     """
 
-    # Defensive import — Pydantic is a hard project dependency, but we
-    # mirror the import-guard style used by _is_rate_limit so the module
-    # is uniformly robust.
-    try:
-        from pydantic import ValidationError
-
-        if isinstance(exc, ValidationError):
-            return True
-
-    except ImportError:
-        return False
+    # ValidationError is imported at module level — pydantic is a hard
+    # project dependency.  The old inner-import guard was removed (A-032)
+    # because it could never fire and structurally mirrored a pattern that
+    # would silently downgrade every schema error to "not retryable".
+    if isinstance(exc, ValidationError):
+        return True
 
     cause = exc.__cause__
 
@@ -204,12 +199,8 @@ def _find_validation_error(exc: BaseException) -> BaseException | None:
         (defensive — should not happen when ``_is_schema_error`` returned True).
     """
 
-    try:
-        from pydantic import ValidationError
-
-    except ImportError:
-        return None
-
+    # ValidationError is imported at module level — the inner import guard
+    # was removed (A-032) for the same reason as in ``_is_schema_error``.
     if isinstance(exc, ValidationError):
         return exc
 

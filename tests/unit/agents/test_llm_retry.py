@@ -32,6 +32,7 @@ from agents.llm_retry import (
     build_retry_policies,
     _classify,
     _compute_exp_jitter,
+    _find_validation_error,
     _format_schema_error_for_llm,
     _is_rate_limit,
     _is_schema_error,
@@ -929,3 +930,56 @@ async def test_rate_limit_retry_does_not_emit_schema_feedback() -> None:
     for e in events:
         delta = (e.actions.state_delta or {}) if e.actions is not None else {}
         assert "temp:_last_schema_error" not in delta
+
+
+# ---------------------------------------------------------------------------
+# Audit A-032 regression: pydantic ImportError guard removed
+#
+# The previous implementation of ``_is_schema_error`` and
+# ``_find_validation_error`` each wrapped the pydantic import in a
+# ``try/except ImportError: return False/None`` block.  That guard could
+# never fire (pydantic is a hard project dependency), but its presence was
+# enough to silence linter warnings — and it structurally matched an
+# import-guard pattern that *would* silently downgrade errors if pydantic
+# were ever removed.  These tests pin the happy path so a regression to the
+# guarded style stays visible.
+# ---------------------------------------------------------------------------
+
+
+class _A032Schema(_BM):
+    """Trivial model used to provoke a real ValidationError for A-032 tests."""
+
+    n: int
+
+
+def _make_a032_validation_error() -> _VE:
+    """Return a real pydantic ValidationError instance."""
+
+    try:
+        _A032Schema(n="not an int")  # type: ignore[arg-type]
+    except _VE as ve:
+        return ve
+
+    raise AssertionError("expected ValidationError")
+
+
+def test_is_schema_error_returns_true_for_pydantic_validation_error() -> None:
+    """``_is_schema_error`` must return ``True`` for a real ValidationError.
+
+    Regression guard for audit A-032: removing the ``try/except ImportError``
+    guard must not alter the function's observable classification behaviour.
+    """
+
+    assert _is_schema_error(_make_a032_validation_error()) is True
+
+
+def test_find_validation_error_returns_the_underlying_pydantic_error() -> None:
+    """``_find_validation_error`` must return the original ValidationError.
+
+    Regression guard for audit A-032: the function must locate and return
+    the ``ValidationError`` instance when given one directly, without the
+    import-guard short-circuit masking it.
+    """
+
+    ve: _VE = _make_a032_validation_error()
+    assert _find_validation_error(ve) is ve
