@@ -82,10 +82,11 @@ class RiskGateAgent(BaseAgent):
         proposed = dict(decision.target_weights)
 
         # Strip update (and legacy hold) stances from ``proposed`` before
-        # clamping.  These stances carry no weight change — the executor will
-        # skip broker dispatch for them (``resolve_broker_call`` returns
-        # ``None``).  Leaving their tickers in the proposed dict would run the
-        # clamp logic against a stale/zero weight, which is semantically wrong.
+        # clamping.  These stances carry no weight change — the executor builds
+        # ``Order`` objects directly from ``final_orders`` and simply does not
+        # dispatch no-trade verbs (``update``, ``no_action``).  Leaving their
+        # tickers in the proposed dict would run the clamp logic against a
+        # stale/zero weight, which is semantically wrong.
         _stance_intents = {
             s.ticker: s.intent
             for s in (decision.stances or [])

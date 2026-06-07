@@ -56,10 +56,6 @@ from agents.strategist.stance_schema import TickerStance
 
 logger = logging.getLogger(__name__)
 
-# Verbs that never produce a broker call.
-_NO_TRADE_INTENTS: Final[frozenset[str]] = frozenset({"update", "no_action"})
-
-
 # Sentinel returned by ``apply_stance_to_thesis`` when the stance is a
 # strategist hallucination (sell on a non-held row).  Distinct from
 # ``None`` (which means "full close — caller drops the ticker") so the
@@ -79,66 +75,6 @@ class _Hallucinated:
 
 
 HALLUCINATED: Final = _Hallucinated()
-
-
-def resolve_broker_call(
-    stance: TickerStance,
-    *,
-    prior_row: PositionThesis | None,
-) -> dict | None:
-    """Map a stance to a minimal broker-call descriptor.
-
-    Parameters
-    ----------
-    stance
-        The risk-gated stance from the strategist.
-    prior_row
-        The existing ``PositionThesis`` for this ticker (``None`` if the
-        agent has no thesis on this ticker yet).  Used to distinguish a
-        full close (absent ``stance.weight``) from a partial trim.
-
-    Returns
-    -------
-    dict | None
-        ``None`` for verbs that do not trade (``update``, ``no_action``).
-        Otherwise a dict with ``{"action": "BUY"|"SELL", "weight": float}``
-        describing the broker call direction and target weight.
-
-        Note: the Executor's ``_run_async_impl`` constructs the actual
-        ``Order`` object using ``final_orders`` from the risk gate — this
-        helper exists primarily to gate whether a broker call is needed
-        at all, and to provide the verb-dispatch logic in one auditable
-        place.
-    """
-
-    if stance.intent in _NO_TRADE_INTENTS:
-        # No-trade verbs — the broker does nothing for these.
-        return None
-
-    match stance.intent:
-
-        case "buy":
-            # Enter a new long position or increase an existing one.
-            # ``stance.weight`` is required on buy stances (schema validator
-            # enforces this — safe to access directly here).
-            return {"action": "BUY", "weight": stance.weight}
-
-        case "sell":
-            # Partial trim or full close.
-            # Absent weight (schema allows it for sell) means full exit → 0.0.
-            if stance.weight is not None:
-                # Partial trim — reduce to the supplied weight.
-                return {"action": "SELL", "weight": stance.weight}
-            else:
-                # Full close — sell the entire held position to zero.
-                return {"action": "SELL", "weight": 0.0}
-
-        case _:
-            # Unknown / ``None`` intent — no safe default broker action exists,
-            # so we deliberately do not dispatch.  The caller is responsible for
-            # raising or handling this case; returning ``None`` here surfaces
-            # the gap rather than silently mis-routing the order.
-            return None
 
 
 def _has_live_position(row: PositionThesis | None) -> bool:

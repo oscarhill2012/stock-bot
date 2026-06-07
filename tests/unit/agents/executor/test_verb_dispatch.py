@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from agents.executor._verb_dispatch import apply_stance_to_thesis, resolve_broker_call
+from agents.executor._verb_dispatch import apply_stance_to_thesis
 from agents.strategist.position_thesis import PositionThesis
 from agents.strategist.stance_schema import TickerStance
 
@@ -64,67 +64,6 @@ def _make_prior_row(**kwargs) -> PositionThesis:
 
 _TS = datetime(2026, 5, 23, tzinfo=UTC)
 _TICK_ID = "t-1"
-
-
-# ---------------------------------------------------------------------------
-# resolve_broker_call tests
-# ---------------------------------------------------------------------------
-
-
-def test_resolve_broker_call_buy_returns_buy_to_weight():
-    """``buy`` intent must return a BUY descriptor."""
-
-    stance = _make_stance(
-        intent    = "buy",
-        weight    = 0.05,
-        rationale = "Strong momentum",
-    )
-    result = resolve_broker_call(stance, prior_row=None)
-
-    assert result is not None
-    assert result["action"] == "BUY"
-    assert result["weight"] == pytest.approx(0.05)
-
-
-def test_resolve_broker_call_sell_full_close_returns_sell_zero():
-    """``sell`` with no weight (full close) must return a SELL to weight=0.0."""
-
-    prior = _make_prior_row()
-    stance = _make_stance(intent="sell", rationale="thesis invalidated")
-    result = resolve_broker_call(stance, prior_row=prior)
-
-    assert result is not None
-    assert result["action"] == "SELL"
-    assert result["weight"] == 0.0
-
-
-def test_resolve_broker_call_sell_partial_returns_sell_with_weight():
-    """``sell`` with weight (partial trim) must return a SELL to that weight."""
-
-    prior = _make_prior_row(weight=0.15)
-    stance = _make_stance(
-        intent = "sell",
-        weight = 0.07,
-        rationale = "Taking some profit after 20 % move",
-    )
-    result = resolve_broker_call(stance, prior_row=prior)
-
-    assert result is not None
-    assert result["action"] == "SELL"
-    assert result["weight"] == pytest.approx(0.07)
-
-
-def test_resolve_broker_call_update_returns_none():
-    """``update`` intent must return ``None`` — no broker call."""
-
-    prior = _make_prior_row()
-    stance = _make_stance(
-        intent  = "update",
-        rationale  = "Revised view following macro data",
-    )
-    result = resolve_broker_call(stance, prior_row=prior)
-
-    assert result is None
 
 
 # ---------------------------------------------------------------------------
