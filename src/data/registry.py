@@ -22,7 +22,6 @@ from .models.news import NewsArticle
 # ---------------------------------------------------------------------------
 from .models.price_history import PriceHistory
 from .models.sentiment import SocialSentiment
-from .models.short_interest import ShortInterestSnapshot
 from .models.trades import Form4Bundle, NotableHolder, PoliticianTrade
 from .rate_limit import AsyncRateLimiter
 
@@ -91,7 +90,6 @@ DOMAIN_SHAPES: dict[str, DomainShape] = {
     "filings":           DomainShape("list",   Filing),
     "earnings":          DomainShape("single", EarningsHistory),
     "analyst_consensus": DomainShape("bundle", AnalystConsensusBundle),
-    "short_interest":    DomainShape("list",   ShortInterestSnapshot),
 }
 
 
@@ -108,7 +106,6 @@ DOMAINS: frozenset[str] = frozenset({
     # Phase 3 additions.
     "earnings",            # Finnhub earnings calendar / actuals
     "analyst_consensus",   # yfinance analyst ratings aggregation
-    "short_interest",      # FINRA short-interest (bi-monthly)
 })
 
 

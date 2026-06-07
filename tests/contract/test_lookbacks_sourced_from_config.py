@@ -61,7 +61,6 @@ def _sentinel_config() -> DataConfig:
             "filings":            "edgar",
             "earnings":           "finnhub",
             "analyst_consensus":  "yfinance",
-            "short_interest":     "finra",
         },
         defaults=FetchDefaults(
             news_lookback_days           = SENTINEL_NEWS,

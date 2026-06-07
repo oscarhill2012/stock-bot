@@ -5,8 +5,8 @@ Phase 7.6 lands this test with xfail markers on every domain whose live
 and cache implementations are not yet aligned (per audit).  Each Phase B
 task removes one xfail by aligning live and cache providers.
 
-Live-only domains (``earnings``, ``analyst_consensus``, ``short_interest``)
-skip the cache half entirely.
+Live-only domains (``earnings``, ``analyst_consensus``) skip the cache half
+entirely.
 
 Mocking strategy
 ----------------
@@ -320,31 +320,6 @@ async def _call_live_provider(domain: str, monkeypatch: pytest.MonkeyPatch) -> o
         monkeypatch.setattr(mod.yf, "Ticker", lambda _sym: mock_ticker)
         return await mod.fetch("AAPL", as_of=_as_of_date)
 
-    # ── short_interest ────────────────────────────────────────────────────────
-    # FINRA provider; patch the token cache + AsyncClient.
-    if domain == "short_interest":
-        from data.providers.short_interest import finra as mod
-
-        token_resp = _make_resp({"access_token": "tok", "expires_in": 43200})
-        data_resp  = _make_resp([
-            {
-                "securitiesInformationProcessorSymbolIdentifier": "AAPL",
-                "tradeReportDate":      "2023-03-08",
-                "marketCode":           "B",
-                "shortParQuantity":     10,
-                "shortExemptParQuantity": 0,
-                "totalParQuantity":     100,
-                "reportingFacilityCode": "NCTRF",
-            },
-        ])
-
-        cm_calls = iter([_AsyncCM(token_resp), _AsyncCM(data_resp)])
-        monkeypatch.setattr(mod.httpx, "AsyncClient", lambda *_a, **_k: next(cm_calls))
-        monkeypatch.setattr(mod, "require_key", lambda _k: "stub")
-        monkeypatch.setitem(mod._token_cache, "token", None)
-        monkeypatch.setitem(mod._token_cache, "expires_at", 0.0)
-        return await mod.fetch("AAPL", as_of=_as_of_date, lookback_days=30)
-
     raise ValueError(f"no live-provider stub defined for domain: {domain!r}")
 
 
@@ -535,7 +510,7 @@ async def _call_cache_provider(domain: str, store_path: Path) -> object:
 
 # Domains with no cache provider registered today.
 # Cache test is skipped for these; only the live half runs.
-_LIVE_ONLY: set[str] = {"earnings", "analyst_consensus", "short_interest"}
+_LIVE_ONLY: set[str] = {"earnings", "analyst_consensus"}
 
 # Domains whose **live** provider return type diverges from the canonical
 # DOMAIN_SHAPES entry.  Source: audit column "Drift fix needed = live".

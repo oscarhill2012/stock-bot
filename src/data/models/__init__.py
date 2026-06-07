@@ -15,7 +15,6 @@ from .missing import MISSING_TIMESTAMP, is_missing_timestamp  # noqa: F401
 from .news import NewsArticle
 from .price_history import PriceHistory
 from .sentiment import SocialSentiment, SocialSentimentSnapshot
-from .short_interest import ShortInterestSnapshot
 from .trades import (
     Form4Bundle,
     InsiderDerivativeTrade,
@@ -42,7 +41,6 @@ __all__ = [
     "OHLCBar",
     "PoliticianTrade",
     "PriceHistory",
-    "ShortInterestSnapshot",
     "SocialSentiment",
     "SocialSentimentSnapshot",
     "TradeSide",

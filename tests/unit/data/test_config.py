@@ -23,10 +23,9 @@ VALID_PAYLOAD: dict = {
         "politician_trades": "quiver",
         "notable_holders": "edgar",
         "filings": "edgar",
-        # Phase 3 (Task 3.0) — three surviving domains.
+        # Phase 3 (Task 3.0) — two surviving domains.
         "earnings": "finnhub",
         "analyst_consensus": "yfinance",
-        "short_interest": "finra",
     },
     "defaults": {
         "news_lookback_days": 7,

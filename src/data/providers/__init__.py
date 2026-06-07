@@ -8,7 +8,6 @@ from .news import alpha_vantage as _news_alpha_vantage  # noqa: F401  — Task 3
 from .news import finnhub as _news_finnhub  # noqa: F401
 from .notable_holders import edgar as _notable_holders_edgar  # noqa: F401
 from .politician_trades import quiver as _politician_trades_quiver  # noqa: F401
-from .short_interest import finra as _short_interest_finra  # noqa: F401  — Task 3.3
 from .social_sentiment import finnhub as _social_finnhub  # noqa: F401
 from .stats import yfinance as _stats_yfinance  # noqa: F401
 

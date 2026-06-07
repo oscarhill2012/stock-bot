@@ -252,100 +252,6 @@ def probe_alpha_vantage_news(env: dict[str, str]) -> ProbeResult:
     )
 
 
-def probe_finra_short_interest(env: dict[str, str]) -> ProbeResult:
-    """OAuth2 client-credentials + dataset GET — Row #11.
-
-    FINRA needs a free developer registration and OAuth2 credentials; the
-    plan's Phase 0.2 documents both endpoint paths to try.
-    """
-
-    name = "finra regShoDaily"
-    cid = env.get("FINRA_CLIENT_ID", "").strip()
-    secret = env.get("FINRA_CLIENT_SECRET", "").strip()
-    if not cid or not secret:
-        return ProbeResult(
-            name, "SKIP",
-            "FINRA_CLIENT_ID / _SECRET not set (free at developer.finra.org)",
-        )
-
-    token_url = (
-        "https://ews.fip.finra.org/fip/rest/ews/oauth2/access_token"
-        "?grant_type=client_credentials"
-    )
-    auth_resp = httpx.post(token_url, auth=(cid, secret), timeout=_TIMEOUT)
-    if auth_resp.status_code != 200:
-        return ProbeResult(
-            name, "FAIL",
-            f"token endpoint returned {auth_resp.status_code}",
-        )
-    token = (auth_resp.json() or {}).get("access_token")
-    if not token:
-        return ProbeResult(name, "FAIL", "token response missing access_token")
-
-    # FINRA defaults to CSV for dataset endpoints; ask for JSON explicitly.
-    # `shortInterestExch` was originally listed as a candidate but FINRA
-    # responds 404 — `regShoDaily` is the live name we want for Row #11.
-    url = "https://api.finra.org/data/group/otcMarket/name/regShoDaily"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/json",
-    }
-    r = httpx.get(url, headers=headers, params={"limit": 5}, timeout=_TIMEOUT)
-    if r.status_code != 200:
-        return ProbeResult(
-            name, "FAIL",
-            f"regShoDaily returned {r.status_code}",
-        )
-    # Endpoint returns a JSON array of records directly (not dict-wrapped).
-    rows = r.json() or []
-
-    # Assert top-level shape — the Phase -1 verification (2026-05-17) confirmed
-    # regShoDaily always returns a bare array; a wrapped dict would indicate an
-    # API schema change that would break the Task 3.3 synthesis path.
-    if not isinstance(rows, list):
-        return ProbeResult(
-            name, "FAIL",
-            "response is not a top-level array",
-        )
-    if not rows:
-        return ProbeResult(name, "FAIL", "empty regShoDaily response")
-
-    # Assert field shape against the seven fields confirmed in Phase -1.
-    # Extra fields are informational (FINRA may add columns); missing fields
-    # are a hard failure because the synthesis path depends on all seven.
-    EXPECTED_FIELDS = {
-        "marketCode",
-        "reportingFacilityCode",
-        "securitiesInformationProcessorSymbolIdentifier",
-        "shortExemptParQuantity",
-        "shortParQuantity",
-        "totalParQuantity",
-        "tradeReportDate",
-    }
-    got = set(rows[0].keys())
-    missing = EXPECTED_FIELDS - got
-    extra = got - EXPECTED_FIELDS
-
-    if missing:
-        return ProbeResult(
-            name, "FAIL",
-            f"missing fields: {missing}",
-        )
-
-    # Log extra fields as a note in the result but don't fail — FINRA is
-    # entitled to add columns without breaking our consumers.
-    extra_note = f"; extra fields: {extra}" if extra else ""
-
-    sample = rows[0]
-    return ProbeResult(
-        name, "OK",
-        f"{len(rows)} rows; {sample.get('tradeReportDate')} "
-        f"{sample.get('securitiesInformationProcessorSymbolIdentifier')} "
-        f"shortPar={sample.get('shortParQuantity')}{extra_note}",
-        payload={"endpoint": url, "sample": sample},
-    )
-
-
 def probe_stocktwits(env: dict[str, str]) -> ProbeResult:
     """GET /streams/symbol/AAPL.json — Row #13.
 
@@ -518,7 +424,6 @@ def main() -> int:
     probes: list[Callable[[dict[str, str]], ProbeResult]] = [
         probe_finnhub_earnings,
         probe_alpha_vantage_news,
-        probe_finra_short_interest,
         probe_stocktwits,
         probe_yfinance_analyst,
         probe_yfinance_bulk,
