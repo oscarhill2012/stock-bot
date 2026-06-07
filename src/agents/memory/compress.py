@@ -6,13 +6,6 @@ from collections.abc import Awaitable, Callable
 from .schema import BufferEntry
 
 DIGEST_BUDGET = 2000
-_compress_llm = None
-
-
-def set_compress_llm(fn: Callable[[str, str], Awaitable[str]] | None) -> None:
-    """Inject a test stub. Pass None to restore default."""
-    global _compress_llm
-    _compress_llm = fn
 
 
 async def compress(
@@ -24,8 +17,11 @@ async def compress(
 
     Fast path: simple concat when combined length < budget.
     LLM path: compress via Gemini Flash when over budget.
+
+    The ``llm_fn`` parameter is the primary injection path for tests — pass a
+    stub directly rather than relying on a module-level setter.
     """
-    fn = llm_fn or _compress_llm or _default_llm_compress
+    fn = llm_fn or _default_llm_compress
     appended = f"{prev_digest}\n[{evicted_entry.decision_tag}] {evicted_entry.reasoning_summary}"
     if len(appended) <= DIGEST_BUDGET:
         return appended.strip()

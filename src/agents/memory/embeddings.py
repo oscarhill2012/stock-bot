@@ -1,29 +1,16 @@
-"""Embedding helper with injectable provider for tests."""
+"""Embedding helper for the memory subsystem."""
 from __future__ import annotations
 
 import numpy as np
 
-# Default provider — can be overridden in tests via set_embedding_provider()
-_embedding_provider = None
-
-
-def set_embedding_provider(fn) -> None:
-    """Override the embed() implementation. Pass None to restore default."""
-    global _embedding_provider
-    _embedding_provider = fn
-
 
 async def embed(text: str) -> list[float]:
-    """Embed text using the configured embedding model or the injected provider.
+    """Embed text using the configured Vertex AI embedding model.
 
-    Production path delegates to :func:`_default_embed`, which reads the model
-    ID from ``config/models.json::memory_embedding`` via the central
-    :func:`src.config.models.get_models_config` loader — no hardcoded literal
-    lives in this module.  Tests inject a stub via
-    :func:`set_embedding_provider` and bypass the LLM entirely.
+    Delegates to :func:`_default_embed`, which reads the model ID from
+    ``config/models.json::memory_embedding``. Tests stub this by
+    monkeypatching :func:`_default_embed` directly.
     """
-    if _embedding_provider is not None:
-        return await _embedding_provider(text)
     return await _default_embed(text)
 
 
