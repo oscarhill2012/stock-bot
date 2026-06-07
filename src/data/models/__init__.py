@@ -2,11 +2,6 @@
 
 Re-exported flat for convenience: ``from data.models import CompanyRatios``.
 """
-from .analyst_consensus import (
-    AnalystConsensusBundle,
-    AnalystRating,
-    AnalystRevision,
-)
 from .company_ratios import CompanyRatios
 from .earnings import EarningsHistory, EarningsReport
 from .filings import Filing
@@ -25,9 +20,6 @@ from .trades import (
 )
 
 __all__ = [
-    "AnalystConsensusBundle",
-    "AnalystRating",
-    "AnalystRevision",
     "CompanyRatios",
     "EarningsHistory",
     "EarningsReport",

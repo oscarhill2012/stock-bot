@@ -39,7 +39,6 @@ def test_config_data_json_lists_phase3_domains() -> None:
     """
     cfg = json.loads(Path("config/data.json").read_text())
 
-    for domain in ("earnings", "analyst_consensus"):
-        assert domain in cfg["providers"], (
-            f"Phase 3 domain {domain!r} missing from config/data.json providers block"
-        )
+    assert "earnings" in cfg["providers"], (
+        "Phase 3 domain 'earnings' missing from config/data.json providers block"
+    )

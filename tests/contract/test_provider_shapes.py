@@ -5,8 +5,7 @@ Phase 7.6 lands this test with xfail markers on every domain whose live
 and cache implementations are not yet aligned (per audit).  Each Phase B
 task removes one xfail by aligning live and cache providers.
 
-Live-only domains (``earnings``, ``analyst_consensus``) skip the cache half
-entirely.
+Live-only domains (``earnings``) skip the cache half entirely.
 
 Mocking strategy
 ----------------
@@ -307,19 +306,6 @@ async def _call_live_provider(domain: str, monkeypatch: pytest.MonkeyPatch) -> o
         )
         return await mod.fetch("AAPL", as_of=_as_of_date, lookback_quarters=4)
 
-    # ── analyst_consensus ─────────────────────────────────────────────────────
-    # yfinance provider; now returns AnalystConsensusBundle (Task 5 aligned).
-    if domain == "analyst_consensus":
-        from data.providers.analyst_consensus import yfinance as mod
-
-        mock_ticker = MagicMock()
-        mock_ticker.analyst_price_targets   = {}
-        mock_ticker.upgrades_downgrades      = pd.DataFrame()
-        mock_ticker.recommendations_summary  = pd.DataFrame()
-        mock_ticker.info = {}
-        monkeypatch.setattr(mod.yf, "Ticker", lambda _sym: mock_ticker)
-        return await mod.fetch("AAPL", as_of=_as_of_date)
-
     raise ValueError(f"no live-provider stub defined for domain: {domain!r}")
 
 
@@ -510,7 +496,7 @@ async def _call_cache_provider(domain: str, store_path: Path) -> object:
 
 # Domains with no cache provider registered today.
 # Cache test is skipped for these; only the live half runs.
-_LIVE_ONLY: set[str] = {"earnings", "analyst_consensus"}
+_LIVE_ONLY: set[str] = {"earnings"}
 
 # Domains whose **live** provider return type diverges from the canonical
 # DOMAIN_SHAPES entry.  Source: audit column "Drift fix needed = live".

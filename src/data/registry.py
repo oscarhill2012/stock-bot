@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from typing import Any, Literal, Protocol, TypeVar
 
 from .config import get_config
-from .models.analyst_consensus import AnalystConsensusBundle
 from .models.company_ratios import CompanyRatios
 from .models.earnings import EarningsHistory
 from .models.filings import Filing
@@ -89,7 +88,6 @@ DOMAIN_SHAPES: dict[str, DomainShape] = {
     "notable_holders":   DomainShape("list",   NotableHolder),
     "filings":           DomainShape("list",   Filing),
     "earnings":          DomainShape("single", EarningsHistory),
-    "analyst_consensus": DomainShape("bundle", AnalystConsensusBundle),
 }
 
 
@@ -105,7 +103,6 @@ DOMAINS: frozenset[str] = frozenset({
     "filings",
     # Phase 3 additions.
     "earnings",            # Finnhub earnings calendar / actuals
-    "analyst_consensus",   # yfinance analyst ratings aggregation
 })
 
 

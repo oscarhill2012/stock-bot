@@ -8,8 +8,7 @@
     "politician_trades": "fmp",
     "notable_holders": "edgar",
     "filings": "edgar",
-    "earnings": "finnhub",
-    "analyst_consensus": "yfinance"
+    "earnings": "finnhub"
   },
   "defaults": {
     "news_lookback_days": 7,

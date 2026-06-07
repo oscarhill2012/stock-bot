@@ -33,7 +33,6 @@ def _sentinel_config() -> DataConfig:
             "notable_holders":    "edgar",
             "filings":            "edgar",
             "earnings":           "finnhub",
-            "analyst_consensus":  "yfinance",
         },
         defaults                    = FetchDefaults(),
         quiver_http_timeout_seconds = SENTINEL_TIMEOUT,

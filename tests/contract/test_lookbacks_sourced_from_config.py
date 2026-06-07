@@ -60,7 +60,6 @@ def _sentinel_config() -> DataConfig:
             "notable_holders":    "edgar",
             "filings":            "edgar",
             "earnings":           "finnhub",
-            "analyst_consensus":  "yfinance",
         },
         defaults=FetchDefaults(
             news_lookback_days           = SENTINEL_NEWS,
