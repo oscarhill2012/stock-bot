@@ -176,21 +176,42 @@ async def _call_live_provider(domain: str, monkeypatch: pytest.MonkeyPatch) -> o
         )
 
     # ── company_ratios ────────────────────────────────────────────────────────
-    # Use the yfinance (non-PIT) provider: it is simpler to stub — just _yt_raw.
-    # The pit_composite provider would need edgartools + yfinance mocked
-    # concurrently; for the contract test the yfinance provider is sufficient.
+    # ``pit_composite`` is the sole registered ``company_ratios`` provider
+    # (the yfinance registration was culled in plan-08 A-038).
+    # Stub the three IO-bound internal helpers so no real network calls are
+    # made; the provider's combination + model-construction logic still runs.
     if domain == "company_ratios":
-        from data.providers.stats import yfinance as mod
+        from data.models import PriceHistory
+        from data.providers.company_ratios import pit_composite as mod
 
-        fake_raw = {
-            "history": pd.DataFrame(),
-            "info":    {},
-            "fast":    {},
-        }
-        monkeypatch.setattr(mod, "_yt_raw", lambda *_a, **_k: fake_raw)
-        return await mod.fetch_company_ratios(
-            "AAPL", as_of=_as_of, period="1y", interval="1d",
+        # Minimal stubs — return the correct types with empty / zero values.
+        # _Facts field names come from pit_composite._Facts dataclass.
+        monkeypatch.setattr(
+            mod, "_fetch_xbrl_facts",
+            lambda symbol, as_of_date: mod._Facts(
+                long_name=None,
+                sector=None,
+                shares_out=None,
+                eps_ttm=None,
+                dps_ttm=None,
+            ),
         )
+        monkeypatch.setattr(
+            mod, "_fetch_price_series",
+            lambda symbol, as_of: PriceHistory(ticker=symbol, bars=[]),
+        )
+        monkeypatch.setattr(
+            mod, "_load_xbrl_summary",
+            lambda symbol, as_of_date: {
+                "profit_margin":      None,
+                "debt_to_equity":     None,
+                "roe":                None,
+                "revenue_growth_yoy": None,
+                "free_cash_flow":     None,
+                "peg":                None,
+            },
+        )
+        return await mod.fetch("AAPL", as_of=_as_of)
 
     # ── news ──────────────────────────────────────────────────────────────────
     # Use the Finnhub news provider.  It calls _client().company_news via

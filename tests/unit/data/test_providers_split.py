@@ -1,6 +1,11 @@
-"""Smoke test that the two yfinance providers project from the same raw payload.
+"""Smoke test that the yfinance price_history provider projects from the raw payload.
 
-We do not hit the network — the test patches ``yf.Ticker`` to return a fake.
+The ``company_ratios`` registration was removed from the yfinance stats module
+in the plan-08 provider cull (A-038); ``pit_composite`` is now the sole
+``company_ratios`` provider.  This file previously verified that both providers
+shared the underlying ``_yt_raw`` LRU cache — that invariant is now vacuous
+for ``company_ratios``.  The price_history smoke is preserved here to guard
+the ``_fetch_price_history`` → OHLCV bar mapping.
 """
 from __future__ import annotations
 
@@ -31,19 +36,23 @@ def _fake_yf_ticker(symbol: str) -> MagicMock:
     return t
 
 
-def test_price_history_and_ratios_share_underlying_call() -> None:
-    """Fetching both for the same ticker must not double-call yfinance."""
+def test_price_history_uses_lru_cached_raw_call() -> None:
+    """``_fetch_price_history`` resolves from the LRU-cached ``_yt_raw`` call.
+
+    Verifies the OHLCV bar mapping is correct and that repeated calls for the
+    same (symbol, period, interval) do not re-construct the ``yf.Ticker``.
+    """
     # Clear the lru_cache so the test is hermetic.
     prov._yt_raw.cache_clear()
 
     with patch.object(prov.yf, "Ticker", side_effect=_fake_yf_ticker) as ticker_mock:
         ph = prov._fetch_price_history("AAPL", "1y", "1d")
-        cr = prov._fetch_company_ratios("AAPL", "1y", "1d")
+        # Second call — must hit the LRU cache, not re-construct the Ticker.
+        ph2 = prov._fetch_price_history("AAPL", "1y", "1d")
 
-    # The lru_cache guarantees one Ticker construction per (symbol, period, interval).
+    # Only one Ticker construction expected across both calls.
     assert ticker_mock.call_count == 1
     assert ph.ticker == "AAPL"
     assert len(ph.bars) == 2
     assert ph.bars[-1].close == 102.5
-    assert cr.trailing_pe == 20.1
-    assert cr.last_price == 102.5
+    assert ph2.bars[-1].close == 102.5

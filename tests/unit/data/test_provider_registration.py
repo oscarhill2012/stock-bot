@@ -15,15 +15,6 @@ def test_price_history_yfinance_registers_on_import() -> None:
     assert entry.upstream == "yfinance"
 
 
-def test_company_ratios_yfinance_registers_on_import() -> None:
-    """Importing the yfinance stats module registers the company_ratios domain."""
-    import data.providers.stats.yfinance  # noqa: F401
-    from data.registry import _REGISTRY
-
-    entry = _REGISTRY[("company_ratios", "yfinance")]
-    assert entry.upstream == "yfinance"
-
-
 def test_news_finnhub_registers_on_import() -> None:
     """Importing the finnhub news module registers the news domain."""
     import data.providers.news.finnhub  # noqa: F401

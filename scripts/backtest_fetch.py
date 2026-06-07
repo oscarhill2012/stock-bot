@@ -351,7 +351,7 @@ def _build_provider_name_map() -> dict[str, str]:
     Returns
     -------
     dict[str, str]
-        E.g. ``{"ohlcv": "yfinance", "company_ratios": "yfinance", ...}``.
+        E.g. ``{"ohlcv": "yfinance", "company_ratios": "pit_composite", ...}``.
     """
     from data.config import get_config
 
@@ -360,7 +360,7 @@ def _build_provider_name_map() -> dict[str, str]:
 
     return {
         "ohlcv":             live_map.get("price_history", "yfinance"),
-        "company_ratios":    live_map.get("company_ratios", "yfinance"),
+        "company_ratios":    live_map.get("company_ratios", "pit_composite"),
         "news":              live_map.get("news", "unknown"),
         "filings":           live_map.get("filings", "unknown"),
         "insider_trades":    live_map.get("insider_trades", "unknown"),
