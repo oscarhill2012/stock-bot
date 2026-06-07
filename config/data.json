@@ -7,8 +7,7 @@
     "insider_trades": "edgar",
     "politician_trades": "fmp",
     "notable_holders": "edgar",
-    "filings": "edgar",
-    "earnings": "finnhub"
+    "filings": "edgar"
   },
   "defaults": {
     "news_lookback_days": 7,

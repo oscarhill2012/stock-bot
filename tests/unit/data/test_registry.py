@@ -49,10 +49,6 @@ def test_domains_set_has_expected_slots() -> None:
     }) <= DOMAINS
 
 
-def test_registry_knows_phase3_domains() -> None:
-    """DOMAINS includes the surviving Phase 3 domain."""
-    assert "earnings" in DOMAINS, "expected domain 'earnings' in DOMAINS"
-
 
 def test_register_populates_registry(registry_isolation: None) -> None:
     """A @register-decorated function appears in the _REGISTRY dict."""
@@ -113,8 +109,6 @@ def test_dispatch_calls_active_provider(monkeypatch: pytest.MonkeyPatch, registr
             "politician_trades": "fake_a",
             "notable_holders": "fake_a",
             "filings": "fake_a",
-            # Phase 3 (Task 3.0) — one remaining domain must be present in any DataConfig.
-            "earnings": "fake_a",
         },
     )
     monkeypatch.setattr(data_config, "_cache", fake_cfg)

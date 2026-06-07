@@ -59,7 +59,6 @@ def _sentinel_config() -> DataConfig:
             "politician_trades":  "fmp",
             "notable_holders":    "edgar",
             "filings":            "edgar",
-            "earnings":           "finnhub",
         },
         defaults=FetchDefaults(
             news_lookback_days           = SENTINEL_NEWS,

@@ -3,7 +3,6 @@
 Re-exported flat for convenience: ``from data.models import CompanyRatios``.
 """
 from .company_ratios import CompanyRatios
-from .earnings import EarningsHistory, EarningsReport
 from .filings import Filing
 from .market import OHLCBar
 from .missing import MISSING_TIMESTAMP, is_missing_timestamp  # noqa: F401
@@ -21,8 +20,6 @@ from .trades import (
 
 __all__ = [
     "CompanyRatios",
-    "EarningsHistory",
-    "EarningsReport",
     "Filing",
     "Form4Bundle",
     "InsiderDerivativeTrade",

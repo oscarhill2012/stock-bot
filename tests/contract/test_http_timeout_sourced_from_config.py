@@ -32,7 +32,6 @@ def _sentinel_config() -> DataConfig:
             "politician_trades":  "fmp",
             "notable_holders":    "edgar",
             "filings":            "edgar",
-            "earnings":           "finnhub",
         },
         defaults                    = FetchDefaults(),
         quiver_http_timeout_seconds = SENTINEL_TIMEOUT,

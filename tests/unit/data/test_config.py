@@ -23,8 +23,6 @@ VALID_PAYLOAD: dict = {
         "politician_trades": "quiver",
         "notable_holders": "edgar",
         "filings": "edgar",
-        # Phase 3 (Task 3.0) — one surviving domain.
-        "earnings": "finnhub",
     },
     "defaults": {
         "news_lookback_days": 7,

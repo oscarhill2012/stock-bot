@@ -13,7 +13,6 @@ from typing import Any, Literal, Protocol, TypeVar
 
 from .config import get_config
 from .models.company_ratios import CompanyRatios
-from .models.earnings import EarningsHistory
 from .models.filings import Filing
 from .models.news import NewsArticle
 # ---------------------------------------------------------------------------
@@ -87,7 +86,6 @@ DOMAIN_SHAPES: dict[str, DomainShape] = {
     "politician_trades": DomainShape("list",   PoliticianTrade),
     "notable_holders":   DomainShape("list",   NotableHolder),
     "filings":           DomainShape("list",   Filing),
-    "earnings":          DomainShape("single", EarningsHistory),
 }
 
 
@@ -101,8 +99,6 @@ DOMAINS: frozenset[str] = frozenset({
     "politician_trades",
     "notable_holders",
     "filings",
-    # Phase 3 additions.
-    "earnings",            # Finnhub earnings calendar / actuals
 })
 
 

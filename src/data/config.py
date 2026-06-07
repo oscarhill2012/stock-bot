@@ -24,7 +24,6 @@ _DOMAINS: frozenset[str] = frozenset({
     "politician_trades",
     "notable_holders",
     "filings",
-    "earnings",           # Phase 3 — Finnhub earnings calendar / actuals
 })
 
 

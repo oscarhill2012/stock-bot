@@ -5,7 +5,7 @@ Phase 7.6 lands this test with xfail markers on every domain whose live
 and cache implementations are not yet aligned (per audit).  Each Phase B
 task removes one xfail by aligning live and cache providers.
 
-Live-only domains (``earnings``) skip the cache half entirely.
+All registered domains currently have a cache provider.
 
 Mocking strategy
 ----------------
@@ -280,32 +280,6 @@ async def _call_live_provider(domain: str, monkeypatch: pytest.MonkeyPatch) -> o
         )
         return await mod.fetch("AAPL", as_of=_as_of)
 
-    # ── earnings ──────────────────────────────────────────────────────────────
-    # Finnhub earnings; patch httpx.AsyncClient.
-    if domain == "earnings":
-        from data.providers.earnings import finnhub as mod
-
-        payload = {
-            "earningsCalendar": [
-                {
-                    "symbol":          "AAPL",
-                    "date":            "2023-02-02",
-                    "epsActual":       1.88,
-                    "epsEstimate":     1.94,
-                    "revenueActual":   1.17e11,
-                    "revenueEstimate": 1.21e11,
-                    "quarter":         1,
-                    "year":            2023,
-                },
-            ],
-        }
-        monkeypatch.setattr(mod, "require_key", lambda _k: "stub")
-        monkeypatch.setattr(
-            mod.httpx, "AsyncClient",
-            lambda *_a, **_k: _AsyncCM(_make_resp(payload)),
-        )
-        return await mod.fetch("AAPL", as_of=_as_of_date, lookback_quarters=4)
-
     raise ValueError(f"no live-provider stub defined for domain: {domain!r}")
 
 
@@ -496,7 +470,7 @@ async def _call_cache_provider(domain: str, store_path: Path) -> object:
 
 # Domains with no cache provider registered today.
 # Cache test is skipped for these; only the live half runs.
-_LIVE_ONLY: set[str] = {"earnings"}
+_LIVE_ONLY: set[str] = set()
 
 # Domains whose **live** provider return type diverges from the canonical
 # DOMAIN_SHAPES entry.  Source: audit column "Drift fix needed = live".

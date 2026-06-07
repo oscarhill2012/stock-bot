@@ -1,5 +1,5 @@
 """Validate that every (domain, name) pair in ``config/data.json`` resolves in
-the provider registry, and that all four Phase 3 domains are present.
+the provider registry.
 
 Phase 6 of providers-and-silent-gaps-v1.
 """
@@ -28,17 +28,3 @@ def test_config_data_json_provider_names_resolve_in_registry() -> None:
         assert (domain, name) in _REGISTRY, (
             f"missing registry entry: ({domain!r}, {name!r})"
         )
-
-
-def test_config_data_json_lists_phase3_domains() -> None:
-    """Surviving Phase 3 domains must be present in config/data.json providers block.
-
-    Ensures the config keeps pace with registry expansion — a domain can be
-    registered but silently absent from config, which would leave the live
-    pipeline fetching nothing for that domain.
-    """
-    cfg = json.loads(Path("config/data.json").read_text())
-
-    assert "earnings" in cfg["providers"], (
-        "Phase 3 domain 'earnings' missing from config/data.json providers block"
-    )
