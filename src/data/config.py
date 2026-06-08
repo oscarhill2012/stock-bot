@@ -1,8 +1,9 @@
 """Typed loader for `config/data.json`.
 
-The loader validates that `providers` covers exactly the seven known
-domains. Cross-checking that each `(domain, provider_name)` is registered
-happens at `data` package import time, after providers have been imported.
+The loader validates that `providers` covers exactly the domains declared
+in the canonical `data.domains.DOMAINS` frozenset. Cross-checking that each
+`(domain, provider_name)` is registered happens at `data` package import
+time, after providers have been imported.
 """
 from __future__ import annotations
 
