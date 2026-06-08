@@ -33,6 +33,8 @@ from datetime import datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from data.reference_symbols import REFERENCE_SYMBOLS
+
 # ---------------------------------------------------------------------------
 # Provider function factories
 # ---------------------------------------------------------------------------
@@ -373,16 +375,6 @@ def _build_provider_name_map() -> dict[str, str]:
 # Reference-symbol OHLCV fill
 # ---------------------------------------------------------------------------
 
-# Mirrors orchestrator.tick._REFERENCE_SYMBOLS exactly.  SPY is the broad-market
-# benchmark; the 11 SPDR sector ETFs cover every S&P 500 constituent sector.
-# Kept as a module-level constant so tests and runner.py can import it if needed.
-_REFERENCE_SYMBOLS: tuple[str, ...] = (
-    "SPY",                                            # broad market
-    "XLK", "XLF", "XLE", "XLV", "XLY", "XLP",       # SPDR sector ETFs (batch 1)
-    "XLI", "XLB", "XLRE", "XLU", "XLC",              # SPDR sector ETFs (batch 2)
-)
-
-
 async def _fill_reference_ohlcv(
     *,
     store,
@@ -414,7 +406,7 @@ async def _fill_reference_ohlcv(
 
     warmup_start = window.start - timedelta(days=warmup_days)
 
-    for symbol in _REFERENCE_SYMBOLS:
+    for symbol in REFERENCE_SYMBOLS:
         try:
             history = await get_price_history(
                 symbol,

@@ -112,14 +112,11 @@ def _seed_reference_prices(
         with bars clamped to ``as_of`` when provided.
     """
     from data.models import PriceHistory
-
-    # Import the canonical reference-symbol list from the fetch script so
-    # the two lists can never drift apart.
-    from scripts.backtest_fetch import _REFERENCE_SYMBOLS
+    from data.reference_symbols import REFERENCE_SYMBOLS
 
     ref: dict = {}
 
-    for symbol in _REFERENCE_SYMBOLS:
+    for symbol in REFERENCE_SYMBOLS:
         bars = store.read_ohlcv(symbol, window_start, window_end)
 
         # Phase 2 PIT clamp — strip bars that postdate the current tick
