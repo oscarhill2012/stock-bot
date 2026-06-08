@@ -11,12 +11,7 @@ import asyncio
 
 from broker.fake import FakeBroker
 from data.models.price_history import PriceHistory
-
-_REFERENCE_SYMBOLS = (
-    "SPY",
-    "XLK", "XLF", "XLE", "XLV", "XLY", "XLP",
-    "XLI", "XLB", "XLRE", "XLU", "XLC",
-)
+from data.reference_symbols import REFERENCE_SYMBOLS as _REFERENCE_SYMBOLS
 
 
 def test_build_initial_state_populates_reference_prices(monkeypatch):
