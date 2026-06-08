@@ -18,7 +18,12 @@ from data.providers.stats import yfinance as prov
 
 
 def _fake_yf_ticker(symbol: str) -> MagicMock:
-    """Build a fake yfinance Ticker with a tiny history + info payload."""
+    """Build a fake yfinance Ticker with a tiny two-bar history frame.
+
+    Only ``history`` is populated — ``_yt_raw`` no longer fetches ``info`` /
+    ``fast_info`` on the price_history path (those scrapes were dropped with
+    the plan-08 ``company_ratios`` cull).
+    """
     df = pd.DataFrame(
         {
             "Open":   [100.0, 101.0],
@@ -31,8 +36,6 @@ def _fake_yf_ticker(symbol: str) -> MagicMock:
     )
     t = MagicMock()
     t.history.return_value = df
-    t.info = {"trailingPE": 20.1, "longName": "Test Co", "sector": "Tech"}
-    t.fast_info = {"last_price": 102.5}
     return t
 
 
@@ -56,3 +59,63 @@ def test_price_history_uses_lru_cached_raw_call() -> None:
     assert len(ph.bars) == 2
     assert ph.bars[-1].close == 102.5
     assert ph2.bars[-1].close == 102.5
+
+
+def test_price_history_skips_info_and_fast_info() -> None:
+    """``_yt_raw`` must not fetch ``yt.info`` / ``yt.fast_info`` on the price path.
+
+    Those two eager scrapes existed only to feed the now-culled
+    ``company_ratios`` yfinance provider (plan-08 A-038).  ``yt.info`` in
+    particular triggers a heavy separate yfinance round-trip, so touching it on
+    every ``price_history`` cache miss is pure waste.  This test guards against
+    the eager fetch creeping back into the hot path.
+    """
+    prov._yt_raw.cache_clear()
+
+    df = pd.DataFrame(
+        {
+            "Open":   [100.0],
+            "High":   [102.0],
+            "Low":    [ 99.0],
+            "Close":  [101.0],
+            "Volume": [1_000.0],
+        },
+        index=pd.DatetimeIndex([datetime(2026, 5, 1)]),
+    )
+
+    # A probe Ticker that records whether the snapshot-leaky attributes are
+    # read.  The properties return *normally* (so the provider's own
+    # ``try/except`` can never mask the access) but flip a class-level flag the
+    # moment they are touched.
+    class _ProbeTicker:
+        info_accessed = False
+        fast_accessed = False
+
+        def history(self, *_a, **_k):
+            return df
+
+        @property
+        def actions(self):
+            return pd.DataFrame()
+
+        @property
+        def info(self):
+            type(self).info_accessed = True
+            return {"trailingPE": 20.1}
+
+        @property
+        def fast_info(self):
+            type(self).fast_accessed = True
+            return {"last_price": 101.0}
+
+    with patch.object(prov.yf, "Ticker", side_effect=lambda *_a, **_k: _ProbeTicker()):
+        ph = prov._fetch_price_history("AAPL", "1y", "1d")
+
+    # The price-history mapping must still work off the raw history frame.
+    assert ph.bars[-1].close == 101.0
+
+    # The perf guarantee: neither snapshot-leaky attribute was fetched.
+    assert not _ProbeTicker.info_accessed, \
+        "yt.info must not be fetched on the price_history path"
+    assert not _ProbeTicker.fast_accessed, \
+        "yt.fast_info must not be fetched on the price_history path"

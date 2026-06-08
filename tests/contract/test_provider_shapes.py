@@ -167,8 +167,7 @@ async def _call_live_provider(domain: str, monkeypatch: pytest.MonkeyPatch) -> o
 
         fake_raw = {
             "history": pd.DataFrame(),
-            "info":    {},
-            "fast":    {},
+            "actions": pd.DataFrame(),
         }
         monkeypatch.setattr(mod, "_yt_raw", lambda *_a, **_k: fake_raw)
         return await mod.fetch_price_history(

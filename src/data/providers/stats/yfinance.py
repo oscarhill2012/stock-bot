@@ -24,13 +24,6 @@ post-window information into in-window bars when used for backtest replay.
 actions" which is semantically equivalent to the previous auto_adjust=True
 behaviour (numerically near-identical because recent bars carry few
 unrealised actions ahead of them).
-
-Provenance notes
-----------------
-``forward_pe`` and ``analyst_rating_avg`` are flagged as **snapshot-leaky**:
-yfinance serves wall-clock-current values, so these fields carry implicit
-look-ahead when used in historical backtests.  Do not use them as PIT signals
-without first routing through the ``pit_composite`` provider.
 """
 from __future__ import annotations
 
@@ -52,11 +45,15 @@ from ...models import OHLCBar, PriceHistory
 def _yt_raw(symbol: str, period: str, interval: str) -> dict[str, Any]:
     """Fetch the raw yfinance payload once per ``(symbol, period, interval)``.
 
-    Returns a dict with ``history`` (raw, unadjusted OHLCV DataFrame),
-    ``actions`` (the splits + dividends table from ``yt.actions``),
-    ``info`` (dict), and ``fast`` (dict).  Shared between the price-history
-    and ratios providers so a single tick that needs both pays only one
-    yfinance round-trip.
+    Returns a dict with ``history`` (raw, unadjusted OHLCV DataFrame) and
+    ``actions`` (the splits + dividends table from ``yt.actions``) — the two
+    inputs ``_fetch_price_history`` needs to build a PIT-adjusted series.
+
+    The snapshot-leaky ``yt.info`` / ``yt.fast_info`` scrapes are deliberately
+    **not** fetched here.  They existed only to feed the ``company_ratios``
+    yfinance provider, which was removed in the plan-08 cull (A-038); ``yt.info``
+    in particular triggers a heavy separate yfinance round-trip, so fetching it
+    on every ``price_history`` cache miss was pure waste.
 
     ``auto_adjust=False`` is deliberate — back-adjustment is applied later
     in ``_fetch_price_history`` via ``_pit_adjust`` using only the actions
@@ -75,9 +72,8 @@ def _yt_raw(symbol: str, period: str, interval: str) -> dict[str, Any]:
     Returns
     -------
     dict
-        Keys: ``"history"`` (DataFrame of raw bars), ``"actions"`` (DataFrame
-        of split + dividend events keyed by ex-date), ``"info"`` (dict),
-        ``"fast"`` (dict).
+        Keys: ``"history"`` (DataFrame of raw bars) and ``"actions"``
+        (DataFrame of split + dividend events keyed by ex-date).
     """
     yt = yf.Ticker(symbol)
     df = yt.history(period=period, interval=interval, auto_adjust=False)
@@ -91,19 +87,7 @@ def _yt_raw(symbol: str, period: str, interval: str) -> dict[str, Any]:
     except Exception:
         actions = pd.DataFrame()
 
-    info: dict[str, Any] = {}
-    try:
-        info = yt.info or {}
-    except Exception:
-        info = {}
-
-    fast: dict[str, Any] = {}
-    try:
-        fast = dict(yt.fast_info) if yt.fast_info else {}
-    except Exception:
-        fast = {}
-
-    return {"history": df, "actions": actions, "info": info, "fast": fast}
+    return {"history": df, "actions": actions}
 
 
 def _pit_adjust(
