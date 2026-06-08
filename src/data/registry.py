@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, Protocol, TypeVar
 
 from .config import get_config
+from .domains import DOMAINS  # canonical — see src/data/domains.py
 
 # ---------------------------------------------------------------------------
 # Payload-type imports — each canonical model used in DOMAIN_SHAPES below.
@@ -88,19 +89,6 @@ DOMAIN_SHAPES: dict[str, DomainShape] = {
     "notable_holders":   DomainShape("list",   NotableHolder),
     "filings":           DomainShape("list",   Filing),
 }
-
-
-DOMAINS: frozenset[str] = frozenset({
-    # Phase 5: "stats" retired — split into two purpose-scoped domains.
-    "price_history",
-    "company_ratios",
-    "news",
-    "social_sentiment",
-    "insider_trades",
-    "politician_trades",
-    "notable_holders",
-    "filings",
-})
 
 
 @dataclass(frozen=True)
