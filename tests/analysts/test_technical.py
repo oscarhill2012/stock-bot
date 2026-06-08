@@ -1,19 +1,21 @@
 """Technical analyst unit tests (Tier 1 — no LLM).
 
-Updated for Phase 5 Task 8: TechnicalAnalyst is now a BaseAgent subclass
-(not an LlmAgent).  The output_key field belongs to LlmAgent and no longer
-applies; verdicts are written directly to state["technical_verdicts"] by
-_run_async_impl.
+Phase 5 Task 8: TechnicalAnalyst is a BaseAgent subclass (not LlmAgent).
+Plan 09 (audit consolidation): the module-level ``technical_analyst``
+singleton was deleted; tests now build a fresh instance via the
+``_build_technical_analyst`` factory.
 """
 from google.adk.agents import BaseAgent
 
-from agents.analysts.technical.agent import technical_analyst
+from agents.analysts.technical.agent import _build_technical_analyst
 
 
 def test_technical_analyst_is_base_agent():
     """TechnicalAnalyst must be a BaseAgent — it has no LLM dependency."""
-    assert isinstance(technical_analyst, BaseAgent)
+    analyst = _build_technical_analyst()
+    assert isinstance(analyst, BaseAgent)
 
 
 def test_technical_analyst_name():
-    assert technical_analyst.name == "TechnicalAnalyst"
+    analyst = _build_technical_analyst()
+    assert analyst.name == "TechnicalAnalyst"
