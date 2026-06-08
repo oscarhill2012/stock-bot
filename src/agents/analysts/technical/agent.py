@@ -154,11 +154,6 @@ class TechnicalAnalyst(BaseAgent):
         )
 
 
-# Module-level singleton — used directly by unit tests and the analyst_pool
-# singleton in agents/analysts/__init__.py.
-technical_analyst = TechnicalAnalyst(heuristics=load_heuristics().technical)
-
-
 def _build_technical_analyst(heuristics: TechnicalHeuristics | None = None) -> TechnicalAnalyst:
     """Construct a fresh ``TechnicalAnalyst`` for the orchestrator factory.
 

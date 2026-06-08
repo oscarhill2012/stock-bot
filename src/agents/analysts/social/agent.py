@@ -137,11 +137,6 @@ class SocialAnalyst(BaseAgent):
         )
 
 
-# Module-level singleton — used directly by unit tests and the analyst_pool
-# singleton in agents/analysts/__init__.py.
-social_analyst = SocialAnalyst(heuristics=load_heuristics().social)
-
-
 def _build_social_analyst(heuristics: SocialHeuristics | None = None) -> SocialAnalyst:
     """Construct a fresh ``SocialAnalyst`` for the orchestrator factory.
 
