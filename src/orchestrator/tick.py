@@ -7,6 +7,8 @@ import uuid
 from datetime import UTC, date, datetime
 from enum import Enum
 
+from data.reference_symbols import REFERENCE_SYMBOLS
+
 logger = logging.getLogger(__name__)
 
 
@@ -53,19 +55,6 @@ def _dispatch_app_name(broker_mode: BrokerMode) -> str:
         case _:
             raise ValueError(f"Unsupported broker mode: {broker_mode!r}")
 
-# Symbols fetched once per tick as market and sector benchmarks.
-# SPY is the broad-market reference; the 11 SPDR sector ETFs cover every
-# S&P 500 constituent sector.  These are fetched in a single bulk yfinance
-# call (one round-trip) and stored under ``state["reference_prices"]`` so
-# the technical extractor can compute relative-strength features without
-# issuing any additional network calls.
-_REFERENCE_SYMBOLS: tuple[str, ...] = (
-    "SPY",                                            # broad market benchmark
-    "XLK", "XLF", "XLE", "XLV", "XLY", "XLP",       # SPDR sector ETFs (batch 1)
-    "XLI", "XLB", "XLRE", "XLU", "XLC",              # SPDR sector ETFs (batch 2)
-)
-
-
 async def _fetch_reference_prices(
     symbols: tuple[str, ...],
     *,
@@ -83,7 +72,7 @@ async def _fetch_reference_prices(
     Parameters
     ----------
     symbols:
-        Tuple of ticker symbols to fetch (default: ``_REFERENCE_SYMBOLS``).
+        Tuple of ticker symbols to fetch (default: ``REFERENCE_SYMBOLS``).
     as_of:
         Point-in-time date — forwarded to the bulk downloader for interface
         parity; yfinance uses wall-clock anchored periods internally.
@@ -136,7 +125,7 @@ async def _build_initial_state(broker, tick_id: str, tickers: list[str]) -> dict
     # extractor can compute relative-strength features without issuing any
     # additional network calls during the analyst pool phase.
     reference_prices = await _fetch_reference_prices(
-        _REFERENCE_SYMBOLS, as_of=date.today(),
+        REFERENCE_SYMBOLS, as_of=date.today(),
     )
 
     return {
