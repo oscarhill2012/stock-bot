@@ -24,37 +24,6 @@ class BrokerMode(Enum):
     PAPER = "paper"
 
 
-def _dispatch_app_name(broker_mode: BrokerMode) -> str:
-    """Return the ADK app_name for the current broker mode.
-
-    Parameters
-    ----------
-    broker_mode
-        ``BrokerMode.LIVE`` or ``BrokerMode.PAPER`` — read from the
-        broker layer configuration.
-
-    Returns
-    -------
-    str
-        ``"StockBot-live"`` or ``"StockBot-paper"``.  These values
-        partition the ADK user_state table so paper and live portfolios
-        cannot share thesis rows.  Backtest uses a third value,
-        ``f"StockBot-backtest-{window_key}"``, set in the backtest
-        driver / runner — tick.py does not handle that path.
-
-    Raises
-    ------
-    ValueError
-        When ``broker_mode`` is not one of the supported enum members.
-    """
-    match broker_mode:
-        case BrokerMode.LIVE:
-            return "StockBot-live"
-        case BrokerMode.PAPER:
-            return "StockBot-paper"
-        case _:
-            raise ValueError(f"Unsupported broker mode: {broker_mode!r}")
-
 async def _fetch_reference_prices(
     symbols: tuple[str, ...],
     *,
@@ -223,7 +192,13 @@ async def run_once(broker, session=None, *, tick_label: str | None = None) -> di
     # so test runs land in the paper namespace rather than raising.
     _raw_mode = getattr(broker, "mode", "paper")
     _broker_mode = BrokerMode(_raw_mode) if _raw_mode in BrokerMode._value2member_map_ else BrokerMode.PAPER
-    _app_name = _dispatch_app_name(_broker_mode)
+    # Partition ADK ``user_state`` rows between paper and live so the two
+    # modes cannot share thesis rows.  Backtest uses a third value
+    # (``f"StockBot-backtest-{window_key}"``) set in the backtest driver.
+    # ``_broker_mode`` is already a ``BrokerMode`` member at this point
+    # (the conversion two lines above falls back to PAPER on unknown input),
+    # so the ``StrEnum``-style lookup is exhaustive.
+    _app_name = f"StockBot-{_broker_mode.value}"
 
     from orchestrator.lifecycle_runner import build_runner, build_seed_state
 
