@@ -58,6 +58,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from config._slack import apply_slack
 from config.analysts import LlmCaps  # Shared shape — imported to avoid drift
 
 # Project-root-relative default path. The package is imported via
@@ -152,13 +153,8 @@ class StrategistConfig(BaseModel):
     def schema_cap(self, prompt_cap: int) -> int:
         """Derive the schema-enforced ``max_length`` from a prompt-stated cap.
 
-        Applies the ``slack_percent`` headroom and rounds up.  Uses integer
-        math (``(prompt_cap * (100 + slack) + 99) // 100``) rather than
-        ``ceil(prompt_cap * 1.1)`` to avoid floating-point surprises —
-        ``600 * 1.1`` yields exactly ``660.0`` but ``200 * 1.1`` yields
-        ``220.00000000000003`` due to binary representation, so the two
-        prompt caps would round inconsistently.  Integer math gives the
-        same answer for both: 200 → 220, 600 → 660.
+        Thin delegation to :func:`config._slack.apply_slack` — see that
+        function for the integer-math rationale.
 
         Parameters
         ----------
@@ -168,10 +164,9 @@ class StrategistConfig(BaseModel):
         Returns
         -------
         int
-            ``ceil(prompt_cap * (100 + slack_percent) / 100)`` — the value
-            that goes into ``Field(max_length=...)`` on the schema field.
+            The schema-enforced ``max_length``.
         """
-        return (prompt_cap * (100 + self.slack_percent) + 99) // 100
+        return apply_slack(prompt_cap, self.slack_percent)
 
 
 def load_strategist_config(*, path: Path | None = None) -> StrategistConfig:
