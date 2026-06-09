@@ -52,6 +52,7 @@ async def test_pipeline_built_per_tick_with_current_watchlist(tmp_path: Path) ->
             run_dir=tmp_path,
             window_key="test-window",
             enforce_pipeline_completion=False,
+            require_store=False,
         )
         mock_build.assert_not_called()
 

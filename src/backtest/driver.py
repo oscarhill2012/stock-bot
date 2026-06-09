@@ -146,6 +146,13 @@ class Driver:
         refreshed live rather than only at end-of-run.  Tests that build a
         Driver without a real settings object (no per-window cache wired)
         leave this ``None`` and the per-tick reporting is skipped.
+    require_store:
+        When ``True`` (the default — production-safe), raises ``RuntimeError``
+        at construction time if the shared cache-store handle has not been
+        wired via ``set_store(...)`` before construction.  When ``False``
+        (isolated-unit-test escape hatch), logs a ``WARNING`` instead and
+        continues with degraded behaviour (empty audit telemetry, unchanged
+        reference prices, no broker price refresh).
     """
 
     def __init__(
@@ -161,8 +168,29 @@ class Driver:
         failure_abort_ratio: float = 0.10,
         enforce_pipeline_completion: bool = True,
         settings: Any = None,
+        require_store: bool = True,
     ) -> None:
-        """Wire the driver.  ``run_dir`` should already exist."""
+        """Wire the driver.  ``run_dir`` should already exist.
+
+        Parameters — in addition to those documented on the class —
+        -------
+        require_store:
+            Controls how a missing store handle is handled at construction
+            time and during tick processing.
+
+            ``True`` (the default — production-safe): raises ``RuntimeError``
+            immediately if the shared cache-store handle has not been wired
+            via ``backtest.providers._store_handle.set_store(...)`` before
+            construction.  This is the correct behaviour for real backtest
+            runs, where a missing store means the audit telemetry would be
+            silently empty and reference prices would not be refreshed —
+            masking real pipeline regressions.
+
+            ``False`` (isolated-unit-test escape hatch): logs a ``WARNING``
+            instead of raising and continues with degraded behaviour (empty
+            telemetry, unchanged reference prices).  Use only in test code
+            where wiring a full ``CachedDataStore`` is impractical.
+        """
         self._broker             = broker
         self._run_id             = run_id or f"{window_key}-local"
         self._run_dir            = Path(run_dir)
@@ -176,6 +204,9 @@ class Driver:
         # as-is (no import-time coupling to backtest.settings) so tests that
         # patch the reporting module don't have to construct a real settings.
         self._settings           = settings
+        # Stored early so the capture-enable guard below (and all downstream
+        # tick-level guards) can read it via ``self._require_store``.
+        self._require_store      = require_store
         self._traces_dir         = self._run_dir / "traces"
         self._traces_dir.mkdir(parents=True, exist_ok=True)
 
@@ -201,12 +232,26 @@ class Driver:
 
         # Enable per-tick read capture on the shared cache store so the audit
         # telemetry layer can summarise what the analysts saw.
+        #
+        # Production runs (``require_store=True`` — the default) raise loudly
+        # when the store is missing: silently skipping capture used to mean
+        # the audit telemetry quietly recorded zero reads, masking real
+        # pipeline regressions (see Plan 10 §3, A-044).
+        from backtest.providers._store_handle import get_store
         try:
-            from backtest.providers._store_handle import get_store
             get_store()._audit_enable_capture()
-        except RuntimeError:
-            # No store wired (unit tests) — telemetry will be empty.
-            pass
+        except RuntimeError as exc:
+            if self._require_store:
+                raise RuntimeError(
+                    "Driver: store handle not wired — call "
+                    "backtest.providers._store_handle.set_store(...) before "
+                    "constructing Driver, or pass require_store=False for "
+                    "isolated unit tests."
+                ) from exc
+            logger.warning(
+                "Driver constructed with require_store=False — audit "
+                "telemetry will be empty for this run."
+            )
 
     # ── public API ─────────────────────────────────────────────────────────────
 
@@ -347,11 +392,16 @@ class Driver:
                 state["reference_prices"] = {
                     sym: ph.model_dump(mode="json") for sym, ph in _ref.items()
                 }
-            except RuntimeError:
-                # Store handle not initialised (e.g. isolated unit tests that
-                # construct Driver without a real cache) — leave reference_prices
-                # unchanged so those paths do not break.
-                pass
+            except RuntimeError as exc:
+                if self._require_store:
+                    raise RuntimeError(
+                        f"Driver: cannot refresh reference_prices for tick "
+                        f"{tick.as_of.isoformat()} — store handle not wired."
+                    ) from exc
+                logger.warning(
+                    "Driver tick %s: reference_prices not refreshed "
+                    "(require_store=False).", tick.as_of.isoformat(),
+                )
 
             try:
                 await self._run_one_tick(state, tw)
@@ -385,8 +435,18 @@ class Driver:
             try:
                 _store       = _get_store()
                 cache_reads  = _store._audit_drain_reads()
-            except RuntimeError:
-                # Store not wired in isolated unit tests — produce empty telemetry.
+            except RuntimeError as exc:
+                if self._require_store:
+                    raise RuntimeError(
+                        f"Driver: cannot drain audit reads for tick "
+                        f"{tick.as_of.isoformat()} — store handle not wired."
+                    ) from exc
+                logger.warning(
+                    "Driver tick %s: audit telemetry empty "
+                    "(require_store=False).", tick.as_of.isoformat(),
+                )
+                # cache_reads stays {} — the telemetry record is still written
+                # below, just with zero captured reads.
                 cache_reads = {}
 
             per_domain = per_domain_from_store_reads(
@@ -506,8 +566,11 @@ class Driver:
 
         Known ADK 1.32 issue: the runner may raise ``AttributeError`` or
         ``BaseExceptionGroup`` *after* the pipeline completes (teardown bug in
-        the parallel-agent finaliser).  These are caught, logged, and ignored
-        — the tick result is still readable from the session service.
+        the parallel-agent finaliser).  These are caught via the broad
+        ``except Exception`` handler, logged, and ignored — the tick result
+        is still readable from the session service.  ``BaseException``
+        subclasses that are not ``Exception`` subclasses (``KeyboardInterrupt``,
+        ``SystemExit``) propagate normally.
 
         Parameters
         ----------
@@ -596,8 +659,9 @@ class Driver:
         # the post-run ``last_snapshot`` check below.
         #
         # NOTE: deliberately catches ``Exception`` (not ``BaseException``) so
-        # ``KeyboardInterrupt``, ``SystemExit``, and ``MemoryError`` propagate
-        # normally and are not silently swallowed.
+        # ``KeyboardInterrupt`` and ``SystemExit`` propagate normally and are
+        # never silently swallowed.  ``AttributeError`` is a subclass of
+        # ``Exception``, so the ADK 1.32 teardown bug is still absorbed.
         pipeline_exc: BaseException | None = None
         try:
             async for _ in runner.run_async(
@@ -606,7 +670,7 @@ class Driver:
                 new_message=message,
             ):
                 pass
-        except (AttributeError, Exception) as exc:
+        except Exception as exc:
             pipeline_exc = exc
             _log_exception_chain(exc, state["tick_id"])
 
@@ -699,8 +763,16 @@ class Driver:
 
         try:
             store = get_store()
-        except RuntimeError:
-            # Store not wired (e.g. in isolated unit tests) — skip silently.
+        except RuntimeError as exc:
+            if self._require_store:
+                raise RuntimeError(
+                    f"Driver: cannot refresh broker prices for tick "
+                    f"{tick.as_of.isoformat()} — store handle not wired."
+                ) from exc
+            logger.warning(
+                "Driver tick %s: broker prices not refreshed "
+                "(require_store=False).", tick.as_of.isoformat(),
+            )
             return
 
         for ticker in tickers:

@@ -49,6 +49,7 @@ def _make_driver(tmp_path: Path, broker: FakeBroker) -> Driver:
         window_key="test-window",
         failure_abort_ratio=0.99,                # never abort in this test
         enforce_pipeline_completion=False,
+        require_store=False,
     )
 
 

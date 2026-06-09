@@ -32,6 +32,7 @@ async def test_aborts_above_threshold(tmp_path: Path) -> None:
         run_dir=tmp_path,
         window_key="t",
         failure_abort_ratio=0.10,
+        require_store=False,
     )
 
     # 10 ticks — the first failure pushes the ratio to 1/1 = 100% > 10%.

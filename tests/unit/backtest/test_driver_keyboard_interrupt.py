@@ -43,6 +43,7 @@ def _make_driver(tmp_path: Path) -> Driver:
         # executes, so disable the post-tick snapshot-completion check or
         # it would mask the very behaviour we want to assert here.
         enforce_pipeline_completion=False,
+        require_store=False,
     )
 
 
