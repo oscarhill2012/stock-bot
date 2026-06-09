@@ -864,12 +864,12 @@ class CachedDataStore:
     # When capture is disabled (the default — live runs) the methods skip
     # the append for zero overhead.
 
-    def _audit_capture_enabled(self) -> bool:
-        """Return ``True`` iff per-tick read capture is currently on."""
-        return getattr(self, "_audit_reads", None) is not None
-
     def _audit_record(self, domain: str, ticker: str, rows: list[Any]) -> None:
-        """Append ``rows`` into the per-tick capture if enabled.
+        """Append ``rows`` into the per-tick capture buffer if enabled.
+
+        Capture is enabled by ``_audit_enable_capture`` and drained by
+        ``_audit_drain_reads``.  When ``self._audit_reads`` is absent
+        (the live default) this is a no-op.
 
         Parameters
         ----------
@@ -880,7 +880,8 @@ class CachedDataStore:
         rows:
             Model instances returned by the read method.
         """
-        if not self._audit_capture_enabled():
+        # No buffer attached → capture is disabled; nothing to do.
+        if getattr(self, "_audit_reads", None) is None:
             return
         self._audit_reads.setdefault(domain, {}).setdefault(ticker, []).extend(rows)
 
