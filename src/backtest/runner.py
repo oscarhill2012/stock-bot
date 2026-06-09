@@ -153,10 +153,17 @@ def _seed_initial_prices(
     """Return a ``{ticker: price}`` map for FakeBroker bootstrap.
 
     For each ticker we read the OHLCV slice for the full backtest window
-    and take the *first* bar's close price.  Tickers with no bar in the
-    window keep ``0.0`` — this preserves the previous behaviour for
-    genuinely-absent symbols but eliminates the artefact at tick 1 for
-    every ticker that does have data.
+    and take the *first* bar's close price.  If any ticker has no bar
+    within the window a ``ValueError`` is raised listing every missing
+    symbol in one message — never silently seeding ``0.0`` (A-046: a
+    zero seed let FakeBroker accept zero-priced BUYs, silently corrupting
+    the portfolio equity curve).
+
+    **Defensive guard:** the runner pre-filters the watchlist before
+    calling this function, dropping tickers with no OHLCV data into a
+    ``skipped`` set.  In a normal run the raise therefore never fires.
+    It exists solely to catch any future caller that bypasses the
+    pre-filter and passes an unvalidated ticker list directly.
 
     Parameters
     ----------
@@ -172,13 +179,33 @@ def _seed_initial_prices(
     -------
     dict[str, float]
         Seed prices for FakeBroker construction.
+
+    Raises
+    ------
+    ValueError
+        If one or more tickers have no OHLCV bars within the window.
+        All missing symbols are listed in a single error message.
     """
 
-    prices: dict[str, float] = {}
+    prices:  dict[str, float] = {}
+    missing: list[str]        = []
 
     for ticker in tickers:
         bars = store.read_ohlcv(ticker, window_start, window_end)
-        prices[ticker] = float(bars[0].close) if bars else 0.0
+        if not bars:
+            # Collect every missing ticker before raising so the operator
+            # sees the full list in one error rather than fix-and-retry.
+            missing.append(ticker)
+            continue
+        prices[ticker] = float(bars[0].close)
+
+    if missing:
+        raise ValueError(
+            f"_seed_initial_prices: no OHLCV bars in window "
+            f"[{window_start.isoformat()}, {window_end.isoformat()}] "
+            f"for tickers: {sorted(missing)}.  Run the fetcher for "
+            f"these symbols before invoking the backtest."
+        )
 
     return prices
 
