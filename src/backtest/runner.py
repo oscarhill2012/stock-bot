@@ -395,7 +395,7 @@ class Runner:
             # Default to ``<window>-<git-sha7>`` so concurrent runs can't
             # collide; a caller-supplied ``run_id_override`` wins outright
             # (used by trial / sanity runs that want a stable directory name).
-            run_id     = run_id_override or f"{window_key}-{_git_sha7()}"
+            run_id     = run_id_override or f"{window_key}-{_git_sha(length=7)}"
             runs_root  = runs_root_for_window(self._settings, window_key)
             run_dir    = runs_root / run_id
             run_dir.mkdir(parents=True, exist_ok=True)
@@ -506,7 +506,7 @@ class Runner:
                 "window":           {"start": str(window.start), "end": str(window.end)},
                 "watchlist":        wl_filtered,
                 "skipped_tickers":  skipped,
-                "git_sha":          _git_sha_full(),
+                "git_sha":          _git_sha(),
                 "started_at":       datetime.now(tz=UTC).isoformat(),
                 "status":           "running",
             }
@@ -655,37 +655,34 @@ class Runner:
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
-def _git_sha7() -> str:
-    """Return the short (7-char) git SHA for HEAD; ``"unknown"`` on failure.
+def _git_sha(*, length: int | None = None) -> str:
+    """Return the git SHA for HEAD; ``"unknown"`` on failure.
+
+    Parameters
+    ----------
+    length:
+        When ``None`` (the default), return the full 40-character SHA.
+        When a positive integer, return git's abbreviated SHA of at least
+        that many hex characters (``length=7`` reproduces the run-id form).
 
     Returns
     -------
     str
-        Seven-character hex SHA, or ``"unknown"`` if git is unavailable.
+        Hex SHA for HEAD, or ``"unknown"`` if git is unavailable.
     """
+    # Full SHA when no length is requested; otherwise git's --short=N form.
+    cmd = (
+        ["git", "rev-parse", "HEAD"]
+        if length is None
+        else ["git", "rev-parse", f"--short={length}", "HEAD"]
+    )
+
     try:
         return subprocess.check_output(
-            ["git", "rev-parse", "--short=7", "HEAD"],
+            cmd,
             text=True,
             stderr=subprocess.DEVNULL,
         ).strip()
-    except Exception:
-        return "unknown"
 
-
-def _git_sha_full() -> str:
-    """Return the full 40-char git SHA for HEAD; ``"unknown"`` on failure.
-
-    Returns
-    -------
-    str
-        Full hex SHA, or ``"unknown"`` if git is unavailable.
-    """
-    try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "HEAD"],
-            text=True,
-            stderr=subprocess.DEVNULL,
-        ).strip()
     except Exception:
         return "unknown"

@@ -157,9 +157,9 @@ def runs_root_for_window(settings: BacktestSettings, window: str) -> Path:
     return Path(settings.backtests_root) / window / "runs"
 
 
-# A run-id is ``<window-key>-<7-char git sha>``.  ``_git_sha7()`` in the
-# runner produces 7 lower-case hex chars; we anchor to that to avoid eating
-# legitimate trailing chunks of a window slug.
+# A run-id is ``<window-key>-<7-char git sha>``.  ``_git_sha(length=7)`` in
+# ``backtest.runner`` produces 7 lower-case hex chars; we anchor to that to
+# avoid eating legitimate trailing chunks of a window slug.
 _RUN_ID_RE = re.compile(r"^(?P<window>.+)-(?P<sha>[0-9a-f]{7})$")
 
 
@@ -167,8 +167,9 @@ def window_from_run_id(run_id: str) -> str:
     """Extract the window key from a run-id of the form ``<window>-<sha7>``.
 
     Run-IDs follow the format ``<window-key>-<7-char git sha>`` (see
-    ``backtest.runner._git_sha7``).  We recover the window key by stripping
-    the trailing 7-char hex sha (plus the dash that joins them).
+    ``_git_sha(length=7)`` in ``backtest.runner``).  We recover the window
+    key by stripping the trailing 7-char hex sha (plus the dash that joins
+    them).
 
     Parameters
     ----------
