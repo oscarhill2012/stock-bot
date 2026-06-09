@@ -1,4 +1,4 @@
-"""CLI: re-run one tick with the AuditingStore wrapper and produce a deep dump.
+"""CLI: re-run one tick with in-store capture enabled and produce a deep dump.
 
 Usage::
 
@@ -8,10 +8,11 @@ Usage::
         --tick   2023-03-10T09:30:00-05:00 \\
         --phase  open
 
-The script replays a single tick against the existing run's golden cache
-with ``AuditingStore`` wrapping ``CachedDataStore``.  Every row delivered
-to any analyst is captured, then the ``upstream_verifier`` checks each row
-against its upstream source.  Output is two files under
+The script replays a single tick against the existing run's golden cache.
+``CachedDataStore._audit_enable_capture()`` is called before the tick runs,
+which instructs the store to record every row it returns.  Every row
+delivered to any analyst is captured, then the ``upstream_verifier`` checks
+each row against its upstream source.  Output is two files under
 ``<run-dir>/audit/``:
 
 - ``<tick-slug>.full.jsonl`` — one JSON line per (analyst, ticker, row)
@@ -27,9 +28,7 @@ import asyncio
 import os
 import sys
 from datetime import datetime
-from pathlib import Path
 
-from backtest.audit.auditing_store import AuditingStore
 from backtest.audit.deep_dump import build_deep_rows, write_deep_dump
 from backtest.cache.store import CachedDataStore
 from backtest.driver import Driver, _slug
@@ -41,9 +40,9 @@ from backtest.schedule import Tick
 def main() -> None:
     """CLI entrypoint — re-audit a single tick from a completed run.
 
-    Reads the run directory, wraps the golden cache in an ``AuditingStore``,
-    replays the single tick through the full pipeline, then writes the deep
-    JSONL + summary markdown under ``<run-dir>/audit/``.
+    Reads the run directory, enables in-store capture on a plain
+    ``CachedDataStore``, replays the single tick through the full pipeline,
+    then writes the deep JSONL + summary markdown under ``<run-dir>/audit/``.
     """
     # Strict mode prevents wall-clock leakage through timeguard even inside
     # this replay script.
@@ -82,18 +81,20 @@ def main() -> None:
         print(f"run dir not found: {run_dir}", file=sys.stderr)
         sys.exit(2)
 
-    # Wrap the golden cache store with the auditing decorator so every
-    # cache-read row is intercepted and recorded.  Per-window cache.
+    # Resolve the per-window cache path — each window has its own SQLite store.
     from backtest.settings import cache_path_for_window, get_backtest_settings
     settings   = get_backtest_settings()
     cache_path = cache_path_for_window(settings, args.window)
 
-    inner = CachedDataStore(cache_path)
-    store = AuditingStore(inner=inner)
+    # Build a plain cache store and enable per-tick read capture on it.
+    # Plan 10 collapsed the separate decorator into the store itself,
+    # so a single API surface drives both the live driver and this CLI.
+    store = CachedDataStore(cache_path)
+    store._audit_enable_capture()
 
-    # Register the auditing store as the active store for this process.
+    # Register the capturing store as the active store for this process.
     # Providers call get_store() to read from it during the tick replay.
-    set_store(store)  # type: ignore[arg-type]  # AuditingStore delegates all methods
+    set_store(store)
 
     tick = Tick(as_of=datetime.fromisoformat(args.tick), phase=args.phase)
 
@@ -124,7 +125,7 @@ def main() -> None:
     asyncio.run(driver.run(state, [tick]))
 
     # Drain the captured reads and write the deep dump.
-    captured = store.drain_captured()
+    captured = store._audit_drain_reads()
     rows     = build_deep_rows(captured=captured, tick_as_of=tick.as_of)
 
     audit_dir = run_dir / "audit"

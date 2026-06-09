@@ -21,7 +21,7 @@ def build_deep_rows(
     Parameters
     ----------
     captured:
-        ``AuditingStore.drain_captured()`` output.
+        ``CachedDataStore._audit_drain_reads()`` output.
     tick_as_of:
         The tick's historical clock.
     analyst_attribution:

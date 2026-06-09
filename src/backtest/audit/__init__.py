@@ -4,8 +4,9 @@ Layer 1 (``telemetry``) is always on and writes a ~5 KB JSON record per tick
 under ``runs/<id>/audit/<tick-slug>.tick.json``.  Tripwire flags surface
 suspected leaks at a glance.
 
-Layer 2 (``deep_dump``, Task 7) is opt-in and re-runs a single tick with an
-``AuditingStore`` decorator that captures every cache read and re-fetches
-from upstream for independent verification.
+Layer 2 (``deep_dump``, Task 7) is opt-in and re-runs a single tick with
+capture enabled on the store itself; the cache store captures every read via
+its own ``_audit_*`` API; see ``backtest.cache.store.CachedDataStore``.
+Each captured row is re-fetched from upstream for independent verification.
 """
 from __future__ import annotations
