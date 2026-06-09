@@ -95,6 +95,39 @@ def write_deep_dump(
     return full_path, summary_path
 
 
+def summarise_verification_states(rows: list[dict]) -> dict[str, int]:
+    """Count items by tri-state ``verification_status`` (Plan 10 §4).
+
+    A pure counter — never collapses ``skip`` into ``ok``.  Each item is a
+    dict carrying ``verification_status`` at its top level (callers pass the
+    per-row ``upstream_evidence`` sub-dict, which holds that key).
+
+    Parameters
+    ----------
+    rows:
+        A list of dicts that each carry ``verification_status`` at their
+        TOP level — i.e. the per-row ``upstream_evidence`` sub-dict, NOT the
+        outer deep-row dict (whose status lives one level down under
+        ``upstream_evidence``).  Passing outer deep rows would silently count
+        every row as ``"skip"``.  Missing/unknown statuses default to skip.
+
+    Returns
+    -------
+    dict[str, int]
+        ``{"ok": n_ok, "skip": n_skip, "disagree": n_disagree}``.
+    """
+    counts: dict[str, int] = {"ok": 0, "skip": 0, "disagree": 0}
+
+    for row in rows:
+        status = row.get("verification_status", "skip")
+
+        # Defensive: an unexpected status string still gets its own bucket so
+        # it cannot be silently miscounted as "ok".
+        counts[status] = counts.get(status, 0) + 1
+
+    return counts
+
+
 def _build_summary(rows: list[dict[str, Any]]) -> str:
     """Render the human-readable tripwire summary as markdown.
 
@@ -120,14 +153,30 @@ def _build_summary(rows: list[dict[str, Any]]) -> str:
             counts["same_day_as_as_of"] += 1
         if r.get("missing_timestamp"):
             counts["missing_timestamp"] += 1
-        if not r.get("upstream_evidence", {}).get("agreement_with_cache", True):
-            counts["upstream_disagreement"] += 1
+
+    # Tri-state upstream verification counts (Plan 10 §4).
+    # "skip" is NOT a disagreement — a verifier that did not run cannot
+    # confirm or deny agreement.
+    # Pass each row's upstream_evidence sub-dict — that is where verification_status lives.
+    verif = summarise_verification_states(
+        [r.get("upstream_evidence", {}) for r in rows]
+    )
+    counts["upstream_disagreement"] = verif["disagree"]
 
     # Build each summary line with a warning emoji when the count is non-zero
     # and a green tick when everything is clean.
     def line(flag: str, label: str) -> str:
         """Format one tripwire line with an emoji indicator."""
         return f"- {'⚠️' if counts[flag] else '✅'} {counts[flag]} rows: {label}"
+
+    # Upstream verification breakdown — informational line, never green-on-skip.
+    # A skip count > 0 means those rows were NOT verified against upstream.
+    skip_note = " (verifier not yet implemented)" if verif["skip"] > 0 else ""
+    upstream_info = (
+        f"- ℹ️ upstream verification — "
+        f"verified: {verif['ok']} / disagree: {verif['disagree']} / "
+        f"skipped: {verif['skip']}{skip_note}"
+    )
 
     return (
         "# Tripwire summary — deep audit\n\n"
@@ -136,7 +185,11 @@ def _build_summary(rows: list[dict[str, Any]]) -> str:
         + line("midnight_utc",          "filter-key has time component 00:00:00 UTC (date-only)") + "\n"
         + line("same_day_as_as_of",     "filter-key date == tick.as_of date") + "\n"
         + line("missing_timestamp",     "row carried the MISSING_TIMESTAMP sentinel (should be skipped before delivery)") + "\n"
+        # The next two lines cover the same "disagree" count deliberately:
+        # `upstream_disagreement` is the ✅/⚠️ action-required tripwire;
+        # `upstream_info` is the full ok/disagree/skip breakdown for context.
         + line("upstream_disagreement", "cached value disagreed with upstream re-fetch by >60s") + "\n"
+        + upstream_info + "\n"
         + "\n"
         + "Inspect the corresponding `.full.jsonl` for the per-row evidence "
         + "when any ⚠️ flag fires.  Any ❌ flag means the backtest is not trusted.\n"

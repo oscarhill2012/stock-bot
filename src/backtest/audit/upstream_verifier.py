@@ -9,7 +9,9 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any
 
-# Hard limit on tolerable agreement window.
+# Hard limit on tolerable agreement window.  Reserved for the real sec.gov /
+# Tiingo verifier bodies (Plan 10 follow-up); the current placeholder bodies
+# self-report "skip" and do not consult it yet.
 _AGREEMENT_TOLERANCE = timedelta(seconds=60)
 
 
@@ -36,10 +38,16 @@ def verify_row(
     Returns
     -------
     dict
-        An evidence dict matching the spec §4.2 example shape.  When
-        upstream re-fetch is not implemented for a domain, ``source`` is
-        ``"(no-verify)"`` and ``agreement_with_cache`` is ``True`` (the
-        reviewer reads the missing flag and decides).
+        An evidence dict matching the spec §4.2 example shape.  The
+        ``verification_status`` field is a tri-state string:
+
+        * ``"ok"``       — verifier ran and upstream matched the cache.
+        * ``"disagree"`` — verifier ran and upstream contradicted the cache.
+        * ``"skip"``     — verifier did not run (no upstream verifier for
+                           this domain, missing identifier, or placeholder
+                           body not yet wired to the network).
+
+        A ``skip`` must NEVER be rendered as verified in the SUMMARY.
     """
     from data.models.missing import is_missing_timestamp
 
@@ -51,10 +59,12 @@ def verify_row(
         else 0
     )
 
-    # Default evidence — no upstream check for this domain yet.
+    # Default evidence — no upstream check for this domain yet.  Self-report
+    # as a skip so the SUMMARY never renders an un-run verifier as verified.
     evidence: dict[str, Any] = {
-        "source":               "(no-verify)",
-        "agreement_with_cache": True,
+        "source":              "(no-verify)",
+        "verification_status": "skip",
+        "reason":              "no upstream verifier for this domain",
     }
 
     # ──────────────────────────────────────────────────────────────────────
@@ -157,46 +167,51 @@ def _same_day(value: Any, tick_as_of: datetime) -> bool:
 
 
 def _verify_filing(row: Any) -> dict[str, Any]:
-    """Re-fetch an EDGAR submission index to compare ``acceptedDateTime``.
+    """Verify a filing row's ``filed_at`` against the SEC submissions API.
 
-    Hits the public ``data.sec.gov`` submissions API for the accession
-    number; if the row carries one in ``accession_no`` we can validate
-    ``filed_at`` against ``acceptedDateTime``.
+    Returns a tri-state ``verification_status`` instead of the old
+    ``agreement_with_cache`` boolean (Plan 10 §4 — no green-on-skip).
 
-    Returns ``(no-verify)`` when the accession number is unavailable —
-    the deep-dump reviewer reads the missing flag and decides.
+    * ``"ok"``       — verifier ran and the upstream matched the cache.
+    * ``"disagree"`` — verifier ran and the upstream contradicted the cache.
+    * ``"skip"``     — verifier did not run (no accession, network
+                       disabled, placeholder body).
 
     Parameters
     ----------
     row:
-        A filing row object, expected to have an ``accession_no`` or ``id``
-        attribute.
+        A filing row object, expected to have an ``accession_no`` or
+        ``id`` attribute.
 
     Returns
     -------
     dict
-        Evidence dict with ``source`` and ``agreement_with_cache`` keys.
+        ``{"source": str, "verification_status": str, ...}``.
     """
     accession = getattr(row, "accession_no", None) or getattr(row, "id", None)
     if not accession:
-        return {"source": "(no-verify)", "agreement_with_cache": True}
+        # No identifier — cannot verify.  Skip, do not pretend to pass.
+        return {
+            "source":              "(no-verify)",
+            "verification_status": "skip",
+            "reason":              "missing accession_no/id",
+        }
 
-    # Real implementation hits sec.gov.  For the v1 plan, defer the
-    # network call — return the cached value as evidence and let the
-    # reviewer follow up.  The hook is in place; the body is filled in
-    # when the first audit run surfaces a need.
+    # TODO Plan 10 follow-up: implement the sec.gov fetch.  Until then,
+    # self-report as skip so the SUMMARY never renders an un-run verifier
+    # as green.
     return {
-        "source":               f"sec.gov/Archives/.../{accession}-index.json",
-        "accepted_datetime":    None,
-        "agreement_with_cache": True,
+        "source":              f"sec.gov/Archives/.../{accession}-index.json",
+        "accepted_datetime":   None,  # accepted_datetime stays None until the real sec.gov fetch is wired.
+        "verification_status": "skip",
+        "reason":              "verifier not yet implemented",
     }
 
 
 def _verify_news(row: Any) -> dict[str, Any]:
-    """Re-fetch the article from Tiingo and compare ``publishedDate``.
+    """Verify a news article's ``published_at`` against Tiingo.
 
-    Returns ``(no-verify)`` placeholder for v1 — wire up Tiingo HTTP
-    re-fetch when the first audit run surfaces a need.
+    Same tri-state contract as ``_verify_filing`` — see its docstring.
 
     Parameters
     ----------
@@ -206,12 +221,21 @@ def _verify_news(row: Any) -> dict[str, Any]:
     Returns
     -------
     dict
-        Evidence dict with ``source``, ``published_date``, and
-        ``agreement_with_cache`` keys.
+        ``{"source": str, "verification_status": str, ...}``.
     """
     url = getattr(row, "url", "")
+    if not url:
+        return {
+            "source":              "(no-verify)",
+            "verification_status": "skip",
+            "reason":              "missing url",
+        }
+
+    # TODO Plan 10 follow-up: implement the Tiingo fetch.  Until then,
+    # self-report as skip — never green-on-placeholder.
     return {
-        "source":               url or "(no-verify)",
-        "published_date":       None,
-        "agreement_with_cache": True,
+        "source":              url,
+        "published_date":      None,  # published_date stays None until the real Tiingo fetch is wired.
+        "verification_status": "skip",
+        "reason":              "verifier not yet implemented",
     }

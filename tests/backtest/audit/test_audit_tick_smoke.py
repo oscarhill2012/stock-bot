@@ -23,8 +23,9 @@ def test_deep_dump_writes_files(tmp_path: Path) -> None:
             "filter_key_value":   "2023-03-09T12:00:00+00:00",
             "delta_to_as_of_sec": -77400,
             "upstream_evidence":  {
-                "source":               "(no-verify)",
-                "agreement_with_cache": True,
+                "source":              "(no-verify)",
+                "verification_status": "skip",
+                "reason":              "no upstream verifier for this domain",
             },
             "fabricated_timestamp": False,
             "midnight_utc":         False,
