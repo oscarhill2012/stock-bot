@@ -161,19 +161,71 @@ async def test_executor_stamps_opened_price_on_buy():
 
 @pytest.mark.asyncio
 async def test_executor_rejection_continues():
-    broker = FakeBroker(starting_cash=100.0, prices={"AAPL": 200.0})  # not enough cash
+    """A-066: a rejected order must not block subsequent filled orders.
+
+    Mix one under-funded AAPL BUY (rejected, $200 each × 5 = $1 000 > $100 cash)
+    with one affordable MSFT BUY (filled, $10 each × 1 = $10).  Both execution
+    records must be present; the rejected row carries no fill price (``None``)
+    and the filled row carries a positive fill price.
+
+    This guards against a silent-degradation mode where rejection of the first
+    order silently aborts processing of all subsequent orders in the same tick.
+    """
+    broker = FakeBroker(
+        starting_cash=100.0,
+        prices={"AAPL": 200.0, "MSFT": 10.0},
+    )
     executor = build_executor(broker)
+
     state = {
-        "tick_id": "tick-1",
-        "final_orders": [{"ticker": "AAPL", "action": "BUY", "quantity": 5.0, "est_price": 200.0}],
-        "user:positions": {},   # prior held book (empty)
-        "strategist_decision": {"decision_tag": "buy_aapl", "close_reasons": {}},
+        "tick_id":   "tick-rejection-mix",
+        "final_orders": [
+            # AAPL: costs 5 × $200 = $1 000 — rejected (insufficient cash).
+            {"ticker": "AAPL", "action": "BUY", "quantity": 5.0, "est_price": 200.0},
+            # MSFT: costs 1 × $10 = $10 — should fill within the $100 budget.
+            {"ticker": "MSFT", "action": "BUY", "quantity": 1.0, "est_price": 10.0},
+        ],
+        "user:positions": {},
+        "strategist_decision": {"decision_tag": "mixed_orders", "close_reasons": {}},
     }
+
     ctx = _make_ctx(state)
     async for _ in executor._run_async_impl(ctx):
         pass
+
     executions = state["executions"]
-    assert executions[0]["status"] == "rejected"
+
+    # Both orders must produce an execution record — the rejection must not abort processing.
+    assert len(executions) == 2, (
+        f"expected 2 execution records (one rejected, one filled); got {len(executions)}"
+    )
+
+    # Index by ticker for readable assertions.
+    by_ticker = {
+        e["order"]["ticker"]: e
+        for e in executions
+    }
+
+    # AAPL must be rejected with no fill price.
+    aapl_exec = by_ticker["AAPL"]
+    assert aapl_exec["status"] == "rejected", (
+        f"AAPL order must be rejected; got status={aapl_exec['status']!r}"
+    )
+    assert aapl_exec["actual_price"] is None, (
+        "rejected order must not carry a fill price (actual_price should be None)"
+    )
+
+    # MSFT must be filled with a positive fill price — the canonical content assertion.
+    msft_exec = by_ticker["MSFT"]
+    assert msft_exec["status"] == "filled", (
+        f"MSFT order must be filled; got status={msft_exec['status']!r}"
+    )
+    assert msft_exec["actual_price"] is not None, (
+        "filled order must carry a non-None actual_price"
+    )
+    assert msft_exec["actual_price"] > 0, (
+        f"fill_price for MSFT must be positive; got {msft_exec['actual_price']}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -404,4 +456,109 @@ def test_thesis_writer_callback_logs_assertion_through_logger(caplog):
     assert error_records[0].exc_info is not None, (
         "A-008: the logger.error call must pass exc_info=True so the full "
         "traceback is attached to the log record."
+    )
+
+
+# ---------------------------------------------------------------------------
+# A-065 — after-callback idempotency: same tick_id must not re-fire
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_executor_idempotent_includes_after_callback():
+    """A-065: running the executor a second time with the same tick_id must
+    produce byte-identical ``user:positions`` both times.
+
+    The after-callback (``_executor_thesis_writer_callback``) assembles
+    ``user:positions`` from the stances + fill prices.  If the idempotency
+    guard is bypassed on re-run, the callback could re-fire and mutate the
+    already-correct position book (e.g. re-opening a position that was
+    correctly set on the first run).
+
+    Test mechanism
+    --------------
+    1. Run the executor once with a BUY for AAPL (first run — position book
+       starts empty, tick fills successfully).
+    2. After the first run, manually invoke the after-callback to simulate ADK's
+       after-agent firing.  Capture the resulting ``user:positions``.
+    3. Run the executor a second time with the SAME tick_id.  The idempotency
+       guard (``last_executed_tick_id == tick_id``) must skip ``_run_async_impl``.
+    4. Invoke the after-callback again (as ADK always would).  Assert that
+       ``user:positions`` is byte-for-byte identical to the result after step 2.
+
+    A regression here would produce a double-entry in the position book or
+    a clobbered ``user:positions`` — a silent-degradation mode that would
+    corrupt the strategist's held-view on the next tick.
+    """
+    import json
+
+    buy_price = 150.0
+    broker    = FakeBroker(starting_cash=10_000.0, prices={"AAPL": buy_price})
+    executor  = build_executor(broker)
+
+    # Build the minimal state for a BUY tick.
+    state: dict = {
+        "tick_id":   "tick-idem-callback",
+        "as_of":     "2026-06-10T09:30:00+00:00",
+        "final_orders": [
+            {"ticker": "AAPL", "action": "BUY", "quantity": 2.0, "est_price": buy_price},
+        ],
+        "user:positions": {},   # empty prior held book
+        "strategist_decision": {
+            "decision_tag": "idem_test",
+            "reasoning":    "test idempotency of after-callback",
+            "confidence":   0.6,
+            "stances": [
+                {
+                    "ticker":    "AAPL",
+                    "intent":    "buy",
+                    "weight":    0.04,
+                    "rationale": "momentum intact",
+                },
+            ],
+        },
+    }
+
+    ctx = _make_ctx(state)
+
+    # ── First run: execute the BUY ─────────────────────────────────────────
+    async for _ in executor._run_async_impl(ctx):
+        pass
+
+    # Simulate ADK invoking the after-callback on the first run.
+    cb_ctx_1 = _CallbackCtx(state)
+    _executor_thesis_writer_callback(cb_ctx_1)
+
+    # Capture user:positions after the first full run.
+    positions_after_first_run = json.dumps(
+        state.get("user:positions", {}), sort_keys=True
+    )
+
+    # Sanity: the first run must have created an AAPL position.
+    assert "AAPL" in state.get("user:positions", {}), (
+        "After the first run, AAPL must appear in user:positions"
+    )
+
+    # ── Second run: same tick_id — idempotency guard must fire ─────────────
+    # Mark the tick as executed (mirrors what ADK's session service would carry
+    # cross-tick from the state_delta emitted in the first run).
+    state["last_executed_tick_id"] = "tick-idem-callback"
+
+    async for _ in executor._run_async_impl(ctx):
+        pass
+
+    # After-callback fires again (ADK fires it unconditionally after every run).
+    cb_ctx_2 = _CallbackCtx(state)
+    _executor_thesis_writer_callback(cb_ctx_2)
+
+    positions_after_second_run = json.dumps(
+        state.get("user:positions", {}), sort_keys=True
+    )
+
+    # Content assertion: both serialised position dicts must be identical.
+    assert positions_after_second_run == positions_after_first_run, (
+        "A-065: re-running the executor with the same tick_id must not mutate "
+        "user:positions — the position book must be byte-identical after both runs.\n"
+        f"  After run 1: {positions_after_first_run}\n"
+        f"  After run 2: {positions_after_second_run}"
     )
