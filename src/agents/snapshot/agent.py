@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import AsyncGenerator
 from typing import Any
 
@@ -91,6 +92,20 @@ class SnapshotterAgent(BaseAgent):
                     f"as_of={recorded_at.isoformat()}"
                 )
             spy_price = float(spy_hist.bars[-1].close)
+
+            # NaN or inf must be treated as a fetch failure — NOT silently
+            # passed downstream.  If we allow a non-finite value here, the
+            # first-tick anchor becomes NaN, every subsequent return calc
+            # produces NaN, and SQLite coerces NaN→NULL at insert, breaking
+            # the NOT NULL constraint on portfolio_snapshots.spy_price.
+            # Raising here routes into the same except-block that handles
+            # empty bars, which will re-raise on the first tick.
+            if not math.isfinite(spy_price):
+                raise RuntimeError(
+                    f"SPY price history returned a non-finite close "
+                    f"({spy_price!r}) at as_of={recorded_at.isoformat()}"
+                )
+
         except Exception:
             if first_tick:
                 # Re-raise — anchoring at 0.0 would permanently break the run.
