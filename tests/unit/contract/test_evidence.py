@@ -163,3 +163,105 @@ def test_evidence_round_trip():
     dumped = original.model_dump(mode="json")
     rebuilt = AnalystEvidence.model_validate(dumped)
     assert rebuilt == original
+
+
+# ---------------------------------------------------------------------------
+# D6 content assertions: is_no_data, ticker key, populated fields
+# ---------------------------------------------------------------------------
+
+
+def test_verdict_is_no_data_false_for_normal_verdict():
+    """A real (non-no-data) verdict must have ``is_no_data`` explicitly False.
+
+    This is the per-ticker guard against silent degradation: an evidence
+    object whose ``is_no_data`` was accidentally set True would be treated
+    as missing data by the strategist, silently dropping a real signal.
+    The assertion must be on the field value, not just on construction.
+    """
+    v = _verdict(lean="bullish", magnitude=0.7, confidence=0.8,
+                 rationale="strong momentum", is_no_data=False)
+
+    # Content assertion: is_no_data must be the concrete boolean False,
+    # not None or a truthy string.
+    assert v.is_no_data is False, (
+        "A real verdict must carry is_no_data=False — a True value "
+        "would cause the strategist to silently skip the signal"
+    )
+    # Sanity: a real verdict must also carry a non-empty prose surface.
+    assert v.rationale, "a non-no-data verdict must have a non-empty rationale"
+
+
+def test_evidence_ticker_key_is_accessible_and_correct():
+    """The ``ticker`` field on ``AnalystEvidence`` must carry the exact symbol
+    passed at construction — no normalisation, case-folding, or truncation.
+
+    This guards against an extractor bug where ``evidence.ticker`` is set to
+    a different symbol than the one the pipeline requested (e.g. because a
+    bulk-fetch result was keyed differently).
+    """
+    e = AnalystEvidence(
+        ticker="NVDA",
+        analyst="social",
+        tick_id="2026-06-10T09:30:00Z",
+        recorded_at=_now(),
+        features={"sentiment_score": 0.72, "mention_velocity_pct": 14.0},
+        verdict=_verdict(lean="bullish", magnitude=0.6, confidence=0.75,
+                         rationale="options flow bullish"),
+    )
+
+    # Content assertion: ticker must be the exact input string.
+    assert e.ticker == "NVDA", (
+        f"evidence.ticker must be 'NVDA'; got {e.ticker!r} — "
+        "a mismatch would silently attribute the wrong signal to the wrong ticker"
+    )
+
+    # The features dict must be present and non-empty for a real verdict.
+    assert "sentiment_score" in e.features, (
+        "features dict must contain 'sentiment_score'"
+    )
+    assert e.features["sentiment_score"] == 0.72, (
+        f"feature value must be exact; got {e.features['sentiment_score']}"
+    )
+
+    # is_no_data must be False for a real data verdict.
+    assert e.verdict.is_no_data is False, (
+        "verdict.is_no_data must be False for a properly-evidenced ticker"
+    )
+
+
+def test_build_no_data_verdict_carries_ticker_and_reason():
+    """``build_no_data_verdict`` must produce a ``TickerVerdict`` whose
+    ``ticker`` and ``rationale`` fields carry the supplied values.
+
+    This is a content assertion on the canonical no-data constructor — an
+    empty rationale or wrong ticker would silently misattribute the no-data
+    signal to the wrong symbol or leave the strategist without a reason.
+    """
+    from contract.evidence import build_no_data_verdict
+
+    v = build_no_data_verdict("AMZN", reason="no filings this quarter")
+
+    # Content assertions: ticker and reason must be present and exact.
+    assert v.ticker == "AMZN", (
+        f"no-data verdict ticker must be 'AMZN'; got {v.ticker!r}"
+    )
+    assert "no filings" in v.rationale, (
+        f"rationale must carry the supplied reason; got {v.rationale!r}"
+    )
+    assert v.is_no_data is True, (
+        "build_no_data_verdict must produce is_no_data=True"
+    )
+
+
+def test_build_no_data_verdict_rejects_empty_reason():
+    """``build_no_data_verdict`` must raise ``ValueError`` when called with an
+    empty-or-whitespace reason string.
+
+    The no-data builder closes the silent-fallback bug class: every no-data
+    site already has a concrete reason available.  An empty reason must be
+    rejected loudly so the caller is forced to provide one.
+    """
+    from contract.evidence import build_no_data_verdict
+
+    with pytest.raises(ValueError, match="non-empty reason"):
+        build_no_data_verdict("TSLA", reason="")
