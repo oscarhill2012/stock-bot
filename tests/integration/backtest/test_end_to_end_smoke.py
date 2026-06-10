@@ -64,150 +64,15 @@ import pytest
 from backtest.cache.store import CachedDataStore
 from data.models import CompanyRatios, Filing, NewsArticle, OHLCBar
 
-# ---------------------------------------------------------------------------
-# Helpers — synthetic LLM response payloads
-# ---------------------------------------------------------------------------
-
-def _make_strategist_llm_response(tickers: list[str]):
-    """Return a synthetic ``LlmResponse`` containing a valid ``StrategistLLMDecision``.
-
-    The strategist's ``before_model_callback``, when it returns a non-None
-    ``LlmResponse``, causes ADK to skip the real Gemini call and treat the
-    returned content as the model's response.  ADK then validates the JSON
-    text against ``output_schema=StrategistLLMDecision`` and writes it to state.
-
-    Note: the payload also carries a ``target_weights`` field, which is a
-    ``StrategistDecision``-level field not present on the narrow
-    ``StrategistLLMDecision`` schema.  It is harmlessly ignored at ADK
-    validation time (``StrategistLLMDecision`` has no ``extra="forbid"``), and
-    the ``StrategistEnricher`` re-derives the real ``target_weights`` from the
-    stances downstream — so the value embedded here has no effect on the run.
-
-    Parameters
-    ----------
-    tickers:
-        The watchlist tickers the decision should cover.
-
-    Returns
-    -------
-    google.adk.models.LlmResponse
-        A synthetic response with a ``StrategistLLMDecision`` JSON payload.
-    """
-    from google.adk.models import LlmResponse
-    from google.genai import types as genai_types
-
-    # Buy the first ticker with a small position so the smoke test can assert
-    # that user:positions is non-empty after the run.  The remaining tickers
-    # (if any) receive update stances (no trade, weight unchanged).
-    #
-    # iter-3: three-verb schema (buy / sell / update).  buy weight capped at
-    # 0.05 per trade; no horizon / target_price / stop_price on TickerStance.
-    first_ticker = tickers[0] if tickers else "AAPL"
-    stances = []
-    for t in tickers:
-        if t == first_ticker:
-            stances.append({
-                "ticker":    t,
-                "intent":    "buy",
-                "weight":    0.04,
-                "rationale": "Smoke test buy — exercising the full executor path.",
-            })
-        else:
-            stances.append({
-                "ticker": t,
-                "intent":    "update",
-                "rationale": "Smoke test neutral stance — no real signal.",
-            })
-
-    target_weights = {t: (0.04 if t == first_ticker else 0.0) for t in tickers}
-
-    decision = {
-        "stances":        stances,
-        "target_weights": target_weights,
-        # ``new_positions`` removed in Band 6 — executor assembles PositionThesis
-        # from the fill price + stance via apply_stance_to_thesis.
-        "decision_tag":   "smoke_test_open",
-        "reasoning":      "Smoke test run — opening one position to exercise executor.",
-        "thesis":         "Smoke-test thesis: testing position persistence.",
-        "confidence":     0.7,
-    }
-    return LlmResponse(
-        content=genai_types.Content(
-            parts=[genai_types.Part.from_text(text=json.dumps(decision))]
-        )
-    )
-
-
-def _make_per_ticker_analyst_llm_response(agent_name: str):
-    """Return a synthetic ``LlmResponse`` containing a valid ``LlmTickerVerdict``.
-
-    Used for the per-ticker Fundamental and News ``LlmAgent`` analysts whose
-    ``output_schema=LlmTickerVerdict`` (the narrow LLM emit-schema introduced
-    by the 2026-05-25 schema split — see ``contract.evidence.LlmTickerVerdict``).
-    The ticker is extracted from the agent name by stripping the well-known
-    prefix (``"NewsAnalyst_"`` or ``"FundamentalAnalyst_"``).
-
-    The payload omits ``rationale`` — that field was dropped from the LLM
-    emit-schema (Vertex was padding it toward the cap), and
-    ``LlmTickerVerdict`` declares ``extra="forbid"`` so including it would
-    raise.  The downstream joiner inflates each emit into ``TickerVerdict``,
-    on which ``rationale`` defaults to ``""``.
-
-    Parameters
-    ----------
-    agent_name:
-        The ADK agent name — e.g. ``"NewsAnalyst_AAPL"`` or
-        ``"FundamentalAnalyst_MSFT"``.
-
-    Returns
-    -------
-    google.adk.models.LlmResponse
-        A synthetic response with an ``LlmTickerVerdict`` JSON payload for
-        the single ticker extracted from ``agent_name``.
-    """
-    from google.adk.models import LlmResponse
-    from google.genai import types as genai_types
-
-    # Strip known prefixes to recover the ticker symbol.
-    ticker = agent_name
-    for prefix in ("NewsAnalyst_", "FundamentalAnalyst_"):
-        if agent_name.startswith(prefix):
-            ticker = agent_name[len(prefix):]
-            break
-
-    # ``report`` is required on every emit on ``LlmTickerVerdict`` (no
-    # default, no Optional).  Two drivers is the minimum the
-    # ``AnalystReport`` schema accepts.
-    verdict = {
-        "ticker":      ticker,
-        "lean":        "neutral",
-        "magnitude":   0.0,
-        "confidence":  0.5,
-        "is_no_data":  False,
-        "key_factors": [],
-        "report": {
-            "summary": "Smoke-test stub report — verdict is neutral.",
-            "drivers": [
-                {
-                    "name":      "stub_a",
-                    "direction": "neutral",
-                    "weight":    0.5,
-                    "body":      "Smoke-test stub driver A.",
-                },
-                {
-                    "name":      "stub_b",
-                    "direction": "neutral",
-                    "weight":    0.5,
-                    "body":      "Smoke-test stub driver B.",
-                },
-            ],
-        },
-    }
-    return LlmResponse(
-        content=genai_types.Content(
-            parts=[genai_types.Part.from_text(text=json.dumps(verdict))]
-        )
-    )
+# Import shared LLM-stub helpers from the backtest-level conftest.
+# These are module-level helper functions (not fixtures) so they must be
+# imported explicitly rather than injected via pytest's DI system.
+# The canonical definitions now live in conftest.py — only imported here
+# so the test's inline patches can close over them.
+from tests.integration.backtest.conftest import (
+    _make_per_ticker_analyst_llm_response,
+    _make_strategist_llm_response,
+)
 
 
 # ---------------------------------------------------------------------------
