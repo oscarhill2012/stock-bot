@@ -144,13 +144,20 @@ async def test_snapshotter_raises_when_spy_fetch_fails_on_first_tick():
 
 
 @pytest.mark.asyncio
-async def test_snapshotter_reuses_prior_anchor_when_spy_fetch_fails_later():
+async def test_snapshotter_reuses_prior_anchor_when_spy_fetch_fails_later(caplog):
     """Subsequent ticks log a loud WARNING and reuse the prior anchor;
     never silently substitute 0.0.
+
+    The WARNING must be a structured ``logger.warning(...)`` call (not a bare
+    ``print``) so it is visible in log aggregators and captured by ``caplog``.
+    Silent fallback to 0.0 would permanently corrupt every subsequent return
+    calculation; the WARNING is the diagnostic signal that the fallback fired.
     """
+    import logging
+
     from broker.portfolio import Portfolio
 
-    broker = FakeBroker(starting_cash=10_000.0, prices={})
+    broker  = FakeBroker(starting_cash=10_000.0, prices={})
     snapper = build_snapshotter(broker)
     portfolio = Portfolio(cash=10_000.0)
     state = {
@@ -162,11 +169,33 @@ async def test_snapshotter_reuses_prior_anchor_when_spy_fetch_fails_later():
     }
     ctx = _make_ctx(state)
 
-    with patch("data.get_price_history",
-               side_effect=RuntimeError("transient")):
-        async for _ in snapper._run_async_impl(ctx):
-            pass
+    # Capture WARNING-level records from the snapshotter's logger.
+    with caplog.at_level(logging.WARNING, logger="agents.snapshot.agent"):
+        with patch("data.get_price_history",
+                   side_effect=RuntimeError("transient")):
+            async for _ in snapper._run_async_impl(ctx):
+                pass
 
     snap = state["last_snapshot"]
-    # Anchor preserved; spy_price falls back to last good value, never 0.0.
-    assert snap["spy_price"] == 480.0
+
+    # Content assertion: anchor preserved; spy_price falls back to last good value, never 0.0.
+    assert snap["spy_price"] == 480.0, (
+        f"spy_price must fall back to last_spy_price=480.0; got {snap['spy_price']}"
+    )
+
+    # Structured-log assertion: the WARNING must have been emitted via
+    # logger.warning so aggregators (and caplog in CI) can capture it.
+    # A bare print() would pass the spy_price check above but be invisible here.
+    warning_records = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING and "snapshotter" in r.getMessage()
+    ]
+    assert warning_records, (
+        "A-031: the SPY-fetch fallback must emit a structured logger.warning — "
+        "a bare print() is invisible to log aggregators and this assertion"
+    )
+    # The warning must carry exc_info so the original traceback is attached.
+    assert warning_records[0].exc_info is not None, (
+        "A-031: logger.warning must be called with exc_info=True so the "
+        "transient failure traceback is preserved for post-mortem debugging"
+    )
