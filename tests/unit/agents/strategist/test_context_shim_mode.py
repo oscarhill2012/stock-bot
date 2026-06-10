@@ -83,18 +83,15 @@ async def test_shim_emits_incremental_mode_when_positions_present() -> None:
     state = {
         "user:positions":          {
             "AVGO": {
+                # iter-3 schema: target_price / stop_price / catalyst / horizon removed.
                 "ticker":                 "AVGO",
                 "opened_at":              "2026-05-01T14:00:00+00:00",
                 "opened_tick_id":         "tick_001",
                 "opened_price":           100.0,
                 "weight":                 0.05,
-                "target_price":           120.0,
-                "stop_price":              90.0,
-                "catalyst":               "Q3 guidance",
-                "horizon":                "swing",
                 "rationale":              "Cloud-AI margin expansion",
                 "last_reviewed_at":       "2026-05-01T14:00:00+00:00",
-                "last_reviewed_decision": "open",
+                "last_reviewed_decision": "buy",
             },
         },
         "portfolio":               Portfolio(cash=950.0).model_dump(mode="json"),
@@ -119,15 +116,15 @@ async def test_shim_n_substitution_in_incremental_text() -> None:
     state = {
         "user:positions":          {
             "AVGO": {
+                # iter-3 schema: horizon removed; last_reviewed_decision uses four-verb vocab.
                 "ticker":                 "AVGO",
                 "opened_at":              "2026-05-01T14:00:00+00:00",
                 "opened_tick_id":         "tick_001",
                 "opened_price":           100.0,
                 "weight":                 0.05,
-                "horizon":                "swing",
                 "rationale":              "r1",
                 "last_reviewed_at":       "2026-05-01T14:00:00+00:00",
-                "last_reviewed_decision": "open",
+                "last_reviewed_decision": "buy",
             },
             "MSFT": {
                 "ticker":                 "MSFT",
@@ -135,10 +132,9 @@ async def test_shim_n_substitution_in_incremental_text() -> None:
                 "opened_tick_id":         "tick_002",
                 "opened_price":           400.0,
                 "weight":                 0.04,
-                "horizon":                "swing",
                 "rationale":              "r2",
                 "last_reviewed_at":       "2026-05-02T14:00:00+00:00",
-                "last_reviewed_decision": "open",
+                "last_reviewed_decision": "buy",
             },
             "XOM": {
                 "ticker":                 "XOM",
@@ -146,10 +142,9 @@ async def test_shim_n_substitution_in_incremental_text() -> None:
                 "opened_tick_id":         "tick_003",
                 "opened_price":            110.0,
                 "weight":                 0.03,
-                "horizon":                "swing",
                 "rationale":              "r3",
                 "last_reviewed_at":       "2026-05-03T14:00:00+00:00",
-                "last_reviewed_decision": "open",
+                "last_reviewed_decision": "buy",
             },
         },
         "portfolio":               Portfolio(cash=900.0).model_dump(mode="json"),

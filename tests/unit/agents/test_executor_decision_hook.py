@@ -73,18 +73,17 @@ async def test_executor_calls_decision_logger_on_fill() -> None:
         ],
         "user:positions": {},   # prior held book (empty)
         "strategist_decision": {
-            # Band 6: executor assembles PositionThesis from the open-intent
+            # Band 6: executor assembles PositionThesis from the buy-intent
             # stance + fill price; ``new_positions`` is no longer needed here.
             "stances": [
                 {
-                    "ticker":       "AAPL",
-                    "intent":       "open",
-                    "weight":       0.10,
-                    "horizon":      "swing",
-                    "rationale":    "test",
-                    "target_price": 170.0,
-                    "stop_price":   130.0,
-                    "catalyst":     "test catalyst",
+                    # Four-verb schema (buy / sell / update / no_action).
+                    # Deleted fields horizon / target_price / stop_price / catalyst
+                    # were removed in Plan-02; extra="forbid" rejects them.
+                    "ticker":    "AAPL",
+                    "intent":    "buy",
+                    "weight":    0.10,
+                    "rationale": "test",
                 },
             ],
         },

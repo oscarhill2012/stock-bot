@@ -82,11 +82,11 @@ def _make_held_view_state() -> dict:
         "strategist_decision": {
             "stances": [
                 {
+                    # Four-verb schema; catalyst removed in Plan-02.
                     "ticker":    "AAPL",
                     "intent":    "buy",
                     "weight":    0.05,
                     "rationale": "Bullish technical setup.",
-                    "catalyst":  None,
                 },
             ],
             # sell_reasons / update_reasons removed (A-013 tail).

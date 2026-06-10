@@ -33,18 +33,16 @@ async def test_user_positions_scoped_to_app_name():
 
     paper_positions = {
         "AAPL": {
+            # iter-3 PositionThesis schema: target_price / stop_price / catalyst /
+            # horizon removed; last_reviewed_decision uses four-verb vocabulary.
             "ticker":                  "AAPL",
             "opened_at":               "2026-05-23T00:00:00+00:00",
             "opened_tick_id":          "paper-tick-1",
             "opened_price":            192.50,
             "weight":                  0.05,
-            "target_price":            210.0,
-            "stop_price":              180.0,
-            "catalyst":                "paper-test",
-            "horizon":                 "swing",
             "rationale":               "Paper trading test position",
             "last_reviewed_at":        "2026-05-23T00:00:00+00:00",
-            "last_reviewed_decision":  "open",
+            "last_reviewed_decision":  "buy",
         },
     }
 

@@ -38,13 +38,13 @@ async def test_thesis_persistence_round_trips_across_sessions():
     # Build a complete PositionThesis-shaped dict matching the iter-3 schema.
     # Note: target_price, stop_price, and horizon were removed in iter-3;
     # last_reviewed_decision uses the three-verb vocabulary (buy / sell / update).
+    # iter-3 PositionThesis schema: catalyst removed (prose-only contract).
     avgo_thesis = {
         "ticker":                   "AVGO",
         "opened_at":                "2026-05-23T00:00:00+00:00",
         "opened_tick_id":           "tick-t1",
         "opened_price":             1023.50,
         "weight":                   0.10,
-        "catalyst":                 "AI capex cycle",
         "rationale":                "AI capex thesis intact — test fixture",
         "last_reviewed_at":         "2026-05-23T00:00:00+00:00",
         "last_reviewed_decision":   "buy",

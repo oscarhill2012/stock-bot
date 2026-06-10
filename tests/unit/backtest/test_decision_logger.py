@@ -92,17 +92,16 @@ def _make_state() -> dict:
         "strategist_decision": {
             "stances": [
                 {
+                    # Four-verb schema; catalyst removed in Plan-02.
                     "ticker":    "SIVB",
                     "intent":    "sell",
                     "rationale": "Thesis broken",
-                    "catalyst":  None,
                 },
                 {
                     "ticker":    "AAPL",
                     "intent":    "buy",
                     "weight":    0.05,
                     "rationale": "Opening on bullish technical setup.",
-                    "catalyst":  "Earnings beat expected next week",
                 },
             ],
             # sell_reasons / update_reasons removed (A-013 tail);
@@ -119,13 +118,13 @@ def _make_state() -> dict:
         # thesis-book), not the bare "positions" key (the old in-tick bridge).
         "user:positions": {
             "SIVB": {
+                # iter-3 PositionThesis schema: catalyst removed.
                 "ticker":                   "SIVB",
                 "opened_at":                "2023-03-01T14:30:00+00:00",
                 "opened_tick_id":           "tick-prior",
                 "opened_price":             268.5,
                 "weight":                   0.10,
                 "rationale":                "Above-average net interest margin and deposit growth.",
-                "catalyst":                 "Q1 earnings",
                 "last_reviewed_at":         "2023-03-13T09:30:00+00:00",
                 "last_reviewed_decision":   "buy",
                 "thesis_last_updated_tick": 0,

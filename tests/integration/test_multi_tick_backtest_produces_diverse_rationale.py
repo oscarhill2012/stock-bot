@@ -123,7 +123,7 @@ async def test_multi_tick_backtest_produces_diverse_rationale() -> None:
     # Tick 1: portfolio empty → cold-start mode, flat-portfolio held-view.
     # Tick 2-5: one seeded position → incremental mode, populated held-view.
     #
-    # iter-3: target_price / stop_price / horizon removed from PositionThesis.
+    # iter-3: target_price / stop_price / horizon / catalyst removed from PositionThesis.
     # The seeded dict uses the prose-only contract.  ``thesis_last_updated_tick``
     # is 1 so that staleness advances as ``user:current_tick_index`` increments
     # from 1 to 4 across ticks 2-5 (giving distinct stale_ticks values of 0-3).
@@ -133,7 +133,6 @@ async def test_multi_tick_backtest_produces_diverse_rationale() -> None:
         "opened_tick_id":           "tick_001",
         "opened_price":             100.0,
         "weight":                   0.05,
-        "catalyst":                 "Q3 guidance call",
         "rationale":                "Cloud-AI margin expansion thesis",
         "last_reviewed_at":         "2026-05-01T14:00:00+00:00",
         "last_reviewed_decision":   "buy",

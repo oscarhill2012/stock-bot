@@ -39,18 +39,16 @@ async def test_phase2_hydration_comes_from_db_not_in_process_state(tmp_path):
 
     written_positions = {
         "MSFT": {
+            # iter-3 PositionThesis schema: target_price / stop_price / catalyst /
+            # horizon removed; last_reviewed_decision uses four-verb vocabulary.
             "ticker":                  "MSFT",
             "opened_at":               "2026-05-23T00:00:00+00:00",
             "opened_tick_id":          "tick-t1",
             "opened_price":            415.0,
             "weight":                  0.08,
-            "target_price":            480.0,
-            "stop_price":              390.0,
-            "catalyst":                "Cloud margin expansion",
-            "horizon":                 "swing",
             "rationale":               "Azure growth rate inflecting upward",
             "last_reviewed_at":        "2026-05-23T00:00:00+00:00",
-            "last_reviewed_decision":  "open",
+            "last_reviewed_decision":  "buy",
         },
     }
 

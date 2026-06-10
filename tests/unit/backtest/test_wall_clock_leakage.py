@@ -282,12 +282,12 @@ def test_executor_closed_at_uses_as_of(db_session) -> None:
     # Pre-populate broker position so the SELL order isn't rejected.
     asyncio.run(broker.submit_market("AAPL", "BUY", 10))
 
+    # iter-3 PositionThesis schema: horizon removed.
     thesis = {
-        "opened_at": opened_at_str,
-        "opened_price": 150.0,
-        "opened_tag": "open_tag",
-        "rationale": "was bullish",
-        "horizon": "swing",
+        "opened_at":      opened_at_str,
+        "opened_price":   150.0,
+        "opened_tag":     "open_tag",
+        "rationale":      "was bullish",
         "opened_tick_id": "tick_open",
     }
 
