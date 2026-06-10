@@ -26,6 +26,7 @@ Known failure modes (if the test reaches the LLM but fails):
 """
 from __future__ import annotations
 
+import logging
 import os
 from datetime import UTC, datetime
 
@@ -114,7 +115,10 @@ def _ev(analyst: str, lean: str, conf: float, ticker: str) -> dict:
 # ── Test ──────────────────────────────────────────────────────────────────────
 
 @pytest.mark.integration
-async def test_strategist_v2_emits_per_ticker_stances_with_held_position():
+async def test_strategist_v2_emits_per_ticker_stances_with_held_position(
+    caplog: pytest.LogCaptureFixture,
+    degradation_check,
+):
     """Verify Strategist v2 writes a valid decision to state when run via ADK Runner.
 
     Seeds a two-ticker watchlist (AAPL / MSFT) where AAPL has a held position
@@ -128,7 +132,12 @@ async def test_strategist_v2_emits_per_ticker_stances_with_held_position():
         - The raw value validates as a ``StrategistDecision``.
         - Both AAPL and MSFT appear in ``decision.stances``.
         - Both AAPL and MSFT appear in ``decision.target_weights``.
+        - No analyst domain silently degraded (is_no_data=True) and no
+          forbidden WARNING was emitted during the strategist run.
     """
+    # Capture WARNING-level records before the pipeline runs so the
+    # degradation_check can inspect any forbidden substrings.
+    caplog.set_level(logging.WARNING)
     from google.adk.apps import App
     from google.adk.runners import Runner
     from google.adk.sessions import InMemorySessionService
@@ -265,3 +274,9 @@ async def test_strategist_v2_emits_per_ticker_stances_with_held_position():
         f"Expected target_weights for AAPL and MSFT; got "
         f"{set(decision.target_weights.keys())}"
     )
+
+    # ── Silent-degradation guard ───────────────────────────────────────────────
+    # The strategist runs without analyst domains — only *_evidence keys are in
+    # state (hand-built, no is_no_data rows).  The check verifies no forbidden
+    # WARNING (branch_failed / _fetch_failed) fired during the strategist run.
+    degradation_check(updated.state)

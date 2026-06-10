@@ -27,6 +27,7 @@ price so ``RiskGateAgent`` can compute portfolio weights and
 """
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
@@ -218,7 +219,10 @@ def _build_prior_positions() -> dict:
 
 
 @pytest.mark.asyncio
-async def test_three_verb_single_tick_smoke() -> None:
+async def test_three_verb_single_tick_smoke(
+    caplog: pytest.LogCaptureFixture,
+    degradation_check,
+) -> None:
     """Drive one tick through risk gate + executor and verify three-verb output.
 
     Test outline
@@ -238,6 +242,8 @@ async def test_three_verb_single_tick_smoke() -> None:
          opened_price and rationale.
        - GOOGL: position present in ``user:positions`` with unchanged weight
          and ``thesis_last_updated_tick`` advanced.
+    7. Assert no silent degradation — no domain verdict carries is_no_data=True
+       and no forbidden WARNING was emitted during the tick.
 
     Coverage note
     -------------
@@ -245,6 +251,9 @@ async def test_three_verb_single_tick_smoke() -> None:
     the ADK session persistence layer (cross-tick storage is not the concern
     here — that is covered by ``test_cross_tick_buy_then_sell_produces_trade_log_row``).
     """
+    # Capture WARNING-level logs from the start so degradation_check can inspect
+    # any forbidden silent-failure substrings emitted during the tick.
+    caplog.set_level(logging.WARNING)
 
     # ── Setup ──────────────────────────────────────────────────────────────────
     broker         = _build_broker()
@@ -453,3 +462,11 @@ async def test_three_verb_single_tick_smoke() -> None:
     assert googl_thesis["thesis_last_updated_tick"] > prior_positions["GOOGL"]["thesis_last_updated_tick"], (
         "GOOGL thesis_last_updated_tick must be strictly greater than its prior value (1)"
     )
+
+    # ── Silent-degradation guard ───────────────────────────────────────────────
+    # This tick exercises the risk-gate and executor on a hand-built decision.
+    # The analyst pool did not run here (no *_verdicts or *_evidence keys in
+    # state), so the verdict/evidence checks are vacuous.  The warning check
+    # is still live: any branch_failed / _fetch_failed WARNING would indicate
+    # a silent failure in the executor or risk-gate code paths.
+    degradation_check(state)
