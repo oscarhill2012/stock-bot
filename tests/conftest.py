@@ -42,3 +42,31 @@ def load_fixture(fixture_path):
         with fixture_path(name).open() as f:
             return json.load(f)
     return _load
+
+
+from tests._helpers import assert_no_silent_degradation, make_tick_state  # noqa: E402
+
+# Re-export as pytest fixtures for tests that prefer DI.
+
+@pytest.fixture
+def degradation_check():
+    """Fixture form of ``assert_no_silent_degradation`` — accepts kwargs.
+
+    Usage:
+        def test_x(degradation_check):
+            ...
+            degradation_check(state)
+            degradation_check(state, allow_degradation=("news",))
+    """
+    return assert_no_silent_degradation
+
+
+@pytest.fixture
+def tick_state():
+    """Fixture form of ``make_tick_state`` — call it to build state.
+
+    Usage:
+        def test_x(tick_state):
+            state = tick_state(watchlist=["AAPL"], held={"AAPL": 5.0})
+    """
+    return make_tick_state
