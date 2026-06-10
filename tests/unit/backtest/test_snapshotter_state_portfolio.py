@@ -8,12 +8,22 @@ rather than issuing a redundant broker round-trip mid-tick.
 The test drives the agent through the same synchronous ``_run`` helper and
 ``_StubCtx`` stand-in used in ``test_wall_clock_leakage.py``, keeping both
 files' driving style consistent and avoiding event-loop conflicts.
+
+Hermetic SPY fetch
+------------------
+The agent fetches SPY via ``from data import get_price_history`` at call-time
+inside ``_run_async_impl``.  Patching ``sys.modules["yfinance"]`` is a NO-OP
+against that seam — the agent never imports yfinance directly.  We patch
+``data.get_price_history`` instead, which is the exact name the agent resolves,
+and return a deterministic ``PriceHistory`` with a finite close so the product-
+level non-finite-close guard does not fire.
 """
 from __future__ import annotations
 
 import asyncio
-import sys
-import types
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock, patch
+
 
 # ── Minimal ADK stand-ins (self-contained; mirrored from test_wall_clock_leakage) ─
 
@@ -40,27 +50,6 @@ def _run(coro_gen) -> list:
     return asyncio.run(_drain())
 
 
-# ── yfinance stub builder ──────────────────────────────────────────────────────
-
-def _install_fake_yfinance() -> None:
-    """Inject a stub ``yfinance`` module so the Snapshotter stays offline.
-
-    The agent fetches SPY via ``get_price_history``, which ultimately calls
-    ``yfinance.Ticker(...).history()``.  We return an empty DataFrame-like
-    mock so the agent degrades gracefully to ``spy_price=0.0`` without any
-    network call.
-    """
-    from unittest.mock import MagicMock
-
-    fake_yf = types.ModuleType("yfinance")
-    fake_ticker = MagicMock()
-    # Returning empty=True causes the spy_price fallback path to trigger
-    # (``if spy_hist.bars`` evaluates False, so spy_price stays 0.0).
-    fake_ticker.history.return_value = MagicMock(empty=True)
-    fake_yf.Ticker = MagicMock(return_value=fake_ticker)
-    sys.modules["yfinance"] = fake_yf
-
-
 # ── Test ───────────────────────────────────────────────────────────────────────
 
 def test_snapshotter_uses_state_portfolio_not_broker() -> None:
@@ -72,11 +61,28 @@ def test_snapshotter_uses_state_portfolio_not_broker() -> None:
 
     - ``state["last_snapshot"]["bot_cash"]`` must equal 100.0 (state value wins).
     - ``broker.get_portfolio`` must never have been called.
-    """
-    from unittest.mock import AsyncMock, MagicMock
 
+    The SPY fetch is patched at ``data.get_price_history`` — the seam the agent
+    actually uses — returning a deterministic bar with a finite close so the
+    non-finite-close guard introduced in the loud-fail audit does not trigger.
+    """
     from agents.snapshot.agent import SnapshotterAgent
     from broker.portfolio import Portfolio
+    from data.models.market import OHLCBar
+    from data.models.price_history import PriceHistory
+
+    # Deterministic SPY bar — a finite close is required so the product guard
+    # does not raise and abort the run.
+    _AS_OF = datetime(2023, 3, 10, 9, 30, 0, tzinfo=UTC)
+    spy_bar = OHLCBar(
+        timestamp=_AS_OF,
+        open=398.0,
+        high=402.0,
+        low=397.0,
+        close=400.0,
+        volume=1_000_000.0,
+    )
+    spy_history = PriceHistory(ticker="SPY", bars=[spy_bar])
 
     # Canonical portfolio that Phase 2 would have published into state.
     canonical_portfolio = Portfolio(cash=100.0)
@@ -87,16 +93,17 @@ def test_snapshotter_uses_state_portfolio_not_broker() -> None:
     broker.get_portfolio = AsyncMock(return_value=Portfolio(cash=999.0))
 
     state: dict = {
-        "tick_id":   "t-1",
+        "tick_id": "t-1",
+        "as_of":   _AS_OF,
         # Phase 2 canonical snapshot — agent should read this, not the broker.
         "portfolio": canonical_portfolio.model_dump(mode="json"),
     }
 
-    _install_fake_yfinance()
-
-    # db_session=None skips the persistence path entirely.
-    agent = SnapshotterAgent(broker=broker, db_session=None)
-    _run(agent._run_async_impl(_StubCtx(state)))
+    # Patch the seam the agent actually uses — not sys.modules["yfinance"].
+    with patch("data.get_price_history", new=AsyncMock(return_value=spy_history)):
+        # db_session=None skips the persistence path entirely.
+        agent = SnapshotterAgent(broker=broker, db_session=None)
+        _run(agent._run_async_impl(_StubCtx(state)))
 
     # A-072: the broker round-trip must be gone.
     broker.get_portfolio.assert_not_called()

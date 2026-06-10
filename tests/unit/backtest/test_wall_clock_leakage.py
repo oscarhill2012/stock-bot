@@ -107,13 +107,32 @@ def test_decision_writer_uses_as_of(db_session) -> None:
 # ── SnapshotterAgent ──────────────────────────────────────────────────────────
 
 def test_snapshotter_uses_as_of(db_session) -> None:
-    """SnapshotterAgent should stamp portfolio snapshots with state["as_of"]."""
-    from unittest.mock import MagicMock
+    """SnapshotterAgent should stamp portfolio snapshots with state["as_of"].
+
+    Uses a hermetic patch of ``data.get_price_history`` (the actual seam the
+    agent calls) rather than patching yfinance, which is a NO-OP because the
+    agent imports ``get_price_history`` at call-time via ``from data import
+    get_price_history``.  The patch returns a deterministic PriceHistory with a
+    single bar carrying a finite close so we can also assert the stored spy_price.
+    """
+    from unittest.mock import AsyncMock, MagicMock, patch
 
     from agents.snapshot.agent import SnapshotterAgent
     from broker.portfolio import Portfolio
+    from data.models.market import OHLCBar
+    from data.models.price_history import PriceHistory
 
-    # Fake broker returns a trivial portfolio.
+    # Build a deterministic SPY bar with a clearly finite close.
+    spy_bar = OHLCBar(
+        timestamp=_HISTORICAL_TS,
+        open=398.0,
+        high=402.0,
+        low=397.0,
+        close=400.0,
+        volume=1_000_000.0,
+    )
+    spy_history = PriceHistory(ticker="SPY", bars=[spy_bar])
+
     portfolio = Portfolio(cash=10_000.0)
     mock_broker = MagicMock()
 
@@ -126,21 +145,69 @@ def test_snapshotter_uses_as_of(db_session) -> None:
 
     agent = SnapshotterAgent(broker=mock_broker, db_session=db_session)
 
-    # Patch yfinance so the agent doesn't hit the network.
-    import sys
-    import types
-    fake_yf = types.ModuleType("yfinance")
-    fake_ticker = MagicMock()
-    fake_ticker.history.return_value = MagicMock(empty=True)
-    fake_yf.Ticker = MagicMock(return_value=fake_ticker)
-    sys.modules["yfinance"] = fake_yf
+    # Patch ``data.get_price_history`` — the exact name the agent resolves when
+    # it does ``from data import get_price_history`` inside ``_run_async_impl``.
+    # The agent awaits the call, so the mock must be an AsyncMock.
+    with patch("data.get_price_history", new=AsyncMock(return_value=spy_history)):
+        _run(agent._run_async_impl(_StubCtx(state)))
 
-    _run(agent._run_async_impl(_StubCtx(state)))
     db_session.commit()
 
     row = db_session.query(PortfolioSnapshotRow).one()
+
     # SQLite's DateTime column strips tzinfo on round-trip; compare naive UTC values.
     assert row.recorded_at == _HISTORICAL_TS.replace(tzinfo=None)
+
+    # The persisted spy_price must be the deterministic value from the mock,
+    # not NaN/NULL (which would indicate a silent-degradation bug).
+    assert row.spy_price == 400.0
+
+
+def test_snapshotter_raises_on_nonfinite_spy_close(db_session) -> None:
+    """SnapshotterAgent must raise (not silently persist NULL) when SPY close is NaN.
+
+    Regression test for the non-finite-close guard added in Part A.  If the
+    provider returns a bar whose close is NaN, the agent must raise rather than
+    anchoring ``spy_start_price`` at NaN — which would corrupt every downstream
+    return calculation and cause a NOT NULL constraint failure at the SQLite insert.
+    """
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from agents.snapshot.agent import SnapshotterAgent
+    from broker.portfolio import Portfolio
+    from data.models.market import OHLCBar
+    from data.models.price_history import PriceHistory
+
+    # Build a bar with a deliberately non-finite close to trigger the guard.
+    nan_bar = OHLCBar(
+        timestamp=_HISTORICAL_TS,
+        open=float("nan"),
+        high=float("nan"),
+        low=float("nan"),
+        close=float("nan"),
+        volume=0.0,
+    )
+    nan_history = PriceHistory(ticker="SPY", bars=[nan_bar])
+
+    portfolio = Portfolio(cash=10_000.0)
+    mock_broker = MagicMock()
+
+    # First tick — no ``spy_start_price`` in state — so the agent MUST re-raise
+    # rather than falling back to a prior price that doesn't exist yet.
+    state = {
+        "tick_id":   "tick_nan",
+        "as_of":     _HISTORICAL_TS,
+        "portfolio": portfolio.model_dump(mode="json"),
+    }
+
+    agent = SnapshotterAgent(broker=mock_broker, db_session=db_session)
+
+    with patch("data.get_price_history", new=AsyncMock(return_value=nan_history)):
+        with pytest.raises(RuntimeError):
+            _run(agent._run_async_impl(_StubCtx(state)))
+
+    # No snapshot row should have been written.
+    assert db_session.query(PortfolioSnapshotRow).count() == 0
 
 
 # ── EvidenceWriter ────────────────────────────────────────────────────────────
