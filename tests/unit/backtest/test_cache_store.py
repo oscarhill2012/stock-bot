@@ -236,13 +236,32 @@ def test_filings_pit_uses_filed_at(store: CachedDataStore) -> None:
 
     store.write_filings("AAPL", [past_filing, future_filing])
 
-    result = store.read_filings(
-        "AAPL", as_of=_dt(2023, 3, 15), lookback_days=365,
-    )
+    result = store.read_filings("AAPL", as_of=_dt(2023, 3, 15))
 
     accessions = [f.accession_no for f in result]
     assert "0001-past" in accessions
     assert "0001-future" not in accessions
+
+
+def test_filings_read_has_no_lookback_bound(store: CachedDataStore) -> None:
+    """``read_filings`` returns every row at or before ``as_of`` — no lower bound.
+
+    The 2026-06-11 filings redesign moved visibility decisions into the
+    shared ``select_current_filings`` rule, which needs the *whole* history
+    at or before the tick (an old 10-K anchor must survive however long ago
+    it was filed).  A lookback window at the store layer would silently
+    starve the selector — this pins its absence.
+    """
+    ancient_10k = Filing(
+        ticker="AAPL", form_type="10-K", accession_no="0001-ancient",
+        filed_at=_dt(2022, 2, 1), url="https://sec/ancient",   # ~13 months before as_of
+    )
+
+    store.write_filings("AAPL", [ancient_10k])
+
+    result = store.read_filings("AAPL", as_of=_dt(2023, 3, 15))
+
+    assert [f.accession_no for f in result] == ["0001-ancient"]
 
 
 # ── notable holders ───────────────────────────────────────────────────────────

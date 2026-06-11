@@ -309,9 +309,42 @@ async def test_filings_cache_returns_pydantic_list(
     _wire_store.write_filings("AAPL", [filing])
 
     result = await filings_cache.fetch(
-        "AAPL", as_of=datetime(2023, 3, 15, tzinfo=UTC), lookback_days=365,
+        "AAPL", as_of=datetime(2023, 3, 15, tzinfo=UTC), staleness_days=90,
     )
 
     assert len(result) == 1
     assert isinstance(result[0], Filing)
     assert result[0].form_type == "10-K"
+
+
+@pytest.mark.asyncio
+async def test_filings_cache_applies_shared_selection_rule(
+    _wire_store: CachedDataStore,
+) -> None:
+    """``filings_cache.fetch`` serves the shared analyst-visibility selection.
+
+    The cache holds the raw backfill superset (superseded periodic filings,
+    stale 8-Ks); the provider must apply ``select_current_filings`` per tick
+    so replay serves exactly what live would — latest 10-K, latest 10-Q,
+    and only the 8-Ks inside the staleness horizon.
+    """
+    from backtest.providers import filings_cache  # noqa: PLC0415
+
+    as_of = datetime(2023, 9, 15, tzinfo=UTC)
+
+    def _f(form: str, filed: datetime, acc: str) -> Filing:
+        """Build a minimal cached ``Filing`` row for the selection test."""
+        return Filing(ticker="AAPL", form_type=form, filed_at=filed, accession_no=acc)
+
+    _wire_store.write_filings("AAPL", [
+        _f("10-K", datetime(2021, 11, 5, tzinfo=UTC), "K-superseded"),
+        _f("10-K", datetime(2022, 11, 4, tzinfo=UTC), "K-current"),     # ~10 months old — still the anchor
+        _f("10-Q", datetime(2023, 5, 5,  tzinfo=UTC), "Q-superseded"),
+        _f("10-Q", datetime(2023, 8, 4,  tzinfo=UTC), "Q-current"),
+        _f("8-K",  datetime(2023, 9, 1,  tzinfo=UTC), "E-fresh"),       # inside 90-day horizon
+        _f("8-K",  datetime(2023, 4, 1,  tzinfo=UTC), "E-stale"),       # outside 90-day horizon
+    ])
+
+    result = await filings_cache.fetch("AAPL", as_of=as_of, staleness_days=90)
+
+    assert {f.accession_no for f in result} == {"K-current", "Q-current", "E-fresh"}

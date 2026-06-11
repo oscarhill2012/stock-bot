@@ -478,7 +478,7 @@ async def _call_cache_provider(domain: str, store_path: Path) -> object:
                     title="Annual Report",
                 ),
             ])
-            return await mod.fetch("AAPL", as_of=_as_of, lookback_days=365)
+            return await mod.fetch("AAPL", as_of=_as_of, staleness_days=90)
 
     finally:
         # Always clear the singleton so subsequent tests get a fresh store.

@@ -499,13 +499,17 @@ class CachedDataStore:
                 s.execute(stmt)
             s.commit()
 
-    def read_filings(
-        self, ticker: str, as_of: datetime, lookback_days: int = 365,
-    ) -> list[Filing]:
-        """Return filings with ``filed_at <= as_of`` within the lookback window.
+    def read_filings(self, ticker: str, as_of: datetime) -> list[Filing]:
+        """Return every filing with ``filed_at <= as_of`` — no lower bound.
 
         PIT filter: ``filed_at``.  SEC filing date, not the period the filing
         covers (which can be months in the past).
+
+        Deliberately unbounded below (2026-06-11 filings redesign): visibility
+        decisions belong to the shared ``select_current_filings`` rule in the
+        cache provider, which needs the whole history at or before the tick —
+        an old 10-K anchor must survive however long ago it was filed.  A
+        lookback window here would silently starve the selector.
 
         Parameters
         ----------
@@ -513,28 +517,32 @@ class CachedDataStore:
             Ticker symbol.
         as_of:
             Upper bound (inclusive) on ``filed_at``.
-        lookback_days:
-            How many calendar days back to look.
 
         Returns
         -------
         list[Filing]
             Matching filings, most-recently-filed first.
         """
-        lower = as_of - timedelta(days=lookback_days)
-
         with Session(self._engine) as s:
             rows = s.execute(
                 select(FilingRow)
                 .where(
                     FilingRow.ticker   == ticker,
                     FilingRow.filed_at <= as_of,
-                    FilingRow.filed_at >  lower,
                 )
                 .order_by(FilingRow.filed_at.desc())
             ).scalars().all()
 
-            filings = [Filing.model_validate(r, from_attributes=True) for r in rows]
+            filings: list[Filing] = []
+            for r in rows:
+                f = Filing.model_validate(r, from_attributes=True)
+                # SQLite drops tzinfo on round-trip; every timestamp in the
+                # store is UTC by construction, so re-attach it — the shared
+                # selection rule compares against an aware ``as_of``.
+                if f.filed_at.tzinfo is None:
+                    f = f.model_copy(update={"filed_at": f.filed_at.replace(tzinfo=UTC)})
+                filings.append(f)
+
             self._audit_record("filings", ticker, filings)
             return filings
 

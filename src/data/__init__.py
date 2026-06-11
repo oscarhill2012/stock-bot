@@ -314,15 +314,16 @@ async def get_company_filings(
     """
     from data.config import get_config
     as_of = resolve_as_of(as_of, allow_wallclock=True, site="data.get_company_filings")
-    # The live EDGAR provider ignores lookback_days (it derives its own
-    # window from form_types + limit), but the cache provider requires it.
-    # Sourcing from config keeps the single-source-of-truth invariant.
-    lookback_days = get_config().defaults.filings_lookback_days
+    # The 8-K staleness horizon for the shared analyst-visibility rule
+    # (data.filing_selection) — both the live EDGAR provider and the
+    # backtest cache provider consume it, so live and replay selections
+    # stay identical.  Sourcing from config keeps single-source-of-truth.
+    staleness_days = get_config().defaults.filings_8k_staleness_days
     return await _dispatch(
         "filings", ticker.upper(),
         form_types=form_types, limit=limit,
         include_excerpts=include_excerpts,
-        lookback_days=lookback_days,
+        staleness_days=staleness_days,
         as_of=as_of,
     )
 

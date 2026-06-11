@@ -38,6 +38,15 @@ class FetchDefaults(BaseModel):
     # own window from ``form_types`` + ``limit`` and ignores this value;
     # only the cache replay path consults it.
     filings_lookback_days:        int  = 90
+    # 8-K visibility horizon for the shared analyst-visibility rule
+    # (``data.filing_selection.select_current_filings``) — an 8-K older than
+    # this many days is no longer analyst-visible.  Periodic forms (10-K /
+    # 10-Q) carry no horizon: their latest instance is always current.
+    # Both read paths (live EDGAR + backtest cache) honour this value, so
+    # live and replay selections stay identical.  Sized from the 2026-06-11
+    # 8-K volume check: watchlist tickers file ~4 8-Ks per 90 days (max 8),
+    # so the worst-case analyst pane stays small.
+    filings_8k_staleness_days:    int  = 90
 
 
 class DataConfig(BaseModel):
