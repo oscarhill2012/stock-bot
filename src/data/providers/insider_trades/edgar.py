@@ -603,14 +603,21 @@ def _list_form4_filings(symbol: str, lookback_days: int, as_of: datetime) -> lis
     existed at that historical moment.  Live callers pass ``datetime.now(UTC)``
     via the public wrapper, so behaviour is unchanged in production.
 
-    Returns up to 50 filings ordered by recency.
+    The listing is capped at ``form4_max_filings`` from ``config/data.json``.
+    The cap is a safety valve, not a tuning knob — it must comfortably exceed
+    any realistic window so the date range alone bounds the result.  The old
+    hardcoded ``head(50)`` silently dropped the oldest filings on long-window
+    backfills (e.g. CRM lost its entire first six weeks in the
+    long-baseline-2025 cache — 2026-06-11 audit).
     """
+    from data.config import get_config
+
     _ensure_identity()
     upper_iso = as_of.date().isoformat()
     lower_iso = (as_of.date() - timedelta(days=lookback_days)).isoformat()
     company   = Company(symbol)
     filings   = company.get_filings(form="4", filing_date=f"{lower_iso}:{upper_iso}")
-    return list(filings.head(50))
+    return list(filings.head(get_config().defaults.form4_max_filings))
 
 
 @with_retry

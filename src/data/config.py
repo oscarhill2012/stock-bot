@@ -27,6 +27,12 @@ class FetchDefaults(BaseModel):
     notable_holder_limit:         int  = 20
     filings_per_form:             int  = 3
     include_filing_excerpts:      bool = True
+    # Safety cap on the number of Form 4 filings listed per EDGAR query.
+    # Purely a valve against pathological responses — it must be sized well
+    # above any realistic window (an NVDA-class ticker files ~30/month, so a
+    # 12-month backfill is ~400).  The old hardcoded ``head(50)`` silently
+    # truncated long-window backfills (found in the 2026-06-11 cache audit).
+    form4_max_filings:            int  = 1000
     # Lookback window honoured by the backtest filings cache provider when
     # serving ``get_company_filings``.  The live EDGAR provider derives its
     # own window from ``form_types`` + ``limit`` and ignores this value;

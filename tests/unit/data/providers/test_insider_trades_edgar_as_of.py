@@ -156,6 +156,79 @@ async def test_fetch_swallows_unrecognised_kwargs(monkeypatch: pytest.MonkeyPatc
 
 
 # ---------------------------------------------------------------------------
+# _list_form4_filings() — listing cap sourced from config (2026-06-11 fix)
+# ---------------------------------------------------------------------------
+
+def test_list_form4_filings_cap_sourced_from_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``_list_form4_filings`` caps the EDGAR listing at ``form4_max_filings`` from config.
+
+    The previous hardcoded ``head(50)`` silently truncated long-lookback
+    backfills — a seven-month window for an active ticker (e.g. CRM) blew
+    past 50 Form 4 filings and dropped the oldest ones, which surfaced as
+    head-of-window gaps in the long-baseline-2025 cache audit.  The cap must
+    come from ``config/data.json`` so backfills can size it deliberately.
+    """
+    import data.providers.insider_trades.edgar as mod
+    from data import config as data_config_mod
+    from data.config import DataConfig, FetchDefaults
+
+    # Sentinel far outside any plausible production value (house style:
+    # tests/contract/test_lookbacks_sourced_from_config.py).
+    sentinel_cap = 907
+
+    monkeypatch.setattr(
+        data_config_mod,
+        "_cache",
+        DataConfig(
+            providers={
+                "price_history":      "yfinance",
+                "company_ratios":     "pit_composite",
+                "news":               "alpha_vantage",
+                "social_sentiment":   "finnhub",
+                "insider_trades":     "edgar",
+                "politician_trades":  "fmp",
+                "notable_holders":    "edgar",
+                "filings":            "edgar",
+            },
+            defaults=FetchDefaults(form4_max_filings=sentinel_cap),
+        ),
+    )
+
+    # No network: identity becomes a no-op and Company is a recording stub.
+    monkeypatch.setattr(mod, "_ensure_identity", lambda: None)
+
+    captured: dict[str, object] = {}
+
+    class FakeFilings:
+        """Stub of edgartools' filings listing — records the head() cap."""
+
+        def head(self, n: int) -> list:
+            captured["head_n"] = n
+            return []
+
+    class FakeCompany:
+        """Stub of edgartools' Company — records the filing_date range."""
+
+        def __init__(self, symbol: str) -> None:
+            captured["symbol"] = symbol
+
+        def get_filings(self, **kwargs) -> FakeFilings:
+            captured["filing_date"] = kwargs.get("filing_date")
+            return FakeFilings()
+
+    monkeypatch.setattr(mod, "Company", FakeCompany)
+
+    out = mod._list_form4_filings(
+        "AAPL", lookback_days=210, as_of=datetime(2026, 3, 2, tzinfo=UTC),
+    )
+
+    assert out == []
+    assert captured["head_n"] == sentinel_cap, (
+        "head() must be capped by config's form4_max_filings, not a hardcoded 50"
+    )
+
+
+# ---------------------------------------------------------------------------
 # _build_trade() — reporter flags (audit 2.5)
 # ---------------------------------------------------------------------------
 

@@ -17,7 +17,8 @@
     "notable_holder_limit": 20,
     "filings_per_form": 3,
     "include_filing_excerpts": true,
-    "filings_lookback_days": 90
+    "filings_lookback_days": 90,
+    "form4_max_filings": 1000
   },
   "quiver_http_timeout_seconds": 15.0
 }

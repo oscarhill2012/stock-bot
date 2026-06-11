@@ -46,6 +46,7 @@ shared by all providers. Adding a new provider is a one-file drop in
 | `defaults.filings_per_form` | int | Max filings returned per SEC form type. |
 | `defaults.include_filing_excerpts` | bool | Whether to attach filing excerpts to the bundle. |
 | `defaults.filings_lookback_days` | int | Lookback window honoured by the backtest filings cache provider. Live EDGAR ignores it. Default 90. |
+| `defaults.form4_max_filings` | int | Safety cap on Form 4 filings listed per EDGAR query. A valve against pathological responses, not a tuning knob — size it well above any realistic window (an active ticker files ~30/month, so a 12-month backfill is ~400). Default 1000. |
 | `quiver_http_timeout_seconds` | float | HTTP timeout (seconds) for the Quiver Quant congressional-trades provider. |
 
 Each `providers.<domain>` value must be a name registered in the matching
