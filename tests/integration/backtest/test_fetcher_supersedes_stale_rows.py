@@ -57,7 +57,7 @@ def _store(tmp_path: Path) -> CachedDataStore:
 
 def _window() -> Window:
     """Return a minimal test window (no ``key`` field — passed separately to Fetcher)."""
-    return Window(start=date(2023, 3, 6), end=date(2023, 3, 10), notes="")
+    return Window(start=date(2023, 3, 6), end=date(2023, 3, 10), notes="", risk_free_rate_annual=0.048)
 
 
 def _count_cache_runs(

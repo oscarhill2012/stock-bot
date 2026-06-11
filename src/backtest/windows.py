@@ -9,7 +9,7 @@ import json
 from datetime import date
 from pathlib import Path
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 
 class Window(BaseModel):
@@ -18,6 +18,19 @@ class Window(BaseModel):
     start: date
     end:   date
     notes: str = ""
+
+    # Window-average 3-month T-bill rate, sourced from FRED series DTB3.
+    # Used by the reporting layer to compute excess returns for Sharpe and
+    # to credit the cash fraction of the matched-exposure benchmark.
+    risk_free_rate_annual: float = Field(
+        ...,
+        ge=0.0,
+        le=0.2,
+        description=(
+            "Window-average 3-month T-bill yield, annualised, sourced from "
+            "FRED series DTB3."
+        ),
+    )
 
     @model_validator(mode="after")
     def _check_range(self) -> Window:

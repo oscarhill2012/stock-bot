@@ -51,7 +51,12 @@ async def test_backfill_writes_then_skips_on_rerun(
         "ohlcv_warmup_days":            30,
     }))
     windows_path.write_text(json.dumps({
-        "smoke": {"start": "2023-03-06", "end": "2023-03-10", "notes": "smoke"},
+        "smoke": {
+            "start": "2023-03-06",
+            "end": "2023-03-10",
+            "notes": "smoke",
+            "risk_free_rate_annual": 0.048,
+        },
     }))
     watchlist_path.write_text(json.dumps({"tickers": ["AAPL"]}))
 

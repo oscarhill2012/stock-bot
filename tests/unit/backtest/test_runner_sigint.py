@@ -67,7 +67,12 @@ def test_sigint_handler_writes_interrupted_manifest(tmp_path: Path) -> None:
     backtests_root.mkdir()
 
     windows_path.write_text(json.dumps({
-        "test-window": {"start": "2023-03-06", "end": "2023-03-08", "notes": ""}
+        "test-window": {
+            "start": "2023-03-06",
+            "end": "2023-03-08",
+            "notes": "",
+            "risk_free_rate_annual": 0.04,
+        }
     }))
     watchlist_path.write_text(json.dumps({"tickers": ["AAPL"]}))
 

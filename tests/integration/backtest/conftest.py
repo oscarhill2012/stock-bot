@@ -308,6 +308,7 @@ def smoke_result(tmp_path_factory):
             "start": "2025-09-02",
             "end":   "2025-09-02",
             "notes": "Single-tick slice of the baseline window for smoke test.",
+            "risk_free_rate_annual": 0.040,
         }
     }))
 

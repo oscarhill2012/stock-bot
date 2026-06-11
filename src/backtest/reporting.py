@@ -91,6 +91,21 @@ def report_progress(run_dir: Path, settings: BacktestSettings, *, window: str) -
     report_dir = run_dir / "report"
     report_dir.mkdir(parents=True, exist_ok=True)
 
+    # ── load window config to extract the risk-free rate ─────────────────────
+    # The rf rate is stored per-window in config/backtest_windows.json so
+    # reports are reproducible even if the prevailing rate changes after a run.
+    from backtest.windows import load_windows
+
+    _windows_path = Path(__file__).parents[2] / "config" / "backtest_windows.json"
+    windows = load_windows(_windows_path)
+    if window not in windows:
+        raise KeyError(
+            f"Window key {window!r} not found in {_windows_path}. "
+            f"Available: {sorted(windows)}"
+        )
+    window_cfg            = windows[window]
+    risk_free_rate_annual = window_cfg.risk_free_rate_annual
+
     # ── load portfolio snapshots and trade log from the run DB ───────────────
     engine = create_engine(f"sqlite:///{run_dir / 'db.sqlite'}", future=True)
     with Session(engine) as s:
@@ -134,8 +149,13 @@ def report_progress(run_dir: Path, settings: BacktestSettings, *, window: str) -
     spy_series = _spy_benchmark_series(equity, cache, starting_cash)
 
     # Matched-exposure series: SPY weighted each tick by the bot's equity
-    # exposure %.  Returns a descriptive N/A string when SPY is unavailable.
-    matched_series = _matched_exposure_series(equity, cash, spy_series, starting_cash)
+    # exposure %.  Cash fraction earns rf_tick (not zero) when rf is non-zero.
+    # Returns a descriptive N/A string when SPY is unavailable.
+    matched_series = _matched_exposure_series(
+        equity, cash, spy_series, starting_cash,
+        risk_free_rate_annual=risk_free_rate_annual,
+        ticks_per_day=ticks_per_day,
+    )
 
     # vs-SPY delta uses the same SPY series — call ``_compute_vs_spy_delta``
     # rather than re-deriving here so any future refactor stays consolidated.
@@ -145,12 +165,16 @@ def report_progress(run_dir: Path, settings: BacktestSettings, *, window: str) -
     # string when their series is unavailable, so the metrics file always
     # writes successfully.
     if isinstance(spy_series, list) and len(spy_series) >= 2:
-        spy_sharpe: float | str = _annualised_sharpe(spy_series, ticks_per_day=ticks_per_day)
+        spy_sharpe: float | str = _annualised_sharpe(
+            spy_series, risk_free_rate_annual=risk_free_rate_annual,
+        )
     else:
         spy_sharpe = spy_series if isinstance(spy_series, str) else "N/A — SPY series too short"
 
     if isinstance(matched_series, list) and len(matched_series) >= 2:
-        matched_sharpe: float | str = _annualised_sharpe(matched_series, ticks_per_day=ticks_per_day)
+        matched_sharpe: float | str = _annualised_sharpe(
+            matched_series, risk_free_rate_annual=risk_free_rate_annual,
+        )
         # vs-matched delta: bot total return minus matched-exposure total
         # return — positive = bot's stock-picks beat passive SPY on the same
         # invested capital.
@@ -165,6 +189,14 @@ def report_progress(run_dir: Path, settings: BacktestSettings, *, window: str) -
     else:
         matched_sharpe   = matched_series if isinstance(matched_series, str) else "N/A — matched series too short"
         vs_matched_delta = matched_series if isinstance(matched_series, str) else "N/A — matched series too short"
+
+    # Information Ratio: annualised active return / tracking error vs SPY.
+    if isinstance(spy_series, list) and len(spy_series) >= 2:
+        ir: float | str = _information_ratio(equity, spy_series)
+    elif isinstance(spy_series, str):
+        ir = spy_series
+    else:
+        ir = "N/A — SPY series too short"
 
     avg_exposure_pct = _avg_exposure_pct(equity, cash)
 
@@ -188,7 +220,8 @@ def report_progress(run_dir: Path, settings: BacktestSettings, *, window: str) -
         matched_sharpe=matched_sharpe,
         vs_matched_delta=vs_matched_delta,
         avg_exposure_pct=avg_exposure_pct,
-        ticks_per_day=ticks_per_day,
+        risk_free_rate_annual=risk_free_rate_annual,
+        information_ratio=ir,
     )
 
     # ── pipeline-efficiency section (tokens, latency, cache, retries) ────────
@@ -414,23 +447,26 @@ def _write_metrics(
     matched_sharpe: float | str = "N/A — SPY not in cache",
     vs_matched_delta: float | str = "N/A — SPY not in cache",
     avg_exposure_pct: float = float("nan"),
-    ticks_per_day: int = 1,
+    risk_free_rate_annual: float = 0.0,
+    information_ratio: float | str = "N/A — SPY not in cache",
 ) -> None:
     """Compute performance metrics and write a Markdown report to ``outpath``.
 
     Metrics written (spec §end-of-window):
     - Total return as a percentage of starting value.
-    - Annualised Sharpe ratio (252 trading days × ``ticks_per_day``).
+    - Annualised Sharpe ratio (252 trading days, daily basis, rf-subtracted).
     - Max drawdown (largest peak-to-trough decline as a fraction).
     - vs-SPY delta (bot total return − SPY total return over the same window).
-    - SPY Sharpe (annualised, same basis as bot Sharpe) — apples-to-apples
-      risk-adjusted comparison against a 100% SPY buy-and-hold.
+    - SPY Sharpe (annualised, daily basis) — apples-to-apples risk-adjusted
+      comparison against a 100% SPY buy-and-hold.
     - Matched-exposure Sharpe and vs-matched-exposure delta — same SPY
       benchmark dynamically re-weighted to the bot's per-tick equity
       exposure %, so cash-drag is stripped from the comparison.
+    - Information Ratio vs SPY — annualised active return / tracking error.
     - Average equity exposure — the bot's mean invested fraction across
       the run (1 − cash/total), so the matched-exposure number is
       interpretable on its own.
+    - Risk-free rate transparency line (FRED DTB3 window average).
     - Win rate (winning closed trades / total closed trades).
     - Total Fill count (number of closed trade-log entries).
     - Tick count (number of portfolio snapshots).
@@ -464,14 +500,15 @@ def _write_metrics(
         Mean of ``(total - cash) / total`` across all snapshots — the
         bot's average invested fraction over the run.  ``NaN`` if no
         snapshots have positive total value.
-    ticks_per_day:
-        Number of ticks per trading day in the schedule (e.g. 2 for the
-        default open + close policy).  Used to scale the Sharpe
-        annualisation factor — the ``series`` contains one return per
-        tick, so the annualisation must compound across both the trading
-        calendar (252) and the per-day tick count.  Defaults to 1 so
-        callers with no schedule context (ad-hoc replays) still get a
-        sensible figure.
+    risk_free_rate_annual:
+        Annualised risk-free rate used for the Sharpe calculations.
+        Written verbatim in a transparency row so the reader knows which
+        rf was applied.  Defaults to ``0.0`` so callers without a window
+        context (ad-hoc replays) still produce a valid file.
+    information_ratio:
+        Pre-computed Information Ratio vs SPY, or a descriptive string
+        when SPY is unavailable.  Defaults to the standard N/A string so
+        existing callers that don't pass it continue to work.
     """
     start_v = series[0][1]
     end_v   = series[-1][1]
@@ -479,10 +516,9 @@ def _write_metrics(
 
     # ── Sharpe ───────────────────────────────────────────────────────────────
     # Delegated to the shared helper so bot / SPY / matched-exposure Sharpes
-    # all use the same per-tick return + ``sqrt(252 × ticks_per_day)``
-    # annualisation — the three numbers in ``metrics.md`` are directly
-    # comparable rather than each picking their own convention.
-    sharpe = _annualised_sharpe(series, ticks_per_day=ticks_per_day)
+    # all use the same daily-resampled, rf-subtracted, sqrt(252) convention.
+    # The three numbers in ``metrics.md`` are directly comparable.
+    sharpe = _annualised_sharpe(series, risk_free_rate_annual=risk_free_rate_annual)
 
     # ── Max drawdown ──────────────────────────────────────────────────────────
     peak   = series[0][1]
@@ -510,10 +546,11 @@ def _write_metrics(
             return f"**{value:.2f}**"
         return f"_{value}_"
 
-    vs_spy_str       = _fmt_pct(vs_spy_delta)
-    vs_matched_str   = _fmt_pct(vs_matched_delta)
-    spy_sharpe_str   = _fmt_sharpe(spy_sharpe)
+    vs_spy_str         = _fmt_pct(vs_spy_delta)
+    vs_matched_str     = _fmt_pct(vs_matched_delta)
+    spy_sharpe_str     = _fmt_sharpe(spy_sharpe)
     matched_sharpe_str = _fmt_sharpe(matched_sharpe)
+    ir_str             = _fmt_sharpe(information_ratio)
 
     # Average exposure: a NaN means no snapshots had positive total value;
     # surface the gap rather than silently writing "nan%".
@@ -528,13 +565,15 @@ def _write_metrics(
     outpath.write_text(
         "# Backtest metrics\n\n"
         f"- Total return: **{total_return:+.2%}**\n"
-        f"- Sharpe (annualised, 252d): **{sharpe:.2f}**\n"
+        f"- Sharpe (annualised, daily basis): **{sharpe:.2f}**\n"
         f"- Max drawdown: **{max_dd:+.2%}**\n"
         f"- vs-SPY delta (100% buy-and-hold): {vs_spy_str}\n"
-        f"- SPY Sharpe (annualised, 252d): {spy_sharpe_str}\n"
+        f"- SPY Sharpe (annualised, daily basis): {spy_sharpe_str}\n"
         f"- vs matched-exposure SPY: {vs_matched_str}\n"
-        f"- Matched-exposure SPY Sharpe (annualised, 252d): {matched_sharpe_str}\n"
+        f"- Matched-exposure SPY Sharpe (annualised, daily basis): {matched_sharpe_str}\n"
+        f"- Information Ratio vs SPY (annualised): {ir_str}\n"
         f"- Avg bot equity exposure: {avg_exposure_str}\n"
+        f"- Risk-free rate (annualised): **{risk_free_rate_annual:.3%}** (FRED DTB3 window average)\n"
         f"- Win rate: {win_rate_str}\n"
         f"- Closed round-trips: **{fill_count}**\n"
         f"- Ticks recorded: **{len(series)}**\n",
@@ -542,56 +581,178 @@ def _write_metrics(
     )
 
 
+def _daily_series(
+    series: list[tuple[datetime, float]],
+) -> list[tuple[date, float]]:
+    """Resample a tick-level series to one point per calendar date.
+
+    Groups ticks by their calendar date (in whatever timezone the datetimes
+    carry) and retains only the **last** value for each date, so intra-day
+    volatility does not inflate the daily-return count.  Output is sorted
+    in ascending date order.
+
+    Parameters
+    ----------
+    series:
+        Ordered list of (timestamp, value) pairs at any intra-day frequency.
+
+    Returns
+    -------
+    list[(date, float)]
+        One (date, last_value) pair per calendar date, in chronological order.
+    """
+
+    if not series:
+        return []
+
+    # Walk chronologically, keeping the most recent value seen per date.
+    # A plain dict preserves insertion order (Python 3.7+), so we get a
+    # naturally sorted result as long as the input is chronological.
+    last_by_date: dict[date, float] = {}
+    for ts, value in series:
+        last_by_date[ts.date()] = value
+
+    return list(last_by_date.items())
+
+
 def _annualised_sharpe(
     series: list[tuple[datetime, float]] | None,
-    ticks_per_day: int,
+    *,
+    risk_free_rate_annual: float,
 ) -> float:
-    """Compute the annualised Sharpe ratio of a tick-by-tick value series.
+    """Compute the annualised Sharpe ratio on a daily-resampled basis.
 
-    Returns the per-tick (arithmetic mean / population std) ratio of returns
-    scaled by ``sqrt(252 × ticks_per_day)`` — the same annualisation factor
-    the bot Sharpe uses, so bot, SPY, and matched-exposure numbers in
-    ``metrics.md`` are directly comparable.
+    Resamples the tick-level series to one value per calendar date (last
+    tick of each date), computes daily simple returns, subtracts the daily
+    risk-free rate (converted from the annualised figure via
+    ``(1 + rf)^(1/252) − 1``), then annualises by ``sqrt(252)``.
 
-    The risk-free rate is treated as zero — same simplification ``_write_metrics``
-    already makes for the bot Sharpe.  Wire in a T-bill rate later if it
-    becomes available in the cache; today the metric is "excess of cash"
-    in name only.
+    All three Sharpe ratios in ``metrics.md`` (bot, SPY, matched-exposure)
+    use this helper, so they are directly comparable on a daily basis.
 
     Parameters
     ----------
     series:
         Ordered list of (timestamp, value) pairs.  ``None`` or fewer than
-        two points yields ``NaN`` (no return series to compute over).
-    ticks_per_day:
-        Ticks per trading day, used to scale the annualisation factor — a
-        two-ticks-per-day schedule produces twice as many returns per
-        year as a daily schedule, so the naïve ``sqrt(252)`` under-reports
-        Sharpe by ``sqrt(ticks_per_day)``.
+        two daily points after resampling yields ``NaN``.
+    risk_free_rate_annual:
+        Annualised risk-free rate (e.g. ``0.048`` for 4.8% pa).  Sourced
+        from the window's ``risk_free_rate_annual`` field (FRED DTB3
+        window average).
 
     Returns
     -------
     float
-        Annualised Sharpe, or ``NaN`` when fewer than two returns are
-        available or the return series has zero variance.
+        Annualised Sharpe (daily basis), or ``NaN`` when fewer than two
+        daily returns are available or the excess-return series has zero
+        variance.
     """
 
     if not series or len(series) < 2:
         return float("nan")
 
-    # Per-tick simple returns; skip ticks where the prior value was zero so
-    # we never divide by zero.  ``strict=False`` matches the existing
-    # _write_metrics call site so behaviour is identical.
-    rets: list[float] = []
-    for (_, v0), (_, v1) in zip(series, series[1:], strict=False):
-        if v0 != 0:
-            rets.append((v1 - v0) / v0)
+    # Resample to daily (last tick per date) before computing returns so that
+    # intra-day tick frequency does not bias the annualisation factor.
+    daily = _daily_series(series)
 
-    if len(rets) < 2 or statistics.pstdev(rets) == 0:
+    if len(daily) < 2:
         return float("nan")
 
-    annualisation = (252 * ticks_per_day) ** 0.5
-    return (statistics.mean(rets) / statistics.pstdev(rets)) * annualisation
+    # Daily simple returns from consecutive daily close values.
+    daily_rets: list[float] = []
+    for (_, v0), (_, v1) in zip(daily, daily[1:], strict=False):
+        if v0 != 0:
+            daily_rets.append((v1 - v0) / v0)
+
+    if len(daily_rets) < 2:
+        return float("nan")
+
+    # Convert annualised rf to a per-day rate using the standard compound
+    # formula: rf_daily = (1 + rf_annual)^(1/252) − 1.
+    rf_daily = (1 + risk_free_rate_annual) ** (1 / 252) - 1
+
+    excess = [r - rf_daily for r in daily_rets]
+
+    std = statistics.pstdev(excess)
+    if std == 0:
+        return float("nan")
+
+    # Annualise on a 252-trading-day basis.  Because the return series is
+    # already daily, the factor is simply sqrt(252) — no tick-frequency
+    # scaling required.
+    return (statistics.mean(excess) / std) * (252 ** 0.5)
+
+
+def _information_ratio(
+    bot_series: list[tuple[datetime, float]],
+    spy_series: list[tuple[datetime, float]],
+) -> float:
+    """Compute the annualised Information Ratio of the bot vs SPY.
+
+    IR = annualised active return / tracking error, where:
+
+    - Active return per day = bot daily return − SPY daily return.
+    - Tracking error = population std of daily active returns.
+    - Annualisation factor = ``sqrt(252)``.
+
+    Both series are resampled to daily (last tick per date) and
+    inner-joined on common dates before computing returns, so a difference
+    in tick cadence between bot and SPY does not pollute the result.
+
+    Parameters
+    ----------
+    bot_series:
+        Ordered list of (timestamp, portfolio_value) pairs for the bot.
+    spy_series:
+        Ordered list of (timestamp, spy_benchmark_value) pairs.
+
+    Returns
+    -------
+    float
+        Annualised Information Ratio, or ``NaN`` when:
+        - fewer than two common calendar dates exist after the inner join,
+        - fewer than two daily return diffs can be computed, or
+        - tracking error is zero (bot tracks SPY exactly).
+    """
+
+    if not bot_series or not spy_series:
+        return float("nan")
+
+    # Resample both series to daily (last tick per date).
+    bot_daily = dict(_daily_series(bot_series))
+    spy_daily = dict(_daily_series(spy_series))
+
+    # Inner join on common dates, sorted chronologically.
+    common_dates = sorted(set(bot_daily) & set(spy_daily))
+
+    if len(common_dates) < 2:
+        return float("nan")
+
+    # Compute per-day active return: bot − SPY simple return.
+    diffs: list[float] = []
+    for d_prev, d_curr in zip(common_dates, common_dates[1:], strict=False):
+        bot_v0, bot_v1 = bot_daily[d_prev], bot_daily[d_curr]
+        spy_v0, spy_v1 = spy_daily[d_prev], spy_daily[d_curr]
+
+        if bot_v0 == 0 or spy_v0 == 0:
+            # Skip degenerate periods — zero anchor would produce a
+            # misleading infinite return.
+            continue
+
+        bot_ret = (bot_v1 - bot_v0) / bot_v0
+        spy_ret = (spy_v1 - spy_v0) / spy_v0
+        diffs.append(bot_ret - spy_ret)
+
+    if len(diffs) < 2:
+        return float("nan")
+
+    tracking_error = statistics.pstdev(diffs)
+    if tracking_error == 0:
+        # Zero tracking error means the bot is a perfect SPY replica —
+        # the ratio is undefined.
+        return float("nan")
+
+    return (statistics.mean(diffs) / tracking_error) * (252 ** 0.5)
 
 
 def _avg_exposure_pct(
@@ -643,21 +804,24 @@ def _matched_exposure_series(
     cash: list[float],
     spy_series: list[tuple[datetime, float]] | str,
     starting_cash: float,
+    *,
+    risk_free_rate_annual: float,
+    ticks_per_day: int,
 ) -> list[tuple[datetime, float]] | str:
     """Build a tick-aligned "matched-exposure" benchmark series.
 
     Conceptually: at every tick a synthetic portfolio holds
-    ``bot_equity_pct`` of SPY and ``bot_cash_pct`` in cash, then earns
-    ``bot_equity_pct × spy_return`` over the following tick (cash earns
-    zero — we have no T-bill rate in the cache).  Compounds tick-to-tick
-    starting from ``starting_cash``.
+    ``bot_equity_pct`` of SPY and ``bot_cash_pct`` in cash.  Over each
+    tick it earns ``bot_equity_pct × spy_return`` on the equity fraction
+    and ``rf_tick`` on the cash fraction, where ``rf_tick`` is the per-tick
+    risk-free rate derived from the window's annualised T-bill rate.
 
     Used to strip cash-drag out of the vs-SPY comparison: if the bot is
     only 40% invested, comparing it to a 100% SPY benchmark is unfair.
-    The matched-exposure series instead asks "did the bot's stock-picks
-    beat *passive* SPY on the same invested capital?".  Pair with the
-    raw 100% SPY benchmark to also see whether holding cash was the
-    correct decision (e.g. avoiding a drawdown).
+    The matched-exposure series asks "did the bot's stock-picks beat
+    *passive* SPY on the same invested capital?".  Pair with the raw 100%
+    SPY benchmark to also see whether holding cash was the correct decision
+    (e.g. avoiding a drawdown).
 
     Returns the same descriptive ``N/A`` string as ``_spy_benchmark_series``
     when SPY is unavailable, so the metrics file still writes.
@@ -674,6 +838,13 @@ def _matched_exposure_series(
     starting_cash:
         Anchor $-value for the matched series.  Must equal the
         portfolio's day-one value so the chart and metric share a $-zero.
+    risk_free_rate_annual:
+        Annualised risk-free rate (e.g. ``0.048``).  Used to credit the
+        cash fraction of the synthetic portfolio each tick.
+    ticks_per_day:
+        Number of ticks per trading day.  Used alongside
+        ``risk_free_rate_annual`` to convert the annual rate to a per-tick
+        rate via ``(1 + rf)^(1 / (252 × tpd)) − 1``.
 
     Returns
     -------
@@ -720,8 +891,14 @@ def _matched_exposure_series(
         else:
             exposure_pct = max(0.0, min(1.0, (total_prev - cash_prev) / total_prev))
 
-        spy_return     = (spy_curr - spy_prev) / spy_prev
-        matched_return = exposure_pct * spy_return  # cash earns 0%
+        spy_return = (spy_curr - spy_prev) / spy_prev
+
+        # Cash fraction earns rf_tick (uniform tick-interval approximation).
+        # Assumes each tick represents an equal fraction of the 252-day trading
+        # calendar — reasonable for a fixed daily schedule but not perfectly
+        # accurate over irregular holiday-adjacent gaps.
+        rf_tick        = (1 + risk_free_rate_annual) ** (1 / (252 * ticks_per_day)) - 1
+        matched_return = exposure_pct * spy_return + (1.0 - exposure_pct) * rf_tick
 
         value = value * (1.0 + matched_return)
         matched.append((ts_curr, value))

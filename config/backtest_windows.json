@@ -2,21 +2,25 @@
   "svb-stress-2023-03": {
     "start": "2023-03-06",
     "end":   "2023-04-07",
-    "notes": "SVB / Signature collapse, regional banking stress. First v1 window."
+    "notes": "SVB / Signature collapse, regional banking stress. First v1 window.",
+    "risk_free_rate_annual": 0.048
   },
   "baseline-2025-09": {
     "start": "2025-09-02",
     "end":   "2025-10-13",
-    "notes": "September 2025 baseline window. 30 NYSE sessions (2025-09-02 Tue, first session after Labor Day, through 2025-10-13 Mon). Within Finnhub's ~1-year news retention."
+    "notes": "September 2025 baseline window. 30 NYSE sessions (2025-09-02 Tue, first session after Labor Day, through 2025-10-13 Mon). Within Finnhub's ~1-year news retention.",
+    "risk_free_rate_annual": 0.040
   },
   "iran-conflict-2026-02": {
     "start": "2026-02-10",
     "end":   "2026-03-24",
-    "notes": "Onset of US-Iran conflict — geopolitical-instability stress window. 30 NYSE sessions (2026-02-10 Tue through 2026-03-24 Tue; Presidents Day 2026-02-16 closure accounted for). Within Finnhub's ~1-year news retention."
+    "notes": "Onset of US-Iran conflict — geopolitical-instability stress window. 30 NYSE sessions (2026-02-10 Tue through 2026-03-24 Tue; Presidents Day 2026-02-16 closure accounted for). Within Finnhub's ~1-year news retention. rf set conservatively at 0.04 (FRED DTB3 ~3.6% throughout early 2026) — overstates the hurdle slightly, understating Sharpe.",
+    "risk_free_rate_annual": 0.040
   },
   "long-baseline-2025": {
     "start": "2025-09-02",
     "end":   "2026-03-02",
-    "notes": "Six-month long-baseline window for involved backtests. Starts Tue 2025-09-02 (first NYSE session after Labor Day, matching baseline-2025-09's start) and runs through Mon 2026-03-02 — exactly six calendar months. Encompasses the shorter baseline-2025-09 window. Start date is within Finnhub's ~1-year news retention as of 2026-05-26 — re-fill promptly if the head of the window starts to age out."
+    "notes": "Six-month long-baseline window for involved backtests. Starts Tue 2025-09-02 (first NYSE session after Labor Day, matching baseline-2025-09's start) and runs through Mon 2026-03-02 — exactly six calendar months. Encompasses the shorter baseline-2025-09 window. Start date is within Finnhub's ~1-year news retention as of 2026-05-26 — re-fill promptly if the head of the window starts to age out. rf set conservatively at 0.04 (DTB3 ~4.0% late 2025, ~3.6% early 2026) — overstates the hurdle slightly, understating Sharpe.",
+    "risk_free_rate_annual": 0.040
   }
 }

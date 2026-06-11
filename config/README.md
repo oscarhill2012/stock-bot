@@ -455,8 +455,11 @@ loader strips it before validation.
 
 Era-keyed historical windows for the backtest harness. Each entry:
 
-- `start` / `end`: ISO date strings (inclusive); tick schedule covers NYSE business days in the range.
-- `notes`: free-form description of the regime this window captures.
+| Field | Type | Meaning |
+|---|---|---|
+| `start` / `end` | ISO date string | Inclusive window bounds; tick schedule covers NYSE business days in the range. |
+| `notes` | string | Free-form description of the regime this window captures. |
+| `risk_free_rate_annual` | float [0.0–0.2] | Window-average 3-month T-bill yield (annualised), sourced from FRED series DTB3. Used by the reporting layer to subtract excess-return from Sharpe calculations and to credit the cash fraction of the matched-exposure benchmark. Look up the period average on FRED before adding a new window. |
 
 Add new windows by editing this file — no code changes needed.
 

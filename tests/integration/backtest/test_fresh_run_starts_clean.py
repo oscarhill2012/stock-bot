@@ -124,6 +124,7 @@ def test_fresh_deletes_session_sqlite(
             "start": "2025-09-02",
             "end":   "2025-09-02",
             "notes": "Single-tick slice for fresh-flag test.",
+            "risk_free_rate_annual": 0.040,
         }
     }))
 

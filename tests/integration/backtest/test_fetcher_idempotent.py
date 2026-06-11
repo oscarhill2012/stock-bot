@@ -23,7 +23,7 @@ async def test_fetcher_skips_completed_combinations(tmp_path: Path) -> None:
     """Re-running the fetcher does not re-call providers for ok-marked rows."""
 
     store  = CachedDataStore(tmp_path / "store.sqlite")
-    window = Window(start=date(2023, 3, 6), end=date(2023, 3, 10), notes="")
+    window = Window(start=date(2023, 3, 6), end=date(2023, 3, 10), notes="", risk_free_rate_annual=0.048)
 
     # Build five fake bars — one per trading day in the window.
     # OHLCBar uses ``timestamp`` (datetime) not ``date``; there is no adj_close.

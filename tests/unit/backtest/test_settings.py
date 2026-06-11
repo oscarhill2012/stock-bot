@@ -117,7 +117,8 @@ def test_runner_accepts_backtest_settings_instance(tmp_path: Path, monkeypatch) 
     windows_path   = tmp_path / "windows.json"
     watchlist_path = tmp_path / "watchlist.json"
     windows_path.write_text(
-        '{"smoke": {"start": "2024-01-02", "end": "2024-01-03", "notes": ""}}',
+        '{"smoke": {"start": "2024-01-02", "end": "2024-01-03", "notes": "",'
+        ' "risk_free_rate_annual": 0.04}}',
         encoding="utf-8",
     )
     watchlist_path.write_text('{"tickers": ["AAPL"]}', encoding="utf-8")

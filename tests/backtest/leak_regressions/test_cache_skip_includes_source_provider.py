@@ -24,6 +24,7 @@ def store_and_window(tmp_path: Path) -> tuple[CachedDataStore, Window]:
     window = Window(
         start=date(2023, 3, 1),
         end=date(2023, 3, 15),
+        risk_free_rate_annual=0.048,
     )
     return store, window
 

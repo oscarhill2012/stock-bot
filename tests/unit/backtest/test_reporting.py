@@ -17,6 +17,8 @@ from backtest.reporting import (
     _backfill_forward_returns,
     _build_equity_figure,
     _compute_vs_spy_delta,
+    _daily_series,
+    _information_ratio,
     _matched_exposure_series,
     _parse_date,
     _write_metrics,
@@ -663,68 +665,231 @@ class TestBuildEquityFigure:
 # ── _annualised_sharpe ───────────────────────────────────────────────────────
 
 class TestAnnualisedSharpe:
-    """Unit tests for the shared Sharpe helper.
-
-    The helper is used to compute three Sharpe ratios that must be
-    directly comparable (bot, SPY, matched-exposure).  We pin the
-    annualisation factor here so future refactors can't silently
-    introduce a different convention for one of the three.
-    """
+    """Unit tests for the shared Sharpe helper (daily-basis, rf-subtracted)."""
 
     def test_nan_for_empty_series(self) -> None:
-        """No data → NaN.  Caller decides how to format."""
-        result = _annualised_sharpe([], ticks_per_day=1)
-        assert result != result  # NaN check
+        result = _annualised_sharpe([], risk_free_rate_annual=0.0)
+        assert result != result  # NaN
 
     def test_nan_for_single_tick(self) -> None:
-        """One tick → zero returns → NaN."""
         result = _annualised_sharpe(
-            [(datetime(2023, 3, 6, tzinfo=UTC), 100.0)], ticks_per_day=1,
+            [(datetime(2023, 3, 6, tzinfo=UTC), 100.0)],
+            risk_free_rate_annual=0.0,
         )
         assert result != result
 
     def test_nan_for_zero_variance(self) -> None:
-        """A flat series has zero std → NaN (no risk-adjusted signal)."""
+        """Flat daily values → zero std → NaN."""
         series = [
             (datetime(2023, 3, 6, tzinfo=UTC), 100.0),
             (datetime(2023, 3, 7, tzinfo=UTC), 100.0),
             (datetime(2023, 3, 8, tzinfo=UTC), 100.0),
         ]
-        result = _annualised_sharpe(series, ticks_per_day=1)
+        result = _annualised_sharpe(series, risk_free_rate_annual=0.0)
         assert result != result
 
     def test_positive_sharpe_for_consistent_gains(self) -> None:
-        """A monotonic +1%/tick series → positive, finite Sharpe."""
+        """A monotonic +1%/day series → positive, finite Sharpe."""
         series = [
             (datetime(2023, 3, 6, tzinfo=UTC), 100.0),
             (datetime(2023, 3, 7, tzinfo=UTC), 101.0),
             (datetime(2023, 3, 8, tzinfo=UTC), 102.01),
         ]
-        result = _annualised_sharpe(series, ticks_per_day=1)
-        # Mean / std is large (variance near zero with rounding), but
-        # std isn't exactly zero on float arithmetic — we just check sign.
+        result = _annualised_sharpe(series, risk_free_rate_annual=0.0)
         assert result > 0
         assert result == result  # not NaN
 
-    def test_annualisation_scales_with_ticks_per_day(self) -> None:
-        """sqrt(252 × ticks_per_day) scaling: two-ticks-per-day doubles input freq.
-
-        The helper's job is to multiply the per-tick Sharpe by the
-        annualisation factor; doubling ``ticks_per_day`` should
-        multiply the result by ``sqrt(2)``.
-        """
-        # A series whose per-tick mean and std are both stable enough
-        # that the ratio matters — use alternating +1% / -0.5%.
+    def test_daily_resampling_two_ticks_per_day(self) -> None:
+        """Two ticks on the same date collapse to one daily point (last value used)."""
+        # Day 1: open=100, close=102 → daily value 102.
+        # Day 2: open=102, close=105 → daily value 105.
+        # Daily return: (105 - 102) / 102 ≈ 0.02941.
+        # With rf=0: mean([0.02941]) — but need ≥2 returns, so add day 3.
+        # Day 3: close=107 → daily return ≈ 0.01905.
         series = [
-            (datetime(2023, 3, 1, tzinfo=UTC), 100.0),
-            (datetime(2023, 3, 2, tzinfo=UTC), 101.0),
-            (datetime(2023, 3, 3, tzinfo=UTC), 100.495),  # -0.5%
-            (datetime(2023, 3, 4, tzinfo=UTC), 101.5),    # ~+1%
-            (datetime(2023, 3, 5, tzinfo=UTC), 100.99),   # -0.5%
+            (datetime(2023, 3, 6,  9, 30, tzinfo=UTC), 100.0),
+            (datetime(2023, 3, 6, 16,  0, tzinfo=UTC), 102.0),  # last tick day 1
+            (datetime(2023, 3, 7,  9, 30, tzinfo=UTC), 102.0),
+            (datetime(2023, 3, 7, 16,  0, tzinfo=UTC), 105.0),  # last tick day 2
+            (datetime(2023, 3, 8,  9, 30, tzinfo=UTC), 105.0),
+            (datetime(2023, 3, 8, 16,  0, tzinfo=UTC), 107.0),  # last tick day 3
         ]
-        s_tpd1 = _annualised_sharpe(series, ticks_per_day=1)
-        s_tpd2 = _annualised_sharpe(series, ticks_per_day=2)
-        assert s_tpd2 == pytest.approx(s_tpd1 * (2 ** 0.5), rel=1e-9)
+        result = _annualised_sharpe(series, risk_free_rate_annual=0.0)
+        # Manual: daily values = [102, 105, 107], returns = [3/102, 2/105]
+        # mean = mean([0.02941, 0.01905]), pstdev = pstdev([0.02941, 0.01905])
+        # annualised = mean/pstdev * sqrt(252)
+        import statistics
+        daily_rets = [3/102, 2/105]
+        expected = statistics.mean(daily_rets) / statistics.pstdev(daily_rets) * (252 ** 0.5)
+        assert result == pytest.approx(expected, rel=1e-6)
+
+    def test_rf_subtraction_higher_rf_lower_sharpe(self) -> None:
+        """Higher rf → lower Sharpe (excess returns reduced)."""
+        series = [
+            (datetime(2023, 3, 6, tzinfo=UTC), 100.0),
+            (datetime(2023, 3, 7, tzinfo=UTC), 101.0),
+            (datetime(2023, 3, 8, tzinfo=UTC), 102.01),
+            (datetime(2023, 3, 9, tzinfo=UTC), 103.03),
+        ]
+        sharpe_rf0    = _annualised_sharpe(series, risk_free_rate_annual=0.0)
+        sharpe_rf5pct = _annualised_sharpe(series, risk_free_rate_annual=0.05)
+        # rf>0 subtracts from each excess return → lower numerator → lower Sharpe.
+        assert sharpe_rf5pct < sharpe_rf0
+
+    def test_rf_hand_computed(self) -> None:
+        """Hand-computed example: verifies the exact formula is applied.
+
+        Uses four daily points so there are three returns with non-zero
+        variance, making the pstdev calculation well-defined and the
+        expected value finite.
+        """
+        import statistics
+        rf_annual = 0.05
+        rf_daily  = (1 + rf_annual) ** (1/252) - 1
+        # Values chosen so daily returns alternate: +1%, +2%, +1%.
+        series = [
+            (datetime(2023, 3, 6, tzinfo=UTC), 100.0),
+            (datetime(2023, 3, 7, tzinfo=UTC), 101.0),    # +1%
+            (datetime(2023, 3, 8, tzinfo=UTC), 103.02),   # +2%
+            (datetime(2023, 3, 9, tzinfo=UTC), 104.0502), # +1%
+        ]
+        daily_rets = [1/100, 2.02/101, 1.0302/103.02]
+        excess = [r - rf_daily for r in daily_rets]
+        expected = statistics.mean(excess) / statistics.pstdev(excess) * (252 ** 0.5)
+        result = _annualised_sharpe(series, risk_free_rate_annual=rf_annual)
+        assert result == pytest.approx(expected, rel=1e-6)
+
+    def test_annualisation_is_sqrt_252(self) -> None:
+        """Annualisation factor is exactly sqrt(252) — not per-tick scaled."""
+        import statistics
+        rf_annual = 0.0
+        series = [
+            (datetime(2023, 3, 6, tzinfo=UTC), 100.0),
+            (datetime(2023, 3, 7, tzinfo=UTC), 101.0),
+            (datetime(2023, 3, 8, tzinfo=UTC), 100.0),
+        ]
+        daily_rets = [0.01, -1/101]
+        expected = statistics.mean(daily_rets) / statistics.pstdev(daily_rets) * (252 ** 0.5)
+        result = _annualised_sharpe(series, risk_free_rate_annual=rf_annual)
+        assert result == pytest.approx(expected, rel=1e-6)
+
+
+# ── _daily_series ────────────────────────────────────────────────────────────
+
+class TestDailySeries:
+    """Unit tests for the _daily_series resampler."""
+
+    def test_multi_tick_day_collapses_to_last(self) -> None:
+        """Multiple ticks per calendar date keep only the last value."""
+        series = [
+            (datetime(2023, 3, 6,  9, 30, tzinfo=UTC), 100.0),
+            (datetime(2023, 3, 6, 16,  0, tzinfo=UTC), 102.0),  # last — kept
+        ]
+        result = _daily_series(series)
+        assert len(result) == 1
+        assert result[0][0] == date(2023, 3, 6)
+        assert result[0][1] == pytest.approx(102.0)
+
+    def test_already_daily_passes_through(self) -> None:
+        """One tick per date: output matches input dates and values."""
+        series = [
+            (datetime(2023, 3, 6, tzinfo=UTC), 100.0),
+            (datetime(2023, 3, 7, tzinfo=UTC), 105.0),
+        ]
+        result = _daily_series(series)
+        assert len(result) == 2
+        assert result[0] == (date(2023, 3, 6), pytest.approx(100.0))
+        assert result[1] == (date(2023, 3, 7), pytest.approx(105.0))
+
+    def test_empty_returns_empty(self) -> None:
+        result = _daily_series([])
+        assert result == []
+
+    def test_chronological_order_preserved(self) -> None:
+        """Output is in ascending date order."""
+        series = [
+            (datetime(2023, 3, 6, tzinfo=UTC), 100.0),
+            (datetime(2023, 3, 7, tzinfo=UTC), 101.0),
+            (datetime(2023, 3, 8, tzinfo=UTC), 102.0),
+        ]
+        result = _daily_series(series)
+        dates = [r[0] for r in result]
+        assert dates == sorted(dates)
+
+
+# ── _information_ratio ───────────────────────────────────────────────────────
+
+class TestInformationRatio:
+    """Unit tests for the Information Ratio helper."""
+
+    _T = [
+        datetime(2023, 3, 6, tzinfo=UTC),
+        datetime(2023, 3, 7, tzinfo=UTC),
+        datetime(2023, 3, 8, tzinfo=UTC),
+        datetime(2023, 3, 9, tzinfo=UTC),
+    ]
+
+    def test_nan_for_no_overlap(self) -> None:
+        """No common dates → NaN."""
+        bot = [(datetime(2023, 3, 6, tzinfo=UTC), 100.0), (datetime(2023, 3, 7, tzinfo=UTC), 101.0)]
+        spy = [(datetime(2023, 3, 8, tzinfo=UTC), 100.0), (datetime(2023, 3, 9, tzinfo=UTC), 101.0)]
+        result = _information_ratio(bot, spy)
+        assert result != result  # NaN
+
+    def test_nan_for_fewer_than_two_common_dates(self) -> None:
+        """Only one common date → can't compute a return diff → NaN."""
+        bot = [(datetime(2023, 3, 6, tzinfo=UTC), 100.0), (datetime(2023, 3, 7, tzinfo=UTC), 101.0)]
+        spy = [(datetime(2023, 3, 7, tzinfo=UTC), 200.0), (datetime(2023, 3, 9, tzinfo=UTC), 202.0)]
+        result = _information_ratio(bot, spy)
+        assert result != result
+
+    def test_nan_for_zero_tracking_error(self) -> None:
+        """Bot identical to SPY → zero tracking error → NaN."""
+        spy = [
+            (datetime(2023, 3, 6, tzinfo=UTC), 100.0),
+            (datetime(2023, 3, 7, tzinfo=UTC), 101.0),
+            (datetime(2023, 3, 8, tzinfo=UTC), 102.0),
+        ]
+        result = _information_ratio(spy, spy)
+        assert result != result
+
+    def test_hand_computed_example(self) -> None:
+        """IR matches the hand-computed formula: mean(diff)/pstdev(diff)*sqrt(252)."""
+        import statistics
+        # Bot returns: 1/100, 3.03/101; SPY returns: 1/200, 3.015/201.
+        # Active return diffs are non-equal so tracking error is non-zero.
+        bot = [
+            (datetime(2023, 3, 6, tzinfo=UTC), 100.0),
+            (datetime(2023, 3, 7, tzinfo=UTC), 101.0),
+            (datetime(2023, 3, 8, tzinfo=UTC), 104.03),
+        ]
+        spy = [
+            (datetime(2023, 3, 6, tzinfo=UTC), 200.0),
+            (datetime(2023, 3, 7, tzinfo=UTC), 201.0),
+            (datetime(2023, 3, 8, tzinfo=UTC), 204.015),
+        ]
+        result = _information_ratio(bot, spy)
+        bot_rets = [1/100, 3.03/101]
+        spy_rets = [1/200, 3.015/201]
+        diffs    = [b - s for b, s in zip(bot_rets, spy_rets, strict=False)]
+        expected = statistics.mean(diffs) / statistics.pstdev(diffs) * (252 ** 0.5)
+        assert result == pytest.approx(expected, rel=1e-4)
+
+    def test_positive_ir_when_bot_outperforms(self) -> None:
+        """Bot consistently beating SPY → positive IR."""
+        bot = [
+            (datetime(2023, 3, 6, tzinfo=UTC), 100.0),
+            (datetime(2023, 3, 7, tzinfo=UTC), 102.0),
+            (datetime(2023, 3, 8, tzinfo=UTC), 104.0),
+        ]
+        spy = [
+            (datetime(2023, 3, 6, tzinfo=UTC), 100.0),
+            (datetime(2023, 3, 7, tzinfo=UTC), 100.5),
+            (datetime(2023, 3, 8, tzinfo=UTC), 101.0),
+        ]
+        result = _information_ratio(bot, spy)
+        assert result == result  # not NaN
+        assert result > 0
 
 
 # ── _avg_exposure_pct ────────────────────────────────────────────────────────
@@ -803,11 +968,12 @@ class TestMatchedExposureSeries:
     _SPY_UP_10PCT = [(_T0, 10_000.0), (_T1, 11_000.0)]
 
     def test_full_cash_is_flat(self) -> None:
-        """100% cash exposure → matched value never moves regardless of SPY."""
+        """100% cash exposure with rf=0 → matched value never moves regardless of SPY."""
         equity = [(self._T0, 10_000.0), (self._T1, 10_000.0)]
         cash   = [10_000.0, 10_000.0]
         result = _matched_exposure_series(
             equity, cash, self._SPY_UP_10PCT, starting_cash=10_000.0,
+            risk_free_rate_annual=0.0, ticks_per_day=1,
         )
         assert isinstance(result, list)
         assert result[0][1] == pytest.approx(10_000.0)
@@ -819,20 +985,23 @@ class TestMatchedExposureSeries:
         cash   = [0.0, 0.0]
         result = _matched_exposure_series(
             equity, cash, self._SPY_UP_10PCT, starting_cash=10_000.0,
+            risk_free_rate_annual=0.0, ticks_per_day=1,
         )
         assert isinstance(result, list)
         assert result[0][1] == pytest.approx(10_000.0)
         assert result[1][1] == pytest.approx(11_000.0)
 
     def test_half_exposure_is_halfway(self) -> None:
-        """50% equity / 50% cash → matched series captures half the SPY move."""
+        """50% equity / 50% cash with rf=0 → matched series captures half the SPY move."""
         equity = [(self._T0, 10_000.0), (self._T1, 10_500.0)]
         cash   = [5_000.0, 5_250.0]    # always 50% cash
         result = _matched_exposure_series(
             equity, cash, self._SPY_UP_10PCT, starting_cash=10_000.0,
+            risk_free_rate_annual=0.0, ticks_per_day=1,
         )
         assert isinstance(result, list)
         # Lagged exposure: tick 0 → 1 uses 50% exposure × +10% SPY = +5%.
+        # With rf=0 the cash leg earns nothing so the result is exactly 10_500.
         assert result[1][1] == pytest.approx(10_500.0)
 
     def test_uses_lagged_exposure(self) -> None:
@@ -847,6 +1016,7 @@ class TestMatchedExposureSeries:
         cash   = [0.0, 11_000.0]   # 100% → 0% over the period
         result = _matched_exposure_series(
             equity, cash, self._SPY_UP_10PCT, starting_cash=10_000.0,
+            risk_free_rate_annual=0.0, ticks_per_day=1,
         )
         assert isinstance(result, list)
         # 100% exposure during the period → full SPY +10%.
@@ -859,6 +1029,8 @@ class TestMatchedExposureSeries:
             cash=[0.0],
             spy_series="N/A — SPY not in cache (run backtest_fetch with SPY)",
             starting_cash=10_000.0,
+            risk_free_rate_annual=0.0,
+            ticks_per_day=1,
         )
         assert isinstance(result, str)
         assert "SPY not in cache" in result
@@ -867,6 +1039,7 @@ class TestMatchedExposureSeries:
         """Empty equity series → N/A string (matches surrounding helpers)."""
         result = _matched_exposure_series(
             equity=[], cash=[], spy_series=self._SPY_UP_10PCT, starting_cash=10_000.0,
+            risk_free_rate_annual=0.0, ticks_per_day=1,
         )
         assert isinstance(result, str)
 
@@ -877,9 +1050,44 @@ class TestMatchedExposureSeries:
             cash=[5_000.0],  # too short
             spy_series=self._SPY_UP_10PCT,
             starting_cash=10_000.0,
+            risk_free_rate_annual=0.0,
+            ticks_per_day=1,
         )
         assert isinstance(result, str)
         assert "length mismatch" in result.lower()
+
+    def test_zero_exposure_with_rf_grows_at_rf_tick(self) -> None:
+        """0% equity exposure with rf>0 → the series grows at rf_tick per period."""
+        T0 = datetime(2026, 2, 2, 13, 30, tzinfo=UTC)
+        T1 = datetime(2026, 2, 2, 20,  0, tzinfo=UTC)
+        spy = [(T0, 10_000.0), (T1, 10_000.0)]  # SPY flat
+        equity = [(T0, 10_000.0), (T1, 10_000.0)]
+        cash   = [10_000.0, 10_000.0]  # 100% cash
+        rf_annual   = 0.05
+        tpd         = 2
+        rf_tick     = (1 + rf_annual) ** (1 / (252 * tpd)) - 1
+        result = _matched_exposure_series(
+            equity, cash, spy, starting_cash=10_000.0,
+            risk_free_rate_annual=rf_annual, ticks_per_day=tpd,
+        )
+        assert isinstance(result, list)
+        # Exposure = 0%, spy_return = 0%, rf_tick > 0 → value grows.
+        expected_end = 10_000.0 * (1.0 + rf_tick)
+        assert result[1][1] == pytest.approx(expected_end, rel=1e-9)
+
+    def test_full_equity_tracks_spy_regardless_of_rf(self) -> None:
+        """100% equity → matched series mirrors SPY; rf doesn't apply (cash=0)."""
+        T0 = datetime(2026, 2, 2, 13, 30, tzinfo=UTC)
+        T1 = datetime(2026, 2, 2, 20,  0, tzinfo=UTC)
+        spy = [(T0, 10_000.0), (T1, 11_000.0)]  # SPY +10%
+        equity = [(T0, 10_000.0), (T1, 11_000.0)]
+        cash   = [0.0, 0.0]  # 100% equity
+        result = _matched_exposure_series(
+            equity, cash, spy, starting_cash=10_000.0,
+            risk_free_rate_annual=0.05, ticks_per_day=2,
+        )
+        assert isinstance(result, list)
+        assert result[1][1] == pytest.approx(11_000.0)
 
 
 # ── _write_metrics: new benchmark rows ───────────────────────────────────────
@@ -953,3 +1161,39 @@ class TestWriteMetricsBenchmarks:
         # contains the italic N/A and not a stray "nan".
         assert "Avg bot equity exposure: _N/A_" in text
         assert "nan%" not in text.lower()
+
+
+# ── Window model validation ───────────────────────────────────────────────────
+
+class TestWindowModel:
+    """Unit tests for the Window pydantic model."""
+
+    def test_missing_risk_free_rate_raises_validation_error(self) -> None:
+        """risk_free_rate_annual is required — omitting it raises ValidationError."""
+        import pydantic
+        with pytest.raises(pydantic.ValidationError):
+            from backtest.windows import Window
+            Window(start="2023-03-06", end="2023-04-07", notes="test")
+
+    def test_valid_window_accepts_risk_free_rate(self) -> None:
+        """A valid window with risk_free_rate_annual constructs successfully."""
+        from backtest.windows import Window
+        w = Window(
+            start="2023-03-06",
+            end="2023-04-07",
+            notes="test",
+            risk_free_rate_annual=0.048,
+        )
+        assert w.risk_free_rate_annual == pytest.approx(0.048)
+
+    def test_risk_free_rate_out_of_range_raises(self) -> None:
+        """risk_free_rate_annual > 0.2 (or < 0.0) raises ValidationError."""
+        import pydantic
+        with pytest.raises(pydantic.ValidationError):
+            from backtest.windows import Window
+            Window(
+                start="2023-03-06",
+                end="2023-04-07",
+                notes="test",
+                risk_free_rate_annual=0.5,  # > 0.2 bound
+            )
