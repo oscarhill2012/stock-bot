@@ -32,8 +32,6 @@ SENTINEL_INSIDER              = 993
 SENTINEL_POLITICIAN           = 995
 SENTINEL_NOTABLE_HOLDER       = 997
 SENTINEL_NOTABLE_HOLDER_LIMIT = 901
-SENTINEL_FILINGS_PER_FORM     = 903
-SENTINEL_FILINGS_LOOKBACK     = 905
 # include_filing_excerpts is bool — sentinel uses ``False`` (non-default of True).
 SENTINEL_INCLUDE_EXCERPTS     = False
 
@@ -66,9 +64,7 @@ def _sentinel_config() -> DataConfig:
             politician_lookback_days     = SENTINEL_POLITICIAN,
             notable_holder_lookback_days = SENTINEL_NOTABLE_HOLDER,
             notable_holder_limit         = SENTINEL_NOTABLE_HOLDER_LIMIT,
-            filings_per_form             = SENTINEL_FILINGS_PER_FORM,
             include_filing_excerpts      = SENTINEL_INCLUDE_EXCERPTS,
-            filings_lookback_days        = SENTINEL_FILINGS_LOOKBACK,
         ),
         quiver_http_timeout_seconds = 15.0,
     )
@@ -137,11 +133,11 @@ async def test_fundamental_fetch_agent_uses_config_insider_and_filings(monkeypat
     out all three provider calls in ``fundamental.fetch_agent``.  Asserts that:
 
     - The insider stub receives ``lookback_days = SENTINEL_INSIDER``.
-    - The filings stub receives ``limit = SENTINEL_FILINGS_PER_FORM`` and
-      ``include_excerpts = SENTINEL_INCLUDE_EXCERPTS``.
+    - The filings stub receives ``include_excerpts = SENTINEL_INCLUDE_EXCERPTS``.
 
-    This guards against drift where any of the three knobs reverts to a
-    hardcoded module constant or a literal default.
+    Note: ``filings_per_form`` and ``limit`` were retired in the 2026-06-11
+    filings redesign (Task 6) — the shared analyst-visibility rule now controls
+    which filings are returned, so no per-form count is forwarded.
 
     Parameters
     ----------
@@ -167,8 +163,8 @@ async def test_fundamental_fetch_agent_uses_config_insider_and_filings(monkeypat
     async def fake_ratios(ticker, *, as_of):
         return None
 
-    async def fake_filings(ticker, *, as_of, limit, include_excerpts):
-        captured["filings_limit"]            = limit
+    async def fake_filings(ticker, *, as_of, include_excerpts):
+        """Stub matching the retired-limit signature: no ``limit`` kwarg."""
         captured["filings_include_excerpts"] = include_excerpts
         return []
 
@@ -198,7 +194,6 @@ async def test_fundamental_fetch_agent_uses_config_insider_and_filings(monkeypat
     _ = [ev async for ev in agent.run_async(ctx)]
 
     assert captured["insider_lookback"]         == SENTINEL_INSIDER
-    assert captured["filings_limit"]            == SENTINEL_FILINGS_PER_FORM
     assert captured["filings_include_excerpts"] is SENTINEL_INCLUDE_EXCERPTS
 
 

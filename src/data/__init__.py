@@ -291,8 +291,6 @@ async def get_notable_holders(
 
 async def get_company_filings(
     ticker: str,
-    form_types: tuple[str, ...] = ("10-K", "10-Q", "8-K"),
-    limit: int = 5,
     *,
     include_excerpts: bool = True,
     as_of: datetime | None = None,
@@ -300,17 +298,16 @@ async def get_company_filings(
 ):
     """Fetch SEC filings for ``ticker`` via the active filings provider.
 
+    The selection rule is the shared analyst-visibility rule in
+    ``data.filing_selection``: latest 10-K + latest 10-Q + all 8-Ks filed
+    within ``filings_8k_staleness_days`` days of ``as_of``.  No per-form
+    count or form-type filter is accepted — those knobs were retired in the
+    2026-06-11 filings redesign (Task 6).
+
     Parameters
     ----------
     ticker:
         Ticker symbol (will be uppercased).
-    form_types:
-        Tuple of SEC form types to retrieve.  Deprecated — the live
-        provider derives its forms from ``data.filing_selection``; retired
-        in the Task 6 config migration.
-    limit:
-        Deprecated — the shared selection rule replaced per-form counts;
-        retired in the Task 6 config migration.
     include_excerpts:
         Whether to include MD&A / risk-factor excerpts.
     as_of:
@@ -321,6 +318,12 @@ async def get_company_filings(
         every filing in the range plus the anchor set as of ``from_date``.
         Used by the backtest cache-fill; live analyst callers leave it
         unset.
+
+    Returns
+    -------
+    list[Filing]
+        Filings visible to the analyst at ``as_of`` under the shared
+        selection rule.
     """
     from data.config import get_config
     as_of = resolve_as_of(as_of, allow_wallclock=True, site="data.get_company_filings")
@@ -331,7 +334,6 @@ async def get_company_filings(
     staleness_days = get_config().defaults.filings_8k_staleness_days
     return await _dispatch(
         "filings", ticker.upper(),
-        form_types=form_types, limit=limit,
         include_excerpts=include_excerpts,
         staleness_days=staleness_days,
         from_date=from_date,

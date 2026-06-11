@@ -103,8 +103,7 @@ class FundamentalFetchAgent(BaseAgent):
         # stays in lock-step with the backtest cache-fill (which reads the same
         # config keys).  Never hardcode these values inline.
         defaults = get_config().defaults
-        insider_lookback_days: int   = defaults.insider_lookback_days
-        filings_per_form: int        = defaults.filings_per_form
+        insider_lookback_days: int    = defaults.insider_lookback_days
         include_filing_excerpts: bool = defaults.include_filing_excerpts
 
         fundamental_data: dict[str, dict] = {}
@@ -127,11 +126,13 @@ class FundamentalFetchAgent(BaseAgent):
                 ratios_payload = None
 
             # --- SEC filings ---
+            # The selection rule (latest 10-K + latest 10-Q + recent 8-Ks)
+            # is handled by the shared analyst-visibility rule inside the
+            # provider — no per-form count is passed here.
             try:
                 filings = await get_company_filings(
                     ticker,
                     as_of=as_of,
-                    limit=filings_per_form,
                     include_excerpts=include_filing_excerpts,
                 )
                 # Serialise to plain dicts so downstream consumers (extractor,

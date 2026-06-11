@@ -43,9 +43,7 @@ shared by all providers. Adding a new provider is a one-file drop in
 | `defaults.politician_lookback_days` | int | Default lookback window for politician trades. |
 | `defaults.notable_holder_lookback_days` | int | Default lookback window for notable-holder snapshots. |
 | `defaults.notable_holder_limit` | int | Max number of notable-holder rows returned. |
-| `defaults.filings_per_form` | int | Max filings returned per SEC form type. |
 | `defaults.include_filing_excerpts` | bool | Whether to attach filing excerpts to the bundle. |
-| `defaults.filings_lookback_days` | int | Lookback window honoured by the backtest filings cache provider. Live EDGAR ignores it. Default 90. |
 | `defaults.filings_8k_staleness_days` | int | 8-K visibility horizon for the shared filings selection rule (`data.filing_selection`): an 8-K older than this many days is no longer analyst-visible. Periodic forms (10-K/10-Q) have no horizon — their latest instance is always current. Honoured by both live EDGAR and the backtest cache so the two paths cannot drift. Default 90. |
 | `defaults.form4_max_filings` | int | Safety cap on Form 4 filings listed per EDGAR query. A valve against pathological responses, not a tuning knob — size it well above any realistic window (an active ticker files ~30/month, so a 12-month backfill is ~400). Default 1000. |
 | `quiver_http_timeout_seconds` | float | HTTP timeout (seconds) for the Quiver Quant congressional-trades provider. |
