@@ -20,6 +20,26 @@ The old implementation fetched the "latest ``limit`` filings as of
 fetch-time" with an upper-bound-only date filter and a ``head()`` cap,
 which silently truncated long-window backfills (found in the 2026-06-11
 cache audit) and diverged from the replay read path.
+
+**Amendment exclusion (belt-and-braces):**
+Amendment filings (10-K/A, 10-Q/A, 8-K/A) are excluded uniformly at
+fetch time.  A 10-K/A is typically a partial administrative correction
+(Part III only — no MD&A or risk-factor sections), so anchoring the
+analyst on one yields a near-empty document while the original full filing
+is displaced from the cache entirely.  Exclusion happens at two layers:
+
+1. ``amendments=False`` is passed to edgartools' ``get_filings`` in both
+   sync helpers — this is the primary guard and the cheapest possible
+   filter.
+2. ``_filter_amendments`` post-filters the raw results in both sync
+   helpers as a defensive belt-and-braces measure against future
+   edgartools behaviour changes.
+
+The shared ``select_current_filings`` selector matches form types exactly
+(``"10-K"``, ``"10-Q"``, ``"8-K"``), so it would already be blind to /A
+rows — but preventing them from ever entering the cache is the correct fix:
+the selector's exact-match assumption is valid *because* we exclude them
+here.
 """
 from __future__ import annotations
 
@@ -43,6 +63,55 @@ from ...models import Filing
 _EXCERPT_CHARS = 2000
 # Maximum chars captured for the 8-K body excerpt (Phase 7 — audit 2.7).
 _BODY_EXCERPT_CHARS = 1500
+
+
+# ---------------------------------------------------------------------------
+# Amendment-exclusion helpers
+# ---------------------------------------------------------------------------
+
+def _is_amendment(form: str) -> bool:
+    """Return True if ``form`` is an amendment form (i.e. ends in ``/A``).
+
+    SEC amendment filings append ``/A`` to the base form type:
+    ``10-K/A``, ``10-Q/A``, ``8-K/A``.  These are typically partial
+    administrative corrections with no MD&A or risk-factor sections, so
+    they must never displace the original full filing.
+
+    Parameters
+    ----------
+    form:
+        SEC form type string, e.g. ``"10-K/A"`` or ``"10-K"``.
+
+    Returns
+    -------
+    bool
+        ``True`` if ``form`` is an amendment; ``False`` for base forms and
+        empty strings.
+    """
+    return form.endswith("/A")
+
+
+def _filter_amendments(filings: list) -> list:
+    """Return ``filings`` with all amendment rows removed.
+
+    Defensive post-filter applied inside both sync helpers after edgartools
+    returns results.  This is belt-and-braces on top of passing
+    ``amendments=False`` to ``get_filings`` — it protects against future
+    edgartools behaviour changes and ensures the cache only ever holds base
+    forms.
+
+    Parameters
+    ----------
+    filings:
+        Raw edgartools filing objects (any form type).
+
+    Returns
+    -------
+    list
+        Same objects, with any entry whose ``form`` attribute ends in ``/A``
+        removed.
+    """
+    return [f for f in filings if not _is_amendment(str(getattr(f, "form", "")))]
 
 # Every form the analyst-visibility rule knows about — the only forms worth
 # fetching or caching.
@@ -177,6 +246,12 @@ def _list_latest_filing(symbol: str, form: str, as_of: datetime) -> list[Any]:
     Uses the SEC's ``filing_date=":YYYY-MM-DD"`` upper-bound syntax so the
     query never sees filings that did not yet exist at ``as_of``.
 
+    Amendment filings (``/A`` suffix) are excluded at two layers:
+
+    - ``amendments=False`` is passed to edgartools as the primary guard.
+    - ``_filter_amendments`` is applied to the result as a defensive
+      belt-and-braces measure.
+
     Parameters
     ----------
     symbol:
@@ -190,13 +265,19 @@ def _list_latest_filing(symbol: str, form: str, as_of: datetime) -> list[Any]:
     -------
     list[Any]
         At most one raw edgartools filing object (empty if the company has
-        never filed that form).
+        never filed that form).  Amendment forms are never returned.
     """
     _ensure_identity()
     upper_iso = as_of.date().isoformat()
     company   = Company(symbol)
-    filings   = company.get_filings(form=form, filing_date=f":{upper_iso}")
-    return list(filings.head(1))
+
+    # amendments=False: ask edgartools to exclude /A forms at query time
+    # (belt layer 1 — the cheaper guard; supported since edgartools ≥ 0.30).
+    filings   = company.get_filings(form=form, filing_date=f":{upper_iso}", amendments=False)
+
+    # _filter_amendments: defensive post-filter in case edgartools behaviour
+    # changes in a future version (belt layer 2).
+    return _filter_amendments(list(filings.head(1)))
 
 
 @with_retry
@@ -212,6 +293,12 @@ def _list_filings_range(
     range syntax).  No count cap is applied — the date range itself bounds
     the result, which is exactly the property the old ``head()`` cap broke.
 
+    Amendment filings (``/A`` suffix) are excluded at two layers:
+
+    - ``amendments=False`` is passed to edgartools as the primary guard.
+    - ``_filter_amendments`` is applied to the result as a defensive
+      belt-and-braces measure.
+
     Parameters
     ----------
     symbol:
@@ -222,12 +309,22 @@ def _list_filings_range(
         Inclusive lower-bound datetime.
     upper:
         Inclusive upper-bound datetime.
+
+    Returns
+    -------
+    list[Any]
+        Raw edgartools filing objects within the date range.  Amendment
+        forms are never returned.
     """
     _ensure_identity()
     span    = f"{lower.date().isoformat()}:{upper.date().isoformat()}"
     company = Company(symbol)
-    filings = company.get_filings(form=list(forms), filing_date=span)
-    return list(filings)
+
+    # amendments=False: exclude /A forms at query time (belt layer 1).
+    filings = company.get_filings(form=list(forms), filing_date=span, amendments=False)
+
+    # _filter_amendments: defensive post-filter (belt layer 2).
+    return _filter_amendments(list(filings))
 
 
 def _iter_latest_filing(symbol: str, form: str, as_of: datetime) -> list[Any]:
@@ -334,6 +431,15 @@ async def fetch(
 ) -> list[Filing]:
     """Fetch analyst-visible filings (live) or a cacheable superset (backfill).
 
+    **Amendment exclusion:** amendment forms (10-K/A, 10-Q/A, 8-K/A) are
+    never returned by either mode.  They are excluded at fetch time — both
+    via ``amendments=False`` passed to edgartools and via a defensive
+    post-filter — so the cache only ever holds base forms and the shared
+    selector's exact-match logic is sound.  A 10-K/A is typically a partial
+    administrative document with no MD&A or risk sections; anchoring the
+    analyst on one would displace the original full filing from the cache
+    entirely.
+
     Parameters
     ----------
     ticker:
@@ -363,7 +469,8 @@ async def fetch(
     list[Filing]
         Live mode: the analyst-visible selection (latest 10-K, latest 10-Q,
         fresh 8-Ks), newest first.  Backfill mode: the raw cacheable
-        superset, newest first.
+        superset, newest first.  Amendment forms are never included in
+        either mode.
     """
     symbol   = ticker.upper()
     as_of_dt = _coerce_as_of_to_datetime(as_of)
@@ -375,8 +482,15 @@ async def fetch(
     seen: set[str]  = set()
 
     def _add(batch: list[Any]) -> None:
-        """Append ``batch`` to ``raw``, skipping accessions already seen."""
-        for filing in batch:
+        """Append ``batch`` to ``raw``, skipping amendments and seen accessions.
+
+        This is the single convergence point for all raw filings — both live
+        and backfill mode route through here — so applying the amendment
+        filter here (in addition to the sync-helper layer) guarantees that
+        no /A row ever enters ``raw`` regardless of how the seams are wired
+        (including when tests monkeypatch the seams directly).
+        """
+        for filing in _filter_amendments(batch):
             key = _accession_key(filing)
             if key not in seen:
                 seen.add(key)

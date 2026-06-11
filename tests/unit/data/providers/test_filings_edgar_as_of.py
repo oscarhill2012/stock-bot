@@ -364,3 +364,174 @@ async def test_fetch_accepts_extra_kwargs(monkeypatch: pytest.MonkeyPatch) -> No
         lookback_days=30,    # type: ignore[call-arg]
     )
     assert out == []
+
+
+# ---------------------------------------------------------------------------
+# Amendment-exclusion tests (bug fix: 10-K/A displacing original 10-K)
+# ---------------------------------------------------------------------------
+
+def test_is_amendment_true_for_slash_a_forms() -> None:
+    """``_is_amendment`` must return True for any form ending in ``/A``.
+
+    These are the partial administrative amendments that should never enter
+    the cache or reach the analyst.
+    """
+    import data.providers.filings.edgar as mod
+
+    assert mod._is_amendment("10-K/A") is True
+    assert mod._is_amendment("10-Q/A") is True
+    assert mod._is_amendment("8-K/A")  is True
+
+
+def test_is_amendment_false_for_base_forms() -> None:
+    """``_is_amendment`` must return False for all standard base forms.
+
+    The helper must never accidentally exclude a base filing.
+    """
+    import data.providers.filings.edgar as mod
+
+    assert mod._is_amendment("10-K")  is False
+    assert mod._is_amendment("10-Q")  is False
+    assert mod._is_amendment("8-K")   is False
+    assert mod._is_amendment("")      is False
+
+
+def test_filter_amendments_removes_slash_a_rows() -> None:
+    """``_filter_amendments`` must drop /A objects and preserve base forms.
+
+    This is the pure-iterable choke-point filter that both live and backfill
+    paths run through — testable without any network or provider machinery.
+    """
+    import data.providers.filings.edgar as mod
+
+    base_k   = _FakeFiling("10-K",   date(2025, 1, 31), "K-base")
+    amend_k  = _FakeFiling("10-K/A", date(2025, 4, 30), "K-amended")
+    base_q   = _FakeFiling("10-Q",   date(2025, 8, 1),  "Q-base")
+    amend_q  = _FakeFiling("10-Q/A", date(2025, 9, 5),  "Q-amended")
+    base_e   = _FakeFiling("8-K",    date(2026, 2, 20), "E-base")
+    amend_e  = _FakeFiling("8-K/A",  date(2026, 2, 22), "E-amended")
+
+    raw = [base_k, amend_k, base_q, amend_q, base_e, amend_e]
+    filtered = mod._filter_amendments(raw)
+
+    accessions = {f.accession_no for f in filtered}
+    assert accessions == {"K-base", "Q-base", "E-base"}
+
+    # Amendments are excluded — none must survive.
+    assert all(not mod._is_amendment(f.form) for f in filtered)
+
+
+@pytest.mark.asyncio
+async def test_amendments_excluded_from_live_latest_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The seam filter must drop 10-K/A rows returned by the latest-filing query.
+
+    Simulates the TSLA bug: ``get_filings(form="10-K")`` returned a 10-K/A
+    amendment, which ``head(1)`` anchored — displacing the original 10-K.
+    After the fix the amendment must be silently dropped so the base form
+    survives.
+    """
+    import data.providers.filings.edgar as mod
+
+    # Seam returns the amendment FIRST (as edgartools would for TSLA).
+    amendment = _FakeFiling("10-K/A", date(2025, 4, 30), "K-amended")
+    original  = _FakeFiling("10-K",   date(2025, 1, 31), "K-original")
+
+    _patch_seams(monkeypatch, mod, latest={"10-K": [amendment, original]}, ranged=[])
+
+    out = await mod.fetch("TSLA", as_of=AS_OF, staleness_days=90, include_excerpts=False)
+
+    accessions = {f.accession_no for f in out}
+    assert "K-amended"  not in accessions, "amendment must not reach the analyst"
+    assert "K-original" in accessions,     "original must still be present"
+
+
+@pytest.mark.asyncio
+async def test_amendments_excluded_from_backfill_range_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The range query filter must drop 8-K/A rows from backfill mode.
+
+    The production cache contained four stray 8-K/A rows from range queries;
+    this test confirms they are stripped before returning the superset.
+    """
+    import data.providers.filings.edgar as mod
+
+    base_e    = _FakeFiling("8-K",   date(2026, 1, 10), "E-base")
+    amend_e   = _FakeFiling("8-K/A", date(2026, 1, 12), "E-amended")
+    base_k    = _FakeFiling("10-K",  date(2025, 1, 31), "K-base")
+    amend_k   = _FakeFiling("10-K/A",date(2025, 4, 30), "K-amended")
+
+    _patch_seams(
+        monkeypatch, mod,
+        latest={"10-K": [base_k, amend_k], "10-Q": []},
+        ranged=[base_e, amend_e, base_k, amend_k],
+    )
+
+    out = await mod.fetch(
+        "TSLA",
+        as_of=AS_OF,
+        staleness_days=90,
+        include_excerpts=False,
+        from_date=date(2025, 9, 2),
+    )
+
+    form_types = {f.form_type for f in out}
+    assert "10-K/A" not in form_types, "10-K/A must not enter the backfill cache"
+    assert "8-K/A"  not in form_types, "8-K/A must not enter the backfill cache"
+
+
+@pytest.mark.asyncio
+async def test_get_filings_called_with_amendments_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """edgartools ``get_filings`` must be called with ``amendments=False``.
+
+    Verifies the query-level exclusion (layer 1 of the belt-and-braces
+    defence).  Monkeypatches the ``Company`` class so the kwarg is recorded
+    without any real network activity.
+    """
+    import data.providers.filings.edgar as mod
+
+    # Accumulate every call's kwargs so we can assert on them.
+    kwargs_log: list[dict] = []
+
+    class _FakeFilings:
+        """Minimal stand-in for an edgartools EntityFilings object."""
+
+        def head(self, n: int):  # noqa: ANN001
+            """Return self — we never actually iterate in this test."""
+            return self
+
+        def __iter__(self):
+            return iter([])
+
+    class _FakeCompany:
+        """Stand-in for edgar.Company that records get_filings kwargs."""
+
+        def __init__(self, symbol: str) -> None:
+            self._symbol = symbol
+
+        def get_filings(self, **kwargs) -> _FakeFilings:  # noqa: ANN003
+            """Record kwargs and return an empty filings stub."""
+            kwargs_log.append(kwargs)
+            return _FakeFilings()
+
+    monkeypatch.setattr(mod, "Company", _FakeCompany)
+
+    # Trigger both live-mode paths (latest + range) — we do NOT patch the
+    # seams here because we want the real sync helpers to call get_filings.
+    import data.secrets as secrets_mod
+    monkeypatch.setattr(secrets_mod, "require_key", lambda _key: "test@test.com")
+
+    import edgar as edgar_lib
+    monkeypatch.setattr(edgar_lib, "set_identity", lambda _id: None)
+
+    await mod.fetch("AAPL", as_of=AS_OF, staleness_days=90, include_excerpts=False)
+
+    assert kwargs_log, "get_filings was never called"
+    for kwargs in kwargs_log:
+        assert kwargs.get("amendments") is False, (
+            f"get_filings called without amendments=False: {kwargs}"
+        )

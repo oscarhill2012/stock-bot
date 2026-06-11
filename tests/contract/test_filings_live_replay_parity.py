@@ -56,13 +56,15 @@ class _FakeRawFiling:
 # ---------------------------------------------------------------------------
 
 _UNIVERSE: list[_FakeRawFiling] = [
-    _FakeRawFiling("10-K", date(2025, 1, 31), "K-superseded"),
-    _FakeRawFiling("10-K", date(2026, 1, 30), "K-current"),
-    _FakeRawFiling("10-Q", date(2025, 8, 1),  "Q-superseded"),
-    _FakeRawFiling("10-Q", date(2025, 11, 3), "Q-current"),
-    _FakeRawFiling("8-K",  date(2026, 2, 20), "E-fresh"),
-    _FakeRawFiling("8-K",  date(2025, 10, 7), "E-stale"),     # outside the 90-day horizon
-    _FakeRawFiling("8-K",  date(2026, 3, 10), "E-future"),    # filed after AS_OF
+    _FakeRawFiling("10-K",   date(2025, 1, 31), "K-superseded"),
+    _FakeRawFiling("10-K",   date(2026, 1, 30), "K-current"),
+    _FakeRawFiling("10-K/A", date(2026, 2, 15), "K-amended"),   # amendment — must be excluded
+    _FakeRawFiling("10-Q",   date(2025, 8, 1),  "Q-superseded"),
+    _FakeRawFiling("10-Q",   date(2025, 11, 3), "Q-current"),
+    _FakeRawFiling("8-K",    date(2026, 2, 20), "E-fresh"),
+    _FakeRawFiling("8-K",    date(2025, 10, 7), "E-stale"),     # outside the 90-day horizon
+    _FakeRawFiling("8-K",    date(2026, 3, 10), "E-future"),    # filed after AS_OF
+    _FakeRawFiling("8-K/A",  date(2026, 2, 21), "E-amended"),   # amendment — must be excluded
 ]
 
 

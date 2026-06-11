@@ -12,6 +12,13 @@ Keeping the rule in one pure function means live and replay cannot drift
 apart — the contract test feeds both paths the same synthetic filings and
 asserts identical output.
 
+**Amendment forms never reach this selector.**  The EDGAR fetch layer
+excludes 10-K/A, 10-Q/A, and 8-K/A at query time (``amendments=False`` in
+edgartools plus a defensive post-filter in
+``data.providers.filings.edgar``), so the exact-match logic below — which
+compares ``form_type`` against ``"10-K"`` / ``"10-Q"`` / ``"8-K"`` — is
+always sound.
+
 The rule itself:
 
 - **latest 10-K** with ``filed_at <= as_of`` — the current annual report.
