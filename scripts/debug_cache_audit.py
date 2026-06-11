@@ -26,6 +26,7 @@ import json
 import sqlite3
 import sys
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 from pathlib import Path
 
 
@@ -58,7 +59,13 @@ DOMAINS: list[Domain] = [
         "trades",
         enabled=False,      # disabled in fetcher 2026-05-18 — no free historical source
     ),
-    Domain("notable_holders",   "notable_holders",  "date(filed_at)",                                    "filings"),
+    Domain(
+        "notable_holders",
+        "notable_holders",
+        "date(filed_at)",
+        "filings",
+        enabled=False,      # disabled in fetcher 2026-05-19 — no live fetch call wired up
+    ),
 ]
 
 
@@ -449,6 +456,338 @@ def deep_check_ohlcv(
 
 
 # ---------------------------------------------------------------------------
+# Domain-specific deep dive: temporal density.  Returns per-domain,
+# per-ticker, per-calendar-month row counts — every month in the window
+# is listed, including months with zero rows.  Zero-count months are the
+# key signal: when only the last N months have data the cache was likely
+# truncated via a head(3) fetch and early ticks will be unserviceable.
+# ---------------------------------------------------------------------------
+
+def _iter_year_months(start_iso: str, end_iso: str):
+    """Yield every ``(year, month)`` tuple from start through end inclusive.
+
+    Parameters
+    ----------
+    start_iso:
+        ISO date string for the first day of the range.
+    end_iso:
+        ISO date string for the last day of the range.
+
+    Yields
+    ------
+    tuple[int, int]
+        ``(year, month)`` pairs, in chronological order.
+    """
+    start = date.fromisoformat(start_iso)
+    end   = date.fromisoformat(end_iso)
+
+    year  = start.year
+    month = start.month
+
+    while (year, month) <= (end.year, end.month):
+        yield year, month
+
+        # Advance to the next calendar month.
+        if month == 12:
+            year  += 1
+            month  = 1
+        else:
+            month += 1
+
+
+def deep_check_temporal_density(
+    con:       sqlite3.Connection,
+    domains:   list,
+    tickers:   list[str],
+    start_iso: str,
+    end_iso:   str,
+) -> dict[str, dict[str, dict[str, int]]]:
+    """Count rows per domain × ticker × calendar month across the window.
+
+    Every calendar month from ``start_iso`` through ``end_iso`` is present
+    in each ticker's sub-dict — months with zero rows appear explicitly.
+    A tail-heavy distribution (e.g. only the last 1–3 months populated)
+    is the ``head(3)`` truncation signature that the original audit was
+    designed to expose.
+
+    Parameters
+    ----------
+    con:
+        Open sqlite3 connection to the cache file.
+    domains:
+        Subset of the DOMAINS registry to check; disabled domains are
+        silently skipped even if included here.
+    tickers:
+        Watchlist symbols to check.
+    start_iso:
+        ISO date string for the first day of the window (inclusive).
+    end_iso:
+        ISO date string for the last day of the window (inclusive).
+
+    Returns
+    -------
+    dict[str, dict[str, dict[str, int]]]
+        ``{ domain_name: { ticker: { "YYYY-MM": count } } }``
+        Disabled domains and tables that are absent from the cache are
+        omitted from the outer dict.
+    """
+    cur    = con.cursor()
+    result = {}
+
+    for domain in domains:
+
+        # Skip domains that the fetcher is not configured to fill.
+        if not domain.enabled:
+            continue
+
+        # Skip if the table does not exist in this cache file.
+        cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            (domain.table,),
+        )
+        if cur.fetchone() is None:
+            continue
+
+        # Build the full month spine first (all months, default count 0) so
+        # months with no rows still appear in the output — that is the whole
+        # point of this check.
+        month_spine = [
+            f"{y:04d}-{m:02d}"
+            for y, m in _iter_year_months(start_iso, end_iso)
+        ]
+
+        per_ticker: dict[str, dict[str, int]] = {}
+
+        for ticker in tickers:
+            # Initialise every month to 0 before querying — ensures the zero
+            # months are visible even when SQLite returns no matching rows.
+            counts: dict[str, int] = {ym: 0 for ym in month_spine}
+
+            # Use strftime to bucket each PIT date into "YYYY-MM" directly in
+            # SQLite, then aggregate.  The domain's ``pit_expr`` produces the
+            # date string used throughout the audit (e.g. "date(filed_at)").
+            cur.execute(
+                f"SELECT strftime('%Y-%m', {domain.pit_expr}), COUNT(*) "   # noqa: S608
+                f"FROM {domain.table} "                                      # noqa: S608
+                f"WHERE ticker=? AND {domain.pit_expr} BETWEEN ? AND ? "    # noqa: S608
+                f"GROUP BY strftime('%Y-%m', {domain.pit_expr})",            # noqa: S608
+                (ticker, start_iso, end_iso),
+            )
+            for ym, n in cur.fetchall():
+                if ym in counts:
+                    counts[ym] = n
+
+            per_ticker[ticker] = counts
+
+        result[domain.name] = per_ticker
+
+    return result
+
+
+def print_temporal_density(
+    density: dict[str, dict[str, dict[str, int]]],
+    tickers: list[str],
+) -> None:
+    """Print a compact ticker × month matrix for every domain in ``density``.
+
+    Columns are calendar months; rows are tickers.  Zero cells are printed
+    as ``-`` so bunched-at-the-tail distributions stand out visually.
+    This is informational only — it does not affect the verdict.
+
+    Parameters
+    ----------
+    density:
+        Result of ``deep_check_temporal_density``.
+    tickers:
+        Watchlist symbols, in display order.
+    """
+    _section("Temporal density — per-ticker × month row counts")
+
+    for domain_name, per_ticker in density.items():
+        if not per_ticker:
+            print(f"  {domain_name}: (no data)")
+            continue
+
+        # Collect the sorted month labels from any ticker (they all have
+        # the same spine because we pre-seeded zeros).
+        sample_months = sorted(next(iter(per_ticker.values())).keys())
+
+        # Format: domain header, then month header row, then one row per ticker.
+        print(f"\n  [{domain_name}]")
+        month_header = " ".join(f"{ym[5:]:>7}" for ym in sample_months)   # "MM" only for brevity
+        print(f"  {'ticker':<8} {month_header}")
+
+        for ticker in tickers:
+            if ticker not in per_ticker:
+                continue
+            counts = per_ticker[ticker]
+            cells  = " ".join(
+                f"{'  -':>7}" if counts[ym] == 0 else f"{counts[ym]:>7d}"
+                for ym in sample_months
+            )
+            print(f"  {ticker:<8} {cells}")
+
+
+# ---------------------------------------------------------------------------
+# Domain-specific deep dive: first-tick serviceability.  At the very first
+# tick of the window (i.e. at ``start_iso``) can each analyst actually be
+# served?  The filing analyst requires a 10-K and 10-Q anchor (periodic
+# forms carry no staleness bound — the latest one *is* the current anchor);
+# the 8-K, insider, and news counts are informational (zero is legitimately
+# possible at window open but worth surfacing).
+# ---------------------------------------------------------------------------
+
+def deep_check_first_tick(
+    con:                    sqlite3.Connection,
+    tickers:                list[str],
+    start_iso:              str,
+    *,
+    staleness_days:         int,
+    insider_lookback_days:  int,
+    news_lookback_days:     int,
+) -> dict[str, dict[str, object]]:
+    """Check whether each ticker is serviced at the very first window tick.
+
+    Parameters
+    ----------
+    con:
+        Open sqlite3 connection to the cache file.
+    tickers:
+        Watchlist symbols to inspect.
+    start_iso:
+        ISO date string for the first day of the window (``YYYY-MM-DD``).
+    staleness_days:
+        Horizon for 8-K visibility — ``filings_8k_staleness_days`` from
+        ``config/data.json``.
+    insider_lookback_days:
+        Look-back window for insider trades — ``insider_lookback_days``
+        from ``config/data.json``.
+    news_lookback_days:
+        Look-back window for news articles — ``news_lookback_days``
+        from ``config/data.json``.
+
+    Returns
+    -------
+    dict[str, dict[str, object]]
+        ``{ ticker: {
+                "has_10k":        bool,
+                "has_10q":        bool,
+                "eightk_count":   int,
+                "insider_count":  int,
+                "news_count":     int,
+           } }``
+    """
+    cur   = con.cursor()
+    start = date.fromisoformat(start_iso)
+
+    # Compute the inclusive lower bounds for each look-back range.
+    eightk_lower  = (start - timedelta(days=staleness_days)).isoformat()
+    insider_lower = (start - timedelta(days=insider_lookback_days)).isoformat()
+    news_lower    = (start - timedelta(days=news_lookback_days)).isoformat()
+
+    result: dict[str, dict[str, object]] = {}
+
+    for ticker in tickers:
+
+        # ── 10-K anchor: at least one row filed at or before start ──────────
+        cur.execute(
+            "SELECT COUNT(*) FROM filings "
+            "WHERE ticker=? AND form_type='10-K' AND date(filed_at) <= ?",
+            (ticker, start_iso),
+        )
+        has_10k = (cur.fetchone()[0] > 0)
+
+        # ── 10-Q anchor: at least one row filed at or before start ──────────
+        cur.execute(
+            "SELECT COUNT(*) FROM filings "
+            "WHERE ticker=? AND form_type='10-Q' AND date(filed_at) <= ?",
+            (ticker, start_iso),
+        )
+        has_10q = (cur.fetchone()[0] > 0)
+
+        # ── 8-K count: filed within [start - staleness_days, start] ─────────
+        # The inclusive lower bound mirrors the ``select_current_filings``
+        # horizon rule: a filing exactly ``staleness_days`` before ``as_of``
+        # is still visible.
+        cur.execute(
+            "SELECT COUNT(*) FROM filings "
+            "WHERE ticker=? AND form_type='8-K' "
+            "AND date(filed_at) BETWEEN ? AND ?",
+            (ticker, eightk_lower, start_iso),
+        )
+        eightk_count = cur.fetchone()[0]
+
+        # ── Insider trade count within lookback window ───────────────────────
+        cur.execute(
+            "SELECT COUNT(*) FROM insider_trades "
+            "WHERE ticker=? AND date(filed_at) BETWEEN ? AND ?",
+            (ticker, insider_lower, start_iso),
+        )
+        insider_count = cur.fetchone()[0]
+
+        # ── News article count within lookback window ────────────────────────
+        cur.execute(
+            "SELECT COUNT(*) FROM news_articles "
+            "WHERE ticker=? AND date(published_at) BETWEEN ? AND ?",
+            (ticker, news_lower, start_iso),
+        )
+        news_count = cur.fetchone()[0]
+
+        result[ticker] = {
+            "has_10k":       has_10k,
+            "has_10q":       has_10q,
+            "eightk_count":  eightk_count,
+            "insider_count": insider_count,
+            "news_count":    news_count,
+        }
+
+    return result
+
+
+def print_first_tick_serviceability(
+    first_tick: dict[str, dict[str, object]],
+    tickers:    list[str],
+    start_iso:  str,
+) -> None:
+    """Print the first-tick serviceability summary table.
+
+    Periodic anchors (10-K, 10-Q) are flagged with MISSING when absent —
+    the fundamental analyst flies blind without them.  Counts for 8-K,
+    insider, and news are informational — zero is legitimately possible
+    at window open (e.g. no insider trades in the last 30 days) so they
+    are not flagged, just reported.
+
+    Parameters
+    ----------
+    first_tick:
+        Result of ``deep_check_first_tick``.
+    tickers:
+        Watchlist symbols, in display order.
+    start_iso:
+        The window start date (display only).
+    """
+    _section(f"First-tick serviceability (as of {start_iso})")
+
+    print(
+        f"  {'ticker':<8} {'10-K':>6} {'10-Q':>6} "
+        f"{'8-K(n)':>8} {'insider(n)':>11} {'news(n)':>8}"
+    )
+
+    for ticker in tickers:
+        if ticker not in first_tick:
+            continue
+
+        row  = first_tick[ticker]
+        tenk = "ok" if row["has_10k"] else "MISSING"
+        tenq = "ok" if row["has_10q"] else "MISSING"
+        print(
+            f"  {ticker:<8} {tenk:>6} {tenq:>6} "
+            f"{row['eightk_count']:>8d} {row['insider_count']:>11d} "
+            f"{row['news_count']:>8d}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Report formatter.  Pure presentation — no SQL, no failure logic.
 # ---------------------------------------------------------------------------
 def print_domain_table(all_findings: list[DomainFindings]) -> None:
@@ -703,9 +1042,9 @@ def print_per_domain_details(all_findings: list[DomainFindings]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Verdict — promotes findings into pass / warn lines.  Politician_trades is
-# expected to be empty (the domain is disabled in the fetcher) so we treat
-# it as informational only.
+# Verdict — promotes findings into pass / warn lines.  Politician_trades and
+# notable_holders are expected to be empty (both are disabled in the fetcher)
+# so we treat them as informational only.
 # ---------------------------------------------------------------------------
 def render_verdict(
     all_findings:    list[DomainFindings],
@@ -713,9 +1052,29 @@ def render_verdict(
     ratios_deep:     dict,
     ohlcv_findings:  DomainFindings,
     tickers:         list[str],
+    first_tick:      dict[str, dict[str, object]] | None = None,
 ) -> list[str]:
-    """Return a list of WARN strings; empty list means PASS."""
+    """Return a list of WARN strings; empty list means PASS.
 
+    Parameters
+    ----------
+    all_findings:
+        One ``DomainFindings`` per entry in DOMAINS.
+    deep:
+        Result of ``deep_check_insider_trades``.
+    ratios_deep:
+        Result of ``deep_check_company_ratios``.
+    ohlcv_findings:
+        The DomainFindings entry for the ``ohlcv`` domain (used for
+        per-tick fill cross-check).
+    tickers:
+        Watchlist symbols.
+    first_tick:
+        Optional result of ``deep_check_first_tick``.  When provided,
+        missing 10-K or 10-Q anchors for any ticker produce a WARN
+        (the selector returns no periodic filings at the first tick →
+        the fundamental analyst flies blind).
+    """
     warns: list[str] = []
 
     if deep["missing_filed_at"] > 0:
@@ -728,6 +1087,29 @@ def render_verdict(
             f"{deep['numeric_insider_name']} insider_trades rows still have "
             f"a numeric insider_name (Series.name leak)"
         )
+
+    # ── First-tick serviceability: periodic filing anchors ─────────────────
+    # A missing 10-K or 10-Q at window start means the filing selector would
+    # return no periodic filings on every tick from the opening bell, so the
+    # fundamental analyst operates with no annual/quarterly report in context.
+    # Counts for 8-K / insider / news are informational — zero is legitimately
+    # possible at window open, so they are printed but not WARN-promoted here.
+    if first_tick:
+        missing_10k = [t for t, row in first_tick.items() if not row["has_10k"]]
+        missing_10q = [t for t, row in first_tick.items() if not row["has_10q"]]
+
+        if missing_10k:
+            warns.append(
+                f"first-tick serviceability: {len(missing_10k)} ticker(s) "
+                f"have no 10-K filed at or before window start — "
+                f"fundamental analyst has no annual anchor: {missing_10k}"
+            )
+        if missing_10q:
+            warns.append(
+                f"first-tick serviceability: {len(missing_10q)} ticker(s) "
+                f"have no 10-Q filed at or before window start — "
+                f"fundamental analyst has no quarterly anchor: {missing_10q}"
+            )
 
     # ── company_ratios regressions ──────────────────────────────────────────
     # Schema drift is the highest-priority signal here: a column absent from
@@ -848,6 +1230,15 @@ def main() -> int:
     watch_p   = Path(args.watchlist) if args.watchlist else (config_dir / "watchlist.json")
     watchlist = _load_json(watch_p)
 
+    # Load the configurable look-back knobs from config/data.json so the
+    # first-tick check uses the same horizons as the live providers.  We
+    # parse the file directly (stdlib only — no data.config import) to
+    # avoid being fooled by a regression in our own config layer.
+    data_cfg         = _load_json(config_dir / "data.json").get("defaults", {})
+    staleness_days       = int(data_cfg.get("filings_8k_staleness_days", 90))
+    insider_lookback     = int(data_cfg.get("insider_lookback_days",      30))
+    news_lookback        = int(data_cfg.get("news_lookback_days",          7))
+
     if args.window not in windows:
         print(
             f"window {args.window!r} not in backtest_windows.json "
@@ -903,8 +1294,33 @@ def main() -> int:
 
         print_future_bleed_check(all_findings, end_iso)
 
+        # ── Temporal density — per-ticker × calendar-month row counts ────────
+        # Run against enabled+present domains; printers are informational only.
+        density = deep_check_temporal_density(
+            con,
+            domains=DOMAINS,
+            tickers=tickers,
+            start_iso=start_iso,
+            end_iso=end_iso,
+        )
+        print_temporal_density(density, tickers)
+
+        # ── First-tick serviceability — can the very first tick be served? ───
+        first_tick = deep_check_first_tick(
+            con,
+            tickers=tickers,
+            start_iso=start_iso,
+            staleness_days=staleness_days,
+            insider_lookback_days=insider_lookback,
+            news_lookback_days=news_lookback,
+        )
+        print_first_tick_serviceability(first_tick, tickers, start_iso)
+
         _section("Verdict")
-        warns = render_verdict(all_findings, deep, ratios_deep, ohlcv_findings, tickers)
+        warns = render_verdict(
+            all_findings, deep, ratios_deep, ohlcv_findings, tickers,
+            first_tick=first_tick,
+        )
         if not warns:
             print("  PASS — cache looks ready for backtest replay.\n")
             return 0
