@@ -4,6 +4,11 @@ Idempotent: if a ``cache_runs`` row already exists with ``status='ok'`` for a
 ``(window_key, ticker, domain)`` triple, the corresponding fetch is skipped.
 Failed runs (``status='error'``) and absent rows are always retried.
 
+``cache_runs`` is a *current-status ledger* — one row per
+``(window_key, ticker, domain)`` triple, not an append-only log.  Each fetch
+attempt supersedes (replaces) any prior row for that triple.  See
+``_fetch_one`` for the delete-then-insert strategy.
+
 Adaptation note — domain names vs Phase B store:
     The plan used ``market_meta`` / ``write_market_meta``, but the real
     ``CachedDataStore`` (adapted during Phase B) uses ``company_ratios`` /
@@ -23,7 +28,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from backtest.cache.schema import CacheRunRow
@@ -108,8 +113,9 @@ class Fetcher:
 
         For each combination that is not already recorded as ``status='ok'``
         in ``cache_runs``, calls the provider and writes the result into the
-        store.  An audit row is inserted for every attempted fetch, whether
-        it succeeds or fails.
+        store.  The ``cache_runs`` audit row for each triple is replaced on
+        every attempt (delete-then-insert in a single transaction), so the
+        table is a current-status ledger rather than an append-only log.
 
         After all fetches complete, drains the store's skipped-write counter
         and writes ``fill_audit.json`` beside the cache file if any rows were
@@ -204,12 +210,21 @@ class Fetcher:
         domain: str,
         fn: Callable[..., Awaitable[Any]],
     ) -> None:
-        """Fetch one (ticker, domain) combo and persist both the data and an audit row.
+        """Fetch one (ticker, domain) combo and persist both the data and the audit row.
 
         Calls ``fn(ticker, start=window.start, end=window.end)``, then
         dispatches to the matching ``CachedDataStore`` writer.  Any exception
         is caught, logged, and recorded as ``status='error'`` — the fetcher
         continues with the next combination rather than aborting.
+
+        The ``cache_runs`` entry for ``(window_key, ticker, domain)`` is
+        treated as a *current-status ledger cell*: any prior rows for the
+        triple are deleted **within the same transaction** as the new insert,
+        so there is never a window where the triple has no row, and stale
+        error or ok+0 rows can never survive alongside a newer ok row.  This
+        supersede-on-write pattern means the table always has at most one row
+        per triple, and the audit script never sees phantom errors from
+        previous run attempts.
 
         Parameters
         ----------
@@ -270,7 +285,26 @@ class Fetcher:
             logger.exception("fetch failed for %s/%s: %s", ticker, domain, exc)
 
         # Always write the audit row so the next run knows what happened.
+        #
+        # Supersede semantics: delete ALL prior rows for this triple first,
+        # then insert the new one — both operations in the same transaction so
+        # there is never a moment where the triple is absent from the ledger.
+        # This prevents a transient error row (or a stale ok+0 row after a
+        # provider swap) from surviving next to the later, authoritative row
+        # and causing the audit script to nag indefinitely.
         with Session(self._store._engine) as s:
+            # Remove every prior row for this (window_key, ticker, domain),
+            # regardless of status or source_provider — the latest attempt is
+            # always the truth, even when the provider has been changed.
+            s.execute(
+                delete(CacheRunRow).where(
+                    CacheRunRow.window_key == self._window_key,
+                    CacheRunRow.ticker     == ticker,
+                    CacheRunRow.domain     == domain,
+                )
+            )
+
+            # Insert the fresh row.
             s.add(CacheRunRow(
                 run_id=run_id,
                 started_at=started,
@@ -283,4 +317,5 @@ class Fetcher:
                 status=status,
                 error=error or "",
             ))
+
             s.commit()

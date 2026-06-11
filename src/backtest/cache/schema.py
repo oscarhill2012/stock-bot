@@ -245,10 +245,17 @@ class NotableHolderRow(CacheBase):
 
 
 class CacheRunRow(CacheBase):
-    """Audit log of fetcher runs.  Surrogate ``run_id`` PK.
+    """Current-status ledger for fetcher runs.  Surrogate ``run_id`` PK.
 
-    One row per (ticker, domain) fetch attempt — allows the fetcher to skip
-    already-populated windows and the runner to report coverage gaps.
+    Holds **one row per** ``(window_key, ticker, domain)`` triple — not an
+    append-only log.  Each fetch attempt supersedes (replaces) any prior row
+    for the same triple so the table always reflects the latest known status.
+    The surrogate ``run_id`` PK is retained for uniqueness; the ledger
+    invariant is enforced by the fetcher (delete-then-insert in one
+    transaction), not by a database constraint.
+
+    This design means the audit script can unconditionally flag any
+    ``status='error'`` row without false-positives from prior failed attempts.
     """
 
     __tablename__ = "cache_runs"
