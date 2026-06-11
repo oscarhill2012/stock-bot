@@ -56,7 +56,7 @@ def _validate_active_providers_are_registered() -> None:
 
 _validate_active_providers_are_registered()
 
-from datetime import datetime
+from datetime import date, datetime
 
 from data.timeguard import resolve_as_of
 
@@ -296,6 +296,7 @@ async def get_company_filings(
     *,
     include_excerpts: bool = True,
     as_of: datetime | None = None,
+    from_date: date | None = None,
 ):
     """Fetch SEC filings for ``ticker`` via the active filings provider.
 
@@ -304,13 +305,22 @@ async def get_company_filings(
     ticker:
         Ticker symbol (will be uppercased).
     form_types:
-        Tuple of SEC form types to retrieve.
+        Tuple of SEC form types to retrieve.  Deprecated — the live
+        provider derives its forms from ``data.filing_selection``; retired
+        in the Task 6 config migration.
     limit:
-        Maximum number of filings per form type.
+        Deprecated — the shared selection rule replaced per-form counts;
+        retired in the Task 6 config migration.
     include_excerpts:
         Whether to include MD&A / risk-factor excerpts.
     as_of:
         Historical clock timestamp.  Defaults to ``datetime.now(UTC)``.
+    from_date:
+        When given, the live EDGAR provider switches to backfill mode and
+        returns the raw cacheable superset for ``[from_date, as_of]`` —
+        every filing in the range plus the anchor set as of ``from_date``.
+        Used by the backtest cache-fill; live analyst callers leave it
+        unset.
     """
     from data.config import get_config
     as_of = resolve_as_of(as_of, allow_wallclock=True, site="data.get_company_filings")
@@ -324,6 +334,7 @@ async def get_company_filings(
         form_types=form_types, limit=limit,
         include_excerpts=include_excerpts,
         staleness_days=staleness_days,
+        from_date=from_date,
         as_of=as_of,
     )
 

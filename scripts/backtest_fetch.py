@@ -225,18 +225,24 @@ def _build_provider_fns(warmup_days: int = 30) -> dict:
             from_date=start - pre_window_buffer,
             to_date=end,
             as_of=_as_of_close(end),
-            limit=2000,
+            limit=9000,
         )
 
     async def _filings(ticker: str, *, start, end) -> list:
-        """Fetch SEC filings filed on or before window-close.
+        """Fetch the cacheable filings superset for the window.
 
-        ``limit`` (``filings_per_form``) and ``include_excerpts``
-        (``include_filing_excerpts``) are sourced from ``config/data.json``
-        so the cache-fill and the live tick agree on row counts and excerpt
-        attachment.  Without this, the dispatcher's hardcoded defaults
-        (``limit=5``, ``include_excerpts=True``) would silently override the
-        configured values.  ``filings_lookback_days`` is consumed inside
+        Passing ``from_date=start`` switches the live EDGAR provider into
+        backfill mode: every 10-K/10-Q/8-K filed inside ``[start, end]``
+        plus the anchor set as of ``start`` (latest 10-K, latest 10-Q, and
+        pre-window 8-Ks still inside the staleness horizon).  That superset
+        provably covers every tick's selection for a window of any length —
+        anything filed before ``start`` that survives selection at some tick
+        was, by definition, in the anchor set at ``start``.
+
+        ``include_excerpts`` is sourced from ``config/data.json``
+        (``include_filing_excerpts``) so the cache-fill and the live tick
+        agree on excerpt attachment.  The 8-K staleness horizon
+        (``filings_8k_staleness_days``) is consumed inside
         ``get_company_filings`` itself, so the caller does not forward it
         directly.
         """
@@ -245,8 +251,8 @@ def _build_provider_fns(warmup_days: int = 30) -> dict:
         return await get_company_filings(
             ticker,
             as_of=_as_of_close(end),
-            limit=defaults.filings_per_form,
             include_excerpts=defaults.include_filing_excerpts,
+            from_date=start,
         )
 
     async def _insider_trades(ticker: str, *, start, end) -> list:

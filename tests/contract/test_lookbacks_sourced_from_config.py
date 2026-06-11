@@ -319,15 +319,15 @@ async def test_backtest_notable_holders_uses_config_lookback_and_limit(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_backtest_filings_uses_config_per_form_and_excerpts(monkeypatch) -> None:
-    """Cache-fill ``_filings`` forwards ``filings_per_form`` and ``include_filing_excerpts``.
+async def test_backtest_filings_uses_config_excerpts_and_window_start(monkeypatch) -> None:
+    """Cache-fill ``_filings`` forwards ``include_filing_excerpts`` and ``from_date``.
 
-    The cache-fill closure is expected to read both from config and pass
-    them to ``get_company_filings`` as ``limit=`` and ``include_excerpts=``.
-    Filings_lookback_days is consumed inside ``get_company_filings`` itself,
-    so the cache-fill caller does not need to forward it directly.
-
-    This will FAIL until ``_filings`` is wired to read both keys from config.
+    ``include_excerpts`` must come from config (``include_filing_excerpts``)
+    and ``from_date`` must be the window start — that is what switches the
+    live EDGAR provider into backfill mode (in-window range + anchors as of
+    window start) so the cache covers every tick's selection.  The 8-K
+    staleness horizon is consumed inside ``get_company_filings`` itself, so
+    the cache-fill caller does not forward it directly.
     """
     import data as data_pkg
     from data import config as data_config_mod
@@ -337,9 +337,9 @@ async def test_backtest_filings_uses_config_per_form_and_excerpts(monkeypatch) -
 
     captured: dict[str, object] = {}
 
-    async def fake_filings(ticker, *, as_of, limit, include_excerpts):
-        captured["limit"]            = limit
+    async def fake_filings(ticker, *, as_of, include_excerpts, from_date):
         captured["include_excerpts"] = include_excerpts
+        captured["from_date"]        = from_date
         return []
 
     monkeypatch.setattr(data_pkg, "get_company_filings", fake_filings)
@@ -347,5 +347,5 @@ async def test_backtest_filings_uses_config_per_form_and_excerpts(monkeypatch) -
     fns = bf._build_provider_fns()
     await fns["filings"]("AAPL", start=_FAKE_START, end=_FAKE_END)
 
-    assert captured["limit"]            == SENTINEL_FILINGS_PER_FORM
     assert captured["include_excerpts"] is SENTINEL_INCLUDE_EXCERPTS
+    assert captured["from_date"]        == _FAKE_START

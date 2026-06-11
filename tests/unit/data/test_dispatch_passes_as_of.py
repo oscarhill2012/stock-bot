@@ -48,6 +48,40 @@ async def test_get_company_filings_dispatches_cleanly(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.asyncio
+async def test_get_company_filings_forwards_from_date(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``from_date`` must reach the provider and trigger backfill-mode queries.
+
+    The backtest cache-fill passes ``from_date`` (window start) through the
+    wrapper; if the wrapper swallowed it, the provider would silently fall
+    back to live mode and the cache would miss the in-window range — so this
+    asserts a range query lower-bounded at ``from_date`` is actually issued.
+    """
+    import data.providers.filings.edgar as mod
+    from data import get_company_filings
+
+    window_start = date(2025, 9, 2)
+    range_calls: list[tuple] = []
+
+    def fake_range(symbol, forms, lower, upper):
+        range_calls.append((forms, lower, upper))
+        return []
+
+    monkeypatch.setattr(mod, "_iter_latest_filing", lambda s, f, a: [])
+    monkeypatch.setattr(mod, "_iter_filings_range", fake_range)
+
+    out = await get_company_filings(
+        "AAPL",
+        as_of=datetime(2025, 10, 13, tzinfo=UTC),
+        include_excerpts=False,
+        from_date=window_start,
+    )
+
+    assert out == []
+    window_lower = datetime.combine(window_start, datetime.min.time(), tzinfo=UTC)
+    assert any(lower == window_lower for _, lower, _ in range_calls)
+
+
+@pytest.mark.asyncio
 async def test_get_stock_news_dispatches_cleanly(monkeypatch: pytest.MonkeyPatch) -> None:
     """``get_stock_news`` must not TypeError when calling the active provider.
 
