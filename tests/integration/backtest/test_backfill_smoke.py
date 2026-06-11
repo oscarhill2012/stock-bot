@@ -144,8 +144,12 @@ async def test_backfill_writes_then_skips_on_rerun(
         lambda symbol, lookback, lim, as_of: [],
     )
     monkeypatch.setattr(
-        fl_mod, "_list_filings",
-        lambda symbol, form_types, lim, as_of: [],
+        fl_mod, "_list_latest_filing",
+        lambda symbol, form, as_of: [],
+    )
+    monkeypatch.setattr(
+        fl_mod, "_list_filings_range",
+        lambda symbol, forms, lower, upper: [],
     )
 
     # ── No-op the reference-OHLCV fill (SPY + sector ETFs).  That helper

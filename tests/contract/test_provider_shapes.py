@@ -290,13 +290,16 @@ async def _call_live_provider(domain: str, monkeypatch: pytest.MonkeyPatch) -> o
         return await mod.fetch("AAPL", as_of=_as_of, lookback_days=180)
 
     # ── filings ───────────────────────────────────────────────────────────────
-    # EDGAR provider; patch _iter_filings to return [].
+    # EDGAR provider; patch both per-form listing seams to return [].
     if domain == "filings":
         from data.providers.filings import edgar as mod
 
         monkeypatch.setattr(mod, "require_key", lambda _k: "stub")
         monkeypatch.setattr(
-            mod, "_iter_filings", lambda *_a, **_k: [],
+            mod, "_iter_latest_filing", lambda *_a, **_k: [],
+        )
+        monkeypatch.setattr(
+            mod, "_iter_filings_range", lambda *_a, **_k: [],
         )
         return await mod.fetch("AAPL", as_of=_as_of)
 

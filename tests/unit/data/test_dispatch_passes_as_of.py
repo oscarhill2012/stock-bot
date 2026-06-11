@@ -37,7 +37,8 @@ async def test_get_company_filings_dispatches_cleanly(monkeypatch: pytest.Monkey
     import data.providers.filings.edgar as mod
     from data import get_company_filings
 
-    monkeypatch.setattr(mod, "_list_filings", lambda s, ft, lim, a: [])
+    monkeypatch.setattr(mod, "_list_latest_filing", lambda s, f, a: [])
+    monkeypatch.setattr(mod, "_list_filings_range", lambda s, f, lo, up: [])
     out = await get_company_filings(
         "AAPL",
         as_of=datetime(2023, 3, 15, tzinfo=UTC),
