@@ -23,90 +23,14 @@ from data.registry import register
 from data.retry import with_retry
 from data.secrets import require_key
 
-from ...models import PoliticianTrade, TradeSide
+from ...models import PoliticianTrade
+
+# Shared parsing helpers — identical logic used by both the FMP and Quiver
+# providers; kept in one place so a fix in one applies to both.
+from ._common import _coerce_side, _parse_amount_range, _parse_date
 
 _BASE_URL     = "https://financialmodelingprep.com/api/v4"
 _HTTP_TIMEOUT = 15.0
-
-# Mapping from FMP's free-text ``type`` field to our canonical ``TradeSide``.
-_SIDE_MAP: dict[str, TradeSide] = {
-    "purchase":         "buy",
-    "buy":              "buy",
-    "sale":             "sell",
-    "sale (full)":      "sell",
-    "sale (partial)":   "sell",
-    "sell":             "sell",
-    "exchange":         "exchange",
-}
-
-
-def _coerce_side(raw: Any) -> TradeSide:
-    """Map FMP's ``type`` string to our ``TradeSide`` literal.
-
-    Parameters
-    ----------
-    raw:
-        The raw ``type`` value from the FMP JSON row.
-
-    Returns
-    -------
-    TradeSide
-        Canonical side; ``"unknown"`` when unrecognised.
-    """
-    if not raw:
-        return "unknown"
-    return _SIDE_MAP.get(str(raw).strip().lower(), "unknown")
-
-
-def _parse_date(raw: Any) -> date | None:
-    """Coerce ``YYYY-MM-DD`` strings into ``date``; return ``None`` on failure.
-
-    Parameters
-    ----------
-    raw:
-        The raw date value (string or ``None``).
-
-    Returns
-    -------
-    date | None
-        Parsed date, or ``None`` if the value is missing or unparseable.
-    """
-    if not raw:
-        return None
-    try:
-        return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).date()
-    except ValueError:
-        try:
-            return datetime.strptime(str(raw)[:10], "%Y-%m-%d").date()
-        except ValueError:
-            return None
-
-
-def _parse_amount_range(raw: Any) -> tuple[float | None, float | None]:
-    """Parse ``"$15,001 - $50,000"``-style amount strings into a numeric range.
-
-    Parameters
-    ----------
-    raw:
-        The raw amount string from the FMP JSON row.
-
-    Returns
-    -------
-    tuple[float | None, float | None]
-        ``(min, max)`` in USD, or ``(None, None)`` if unparseable.
-    """
-    if raw is None:
-        return None, None
-    text = str(raw).replace("$", "").replace(",", "").strip()
-    if not text:
-        return None, None
-    parts = [p.strip() for p in text.split("-")]
-    try:
-        if len(parts) == 2:
-            return float(parts[0]), float(parts[1])
-        return float(parts[0]), float(parts[0])
-    except ValueError:
-        return None, None
 
 
 @with_retry

@@ -16,52 +16,13 @@ from data.registry import register
 from data.retry import with_retry
 from data.secrets import require_key
 
-from ...models import PoliticianTrade, TradeSide
+from ...models import PoliticianTrade
+
+# Shared parsing helpers — identical logic used by both the FMP and Quiver
+# providers; kept in one place so a fix in one applies to both.
+from ._common import _coerce_side, _parse_amount_range, _parse_date
 
 _BASE_URL = "https://api.quiverquant.com/beta"
-
-_SIDE_MAP: dict[str, TradeSide] = {
-    "purchase": "buy",
-    "buy": "buy",
-    "sale": "sell",
-    "sale (full)": "sell",
-    "sale (partial)": "sell",
-    "sell": "sell",
-    "exchange": "exchange",
-}
-
-
-def _coerce_side(raw: Any) -> TradeSide:
-    if not raw:
-        return "unknown"
-    return _SIDE_MAP.get(str(raw).strip().lower(), "unknown")
-
-
-def _parse_date(raw: Any) -> date | None:
-    if not raw:
-        return None
-    try:
-        return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).date()
-    except ValueError:
-        try:
-            return datetime.strptime(str(raw)[:10], "%Y-%m-%d").date()
-        except ValueError:
-            return None
-
-
-def _parse_amount_range(raw: Any) -> tuple[float | None, float | None]:
-    if raw is None:
-        return None, None
-    text = str(raw).replace("$", "").replace(",", "").strip()
-    if not text:
-        return None, None
-    parts = [p.strip() for p in text.split("-")]
-    try:
-        if len(parts) == 2:
-            return float(parts[0]), float(parts[1])
-        return float(parts[0]), float(parts[0])
-    except ValueError:
-        return None, None
 
 
 @with_retry
