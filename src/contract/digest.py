@@ -6,6 +6,7 @@ for the math + design rationale.
 """
 from __future__ import annotations
 
+import logging
 from collections import Counter
 from collections.abc import Mapping
 from datetime import datetime
@@ -14,6 +15,8 @@ from statistics import mean, variance
 from contract.digest_defaults import DIRECTION_DEAD_ZONE
 from contract.evidence import AnalystEvidence, AnalystVerdict
 from contract.ticker_evidence import AggregateVerdict, TickerEvidence
+
+logger = logging.getLogger(__name__)
 
 
 def _lean_sign(lean: str) -> int:
@@ -72,13 +75,26 @@ def _fill_missing(
         if name in filled:
             continue
 
+        # Loud-failure policy (A-050): a missing slot is a pipeline signal,
+        # not ordinary sparseness. Emit a structured WARNING so operators can
+        # see which analyst failed to produce output this tick, and tag the
+        # synthesised entry so downstream can detect it without parsing logs.
+        logger.warning(
+            "missing_analyst_slot ticker=%s slot=%s — neutral-filled "
+            "(is_no_data=True); a missing slot is a pipeline signal, not data",
+            ticker,
+            name,
+        )
+
         filled[name] = AnalystEvidence(
             ticker=ticker,
             analyst=name,  # type: ignore[arg-type]
             tick_id=tick_id,
             recorded_at=recorded_at,
             features={},
-            feature_warnings=[],
+            # Machine-readable marker so downstream can detect the synthesised
+            # nature without parsing log output (A-050 loud-failure policy).
+            feature_warnings=[f"missing_slot:{name}"],
             verdict=AnalystVerdict(
                 lean="neutral",
                 magnitude=0.0,

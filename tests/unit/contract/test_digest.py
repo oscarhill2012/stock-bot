@@ -250,6 +250,35 @@ def test_per_analyst_magnitude_preserved_in_dump():
     assert te.per_analyst["technical"].verdict.magnitude == pytest.approx(0.9)
 
 
+# ── A-050: missing analyst slot must warn loudly ──────────────────────────────
+
+
+def test_fill_missing_emits_structured_warning(caplog):
+    """A missing analyst slot must be logged loudly AND flagged on the evidence (A-050).
+
+    Two assertions verify the loud-failure policy:
+    (a) A structured WARNING is emitted, naming the missing slot in the message.
+    (b) The synthesised AnalystEvidence carries ``missing_slot:<name>`` in its
+        ``feature_warnings`` so downstream can detect the synthesised nature
+        without parsing log output.
+    """
+    # Only supply technical — all other slots (fundamental, news, social,
+    # smart_money) are absent and should trigger warnings + machine-readable flags.
+    per_analyst = {"technical": _ev("technical", "bullish", 0.8)}
+
+    with caplog.at_level("WARNING"):
+        te = build_ticker_evidence(per_analyst, "AAPL", "t", _now(), DEFAULT_ANALYST_WEIGHTS)
+
+    # (a) At least one structured WARNING must name a missing slot.
+    assert any(
+        rec.levelname == "WARNING" and "missing_analyst_slot" in rec.getMessage()
+        for rec in caplog.records
+    ), "expected a structured WARNING when a slot is missing"
+
+    # (b) The synthesised entry for 'social' carries the machine-readable marker.
+    assert "missing_slot:social" in te.per_analyst["social"].feature_warnings
+
+
 # ── Ticker / tick_id / recorded_at carry-through ──────────────────────────────
 
 
