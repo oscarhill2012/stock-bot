@@ -357,6 +357,12 @@ Each finding lists `Origin:` underlying report IDs. Open those files under `docs
 - **Evidence:** Missing analyst slot → `is_no_data=True, report=None` legally; with A-016 synthetic reports observers can't distinguish. Per §7.1 missing slot = pipeline bug.
 - **Suggested action:** refactor (structured warning; possibly raise).
 - **Origin:** F-contract-005.
+- **Status:** closed in plan-12 (commit 98e1d2f). `_fill_missing` now emits a
+  structured WARNING per missing analyst slot and tags
+  `feature_warnings=["missing_slot:<name>"]`, so a synthetic/no-data slot is
+  observable again per §7.1. It still fills the slot so the pipeline continues
+  (graceful degradation preserved) — the change makes the failure loud, it does
+  not hard-raise.
 
 ### A-051 — `TickerVerdict`/`LlmTickerVerdict` two-shape pattern
 - **Severity:** P2 · **Category:** schema-duplication
@@ -556,6 +562,10 @@ Each finding lists `Origin:` underlying report IDs. Open those files under `docs
 - **Evidence:** Live catches `BaseException` (swallows `KeyboardInterrupt`/`SystemExit`); backtest deliberately doesn't.
 - **Suggested action:** refactor (narrow catch; reuse `_log_exception_chain`).
 - **Origin:** F-orch-011, D-025.
+- **Status:** closed in plan-12 (commit 73671b3). The live-tick drain now
+  re-raises `KeyboardInterrupt`/`SystemExit` and only logs-and-continues the
+  known ADK 1.32 post-state-write teardown noise (state is already persisted at
+  that point). The catch no longer swallows `BaseException`.
 
 ### A-082 — Dormant data-registry tail (7 unused schemas)
 - **Severity:** P2 · **Category:** schema-duplication
@@ -580,6 +590,56 @@ Each finding lists `Origin:` underlying report IDs. Open those files under `docs
 - **A-095** `log_cache_hit_to_state` no-op (F-analysts-004).
 - **A-096** `report_cache.py` importlib gymnastics (F-analysts-014).
 - **A-097** Misc nits: empty `src/deploy/` (F-ops-002); legacy `emit_analyst_totals`/`_header` (F-ops-003); `get_handles` (F-ops-004); `SPYMetrics`/`_metrics_from_series` (F-ops-005, D-012); two-namespace tuple (F-ops-008); missing config-loader tests (F-ops-009); `config/README.md` missing `watchlist_smoke.json` (F-ops-011); empty `baselines/__init__.py` (F-ops-013); EDGAR/pit_composite bare `except` (F-data-019); `timeguard.py` wall-clock counter (F-data-008); per-domain `__init__.py` double-bookkeeping (F-data-009); `quiver_http_timeout_seconds` (F-data-010); politician_trades fmp/quiver dup (F-data-011); blanket noqa E402 (F-data-018); `_trace_maybe` cross-package underscore import (F-risk_gate-007); `_build_memory_writer` indirection (F-orch-006); duplicate session-service tests (F-orch-008, T-109); doc-only `__init__.py` (F-backtest-014); stale "Band 4" comment (F-backtest-015); reporting.py N/A-by-string (F-backtest-008); `decision_writer.py` BaseAgent overhead (F-strategist-013); `digest_defaults.py` single-dict module (F-contract-012); `strategist_prompt.render_all_ticker_blocks` single caller (F-contract-014); T212 PAPER/LIVE URLs un-smoke-tested (F-broker-010, F-broker-011); strategist enricher gap on `intent=None` (F-strategist-012); joiner verdict/evidence consistency test (F-analysts-016); `decision_tags` plumbing unread (F-strategist-006).
+
+#### Plan-12 closure status (P3 block)
+
+The numbered P3 findings routed to plan-12 are closed (or explicitly deferred)
+as follows. SHAs are the authoritative reference where a commit message cites a
+slightly different sub-finding ID than the bullet above.
+
+- **A-087** `TickState` unused — closed in plan-12 (commit f406b56; deleted with `BUFFER_MAX`).
+- **A-089** `BrokerMode._value2member_map_` private access — closed in plan-12 (commit 4b64a57; replaced by `_resolve_broker_mode` which raises on unknown modes).
+- **A-090** Cloud Scheduler shells (Human gate §8.5) — closed in plan-12 (commit 83a94ed; keep-decision recorded in the module docstring per §8.5 — kept, not deleted).
+- **A-091** Postgres `public.` assumption — closed in plan-12 (commits 20e1b8c, 95c9339).
+- **A-092** `BUFFER_MAX` unused — closed in plan-12 (commit f406b56).
+- **A-093** triple structured-log emission pattern — **deferred — see plan-12 §3.2**: the three call sites' field sets diverge, so a shared emitter helper would be lossy. Left in place for a dedicated follow-up.
+- **A-096** `report_cache.py` importlib gymnastics — closed in plan-12 (commit e07ba56; cycle resolved by dropping unused eager `.agent` re-exports — verified no caller used the package-root symbols).
+
+**A-097 sub-items (a–aa).** Closed (`✓`), deferred (`→`), or already-resolved/no-op (`·`):
+
+| Sub | Finding | Disposition |
+|---|---|---|
+| a | empty `src/deploy/` (F-ops-002) | · already removed pre-plan; no-op |
+| b | `emit_analyst_totals`/`_header` (F-ops-003) | · already removed pre-plan; no-op |
+| c | `get_handles` (F-ops-004) | ✓ closed (adddeda) |
+| d | `SPYMetrics`/`_metrics_from_series` (F-ops-005, D-012) | → kept — `_metrics_from_series` is deliberately retained and guarded by `tests/unit/baselines/test_spy_metrics_removed.py`; the public `spy_metrics` was already removed in Phase 7. Deletion out of scope. |
+| e | two-namespace tuple (F-ops-008) | ✓ closed (9b6908c) |
+| f | missing config-loader tests (F-ops-009) | ✓ closed (cf4028a) |
+| g | `config/README.md` missing `watchlist_smoke.json` (F-ops-011) | · moot — `watchlist_smoke.json` removed in c586343; no-op |
+| h | empty `baselines/__init__.py` (F-ops-013) | · already removed pre-plan; no-op |
+| i | EDGAR/pit_composite bare `except` (F-data-019) | ✓ closed (aac292d, 48d730c) — narrowed-and-logged; catch breadth kept (still degrades to empty summary), failure now observable |
+| j | `timeguard.py` wall-clock counter (F-data-008) | ✓ closed (be50909) — WARN on every live wall-clock fallback; counter kept for backtest telemetry |
+| k | per-domain `__init__.py` double-bookkeeping (F-data-009) | · deferred/no-op — no safe single-source change in scope |
+| l | `quiver_http_timeout_seconds` (F-data-010) | · no-op — config value is live (read at `quiver.py`) |
+| m | politician_trades fmp/quiver dup (F-data-011) | ✓ closed (886e16d) — byte-identical helpers extracted to `_common.py`; **both providers kept registered** |
+| n | blanket noqa E402 (F-data-018) | ✓ closed (f2fcec6) — scoped to per-line `# noqa: E402` |
+| o | `_trace_maybe` cross-package underscore import (F-risk_gate-007) | ✓ closed (bf7711e) — promoted to public `trace_maybe` across all 15 consumers |
+| p | `_build_memory_writer` indirection (F-orch-006) | ✓ closed (cb9d785) — inlined at its single call site |
+| q | duplicate session-service tests (F-orch-008, T-109) | ✓ closed — duplicate removed earlier (c8929f5); `tests/unit/orchestrator/test_persistence.py` retains coverage |
+| r | doc-only `__init__.py` (F-backtest-014) | ✓ closed (19de04f) — keep-decision recorded in docstring (suggested action was "none") |
+| s | stale "Band 4" comment (F-backtest-015) | ✓ closed (ed06423) — stale forward-intent sentence removed from `runner.py`; the accurate `(Band 4)` attribution label in `driver.py` deliberately kept |
+| t | reporting.py N/A-by-string (F-backtest-008) | → deferred — the N/A strings are intentional `metrics.md` output from the rf-adjusted Sharpe/IR feature (commit 91a97e5); the audit predates it. No change. |
+| u | `decision_writer.py` BaseAgent overhead (F-strategist-013) | · no-op — BaseAgent lifecycle is load-bearing here; not a safe P3 refactor |
+| v | `digest_defaults.py` single-dict module (F-contract-012) | ✓ closed (8219070, afeb121) — folded into `contract.digest`; module deleted; importers updated |
+| w | `render_all_ticker_blocks` single caller (F-contract-014) | ✓ closed (a8e26c2) — inlined into `context_shim.py` |
+| x | T212 PAPER/LIVE URLs un-smoke-tested (F-broker-010, F-broker-011) | → deferred — out of scope per plan-12 §3.3; deferral recorded in `test-strategy.md` (commit 5747e73). Belongs to a future broker-integration test pass. |
+| y | enricher gap on `intent=None` (F-strategist-012) | · no-op — already satisfied; `enricher.validate_and_enrich` raises `StrategistContractViolation` on `intent=None` (no silent legacy fallback) |
+| z | joiner verdict/evidence consistency test (F-analysts-016) | ✓ closed (2da0441, 0812df5) — positive consistency invariants asserted on both news + fundamental joiners |
+| aa | `decision_tags` plumbing unread (F-strategist-006) | → kept — `DerivedFields.decision_tags` retained as dormant scaffolding for the planned Spec B/C memory-writer path; the misleading "downstream consumers use this" docstring corrected to "computed but not yet consumed" (commit 9596213) |
+
+Post-sweep polish (code-quality review): commit 48d730c (review nits) and 0812df5
+(test-file lint). All of plan-12 is green: `pytest` 1537 passed / 2 skipped;
+`ruff check src/` clean.
 
 ---
 
