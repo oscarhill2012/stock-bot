@@ -580,10 +580,11 @@ class Runner:
                 "tickers":          wl_filtered,
                 "portfolio":        portfolio.model_dump(mode="json"),
                 # ``positions`` is intentionally absent — it has migrated to
-                # ``user:positions`` (Spec B, Band 4).  ADK's user_state merge
-                # re-hydrates ``user:positions`` from the DatabaseSessionService
-                # row on tick 2+; Band 4 will wire the Executor writer-of-record
-                # to persist it there.
+                # ``user:positions`` (Spec B, Band 4).  The Executor's
+                # ``_executor_thesis_writer_callback`` (after_agent_callback)
+                # is the writer-of-record; ADK's user_state merge re-hydrates
+                # ``user:positions`` from the DatabaseSessionService row on
+                # tick 2+ automatically.
                 #
                 # ``thesis`` is intentionally absent — it has migrated to
                 # ``user:thesis`` (Spec B, Band 2).  The strategist prompt
