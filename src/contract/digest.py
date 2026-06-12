@@ -12,11 +12,31 @@ from collections.abc import Mapping
 from datetime import datetime
 from statistics import mean, variance
 
-from contract.digest_defaults import DIRECTION_DEAD_ZONE
 from contract.evidence import AnalystEvidence, AnalystVerdict
 from contract.ticker_evidence import AggregateVerdict, TickerEvidence
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Tunable defaults for the analyst → strategist digest aggregator.
+#
+# These were previously in ``contract.digest_defaults`` (folded in by
+# A-097.v).  Per-key nested weighting (e.g. ``smart_money.n_politicians > 2``
+# ⇒ +x) is deferred to a future spec; weights are per-analyst-family only for
+# now.  If a future spec needs these tunable without code changes, promote to
+# ``config/digest.json`` and add a loader.
+# ---------------------------------------------------------------------------
+
+DEFAULT_ANALYST_WEIGHTS: dict[str, float] = {
+    "technical":   1.0,
+    "fundamental": 1.0,
+    "news":        1.0,
+    "social":      1.0,   # added Task 7 — deterministic social analyst
+    "smart_money": 1.0,
+}
+
+DIRECTION_DEAD_ZONE: float = 0.15
 
 
 def _lean_sign(lean: str) -> int:

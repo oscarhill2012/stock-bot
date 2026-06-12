@@ -1,7 +1,7 @@
 """Digest defaults tests — Tier 1, no LLM."""
 from __future__ import annotations
 
-from contract.digest_defaults import DEFAULT_ANALYST_WEIGHTS, DIRECTION_DEAD_ZONE
+from contract.digest import DEFAULT_ANALYST_WEIGHTS, DIRECTION_DEAD_ZONE
 from contract.evidence import AnalystName  # noqa: F401  (used in type-checks)
 
 

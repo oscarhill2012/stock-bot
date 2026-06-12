@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 import pytest
 
 from contract.digest import build_ticker_evidence
-from contract.digest_defaults import DEFAULT_ANALYST_WEIGHTS
+from contract.digest import DEFAULT_ANALYST_WEIGHTS
 from contract.evidence import AnalystEvidence, AnalystVerdict
 
 
