@@ -130,6 +130,37 @@ async def _build_initial_state(broker, tick_id: str, tickers: list[str]) -> dict
     }
 
 
+async def _drain_runner_events(events, tick_id: str) -> None:
+    """Consume the ADK runner's event stream for one tick.
+
+    Swallows the known ADK 1.32 runner-teardown noise (AttributeError on
+    NoneType, or a BaseExceptionGroup wrapping GeneratorExit from
+    parallel-agent teardown) — these fire *after* session state is written,
+    so the tick result is still readable from the session service.
+
+    Operator interrupts (KeyboardInterrupt) and process-shutdown
+    (SystemExit) are NOT teardown noise — they must propagate so a Ctrl-C
+    or shutdown signal stops the run instead of being silently eaten (A-081).
+
+    :param events: Async iterator of ADK runner events.
+    :param tick_id: Identifier for the current tick, used in the warning log.
+    :returns: None.
+    """
+    try:
+        async for _ in events:
+            pass
+    except (KeyboardInterrupt, SystemExit):
+        # Operator interrupt / shutdown signal — must propagate, never swallow.
+        raise
+    except BaseException as exc:
+        # ADK 1.32 teardown bug — log and continue; state is already written
+        # and the caller reads it from the session service below.
+        logger.warning(
+            "ADK runner raised during tick %s (pipeline likely completed): %s: %s",
+            tick_id, type(exc).__name__, exc,
+        )
+
+
 async def run_once(broker, session=None, *, tick_label: str | None = None) -> dict:
     """Run one hourly tick and return the final session state dict.
 
@@ -242,20 +273,7 @@ async def run_once(broker, session=None, *, tick_label: str | None = None) -> di
             role="user",
         ),
     )
-    try:
-        async for _ in events:
-            pass
-    except (AttributeError, BaseException) as exc:
-        # ADK 1.32 has a known runner-cleanup bug: after the pipeline runs, the
-        # runner may raise AttributeError('NoneType'.partial) or a
-        # BaseExceptionGroup wrapping GeneratorExit from parallel-agent teardown.
-        # Both happen *after* session state has been written, so the tick result
-        # is still available via session_service.get_session(). We log and
-        # continue; the caller reads state from the session service below.
-        logger.warning(
-            "ADK runner raised during tick %s (pipeline likely completed): %s: %s",
-            tick_id, type(exc).__name__, exc,
-        )
+    await _drain_runner_events(events, tick_id)
 
     updated = await session_service.get_session(
         app_name=_app_name,
