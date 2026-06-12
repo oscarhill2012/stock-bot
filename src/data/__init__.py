@@ -1,4 +1,3 @@
-# ruff: noqa: E402  — imports after _validate_active_providers_are_registered() are intentional
 """Data-source layer for StockBot.
 
 Public surface for agents:
@@ -56,11 +55,14 @@ def _validate_active_providers_are_registered() -> None:
 
 _validate_active_providers_are_registered()
 
-from datetime import date, datetime
+# The imports below are intentionally deferred until after the validation call
+# above.  ruff E402 ("module level import not at top of file") is suppressed
+# per-line — only these deferred lines need the waiver, not the whole file.
+from datetime import date, datetime  # noqa: E402
 
-from data.timeguard import resolve_as_of
+from data.timeguard import resolve_as_of  # noqa: E402
 
-from .models import (
+from .models import (  # noqa: E402
     CompanyRatios,
     Filing,
     InsiderTrade,
@@ -72,9 +74,9 @@ from .models import (
     SocialSentiment,
     SocialSentimentSnapshot,
 )
-from .rate_limit import AsyncRateLimiter
-from .registry import dispatch as _dispatch  # noqa: F401  (re-export)
-from .registry import min_decision_interval_seconds
+from .rate_limit import AsyncRateLimiter  # noqa: E402
+from .registry import dispatch as _dispatch  # noqa: F401, E402  (re-export; deferred)
+from .registry import min_decision_interval_seconds  # noqa: E402
 
 
 async def get_price_history(
