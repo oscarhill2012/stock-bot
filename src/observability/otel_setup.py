@@ -216,18 +216,6 @@ def install_observability(*, service_name: str = "stockbot") -> ObservabilityHan
     return _HANDLES
 
 
-def get_handles() -> ObservabilityHandles | None:
-    """Return the installed handles, or ``None`` if ``install_observability`` was never called.
-
-    Returns
-    -------
-    ObservabilityHandles | None
-        ``None`` on production (live) ticks where observability is not
-        explicitly installed; the bundle otherwise.
-    """
-    return _HANDLES
-
-
 def _reset_for_tests() -> None:
     """Drop the singleton handle so a fresh provider can be installed.
 

@@ -13,7 +13,6 @@ import logging
 from observability.otel_setup import (
     ObservabilityHandles,
     _reset_for_tests,
-    get_handles,
     install_observability,
 )
 
@@ -38,21 +37,6 @@ def test_install_is_idempotent():
 
     assert first is second
     assert first.log_handler is second.log_handler
-
-
-def test_get_handles_returns_installed_bundle():
-    """``get_handles`` should expose the singleton without re-installing."""
-    _reset_for_tests()
-    installed = install_observability()
-
-    assert get_handles() is installed
-
-
-def test_get_handles_returns_none_before_install():
-    """Production live ticks that skip install must see ``None``."""
-    _reset_for_tests()
-
-    assert get_handles() is None
 
 
 def test_log_handler_attached_to_project_namespaces():
