@@ -158,7 +158,7 @@ def build_pipeline(broker, db_session=None, *, tickers: list[str]) -> Sequential
             build_strategist_decision_writer(db_session),
             RiskGateAgent(broker=broker),
             build_executor(broker, db_session),
-            MemoryWriter(),  # fresh instance per pipeline build (inlined from former _build_memory_writer)
+            MemoryWriter(),  # fresh instance each pipeline build — must not be cached across ticks
             build_snapshotter(broker, db_session),
         ],
     )

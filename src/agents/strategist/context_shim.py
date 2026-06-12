@@ -280,8 +280,8 @@ class StrategistContextShim(BaseAgent):
         if not ticker_evidence:
             ticker_evidence_rendered = "(no evidence this tick)"
         else:
-            _divider = "\n" + "-" * 60 + "\n"
-            ticker_evidence_rendered = _divider.join(
+            # Join per-ticker blocks with a horizontal divider for legibility.
+            ticker_evidence_rendered = ("\n" + "-" * 60 + "\n").join(
                 render_ticker_block(te) for te in ticker_evidence
             )
 

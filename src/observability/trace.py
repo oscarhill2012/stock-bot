@@ -134,9 +134,10 @@ def trace_maybe(
     When ``state["temp:_trace"]`` is a ``TraceWriter`` instance, the payload is
     appended as a new section under ``label``.
 
-    An ``isinstance(state, dict)`` guard prevents ``AttributeError`` if a non-
-    dict state subclass (e.g. an ADK ``Session.state`` proxy) is passed; in
-    that case the hook silently does nothing.
+    A duck-typed ``state.get(...)`` call (wrapped in ``try/except
+    (AttributeError, TypeError)``) handles non-dict state objects — e.g. an
+    ADK ``Session.state`` proxy, which is dict-like but not a ``dict``
+    subclass.  If ``state`` is not dict-like at all the hook silently no-ops.
 
     Parameters
     ----------
