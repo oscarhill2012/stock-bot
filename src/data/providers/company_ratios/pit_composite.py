@@ -154,7 +154,8 @@ def _fetch_xbrl_facts(symbol: str, as_of_date: date) -> _Facts:
             rows = q.latest() if hasattr(q, "latest") else None
             row  = rows[0] if rows else None
             return _safe_float(getattr(row, "value", None)) if row else None
-        except Exception:
+        except Exception:  # noqa: BLE001 — edgartools internals raise unpredictably; log and degrade
+            logger.debug("XBRL scalar fetch failed for concept=%r symbol=%r: %s", concept, symbol, "see traceback in DEBUG", exc_info=False)
             return None
 
     # Try diluted EPS first; fall back to basic.
@@ -225,8 +226,8 @@ def _load_xbrl_summary(symbol: str, as_of_date: date) -> dict[str, float | None]
     try:
         company = Company(symbol)
         facts   = company.get_facts()
-    except Exception:
-        logger.debug("No XBRL facts available for %s; returning empty summary.", symbol)
+    except Exception:  # noqa: BLE001 — edgartools raises RuntimeError/httpx errors/internal types; log and return empty
+        logger.warning("XBRL facts unavailable for %s; returning empty ratio summary.", symbol, exc_info=True)
         return result  # type: ignore[return-value]
 
     def _ttm(concept: str) -> float | None:
@@ -254,7 +255,8 @@ def _load_xbrl_summary(symbol: str, as_of_date: date) -> dict[str, float | None]
             rows = q.latest() if hasattr(q, "latest") else None
             row  = rows[0] if rows else None
             return _safe_float(getattr(row, "value", None)) if row else None
-        except Exception:
+        except Exception:  # noqa: BLE001 — edgartools internals raise unpredictably; log and degrade
+            logger.debug("XBRL TTM fetch failed for concept=%r symbol=%r", concept, symbol, exc_info=False)
             return None
 
     # --- profit_margin: NetIncomeLoss / Revenues (both TTM) ---
@@ -286,7 +288,8 @@ def _load_xbrl_summary(symbol: str, as_of_date: date) -> dict[str, float | None]
         rows_prior = q_prior.latest() if hasattr(q_prior, "latest") else None
         row_prior  = rows_prior[0] if rows_prior else None
         rev_prior  = _safe_float(getattr(row_prior, "value", None)) if row_prior else None
-    except Exception:
+    except Exception:  # noqa: BLE001 — edgartools internals raise unpredictably; log and degrade
+        logger.debug("XBRL prior-year revenue fetch failed for symbol=%r as_of=%r", symbol, prior_date, exc_info=False)
         rev_prior = None
 
     if revenues is not None and rev_prior is not None and rev_prior != 0:
