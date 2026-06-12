@@ -4,6 +4,9 @@ These tests assert on concrete content: the callable's identity, its exact name,
 and its parameter contract — not merely that it exists or is async.
 """
 import inspect
+import types
+
+import pytest
 
 
 def test_tick_module_importable():
@@ -52,3 +55,68 @@ def test_run_once_accepts_broker_and_session_params():
     assert "broker" in params, "run_once must accept a 'broker' parameter"
     assert "session" in params, "run_once must accept an optional 'session' parameter"
     assert "tick_label" in params, "run_once must accept an optional 'tick_label' parameter"
+
+
+# ── _resolve_broker_mode tests ────────────────────────────────────────────────
+# These tests exercise the pure helper in isolation — no ADK pipeline, no
+# network calls.  Each test uses a tiny ``types.SimpleNamespace`` stub or a
+# bare ``object`` to represent the broker rather than a real implementation.
+
+class TestResolveBrokerMode:
+    """Tests for the ``_resolve_broker_mode`` helper."""
+
+    def test_paper_mode_returned_for_paper_attribute(self):
+        """Returns ``BrokerMode.PAPER`` when the broker's ``mode`` is ``"paper"``."""
+        from orchestrator.tick import BrokerMode, _resolve_broker_mode
+
+        broker = types.SimpleNamespace(mode="paper")
+        result = _resolve_broker_mode(broker)
+
+        assert result is BrokerMode.PAPER
+
+    def test_paper_mode_returned_when_mode_attribute_absent(self):
+        """Returns ``BrokerMode.PAPER`` when the broker has no ``mode`` attribute.
+
+        FakeBroker does not expose ``.mode``; the helper must default to
+        ``"paper"`` (a valid mode) so test runs land in the paper namespace
+        without raising.
+        """
+        from orchestrator.tick import BrokerMode, _resolve_broker_mode
+
+        # A plain object has no ``mode`` attribute — mirrors FakeBroker.
+        broker = object()
+        result = _resolve_broker_mode(broker)
+
+        assert result is BrokerMode.PAPER
+
+    def test_live_mode_returned_for_live_attribute(self):
+        """Returns ``BrokerMode.LIVE`` when the broker's ``mode`` is ``"live"``."""
+        from orchestrator.tick import BrokerMode, _resolve_broker_mode
+
+        broker = types.SimpleNamespace(mode="live")
+        result = _resolve_broker_mode(broker)
+
+        assert result is BrokerMode.LIVE
+
+    def test_raises_on_unknown_mode_string(self):
+        """Raises ``ValueError`` — with the bad value in the message — for an unrecognised mode.
+
+        Silently falling back to ``BrokerMode.PAPER`` on a typo would route
+        trades into the wrong user_state namespace; the helper must surface the
+        problem loudly instead.
+        """
+        from orchestrator.tick import _resolve_broker_mode
+
+        broker = types.SimpleNamespace(mode="papr")
+
+        with pytest.raises(ValueError, match="papr"):
+            _resolve_broker_mode(broker)
+
+    def test_raises_message_includes_valid_modes(self):
+        """The ``ValueError`` message lists the valid mode values so the operator knows what to fix."""
+        from orchestrator.tick import _resolve_broker_mode
+
+        broker = types.SimpleNamespace(mode="practice")
+
+        with pytest.raises(ValueError, match="valid"):
+            _resolve_broker_mode(broker)

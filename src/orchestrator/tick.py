@@ -24,6 +24,37 @@ class BrokerMode(Enum):
     PAPER = "paper"
 
 
+def _resolve_broker_mode(broker) -> BrokerMode:
+    """Resolve a broker's operating mode to a ``BrokerMode`` member.
+
+    Reads the broker's ``mode`` attribute (``"paper"`` or ``"live"``);
+    ``FakeBroker`` does not expose ``.mode`` so the attribute defaults to
+    ``"paper"``, which is itself a valid mode.  An unrecognised mode string
+    is surfaced as a ``ValueError`` rather than silently coerced — a typo in
+    a deployment config must fail loudly, not route trades into the wrong
+    user_state namespace.
+
+    Args:
+        broker: Any broker; its optional ``mode`` attribute is read.
+
+    Returns:
+        The matching ``BrokerMode`` member.
+
+    Raises:
+        ValueError: If the broker's ``mode`` is not a known ``BrokerMode``.
+    """
+    raw = getattr(broker, "mode", "paper")
+
+    try:
+        return BrokerMode(raw)
+    except ValueError:
+        # Surface the typo — never silently fall back to PAPER, which would
+        # route trades into the wrong namespace.
+        raise ValueError(
+            f"unknown BrokerMode {raw!r}; valid: {[m.value for m in BrokerMode]}"
+        ) from None
+
+
 async def _fetch_reference_prices(
     symbols: tuple[str, ...],
     *,
@@ -218,17 +249,16 @@ async def run_once(broker, session=None, *, tick_label: str | None = None) -> di
     # seeded into the ADK session state by ``_build_initial_state`` below.
     pipeline = build_pipeline(broker, session, tickers=tickers)
 
-    # Resolve the broker mode from its ``mode`` attribute (``"paper"`` or
-    # ``"live"``).  FakeBroker does not expose ``.mode``; default to PAPER
-    # so test runs land in the paper namespace rather than raising.
-    _raw_mode = getattr(broker, "mode", "paper")
-    _broker_mode = BrokerMode(_raw_mode) if _raw_mode in BrokerMode._value2member_map_ else BrokerMode.PAPER
+    # Resolve the broker mode via the pure helper — raises ``ValueError`` on an
+    # unrecognised mode string so a typo in a deployment config surfaces loudly
+    # rather than silently routing trades into the wrong user_state namespace.
+    # FakeBroker does not expose ``.mode``; the helper defaults to ``"paper"``
+    # (a valid mode) so test runs land in the paper namespace without raising.
+    #
     # Partition ADK ``user_state`` rows between paper and live so the two
     # modes cannot share thesis rows.  Backtest uses a third value
     # (``f"StockBot-backtest-{window_key}"``) set in the backtest driver.
-    # ``_broker_mode`` is already a ``BrokerMode`` member at this point
-    # (the conversion two lines above falls back to PAPER on unknown input),
-    # so the ``StrEnum``-style lookup is exhaustive.
+    _broker_mode = _resolve_broker_mode(broker)
     _app_name = f"StockBot-{_broker_mode.value}"
 
     from orchestrator.lifecycle_runner import build_runner, build_seed_state
