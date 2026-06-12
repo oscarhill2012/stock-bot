@@ -9,6 +9,7 @@ table can never silently fall out of preflight / hard_reset coverage.
 """
 from __future__ import annotations
 
+import pytest
 from sqlalchemy import inspect
 
 from lifecycle._tables import STOCKBOT_TABLES
@@ -44,3 +45,21 @@ def test_init_db_is_idempotent(tmp_path) -> None:
     engine = make_engine(f"sqlite:///{db_path}")
     tables = set(inspect(engine).get_table_names())
     assert set(Base.metadata.tables.keys()).issubset(tables)
+
+
+def test_check_live_tables_empty_rejects_non_default_schema(tmp_path):
+    """Postgres non-public schema is not supported — document via explicit raise.
+
+    The lifecycle helper hard-codes un-qualified table references, which resolve
+    against the Postgres `search_path` (defaulting to `public`). A URL that pins
+    a different schema would silently query the wrong tables.  A-091 mandates a
+    loud failure with a documented migration path instead.
+    """
+    from lifecycle.initialise import UnsupportedSchemaError, _check_live_tables_empty
+
+    # URL with an explicit search_path that is NOT public — simulates a
+    # multi-tenant deployment attempting to reuse the lifecycle helper.
+    url = "postgresql+psycopg://u:p@h/db?options=-csearch_path%3Dtenant_a"
+
+    with pytest.raises(UnsupportedSchemaError, match="public"):
+        _check_live_tables_empty(url)

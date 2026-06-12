@@ -33,6 +33,26 @@ class BrokerCashMismatch(RuntimeError):
     pass
 
 
+class UnsupportedSchemaError(RuntimeError):
+    """Raised when a Postgres URL targets a schema other than 'public'.
+
+    The lifecycle helpers use un-qualified table references (e.g. ``SELECT
+    COUNT(*) FROM trades``), which Postgres resolves via ``search_path``.
+    When ``search_path`` defaults to ``public`` this is correct.  If a URL
+    pins a *different* schema the queries would silently hit the wrong tables
+    (or find nothing and report a false-positive empty state).
+
+    Multi-schema deployment is a portability concern, not a correctness
+    one at this stage.  If multi-schema support is needed in future:
+
+    1. Add a ``schema: str = "public"`` argument to every lifecycle helper.
+    2. Qualify every table reference: ``f"{schema}.{table}"`` (there is one
+       existing explicit ``public.`` qualifier in ``hard_reset.py`` around
+       line 68 that would also need parameterising).
+    3. Remove this guard once all sites are schema-aware.
+    """
+
+
 @dataclass(frozen=True)
 class InitResult:
     anchor_tick_id: str
@@ -72,6 +92,38 @@ def _check_heuristics() -> None:
 
 
 def _check_live_tables_empty(db_url: str) -> None:
+    """Verify the four StockBot tables are empty before initialisation.
+
+    Connects to the database at ``db_url``, inspects each table listed in
+    ``_STOCKBOT_TABLES``, and raises ``NonEmptyTablesError`` for any table
+    that already contains rows.
+
+    Assumes the default Postgres schema (``public``).  If the URL pins a
+    different ``search_path``, the un-qualified ``SELECT COUNT(*)`` queries
+    would silently hit the wrong schema.  This function detects that case
+    and raises ``UnsupportedSchemaError`` — see that class for the migration
+    path.
+
+    Args:
+        db_url: SQLAlchemy-compatible connection string.
+
+    Raises:
+        UnsupportedSchemaError: when the URL contains an explicit
+            ``search_path`` that is not ``public``.
+        NonEmptyTablesError: when any monitored table already has rows.
+    """
+    # Guard: reject URLs that explicitly override search_path to something
+    # other than 'public'.  The split on "search_path" gives us the
+    # remainder of the URL after the key, so we can check whether the
+    # value contains "public".  A plain "postgresql://…" URL (no
+    # search_path option) passes through unaffected.
+    if "search_path" in db_url and "public" not in db_url.split("search_path", 1)[1]:
+        raise UnsupportedSchemaError(
+            "non-default Postgres schema detected in db_url; only 'public' is "
+            "supported by the lifecycle helpers.  See UnsupportedSchemaError "
+            "docstring for the migration path."
+        )
+
     engine = make_engine(db_url)
     insp = inspect(engine)
     existing = set(insp.get_table_names())
