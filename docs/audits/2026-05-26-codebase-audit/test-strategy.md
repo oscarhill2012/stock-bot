@@ -632,4 +632,21 @@ warranted; no rule is wrong.
 
 ---
 
+## 8. Deferred items (plan-12 scope decisions)
+
+### A-097.x — T212 PAPER vs LIVE base-URL smoke tests (out of scope, plan-12 §3.3)
+
+**Decision date:** 2026-06-12 (plan-12-p3-sweep).
+
+The Trading 212 broker constructs different base URLs depending on whether
+the mode is `paper` or `live`.  Smoke tests that assert the correct URL is
+used in each mode (A-097.x) were scoped out of plan-12 per §3.3 of the
+plan — they belong to a future broker-integration test pass alongside the
+other Trading 212 contract tests (e.g. F-broker-002, F-broker-003, F-broker-009).
+
+No action was taken in plan-12; this note records the deferral so the future
+broker-integration pass can pick it up without re-auditing.
+
+---
+
 *End of test-strategy review.*
