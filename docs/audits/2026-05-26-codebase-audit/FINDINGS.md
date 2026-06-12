@@ -540,6 +540,15 @@ Each finding lists `Origin:` underlying report IDs. Open those files under `docs
 - **Severity:** P2 · **Category:** dedupe
 - **Suggested action:** investigate (collapse or atomic-write helper).
 - **Origin:** D-027.
+- **Status:** investigated — no action (plan-12). The suggested "investigate" was
+  carried out: the two keys are **not** parallel high-water marks. `last_executed_tick_id`
+  is a bare tick-id *string* read solely by the executor's idempotency guard
+  (`executor/agent.py:79`, `== tick_id`); `last_snapshot` is a snapshot *payload dict*
+  read solely by the driver's completion check (`driver.py:738`, `snap.get("tick_id")`).
+  No call site reads them together (grepped `src/` + `tests/`), so neither "collapse"
+  nor an "atomic-write helper" applies — they are written by different agents at
+  different pipeline stages, and a coalescing accessor would be type-incoherent (string
+  vs dict) and would regress execution idempotency. Closed as not-a-duplication.
 
 ### A-081 — Live tick `BaseException` swallow
 - **Severity:** P2 · **Category:** cross-lifecycle
