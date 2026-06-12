@@ -20,15 +20,16 @@ Both pieces must match for a hit. Anything else is a miss -> LLM is called
 """
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
-import sys
 from datetime import UTC, datetime
 from hashlib import blake2b
 from pathlib import Path
 from typing import Any
 
+from agents.analysts.fundamental.prompts import build_fundamental_instruction
+from agents.analysts.heuristics import load_heuristics
+from agents.analysts.news.prompts import build_news_instruction
 from data.models import (
     CompanyRatios,
     Filing,
@@ -81,110 +82,18 @@ def _derive_prompt_version(instruction: str) -> str:
     return f"auto:{blake2b(instruction.encode(), digest_size=6).hexdigest()}"
 
 
-# Render each analyst's instruction once at import time using the
-# heuristics file's closed-vocab lists, then hash the result.  Both
-# ``load_heuristics()`` and the analyst-config singleton consumed inside
-# ``build_*_instruction`` are ``lru_cache(maxsize=1)``, so this work is
-# cheap and only fires on the first import.
-#
-# NOTE — why the filesystem loader (and why a deferred import does NOT work).
-#
-# The cycle is two layers deep.  Surface layer:
-#   ``agents.analysts.__init__`` eagerly imports all five agent modules;
-#   each agent module imports ``cache_callbacks``; ``cache_callbacks``
-#   imports ``report_cache``.  So by the time *this* module body runs,
-#   ``cache_callbacks`` is mid-init in ``sys.modules`` and the chain
-#   above it is partially built.
-#
-# Deeper layer (the one that defeats a "just defer the import" fix):
-#   A naive ``from agents.analysts.news.prompts import build_news_instruction``
-#   — whether at module-top OR inside a function called later — does NOT
-#   import ``news/prompts.py`` in isolation.  Python first runs
-#   ``agents/analysts/news/__init__.py``, which eagerly does
-#   ``from .agent import news_analyst``.  That re-enters ``cache_callbacks``
-#   (still partially initialised) and raises ``ImportError: cannot import
-#   name 'make_report_cache_callbacks' from partially initialized module``.
-#
-# The filesystem loader below sidesteps both layers by loading
-# ``heuristics.py`` / ``news/prompts.py`` / ``fundamental/prompts.py``
-# DIRECTLY by path via ``importlib.util.spec_from_file_location``.  That
-# never executes ``news/__init__.py`` or ``fundamental/__init__.py``, so
-# the eager-agent chain that owns the cycle never fires.  The loaded
-# modules are registered in ``sys.modules`` under their canonical dotted
-# names so that when ``agents.analysts.__init__`` later runs normally and
-# the agent modules do ``from agents.analysts.news.prompts import ...``,
-# they resolve to the same module objects (no duplicate load, no drift).
-#
-# A cleaner long-term fix would be to drop the eager
-# ``from .agent import news_analyst`` from the news + fundamental package
-# ``__init__.py`` files, or to move the prompt builders out of those
-# sub-packages — both are structural refactors beyond the scope of B23.
-
-def _load_prompt_builders() -> tuple:
-    """Load the prompt-builder callables for both analysts without
-    triggering the ``agents.analysts.{news,fundamental}`` sub-package
-    ``__init__.py`` files (which eagerly import their ``agent`` module
-    and re-enter the cache-callback chain — see the block comment above
-    for the full cycle).
-
-    Uses ``importlib.util.spec_from_file_location`` to load
-    ``heuristics.py``, ``news/prompts.py``, and
-    ``fundamental/prompts.py`` directly from their filesystem paths,
-    bypassing those sub-package ``__init__`` files.  The loaded modules
-    are inserted into ``sys.modules`` under their canonical dotted names
-    so subsequent normal imports (e.g. from the agent modules) resolve
-    to the same module object rather than loading a duplicate.
-
-    Returns
-    -------
-    tuple
-        ``(load_heuristics, build_news_instruction,
-        build_fundamental_instruction)`` — the three callables needed
-        to render both analyst instructions.
-    """
-    # Resolve the ``src/`` root so paths work regardless of cwd.
-    _src = Path(__file__).parent.parent.parent   # src/agents/analysts/report_cache.py -> src/
-
-    def _load(dotted_name: str, rel_path: str):
-        """Load a single module by file path, registering it in sys.modules."""
-        # Re-use the cached module if it was already loaded normally.
-        if dotted_name in sys.modules:
-            return sys.modules[dotted_name]
-
-        spec = importlib.util.spec_from_file_location(
-            dotted_name, _src / rel_path
-        )
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules[dotted_name] = mod          # Register before exec to handle any internal relative imports.
-        spec.loader.exec_module(mod)
-        return mod
-
-    heuristics_mod = _load(
-        "agents.analysts.heuristics",
-        "agents/analysts/heuristics.py",
-    )
-    news_prompts_mod = _load(
-        "agents.analysts.news.prompts",
-        "agents/analysts/news/prompts.py",
-    )
-    fundamental_prompts_mod = _load(
-        "agents.analysts.fundamental.prompts",
-        "agents/analysts/fundamental/prompts.py",
-    )
-
-    return (
-        heuristics_mod.load_heuristics,
-        news_prompts_mod.build_news_instruction,
-        fundamental_prompts_mod.build_fundamental_instruction,
-    )
-
+# Render each analyst's instruction once at import time using the heuristics
+# file's closed-vocab lists, then hash the result.  The prompt builders are
+# imported normally at the top of this file (A-096) — the import cycle that
+# previously forced an importlib filesystem-loader workaround is gone now that
+# the news/fundamental package __init__ files no longer eagerly re-export
+# their .agent modules.
 
 def _compute_version_constants() -> tuple[str, str]:
     """Render both analyst instructions and return their version fingerprints.
 
-    Kept as a private function so the importlib machinery is contained in
-    one place and the version constants remain simple module-level
-    assignments.
+    Kept as a private function so the version-derivation logic is contained in
+    one place and the module-level constants remain simple assignments.
 
     Returns
     -------
@@ -192,9 +101,6 @@ def _compute_version_constants() -> tuple[str, str]:
         ``(news_version, fundamental_version)`` — both in
         ``"auto:<digest>"`` format as returned by ``_derive_prompt_version``.
     """
-    load_heuristics, build_news_instruction, build_fundamental_instruction = (
-        _load_prompt_builders()
-    )
     heuristics = load_heuristics()
 
     news_version = _derive_prompt_version(
