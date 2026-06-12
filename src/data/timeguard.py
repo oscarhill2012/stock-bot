@@ -26,9 +26,12 @@ silently fabricated during a backtest.
 """
 from __future__ import annotations
 
+import logging
 import os
 import threading
 from datetime import UTC, datetime
+
+logger = logging.getLogger(__name__)
 
 
 class AsOfRequiredError(RuntimeError):
@@ -158,7 +161,10 @@ def resolve_as_of(
             f"(strict_env={strict}, allow_wallclock={allow_wallclock})"
         )
 
-    # Live path — caller has explicitly opted in.  Bump the per-tick counter
-    # so the backtest driver can surface this on the audit tripwire.
+    # Live path — caller has explicitly opted in.  Emit a WARNING so live
+    # log tails surface the fallback (previously silent outside backtest).
+    # The backtest driver drains the counter after each tick for its own
+    # audit tripwire; we keep the bump so that telemetry path is unaffected.
+    logger.warning("as_of missing at %s; falling back to wall clock", site)
     _set_counter(_get_counter() + 1)
     return datetime.now(tz=UTC)
