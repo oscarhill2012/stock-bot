@@ -43,8 +43,7 @@ from agents.strategist.prompts import (
     INCREMENTAL_MODE_TEMPLATE,
 )
 from broker.portfolio import Portfolio
-from contract.digest import build_ticker_evidence
-from contract.digest import DEFAULT_ANALYST_WEIGHTS
+from contract.digest import DEFAULT_ANALYST_WEIGHTS, build_ticker_evidence
 from contract.evidence import AnalystEvidence
 from contract.strategist_prompt import render_ticker_block
 from contract.ticker_evidence import TickerEvidence
