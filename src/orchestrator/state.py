@@ -1,9 +1,9 @@
-"""Shared state schemas — TickState built incrementally across pipeline phases."""
+"""Shared state schemas (orders, executions, clamp telemetry) and risk-gate constants."""
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 # ── Risk-gate constants ───────────────────────────────────────────────────────
 # Resolved from ``config/risk_gate.json`` at import time so every existing
@@ -55,48 +55,3 @@ class Execution(BaseModel):
     broker_order_id: str | None   = None
     error: str | None             = None
 
-
-# ── TickState ─────────────────────────────────────────────────────────────────
-
-class TickState(BaseModel):
-    """Complete shared state schema. Agents read/write session.state[key].
-
-    Fields are grouped by which pipeline stage writes them.
-    """
-
-    # Seeded at tick start by the entrypoint.
-    tick_id: str = ""
-    tickers: list[str] = Field(default_factory=list)
-
-    # Written by analyst before_callbacks (raw data fetched from providers).
-    # NB: at runtime the state keys carry the ``temp:`` prefix
-    # (``temp:technical_data`` etc. — A2.6 rename) so ADK strips them at the
-    # invocation boundary.  These Pydantic field names are the Python
-    # identifiers used before serialisation; they are NOT the live session-
-    # state keys and must NOT be renamed here.
-    technical_data: dict[str, Any]      = Field(default_factory=dict)
-    fundamental_data: dict[str, Any]    = Field(default_factory=dict)
-    news_data: dict[str, Any]           = Field(default_factory=dict)  # renamed from sentiment_data (Task 6)
-    social_data: dict[str, Any]         = Field(default_factory=dict)  # added Task 7
-    smart_money_data: dict[str, Any] | None = None
-
-    # Persistent across ticks (loaded from and saved to the ADK session store).
-    # NOTE: ``positions`` and ``thesis`` have been migrated to user-scoped ADK
-    # session state — they are addressed as ``session.state["user:positions"]``
-    # and ``session.state["user:thesis"]`` and are NOT fields on TickState.
-    # Reads of ``TickState.positions`` or ``TickState.thesis`` are a type error
-    # by design — those sites must be migrated to the prefixed keys.
-    # See: docs/Phase10-post-first-backtest/specs/foundational-thesis-memory.md (Spec B).
-    memory_buffer: list[Any]  = Field(default_factory=list)
-    day_digest: str           = ""
-    last_executed_tick_id: str | None = None
-
-    # Written by the Strategist LlmAgent.
-    strategist_decision: Any = None
-
-    # Written by the RiskGate.
-    final_orders: list[Any]        = Field(default_factory=list)
-    risk_clamps_applied: list[Any] = Field(default_factory=list)
-
-    # Written by the Executor.
-    executions: list[Any] = Field(default_factory=list)

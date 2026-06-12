@@ -14,7 +14,6 @@ from .dedup import detect_repeat
 from .embeddings import embed
 from .schema import BufferEntry
 
-BUFFER_MAX   = 24
 BUFFER_EVICT_AT = 25  # evict the oldest entry when buffer reaches this size
 
 
