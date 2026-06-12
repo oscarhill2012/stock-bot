@@ -15,7 +15,6 @@ from pydantic import ValidationError
 
 from config.models import ModelsConfig, _reset_cache, load_models_config
 
-
 # ---------------------------------------------------------------------------
 # Shared minimal valid payload
 # ---------------------------------------------------------------------------

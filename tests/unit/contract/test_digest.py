@@ -6,8 +6,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from contract.digest import build_ticker_evidence
-from contract.digest import DEFAULT_ANALYST_WEIGHTS
+from contract.digest import DEFAULT_ANALYST_WEIGHTS, build_ticker_evidence
 from contract.evidence import AnalystEvidence, AnalystVerdict
 
 

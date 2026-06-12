@@ -22,7 +22,6 @@ from google.adk.sessions import InMemorySessionService
 
 from agents.analysts.fundamental.joiner import FundamentalJoinerAgent
 
-
 # ---------------------------------------------------------------------------
 # Shared sample data helpers
 # ---------------------------------------------------------------------------

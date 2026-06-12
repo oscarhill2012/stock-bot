@@ -3,9 +3,6 @@
 news_verdicts + news_evidence; synthesises no-data for missing keys."""
 from __future__ import annotations
 
-import logging
-import os
-
 import pytest
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.sessions import InMemorySessionService

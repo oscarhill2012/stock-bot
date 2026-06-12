@@ -16,7 +16,6 @@ from pydantic import ValidationError
 
 from config.retry_429 import Retry429Policy, _reset_cache, load_retry_429_policy
 
-
 # ---------------------------------------------------------------------------
 # Shared minimal valid payload
 # ---------------------------------------------------------------------------
