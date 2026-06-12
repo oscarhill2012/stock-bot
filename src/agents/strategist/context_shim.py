@@ -1,8 +1,8 @@
 """StrategistContextShim — ADK BaseAgent that hydrates strategist context keys.
 
 Replaces the two ``before_agent_callback`` direct-mutation sites on the
-Strategist ``LlmAgent`` (``_held_view_before_callback`` and
-``render_all_ticker_blocks`` in ``contract/strategist_prompt.py``).
+Strategist ``LlmAgent`` (``_held_view_before_callback`` and the former
+``render_all_ticker_blocks``, now inlined here per A-097.w).
 
 ADK callbacks cannot yield ``Event``s (contract Rule 3) but the contract
 requires every state write to ride on a yielded
@@ -46,7 +46,7 @@ from broker.portfolio import Portfolio
 from contract.digest import build_ticker_evidence
 from contract.digest import DEFAULT_ANALYST_WEIGHTS
 from contract.evidence import AnalystEvidence
-from contract.strategist_prompt import render_all_ticker_blocks
+from contract.strategist_prompt import render_ticker_block
 from contract.ticker_evidence import TickerEvidence
 from data.timeguard import resolve_as_of
 from observability.trace import trace_maybe
@@ -275,7 +275,16 @@ class StrategistContextShim(BaseAgent):
             ticker_evidence.append(te)
 
         ticker_evidence_objects = [te.model_dump(mode="json") for te in ticker_evidence]
-        ticker_evidence_rendered = render_all_ticker_blocks(ticker_evidence)
+        # Inline of the former ``render_all_ticker_blocks`` (single-caller,
+        # inlined per A-097.w).  Concatenates per-ticker prompt blocks
+        # separated by a horizontal divider; returns a sentinel when empty.
+        if not ticker_evidence:
+            ticker_evidence_rendered = "(no evidence this tick)"
+        else:
+            _divider = "\n" + "-" * 60 + "\n"
+            ticker_evidence_rendered = _divider.join(
+                render_ticker_block(te) for te in ticker_evidence
+            )
 
         # Surface trace — no-op unless state["temp:_trace"] is set.
         trace_maybe(state, "04_digest", ticker_evidence_objects)

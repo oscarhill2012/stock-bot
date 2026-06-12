@@ -687,27 +687,3 @@ def render_ticker_block(te: TickerEvidence) -> str:
     return "\n".join(parts)
 
 
-def render_all_ticker_blocks(items: list[TickerEvidence]) -> str:
-    """Render all ``TickerEvidence`` objects as a combined prompt section.
-
-    Concatenates ``render_ticker_block`` outputs, separated by a blank line
-    and a horizontal divider, so each ticker's block is visually distinct in
-    the prompt.
-
-    Parameters
-    ----------
-    items:
-        List of ``TickerEvidence`` objects for the current tick, one per
-        watchlist ticker.
-
-    Returns
-    -------
-    str
-        Combined prompt-ready string covering all tickers.
-        Returns ``"(no evidence this tick)"`` when the list is empty.
-    """
-    if not items:
-        return "(no evidence this tick)"
-
-    divider = "\n" + "-" * 60 + "\n"
-    return divider.join(render_ticker_block(te) for te in items)
