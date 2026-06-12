@@ -118,12 +118,6 @@ def _build_strategist():
     return build_strategist()
 
 
-def _build_memory_writer():
-    """Build a fresh MemoryWriter each time."""
-    from agents.memory.writer import MemoryWriter
-    return MemoryWriter()
-
-
 def build_pipeline(broker, db_session=None, *, tickers: list[str]) -> SequentialAgent:
     """Compose the full hourly tick pipeline.
 
@@ -150,6 +144,7 @@ def build_pipeline(broker, db_session=None, *, tickers: list[str]) -> Sequential
     """
     from agents.contract.evidence_writer import build_evidence_writer
     from agents.executor.agent import build_executor
+    from agents.memory.writer import MemoryWriter
     from agents.risk_gate.agent import RiskGateAgent
     from agents.snapshot.agent import build_snapshotter
     from agents.strategist.decision_writer import build_strategist_decision_writer
@@ -163,7 +158,7 @@ def build_pipeline(broker, db_session=None, *, tickers: list[str]) -> Sequential
             build_strategist_decision_writer(db_session),
             RiskGateAgent(broker=broker),
             build_executor(broker, db_session),
-            _build_memory_writer(),
+            MemoryWriter(),  # fresh instance per pipeline build (inlined from former _build_memory_writer)
             build_snapshotter(broker, db_session),
         ],
     )
