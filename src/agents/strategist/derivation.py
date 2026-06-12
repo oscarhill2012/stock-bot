@@ -67,10 +67,11 @@ def derive_decision_tag(*, prior: float, new: float) -> str:
     | hold       | prior == new AND prior > 0                         |
 
     ``ORDER_EPSILON`` (1e-6) is the zero threshold so dust positions do
-    not flip exit/entry into trim/ramp.  Downstream Spec B / Spec C
-    memory writers use this tag as the intent key, giving each ticker a
-    discriminating signal rather than the constant ``catalyst_driven_entry``
-    the LLM was emitting for every tick.
+    not flip exit/entry into trim/ramp.  The tag was designed to give Spec B /
+    Spec C memory writers a discriminating intent key rather than the constant
+    ``catalyst_driven_entry`` the LLM was emitting every tick, but no downstream
+    consumer currently reads ``decision_tags`` — the field is dormant scaffolding
+    retained for the planned Spec B/C memory-writer path (A-097.aa).
 
     Args:
         prior: The ticker's current portfolio weight before this tick.
@@ -168,7 +169,9 @@ class DerivedFields:
         decision_tags: Per-ticker intent tag derived from the (prior, new)
             weight pair — one of ``entry``, ``ramp``, ``trim``, ``exit``,
             ``hold_flat``, ``hold``.  Carry-forward tickers are included with
-            their implicit action tag.
+            their implicit action tag.  This field is computed but NOT currently
+            consumed by any downstream code — it is dormant scaffolding retained
+            for the planned Spec B/C memory-writer path; no reader exists today.
 
     Note:
         ``frozen=True`` prevents field reassignment but does not deep-freeze the
@@ -297,8 +300,9 @@ def derive_decision_fields(
                 target_weights[stance.ticker] = current
 
         # S6: derive a per-ticker intent tag from the (prior, new) weight pair.
-        # Replaces the constant ``catalyst_driven_entry`` the LLM emitted for
-        # every tick — gives Spec B / Spec C memory writers a discriminating key.
+        # The tag was designed for Spec B/C memory writers, but no downstream
+        # code currently reads ``decision_tags`` — it is computed but dormant
+        # (retained for the planned Spec B/C memory-writer path, A-097.aa).
         decision_tags[stance.ticker] = derive_decision_tag(
             prior=current,
             new=target_weights[stance.ticker],
