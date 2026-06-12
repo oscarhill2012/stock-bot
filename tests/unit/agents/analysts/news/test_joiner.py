@@ -234,3 +234,90 @@ async def test_news_joiner_passes_retries_to_summary(monkeypatch) -> None:
     assert call["retries"] == {"rate_limit": 2}, (
         f"Expected retries={{'rate_limit': 2}}; got retries={call['retries']}"
     )
+
+
+@pytest.mark.asyncio
+async def test_news_joiner_verdict_evidence_consistency():
+    """Assert verdict/evidence structural consistency (F-analysts-016).
+
+    The joiner guarantees the following invariants for every ticker:
+
+    1. The lean recorded in ``news_verdicts`` matches the lean recorded in the
+       corresponding ``news_evidence`` row — both derive from the same
+       ``AnalystVerdict`` object, so they cannot diverge.
+
+    2. When ``is_no_data=True`` (synthesised no-data path), the lean is always
+       ``"neutral"`` — the joiner forces this explicitly in the synthesis branch.
+
+    3. Every ticker in the input ``tickers`` list produces exactly one row in
+       ``news_verdicts["verdicts"]`` and one row in ``news_evidence`` — the
+       lengths always equal ``len(tickers)`` regardless of which branches
+       succeeded or failed.
+
+    Note: the joiner does NOT guarantee that a non-neutral, non-no-data verdict
+    carries at least one ``key_factors`` entry — the LLM may emit an empty list,
+    and the schema permits that.  The invariant asserted here is the structural
+    mirror-image: the two output lists are always aligned and the synthesised
+    no-data verdict always has lean ``"neutral"``.
+    """
+    state = {
+        "tickers":  ["AAPL", "MSFT", "TSLA"],
+        "tick_id":  "t-consist",
+        "as_of":    "2026-05-21T14:00",
+        "temp:news_data": {
+            "AAPL": {"news": [{"title": "AAPL beats", "summary": "Q3 strong"}]},
+            "MSFT": {"news": []},
+            "TSLA": {"news": [{"title": "Bearish note"}]},
+        },
+        # TSLA verdict is absent — simulates a failed branch; should become
+        # a no-data neutral synthesis.
+        "temp:news_verdict_AAPL": {
+            "ticker": "AAPL", "lean": "bullish", "magnitude": 0.7,
+            "confidence": 0.8, "rationale": "Earnings beat",
+            "key_factors": ["catalyst:earnings"], "is_no_data": False,
+        },
+        "temp:news_verdict_MSFT": {
+            "ticker": "MSFT", "lean": "bearish", "magnitude": 0.4,
+            "confidence": 0.5, "rationale": "Macro headwind",
+            "key_factors": [], "is_no_data": False,
+        },
+    }
+
+    svc     = InMemorySessionService()
+    session = await svc.create_session(
+        app_name="test", user_id="test", state=state, session_id="t-consist",
+    )
+    agent = NewsJoinerAgent(name="NewsJoiner")
+    ctx   = InvocationContext(
+        session_service=svc, session=session, invocation_id="inv-consist", agent=agent,
+    )
+
+    events = [ev async for ev in agent.run_async(ctx)]
+    delta  = events[0].actions.state_delta
+
+    verdicts  = {v["ticker"]: v for v in delta["news_verdicts"]["verdicts"]}
+    evidences = {row["ticker"]: row for row in delta["news_evidence"]}
+
+    # Invariant 3: one row per input ticker in both output lists.
+    assert set(verdicts.keys())  == {"AAPL", "MSFT", "TSLA"}
+    assert set(evidences.keys()) == {"AAPL", "MSFT", "TSLA"}
+
+    for ticker in ("AAPL", "MSFT", "TSLA"):
+        v   = verdicts[ticker]
+        ev  = evidences[ticker]
+
+        # Invariant 1: verdict lean matches evidence lean for the same ticker.
+        assert v["lean"] == ev["verdict"]["lean"], (
+            f"{ticker}: verdict lean {v['lean']!r} != evidence lean "
+            f"{ev['verdict']['lean']!r}"
+        )
+
+        # Invariant 2: no-data synthesis always produces lean == "neutral".
+        if v["is_no_data"]:
+            assert v["lean"] == "neutral", (
+                f"{ticker}: is_no_data=True but lean={v['lean']!r} (expected 'neutral')"
+            )
+
+    # Specific check: TSLA (missing verdict key) must be synthesised as no-data neutral.
+    assert verdicts["TSLA"]["is_no_data"] is True
+    assert verdicts["TSLA"]["lean"]       == "neutral"
