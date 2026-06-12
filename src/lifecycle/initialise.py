@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -112,12 +113,21 @@ def _check_live_tables_empty(db_url: str) -> None:
             ``search_path`` that is not ``public``.
         NonEmptyTablesError: when any monitored table already has rows.
     """
-    # Guard: reject URLs that explicitly override search_path to something
-    # other than 'public'.  The split on "search_path" gives us the
-    # remainder of the URL after the key, so we can check whether the
-    # value contains "public".  A plain "postgresql://…" URL (no
-    # search_path option) passes through unaffected.
-    if "search_path" in db_url and "public" not in db_url.split("search_path", 1)[1]:
+    # Guard: scope to the query string only, so a hostname or database name
+    # that happens to contain the substring "search_path" does not trigger
+    # a false positive.  Only the query portion (after '?') carries URL
+    # parameters.
+    query = db_url.split("?", 1)[1] if "?" in db_url else ""
+
+    # Reject only when search_path is present AND the value is not exactly
+    # 'public' (plain or percent-encoded '='), terminated by a separator or
+    # end-of-string.  Values like 'notpublic' or 'public_tenant' contain
+    # "public" as a substring and must be rejected — hence the trailing anchor.
+    if "search_path" in query and not re.search(
+        r"search_path(?:=|%3D)public(?:[&,;\s]|$)",
+        query,
+        re.IGNORECASE,
+    ):
         raise UnsupportedSchemaError(
             "non-default Postgres schema detected in db_url; only 'public' is "
             "supported by the lifecycle helpers.  See UnsupportedSchemaError "

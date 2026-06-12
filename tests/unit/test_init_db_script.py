@@ -47,7 +47,7 @@ def test_init_db_is_idempotent(tmp_path) -> None:
     assert set(Base.metadata.tables.keys()).issubset(tables)
 
 
-def test_check_live_tables_empty_rejects_non_default_schema(tmp_path):
+def test_check_live_tables_empty_rejects_non_default_schema():
     """Postgres non-public schema is not supported — document via explicit raise.
 
     The lifecycle helper hard-codes un-qualified table references, which resolve
@@ -63,3 +63,47 @@ def test_check_live_tables_empty_rejects_non_default_schema(tmp_path):
 
     with pytest.raises(UnsupportedSchemaError, match="public"):
         _check_live_tables_empty(url)
+
+
+def test_check_live_tables_empty_rejects_schema_containing_public_substring():
+    """A schema like 'notpublic' must be rejected, not pass on substring match.
+
+    Regression for the A-091 review finding: the original guard used a plain
+    ``"public" in ...`` substring test, which allowed values such as
+    ``notpublic``, ``public_tenant``, and ``public2`` through incorrectly.
+    The tightened regex anchors on an exact word boundary so only the literal
+    value ``public`` is accepted.
+    """
+    from lifecycle.initialise import UnsupportedSchemaError, _check_live_tables_empty
+
+    url = "postgresql+psycopg://u:p@h/db?options=-csearch_path%3Dnotpublic"
+
+    with pytest.raises(UnsupportedSchemaError, match="public"):
+        _check_live_tables_empty(url)
+
+
+def test_check_live_tables_empty_accepts_public_schema():
+    """An explicit search_path=public must pass the schema guard.
+
+    The guard should only fire for non-public schemas.  A URL that explicitly
+    pins ``search_path=public`` (or the percent-encoded equivalent) is the
+    default case and must be allowed through to the engine-creation stage.
+    Any error raised beyond that point (e.g. a real connection error) is
+    irrelevant — what matters is that ``UnsupportedSchemaError`` is NOT raised.
+    """
+    from lifecycle.initialise import UnsupportedSchemaError, _check_live_tables_empty
+
+    url = "postgresql+psycopg://u:p@h/db?options=-csearch_path%3Dpublic"
+
+    # The guard passes and the function proceeds to connect — that connection
+    # will fail in this test environment (no real Postgres), but as long as the
+    # error raised is NOT UnsupportedSchemaError the guard itself is correct.
+    try:
+        _check_live_tables_empty(url)
+    except UnsupportedSchemaError:
+        pytest.fail(
+            "UnsupportedSchemaError raised for search_path=public; guard is too strict"
+        )
+    except Exception:
+        # Any other exception (connection refused, etc.) is expected and fine.
+        pass
