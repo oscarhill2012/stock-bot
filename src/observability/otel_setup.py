@@ -182,11 +182,9 @@ def install_observability(*, service_name: str = "stockbot") -> ObservabilityHan
     # per https://adk.dev/observability/logging/).  The remaining names are
     # the project's top-level Python packages under ``src/`` — anything
     # ``logger = logging.getLogger(__name__)`` produces in this codebase
-    # will fall under one of them.  ``stockbot`` is reserved for any
-    # future namespace migration but harmless if currently unused.
+    # will fall under one of them.
     captured_namespaces = (
         "google_adk",
-        "stockbot",
         "agents",
         "backtest",
         "orchestrator",
