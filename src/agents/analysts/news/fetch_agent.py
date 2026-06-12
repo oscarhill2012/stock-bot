@@ -31,7 +31,7 @@ from google.adk.events import Event, EventActions
 from agents.analysts.news.fetch import _build_ticker_news_context
 from data import get_stock_news
 from data.timeguard import resolve_as_of
-from observability.trace import _trace_maybe
+from observability.trace import trace_maybe
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -112,7 +112,7 @@ class NewsFetchAgent(BaseAgent):
         )
 
         # Surface trace — no-op unless state["temp:_trace"] is set.
-        _trace_maybe(state, "01_fetch_news", news_data)
+        trace_maybe(state, "01_fetch_news", news_data)
 
         yield Event(
             author=self.name,

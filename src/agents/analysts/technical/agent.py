@@ -32,7 +32,7 @@ from agents.analysts._common import make_evidence_callback
 from agents.analysts.heuristics import TechnicalHeuristics, load_heuristics
 from contract.extractors.technical import derive_technical_verdict, extract_technical_features
 from data.timeguard import resolve_as_of
-from observability.trace import _trace_maybe
+from observability.trace import trace_maybe
 
 from .fetch import technical_fetch_callback
 
@@ -140,7 +140,7 @@ class TechnicalAnalyst(BaseAgent):
         # Surface trace — no-op unless state["temp:_trace"] is set by trace_tick.py.
         # Run before the yield so the trace records the same payload the
         # state_delta carries.
-        _trace_maybe(ctx.session.state, "02_technical_verdict", verdicts)
+        trace_maybe(ctx.session.state, "02_technical_verdict", verdicts)
 
         # Contract Rule 1 — every state write rides on an Event whose
         # ``actions.state_delta`` carries it.  ADK's SessionService only

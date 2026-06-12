@@ -15,7 +15,7 @@ from agents.strategist.position_thesis import PositionThesis as NewPositionThesi
 from agents.strategist.stance_schema import TickerStance
 from broker.protocol import Broker, BrokerRejection
 from data.timeguard import resolve_as_of
-from observability.trace import _trace_maybe
+from observability.trace import trace_maybe
 from orchestrator.state import Execution, Order
 
 # Module-level logger used by the DecisionLogger hook and the
@@ -356,7 +356,7 @@ class ExecutorAgent(BaseAgent):
         # the state_delta key in the yielded Event below.
 
         # Surface trace — no-op unless state["temp:_trace"] is set by trace_tick.py.
-        _trace_maybe(state, "07_broker_calls", executions)
+        trace_maybe(state, "07_broker_calls", executions)
 
         # Decision-snapshot hook — no-op in live runs that do not set
         # ``state["temp:_decision_logger"]``.  The backtest runner installs one

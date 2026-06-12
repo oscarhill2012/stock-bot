@@ -40,7 +40,7 @@ from data import (
 )
 from data.models.smart_money import SmartMoneyRaw
 from data.timeguard import resolve_as_of
-from observability.trace import _trace_maybe
+from observability.trace import trace_maybe
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +135,7 @@ async def smart_money_fetch_callback(
     state["smart_money_data"] = smart_money_data
 
     # Surface trace — no-op unless state["temp:_trace"] is set by trace_tick.py.
-    _trace_maybe(state, "01_fetch_smart_money", smart_money_data)
+    trace_maybe(state, "01_fetch_smart_money", smart_money_data)
 
     # Return None unconditionally so ADK does NOT set end_invocation=True.
     # Per-ticker no-data handling is delegated to _run_async_impl via the

@@ -9,9 +9,9 @@ crashed and the suppress hid it.
 The fix logs via ``logger.exception`` inside the suppress so single-tick
 drops are not invisible while the suppress still keeps the run alive.
 
-The actual helper exposed by the module is ``_trace_maybe``, not the
-plan sketch's ``_trace_section``; this test uses the real name and the
-real ``(state, label, payload, *, state_keys=None)`` signature.
+The actual helper exposed by the module is ``trace_maybe`` (promoted from
+``_trace_maybe`` in A-097.o); this test uses the real name and the real
+``(state, label, payload, *, state_keys=None)`` signature.
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ import logging
 
 import pytest
 
-from observability.trace import _trace_maybe
+from observability.trace import trace_maybe
 
 
 class _ExplodingTraceWriter:
@@ -33,14 +33,14 @@ class _ExplodingTraceWriter:
 def test_trace_failure_logs_exception(caplog: pytest.LogCaptureFixture) -> None:
     """A snapshot crash logs an exception record but does not propagate."""
 
-    # ``_trace_maybe`` looks up ``state["temp:_trace"]`` via ``.get``; a plain
+    # ``trace_maybe`` looks up ``state["temp:_trace"]`` via ``.get``; a plain
     # dict satisfies that interface without needing an ADK session object.
     state = {"temp:_trace": _ExplodingTraceWriter()}
 
     caplog.set_level(logging.WARNING, logger="observability.trace")
 
     # Should not raise — the try/except keeps the run alive.
-    _trace_maybe(state, label="03_strategist", payload={"x": 1})
+    trace_maybe(state, label="03_strategist", payload={"x": 1})
 
     exception_records = [r for r in caplog.records if r.levelno >= logging.WARNING]
     assert exception_records, (

@@ -5,7 +5,7 @@ the source of truth for the existing domain-labelled per-tick traces
 until its 15+ call sites are migrated in a follow-up):
 
 * **TraceWriter** (``observability.trace``) — manual per-boundary JSON
-  snapshots collected via ``_trace_maybe(state, ...)`` hooks scattered
+  snapshots collected via ``trace_maybe(state, ...)`` hooks scattered
   across the agents.  Captures domain-shaped data (e.g. ``"01_fetch_news"``,
   ``"06_risk_gate_out"``).
 * **OTEL stack** (``observability.otel_setup``, ``observability.exporters``,

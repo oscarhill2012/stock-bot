@@ -23,7 +23,7 @@ from google.genai import types as genai_types
 
 from data import get_company_ratios, get_price_history
 from data.timeguard import resolve_as_of
-from observability.trace import _trace_maybe
+from observability.trace import trace_maybe
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +90,6 @@ async def technical_fetch_callback(
     state["temp:technical_data"] = technical_data
 
     # Surface trace — no-op unless state["temp:_trace"] is set by trace_tick.py.
-    _trace_maybe(state, "01_fetch_technical", technical_data)
+    trace_maybe(state, "01_fetch_technical", technical_data)
 
     return None

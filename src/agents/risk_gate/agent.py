@@ -9,7 +9,7 @@ from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event, EventActions
 
 from broker.portfolio import Portfolio
-from observability.trace import _trace_maybe
+from observability.trace import trace_maybe
 from orchestrator.state import MIN_HELD_WEIGHT
 
 from .constraints import apply_constraints
@@ -126,7 +126,7 @@ class RiskGateAgent(BaseAgent):
         # and therefore never enter the clamp domain — they will not generate
         # any ClampRecord.  The trace key is intentionally kept as
         # ``"06_risk_gate_in"`` so dashboards are not broken by a rename.
-        _trace_maybe(state, "06_risk_gate_in", {"proposed_weights": proposed})
+        trace_maybe(state, "06_risk_gate_in", {"proposed_weights": proposed})
 
         # A-072: consume state['portfolio'] (refreshed at Phase 2) rather
         # than re-pulling from the broker mid-tick.  The broker remains
@@ -258,7 +258,7 @@ class RiskGateAgent(BaseAgent):
         # Surface trace — record clamped weights and generated orders.
         # Reads from the local variables, not from ``state``, because the
         # state_delta has not been merged yet at this point.
-        _trace_maybe(state, "06_risk_gate_out", {
+        trace_maybe(state, "06_risk_gate_out", {
             "clamped_weights": proposed,
             "orders":          final_orders,
             "clamps":          risk_clamps_applied,

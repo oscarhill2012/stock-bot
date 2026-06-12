@@ -27,7 +27,7 @@ from contract.evidence import AnalystEvidence, AnalystVerdict, TickerVerdict, Ve
 from contract.extractors.fundamental import extract_fundamental_features
 from data.timeguard import resolve_as_of
 from observability.terminal_log import emit_analyst_summary
-from observability.trace import _trace_maybe
+from observability.trace import trace_maybe
 
 
 class FundamentalJoinerAgent(BaseAgent):
@@ -149,7 +149,7 @@ class FundamentalJoinerAgent(BaseAgent):
                 )
 
         # Surface trace — records the aggregated verdicts for debugging/auditing.
-        _trace_maybe(state, "02_fundamental_verdict", [v.model_dump() for v in verdicts_list])
+        trace_maybe(state, "02_fundamental_verdict", [v.model_dump() for v in verdicts_list])
 
         yield Event(
             author=self.name,

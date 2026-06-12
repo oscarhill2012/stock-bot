@@ -49,7 +49,7 @@ from contract.evidence import AnalystEvidence
 from contract.strategist_prompt import render_all_ticker_blocks
 from contract.ticker_evidence import TickerEvidence
 from data.timeguard import resolve_as_of
-from observability.trace import _trace_maybe
+from observability.trace import trace_maybe
 
 
 def _index_evidence(state, key: str) -> dict[str, AnalystEvidence]:
@@ -278,7 +278,7 @@ class StrategistContextShim(BaseAgent):
         ticker_evidence_rendered = render_all_ticker_blocks(ticker_evidence)
 
         # Surface trace — no-op unless state["temp:_trace"] is set.
-        _trace_maybe(state, "04_digest", ticker_evidence_objects)
+        trace_maybe(state, "04_digest", ticker_evidence_objects)
 
         # ── Thesis placeholder ───────────────────────────────────────────
         # The strategist instruction uses the optional ``{user:thesis?}``

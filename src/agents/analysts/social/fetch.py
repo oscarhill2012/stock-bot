@@ -19,7 +19,7 @@ from google.genai import types as genai_types
 from data import get_social_sentiment
 from data.providers.social_sentiment.finnhub import PremiumGatedError
 from data.timeguard import resolve_as_of
-from observability.trace import _trace_maybe
+from observability.trace import trace_maybe
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +83,7 @@ async def social_fetch_callback(
     state["temp:social_data"] = social_data
 
     # Surface trace — no-op unless state["temp:_trace"] is set by trace_tick.py.
-    _trace_maybe(state, "01_fetch_social", social_data)
+    trace_maybe(state, "01_fetch_social", social_data)
 
     # Return None so the agent body (_run_async_impl) continues normally.
     return None

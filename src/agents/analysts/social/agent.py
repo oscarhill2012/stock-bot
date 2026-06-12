@@ -32,7 +32,7 @@ from google.adk.events import Event, EventActions
 from agents.analysts._common import make_evidence_callback
 from agents.analysts.heuristics import SocialHeuristics, load_heuristics
 from contract.extractors.social import derive_social_verdict, extract_social_features
-from observability.trace import _trace_maybe
+from observability.trace import trace_maybe
 
 from .fetch import social_fetch_callback
 
@@ -124,7 +124,7 @@ class SocialAnalyst(BaseAgent):
         # Surface trace — no-op unless state["temp:_trace"] is set by trace_tick.py.
         # Trace before the yield so the recorded payload matches the
         # state_delta value.
-        _trace_maybe(ctx.session.state, "02_social_verdict", verdicts)
+        trace_maybe(ctx.session.state, "02_social_verdict", verdicts)
 
         # Contract Rule 1 — yield the state_delta so the write survives
         # ADK's SessionService.append_event boundary.  Direct dict

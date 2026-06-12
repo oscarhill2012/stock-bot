@@ -55,7 +55,7 @@ from data import get_company_filings, get_company_ratios, get_insider_trades
 from data.config import get_config
 from data.models import Form4Bundle
 from data.timeguard import resolve_as_of
-from observability.trace import _trace_maybe
+from observability.trace import trace_maybe
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -202,7 +202,7 @@ class FundamentalFetchAgent(BaseAgent):
         )
 
         # Surface trace — no-op unless state["temp:_trace"] is set by trace_tick.py.
-        _trace_maybe(state, "01_fetch_fundamental", fundamental_data)
+        trace_maybe(state, "01_fetch_fundamental", fundamental_data)
 
         yield Event(
             author=self.name,

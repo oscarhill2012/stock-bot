@@ -2,7 +2,7 @@
 
 Production runs do not instantiate this; the ``trace_tick.py`` entrypoint
 sets ``state["temp:_trace"]`` to a TraceWriter, and every callback opportunistically
-routes through ``_trace_maybe(state, ...)``.  Production tick state has no
+routes through ``trace_maybe(state, ...)``.  Production tick state has no
 ``"temp:_trace"`` key, so the helper is a single dict lookup no-op.
 """
 from __future__ import annotations
@@ -117,7 +117,7 @@ class TraceWriter:
         out_path.write_text(json.dumps(self._sections, indent=2, default=str))
 
 
-def _trace_maybe(
+def trace_maybe(
     state: Any,
     label: str,
     payload: Any,

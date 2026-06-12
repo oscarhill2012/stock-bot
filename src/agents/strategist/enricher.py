@@ -61,7 +61,7 @@ from agents.strategist.schema import StrategistDecision, StrategistLLMDecision
 from broker.portfolio import Portfolio
 from data.timeguard import resolve_as_of
 from observability.terminal_log import emit_analyst_summary
-from observability.trace import _trace_maybe
+from observability.trace import trace_maybe
 
 logger = logging.getLogger(__name__)
 
@@ -227,7 +227,7 @@ def validate_and_enrich(state: dict) -> dict | None:
     # inspection (decisions/, report/) and ad-hoc trace forensics can see
     # the full stance set, decision_tag, reasoning, and derived weights.
     # No-op unless state["temp:_trace"] is set by the backtest driver.
-    _trace_maybe(state, "03_strategist", decision_dump)
+    trace_maybe(state, "03_strategist", decision_dump)
 
     # ── Terminal summary row ──────────────────────────────────────────────────
     # Mirrors the pattern used by news/joiner.py and fundamental/joiner.py —
