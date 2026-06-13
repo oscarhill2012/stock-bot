@@ -217,7 +217,6 @@ def test_verdict_fields_round_trip():
     assert ev.analyst == "technical"
     assert ev.tick_id == "tick-abc"
     assert ev.features == {"toy_feature": 1.0}
-    assert ev.feature_warnings == []
 
 
 # ---------------------------------------------------------------------------

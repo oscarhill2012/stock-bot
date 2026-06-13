@@ -103,13 +103,12 @@ class NewsJoinerAgent(BaseAgent):
             )
 
             ev = AnalystEvidence(
-                analyst        = "news",
-                ticker         = ticker,
-                tick_id        = tick_id,
-                recorded_at    = recorded_at,
-                verdict        = verdict,
-                features       = features,
-                feature_warnings = [],
+                analyst     = "news",
+                ticker      = ticker,
+                tick_id     = tick_id,
+                recorded_at = recorded_at,
+                verdict     = verdict,
+                features    = features,
             )
             evidence_list.append(ev.model_dump(mode="json"))
 

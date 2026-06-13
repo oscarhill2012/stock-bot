@@ -42,7 +42,6 @@ def test_save_analyst_evidence_round_trip(db_session):
             "is_no_data": False,
         },
         features={"rsi_14": 62.0, "atr_pct_14": 0.018},
-        feature_warnings=[],
     )
     db_session.commit()
     rows = db_session.query(AnalystEvidenceRow).all()
@@ -58,7 +57,6 @@ def test_save_analyst_evidence_round_trip(db_session):
     assert json.loads(r.features_json) == {"rsi_14": 62.0, "atr_pct_14": 0.018}
     assert json.loads(r.key_factors_json) == ["rsi_14: 62"]
     assert r.rationale == "uptrend with low volatility"
-    assert json.loads(r.feature_warnings_json) == []
     assert r.id is not None
 
 

@@ -404,10 +404,7 @@ class AnalystEvidence(BaseModel):
 
     `features` carries the deterministic feature extractor's output (numeric
     only — no strings). Keys are analyst-specific; see Phase 4 spec for the
-    locked catalogue per analyst. `feature_warnings` records any
-    extractor-emitted issues (missing data window, NaN replacement, etc.) so
-    downstream consumers can tell "extractor returned 0.0 because the input
-    was missing" apart from "extractor returned a real 0.0".
+    locked catalogue per analyst.
 
     `raw_text` is an optional pass-through of the raw provider text the LLM
     analyst saw (News headlines, Fundamental filing excerpts).  Empty / None
@@ -421,6 +418,5 @@ class AnalystEvidence(BaseModel):
     tick_id: str
     recorded_at: datetime
     features: dict[str, float]
-    feature_warnings: list[str] = Field(default_factory=list)
     verdict: AnalystVerdict
     raw_text: str | None = Field(default=None, max_length=10_000)

@@ -46,9 +46,6 @@ def make_evidence_callback(
     3. Writes the resulting ``AnalystEvidence`` list (as JSON-serialisable
        dicts) to ``state["{analyst}_evidence"]``.
 
-    Note: ``feature_warnings`` is set to ``[]`` for now — extractors do not
-    yet expose a warnings channel.  That plumbing is out of scope for D3.
-
     Parameters
     ----------
     analyst:
@@ -162,7 +159,6 @@ def make_evidence_callback(
                 recorded_at=recorded_at,
                 verdict=verdict,
                 features=features,
-                feature_warnings=[],  # extractors do not yet expose warnings
             )
             evidence_list.append(ev.model_dump(mode="json"))
 

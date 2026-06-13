@@ -41,7 +41,6 @@ def _evidence(analyst, ticker, lean="bullish"):
             "is_no_data": False,
         },
         "features": {f"{analyst}_feature": 1.0},
-        "feature_warnings": [],
     }
 
 

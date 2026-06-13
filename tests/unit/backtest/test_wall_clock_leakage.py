@@ -229,7 +229,6 @@ def test_evidence_writer_uses_as_of(db_session) -> None:
         "analyst": "technical",
         "verdict": verdict,
         "features": {},
-        "feature_warnings": [],
     }
     ticker_ev_obj = {
         "ticker": "AAPL",

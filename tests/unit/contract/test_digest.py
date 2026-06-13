@@ -50,7 +50,6 @@ def _ev(
         tick_id="t",
         recorded_at=_now(),
         features={},
-        feature_warnings=[],
         verdict=AnalystVerdict(
             lean=lean,
             magnitude=conf if magnitude is None else magnitude,
@@ -205,7 +204,6 @@ def test_no_data_flag_treated_as_neutral_in_aggregate():
             tick_id="t",
             recorded_at=_now(),
             features={"is_no_data": 1.0},
-            feature_warnings=[],
             verdict=AnalystVerdict(
                 lean="bullish",
                 magnitude=0.9,
@@ -252,29 +250,49 @@ def test_per_analyst_magnitude_preserved_in_dump():
 
 
 def test_fill_missing_emits_structured_warning(caplog):
-    """A missing analyst slot must be logged loudly AND flagged on the evidence (A-050).
+    """A missing analyst slot must be logged loudly AND synthesised with is_no_data=True (A-050).
 
     Two assertions verify the loud-failure policy:
-    (a) A structured WARNING is emitted, naming the missing slot in the message.
-    (b) The synthesised AnalystEvidence carries ``missing_slot:<name>`` in its
-        ``feature_warnings`` so downstream can detect the synthesised nature
-        without parsing log output.
+    (a) A structured WARNING is emitted, naming the missing slot in the log message.
+    (b) The synthesised AnalystEvidence's verdict has ``is_no_data=True``, confirming
+        the synthesised neutral placeholder is clearly marked as a no-data record.
+
+    Note: A-053 Branch B removed the machine-readable marker field.  The A-050
+    missing-slot signal is now carried solely by the logger.warning call and
+    the ``is_no_data=True`` flag.
     """
     # Only supply technical — fundamental and news are absent and should each
-    # trigger a WARNING + machine-readable feature_warning flag.
+    # trigger a WARNING + is_no_data=True on the synthesised placeholder.
     per_analyst = {"technical": _ev("technical", "bullish", 0.8)}
 
     with caplog.at_level("WARNING"):
         te = build_ticker_evidence(per_analyst, "AAPL", "t", _now(), DEFAULT_ANALYST_WEIGHTS)
 
-    # (a) At least one structured WARNING must name a missing slot.
-    assert any(
-        rec.levelname == "WARNING" and "missing_analyst_slot" in rec.getMessage()
+    # (a) A structured WARNING must fire for EACH missing slot.  Both
+    # "fundamental" and "news" are absent from the fixture, so we expect two
+    # separate WARNING records — one per slot.  This confirms the operator log
+    # fires for every pipeline gap, not just the first one encountered.
+    warning_messages = [
+        rec.getMessage()
         for rec in caplog.records
-    ), "expected a structured WARNING when a slot is missing"
+        if rec.levelname == "WARNING" and "missing_analyst_slot" in rec.getMessage()
+    ]
+    assert any("fundamental" in msg for msg in warning_messages), (
+        "expected a structured WARNING naming the missing 'fundamental' slot"
+    )
+    assert any("news" in msg for msg in warning_messages), (
+        "expected a structured WARNING naming the missing 'news' slot"
+    )
 
-    # (b) The synthesised entry for 'fundamental' carries the machine-readable marker.
-    assert "missing_slot:fundamental" in te.per_analyst["fundamental"].feature_warnings
+    # (b) Both synthesised entries must be marked is_no_data=True — the sole
+    # surviving machine-readable signal after A-053 Branch B removed the
+    # feature_warnings marker.
+    assert te.per_analyst["fundamental"].verdict.is_no_data is True, (
+        "synthesised 'fundamental' missing-slot entry must have is_no_data=True"
+    )
+    assert te.per_analyst["news"].verdict.is_no_data is True, (
+        "synthesised 'news' missing-slot entry must have is_no_data=True"
+    )
 
 
 # ── Dilution-fix regression: 3 unanimous analysts must reach magnitude 1.0 ────
