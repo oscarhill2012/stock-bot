@@ -342,16 +342,20 @@ TECHNICAL_BULLETS: list[_BulletEntry] = [
 
 FUNDAMENTAL_BULLETS: list[_BulletEntry] = [
     # Valuation ratios.
+    #
+    # NB: "P/E (forward)", "PEG" and "Analyst rating avg" bullets were retired
+    # (audit: full-backtest-iter-1) — these are forward-looking / broker-
+    # consensus figures with no PIT-correct source, so the extractor no longer
+    # emits them.  A missing key is skipped by ``_render_features``, so even if
+    # they reappeared the digest would degrade gracefully; removing the bullets
+    # keeps the rendered block honest about what the bot can actually see.
     ("pe_trailing",                    "P/E (trailing):",        _plain,        None),
-    ("pe_forward",                     "P/E (forward):",         _plain,        None),
-    ("peg",                            "PEG:",                   _plain,        None),
     # Growth and quality metrics.
     ("revenue_growth_yoy",             "Revenue growth YoY:",    _pct_signed,   None),
     ("profit_margin",                  "Profit margin:",         _pct_signed,   None),
     ("debt_to_equity",                 "Debt/equity:",           _plain,        None),
     ("fcf_yield_pct",                  "FCF yield:",             _plain,        None),
     ("roe",                            "RoE:",                   _pct_signed,   None),
-    ("analyst_rating_avg",             "Analyst rating avg:",    _plain,        None),
     # Filing recency.
     ("days_since_last_filing",         "Days since filing:",     _plain,        None),
     ("n_filings_30d",                  "Filings last 30d:",      _plain,        None),

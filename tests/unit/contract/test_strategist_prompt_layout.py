@@ -236,7 +236,6 @@ def _make_ticker_evidence(
 
     fund_features = {
         "pe_trailing": 36.2,
-        "pe_forward": 31.3,
         "profit_margin": 0.0,       # 0.0 = no data
         "insider_net_dollars_30d": -72_000_000.0,
         "insider_n_buys_30d": 0.0,

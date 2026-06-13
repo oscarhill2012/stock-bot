@@ -58,10 +58,14 @@ def test_all_features_are_floats(aapl_data):
 
 
 def test_pe_values_carried_through(aapl_data):
-    """P/E values from the ratios sub-dict must survive extraction unchanged."""
+    """Trailing P/E from the ratios sub-dict must survive extraction unchanged.
+
+    ``pe_forward`` is no longer extracted (no PIT-correct source — see _KEYS),
+    so the extractor must not emit it even when the raw ratios dict carries it.
+    """
     features = extract_fundamental_features(aapl_data, ticker="AAPL")
     assert features["pe_trailing"] == pytest.approx(28.5)
-    assert features["pe_forward"] == pytest.approx(26.0)
+    assert "pe_forward" not in features
 
 
 def test_fcf_yield_computed_from_fcf_and_market_cap(aapl_data):
@@ -95,8 +99,14 @@ def test_handles_zero_market_cap_in_fcf_yield():
 # Task 2.4 — Fix D: fundamental extractor wires 8 ratio fields
 # ---------------------------------------------------------------------------
 
-def test_fundamental_emits_eight_ratio_features():
-    """All eight Phase 7 ratio fields must be extracted from raw['ratios']."""
+def test_fundamental_emits_pit_ratio_features():
+    """The PIT-available ratio fields must be extracted from raw['ratios'].
+
+    The forward-looking / broker-consensus fields (``peg``,
+    ``analyst_rating_avg``, ``number_of_analyst_opinions``) were retired from
+    the catalogue — they have no PIT-correct source — so even when the raw
+    CompanyRatios carries them, the extractor must NOT surface them.
+    """
     from data.models.company_ratios import CompanyRatios
 
     r = CompanyRatios(
@@ -108,14 +118,19 @@ def test_fundamental_emits_eight_ratio_features():
     # insider_trades is mandatory post-A-054 even when only ratios are asserted.
     raw = {"ticker": "AAPL", "ratios": r.model_dump(), "insider_trades": []}
     features = extract_fundamental_features(raw, state={})
-    assert features["peg"] == pytest.approx(1.8)
+
+    # PIT-available fields survive extraction.
     assert features["revenue_growth_yoy"] == pytest.approx(0.07)
     assert features["profit_margin"] == pytest.approx(0.25)
     assert features["debt_to_equity"] == pytest.approx(1.5)
     assert features["roe"] == pytest.approx(0.15)
     assert features["free_cash_flow"] == pytest.approx(9.0e10)
-    assert features["analyst_rating_avg"] == pytest.approx(2.1)
-    assert features["number_of_analyst_opinions"] == pytest.approx(42)
+
+    # Retired forward/consensus fields must be absent (not zero, absent).
+    assert "peg" not in features
+    assert "pe_forward" not in features
+    assert "analyst_rating_avg" not in features
+    assert "number_of_analyst_opinions" not in features
 
 
 # ---------------------------------------------------------------------------
