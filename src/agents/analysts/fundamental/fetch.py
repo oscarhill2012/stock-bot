@@ -6,9 +6,10 @@ Provides the per-ticker context-building helpers used by ``FundamentalFetchAgent
 The per-ticker triad payload layout is::
 
     {
-        "ratios":  <dict from CompanyRatios.model_dump() | None on failure>,
-        "filings": [<Filing.model_dump()>, ...],
-        "insider": <Form4Bundle instance>,
+        "ratios":                    <dict from CompanyRatios.model_dump() | None on failure>,
+        "filings":                   [<Filing.model_dump()>, ...],
+        "insider_trades":            [<InsiderTrade.model_dump()>, ...],
+        "insider_derivative_trades": [<InsiderDerivativeTrade.model_dump()>, ...],
     }
 
 The context block written into state combines:
@@ -28,13 +29,61 @@ was retired in Phase 9 when the per-ticker fan-out design replaced the batched
 """
 from __future__ import annotations
 
+import contextlib
 import logging
+
+from pydantic import ValidationError
 
 from config.analysts import FundamentalCaps, get_analysts_config
 from data.config import get_config
 from data.models import Form4Bundle, InsiderTrade
+from data.models.trades import InsiderDerivativeTrade
 
 _logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Shared insider-reconstruction helper
+# ---------------------------------------------------------------------------
+
+def _bundle_from_flat_lists(
+    raw_trades: list[dict],
+    raw_derivatives: list[dict],
+) -> Form4Bundle:
+    """Rebuild a ``Form4Bundle`` from the Phase 7 flat-list insider dicts.
+
+    Each row is re-validated into its typed model; a row that fails Pydantic
+    validation is dropped (best-effort context reconstruction) rather than
+    aborting the whole bundle.  Only ``ValidationError`` is suppressed —
+    anything else (e.g. a non-dict row causing an ``AttributeError``) is a
+    genuine bug and must surface loudly.
+
+    This helper is imported by ``agents.analysts.report_cache`` so the
+    suppression logic lives in exactly one place.
+
+    Parameters
+    ----------
+    raw_trades:
+        List of ``InsiderTrade.model_dump()`` dicts (may be empty).
+    raw_derivatives:
+        List of ``InsiderDerivativeTrade.model_dump()`` dicts (may be empty).
+
+    Returns
+    -------
+    Form4Bundle
+        Typed bundle; any invalid rows are silently omitted.
+    """
+    trades: list[InsiderTrade] = []
+    for row in (raw_trades or []):
+        with contextlib.suppress(ValidationError):
+            trades.append(InsiderTrade.model_validate(row))
+
+    derivatives: list[InsiderDerivativeTrade] = []
+    for row in (raw_derivatives or []):
+        with contextlib.suppress(ValidationError):
+            derivatives.append(InsiderDerivativeTrade.model_validate(row))
+
+    return Form4Bundle(trades=trades, derivatives=derivatives)
 
 
 def _caps() -> FundamentalCaps:
@@ -194,20 +243,30 @@ def _build_ticker_context(
 def _build_ticker_fundamental_context(ticker: str, data: dict) -> str:
     """Adapter shim for ``FundamentalFetchAgent`` — wraps ``_build_ticker_context``.
 
-    The per-ticker agent stores each ticker's payload in a flat dict
-    ``{"ratios": ..., "filings": [...], "insider": Form4Bundle}``.  This
-    adapter unpacks that dict and forwards to ``_build_ticker_context`` with
-    the correct positional arguments, so the agent's call site stays tidy.
+    The per-ticker agent stores each ticker's payload in a flat dict::
+
+        {
+            "ratios":                    dict | None,
+            "filings":                   [dict, ...],
+            "insider_trades":            [dict, ...],
+            "insider_derivative_trades": [dict, ...],
+        }
+
+    This adapter unpacks that dict, reconstructs a ``Form4Bundle`` from the
+    two flat insider lists (Phase 7 unified emission shape), and forwards to
+    ``_build_ticker_context`` with the correct positional arguments so the
+    agent's call site stays tidy.
 
     Parameters
     ----------
     ticker:
         Ticker symbol label.
     data:
-        Per-ticker payload dict with keys ``"ratios"``, ``"filings"``, and
-        ``"insider"``.  ``"filings"`` must be a list of serialised Filing
-        dicts; ``"insider"`` must be a ``Form4Bundle`` instance (or ``None``,
-        in which case an empty bundle is substituted).
+        Per-ticker payload dict.  ``"filings"`` must be a list of serialised
+        Filing dicts; ``"insider_trades"`` and
+        ``"insider_derivative_trades"`` must be lists of
+        ``InsiderTrade.model_dump()`` / ``InsiderDerivativeTrade.model_dump()``
+        dicts respectively.  All three default to empty on absence.
 
     Returns
     -------
@@ -216,7 +275,14 @@ def _build_ticker_fundamental_context(ticker: str, data: dict) -> str:
         produces — suitable for direct inclusion in an LLM prompt.
     """
     filings_payload: list[dict] = data.get("filings") or []
-    insider_bundle: Form4Bundle = data.get("insider") or Form4Bundle(trades=[], derivatives=[])
+
+    # Reconstruct the typed Form4Bundle from the two flat lists emitted by
+    # the producer (Phase 7 unified shape).  Invalid rows are silently dropped;
+    # see _bundle_from_flat_lists for the suppression policy.
+    insider_bundle: Form4Bundle = _bundle_from_flat_lists(
+        raw_trades=data.get("insider_trades") or [],
+        raw_derivatives=data.get("insider_derivative_trades") or [],
+    )
 
     # Read the lookback window from config so the window label in the block
     # always matches the actual fetch window used by the agent.

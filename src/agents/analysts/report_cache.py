@@ -27,6 +27,7 @@ from hashlib import blake2b
 from pathlib import Path
 from typing import Any
 
+from agents.analysts.fundamental.fetch import _bundle_from_flat_lists
 from agents.analysts.fundamental.prompts import build_fundamental_instruction
 from agents.analysts.heuristics import load_heuristics
 from agents.analysts.news.prompts import build_news_instruction
@@ -419,11 +420,12 @@ def write_cache(
 def fundamental_hash_inputs_from_dict(ticker: str, triad: dict) -> str:
     """Reconstruct typed objects from a per-ticker state dict and hash them.
 
-    The fetch callback stores ``ratios`` as a ``CompanyRatios.model_dump()``
+    The fetch agent stores ``ratios`` as a ``CompanyRatios.model_dump()``
     dict (or ``None`` on failure), ``filings`` as a list of
-    ``Filing.model_dump()`` dicts, and ``insider`` as a typed
-    ``Form4Bundle`` instance.  This function re-validates the stored dicts
-    so ``fundamental_hash_inputs`` receives the proper typed objects.
+    ``Filing.model_dump()`` dicts, and insider data as two flat lists
+    (``insider_trades`` + ``insider_derivative_trades``) of serialised dicts
+    (Phase 7 unified emission shape).  This function re-validates all stored
+    dicts so ``fundamental_hash_inputs`` receives the proper typed objects.
 
     Parameters
     ----------
@@ -439,7 +441,14 @@ def fundamental_hash_inputs_from_dict(ticker: str, triad: dict) -> str:
     """
     ratios_dict = triad.get("ratios") or {"ticker": ticker}
     filings_raw = triad.get("filings") or []
-    insider_obj = triad.get("insider") or Form4Bundle(trades=[], derivatives=[])
+
+    # Reconstruct the typed Form4Bundle from the Phase 7 flat lists.
+    # Invalid rows are silently dropped; see _bundle_from_flat_lists for
+    # the suppression policy (ValidationError only — real bugs surface loudly).
+    insider_obj = _bundle_from_flat_lists(
+        raw_trades=triad.get("insider_trades") or [],
+        raw_derivatives=triad.get("insider_derivative_trades") or [],
+    )
 
     ratios  = CompanyRatios.model_validate(ratios_dict)
     filings = [

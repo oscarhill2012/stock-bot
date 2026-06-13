@@ -14,7 +14,7 @@ and yields exactly one state_delta event containing:
 from __future__ import annotations
 
 from datetime import datetime
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from google.adk.agents.invocation_context import InvocationContext
@@ -22,7 +22,6 @@ from google.adk.sessions import InMemorySessionService
 
 from agents.analysts.fundamental.fetch_agent import FundamentalFetchAgent
 from data.models import Form4Bundle
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -121,20 +120,23 @@ async def test_fetch_writes_per_ticker_context_keys():
     assert fd["AAPL"]["filings"] == aapl_filings
     assert fd["MSFT"]["filings"] == msft_filings
 
-    # Pin the contract: ``insider`` is stored as a typed ``Form4Bundle``, NOT
-    # a ``.model_dump()`` dict.  Several downstream consumers — most notably
-    # ``fundamental_hash_inputs_from_dict`` in the per-ticker cache callback
-    # and the legacy branch of ``extract_fundamental_features`` — gate on
-    # ``isinstance(_, Form4Bundle)`` / call ``.trades`` directly.  Dumping
-    # here silently breaks both (the cache callback raises ``AttributeError``
-    # and aborts the branch before the LLM is invoked).  See the S5 ↔ Spec A
-    # regression for context.  The strict decision-logger's recursive
-    # ``_coerce`` handles serialisation at the log-write boundary, so the
-    # in-state shape stays typed.
-    from data.models import Form4Bundle as _Form4Bundle
+    # Pin the contract: insider data is stored as two flat lists of serialised
+    # dicts (Phase 7 unified emission shape), NOT a typed Form4Bundle.  The
+    # typed key "insider" has been retired; downstream consumers
+    # (fundamental_hash_inputs_from_dict, extract_fundamental_features) read
+    # "insider_trades" and "insider_derivative_trades" directly.
+    assert "insider_trades" in fd["AAPL"]
+    assert "insider_derivative_trades" in fd["AAPL"]
+    assert isinstance(fd["AAPL"]["insider_trades"], list)
+    assert isinstance(fd["AAPL"]["insider_derivative_trades"], list)
+    assert "insider_trades" in fd["MSFT"]
+    assert "insider_derivative_trades" in fd["MSFT"]
+    assert isinstance(fd["MSFT"]["insider_trades"], list)
+    assert isinstance(fd["MSFT"]["insider_derivative_trades"], list)
 
-    assert isinstance(fd["AAPL"]["insider"], _Form4Bundle)
-    assert isinstance(fd["MSFT"]["insider"], _Form4Bundle)
+    # The legacy typed key must no longer be emitted.
+    assert "insider" not in fd["AAPL"]
+    assert "insider" not in fd["MSFT"]
 
     # One temp:fundamental_context_<TICKER> key per ticker, each containing
     # only that ticker's block.
