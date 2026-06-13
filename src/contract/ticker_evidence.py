@@ -17,7 +17,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, PositiveFloat
+from pydantic import BaseModel, Field
 
 from contract.evidence import AnalystEvidence
 
@@ -49,11 +49,11 @@ class TickerEvidence(BaseModel):
     strategist's per-ticker renderer can show "where the ticker is trading
     right now" in the section header — see ``contract.strategist_prompt``.
 
-    ``None`` is the SOLE "no price" sentinel.  Any zero or negative value
-    raises a ``ValidationError`` at schema validation — the upstream that fed
-    it (typically the technical extractor's ``last_close=0.0`` no-bars case)
-    must coerce to ``None`` at the emission site so the absence is loud, not
-    silent.  Renderers need only guard against ``None``, never ``0.0``.
+    ``None`` is the SOLE "no price" sentinel.  Any zero, negative, infinite or
+    NaN value raises a ``ValidationError`` at schema validation — the upstream
+    that fed it (typically the technical extractor's ``last_close=0.0`` no-bars
+    case) must coerce to ``None`` at the emission site so the absence is loud,
+    not silent.  Renderers need only guard against ``None``, never ``0.0``.
     """
 
     ticker: str
@@ -63,7 +63,9 @@ class TickerEvidence(BaseModel):
     aggregate: AggregateVerdict
     weights: dict[str, float]
 
-    # PositiveFloat rejects 0.0 and negatives at validation time.
-    # None is the sole "no price available" signal — producers must coerce
-    # the no-bars / no-data case to None rather than 0.0.
-    last_price: PositiveFloat | None = None
+    # ``gt=0`` rejects 0.0 and negatives; ``allow_inf_nan=False`` rejects inf
+    # and NaN (Pydantic's bare ``PositiveFloat`` permits inf, which a degenerate
+    # price feed could otherwise smuggle through).  None is the sole "no price
+    # available" signal — producers must coerce the no-bars / no-data case to
+    # None rather than 0.0.
+    last_price: float | None = Field(default=None, gt=0, allow_inf_nan=False)

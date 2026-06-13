@@ -1,11 +1,17 @@
 """One sentinel for last_price: None means absent, every concrete value is positive.
 
-Tests the constraint that TickerEvidence.last_price is PositiveFloat | None,
-making None the sole "no price" sentinel and rejecting 0.0 / negatives at the
+Tests the constraint that TickerEvidence.last_price is
+``float | None = Field(gt=0, allow_inf_nan=False)``, making None the sole
+"no price" sentinel and rejecting 0.0 / negatives / infinities / NaN at the
 schema boundary rather than silently propagating them downstream.
+
+The explicit ``allow_inf_nan=False`` is load-bearing: Pydantic's bare
+``PositiveFloat`` would accept ``inf`` (its ``allow_inf_nan`` defaults True),
+so a degenerate price feed emitting ``inf`` would otherwise slip through.
 """
 from __future__ import annotations
 
+import math
 from datetime import UTC, datetime
 
 import pytest
@@ -65,3 +71,21 @@ def test_last_price_negative_raises():
     """Negative prices have never been valid — assert the constraint is live."""
     with pytest.raises(ValidationError):
         _make_evidence(last_price=-1.0)
+
+
+def test_last_price_positive_infinity_raises():
+    """+inf must raise — bare ``PositiveFloat`` would have accepted it.
+
+    This is the case that motivated the explicit ``allow_inf_nan=False``: a
+    degenerate price feed producing ``float('inf')`` (e.g. a divide-by-zero
+    upstream) must fail loudly at the schema boundary, not propagate an
+    infinite "price" into the strategist's renderer.
+    """
+    with pytest.raises(ValidationError):
+        _make_evidence(last_price=math.inf)
+
+
+def test_last_price_nan_raises():
+    """NaN must raise — it is neither absent (None) nor a usable positive price."""
+    with pytest.raises(ValidationError):
+        _make_evidence(last_price=math.nan)
