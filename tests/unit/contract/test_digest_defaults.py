@@ -6,9 +6,13 @@ from contract.evidence import AnalystName  # noqa: F401  (used in type-checks)
 
 
 def test_default_weights_cover_expected_analysts():
-    # Phase 5 Task 7: 'social' is now the fifth analyst alongside the existing four.
+    # Only analysts that are BOTH wired into the pipeline AND consumed by the
+    # strategist context shim belong here.  Social and smart_money are shelved
+    # — adding phantom entries causes false-positive missing_analyst_slot
+    # WARNINGs and deflates aggregate magnitude (~40 % dilution with 5 slots
+    # but only 3 contributors).
     assert set(DEFAULT_ANALYST_WEIGHTS.keys()) == {
-        "technical", "fundamental", "news", "social", "smart_money"
+        "technical", "fundamental", "news",
     }
 
 

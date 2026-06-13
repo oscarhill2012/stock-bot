@@ -5,7 +5,7 @@ from google.adk.agents import SequentialAgent
 
 
 def _build_analyst_pool(tickers: list[str]):
-    """Build the AnalystPool — Parallel[Parallel[Tech,Social], Fund, News].
+    """Build the AnalystPool — Parallel[Technical, Fund, News].
 
     Phase 9 changes
     ---------------
@@ -28,12 +28,14 @@ def _build_analyst_pool(tickers: list[str]):
     ``fundamental_evidence``) and ``IsolatedFailureWrapper`` prevents
     sibling cancellation cascades inside ADK's ``asyncio.TaskGroup``.
 
-    Technical and Social remain a ``ParallelAgent`` of two ``BaseAgent``
-    subclasses with distinct output keys (Rule 4 satisfied).
+    Technical is the sole ``BaseAgent`` currently wired in
+    ``DeterministicAnalysts``.  Two analysts are shelved:
 
-    SmartMoney is shelved (2026-05-19).  The analyst module remains so a
-    one-line uncomment will revive it once notable_holders / politician
-    trades have working PIT-correct providers.
+    - SmartMoney (shelved 2026-05-19): revive once notable_holders /
+      politician-trades providers are PIT-correct.
+    - Social (shelved 2026-06-13): revive once ``context_shim`` is updated
+      to index ``social_evidence`` AND ``DEFAULT_ANALYST_WEIGHTS`` is
+      updated in ``contract.digest``.
 
     Args:
         tickers: The current watchlist.  Drives the number of per-ticker
@@ -49,22 +51,28 @@ def _build_analyst_pool(tickers: list[str]):
     from agents.analysts.fundamental.agent import build_fundamental_branch
     from agents.analysts.heuristics import load_heuristics
     from agents.analysts.news.agent import build_news_branch
-    from agents.analysts.social.agent import _build_social_analyst
     from agents.analysts.technical.agent import _build_technical_analyst
+    # _build_social_analyst — shelved (2026-06-13).  The analyst module remains
+    # so a one-line uncomment will revive it.  Re-enable by re-importing
+    # _build_social_analyst here and appending it to the DeterministicAnalysts
+    # sub_agents list below, AND wiring ``social_evidence`` into
+    # ``agents.strategist.context_shim`` (which currently never reads it),
+    # AND re-adding ``"social": 1.0`` to ``DEFAULT_ANALYST_WEIGHTS`` in
+    # ``contract.digest``.  All three changes are required together.
 
     # Load heuristics once so all deterministic analysts share the same
-    # cached config object — consumed by the technical and social BaseAgent
-    # analysts.
+    # cached config object — consumed by the technical BaseAgent analyst.
     h = load_heuristics()
 
-    # Technical and Social are BaseAgent subclasses with distinct output
-    # keys — safe to run in parallel (Rule 4 satisfied).  Neither makes an
-    # LLM call so they don't need the retry wrapper.
+    # Technical is the sole deterministic BaseAgent currently wired.  Social
+    # is shelved (see comment above); SmartMoney is also shelved (see below).
+    # Neither shelved analyst makes an LLM call so re-adding them here does
+    # not require a retry wrapper.
     parallel_deterministic = ParallelAgent(
         name="DeterministicAnalysts",
         sub_agents=[
             _build_technical_analyst(h.technical),
-            _build_social_analyst(h.social),
+            # _build_social_analyst(h.social) — shelved (see comment above).
         ],
     )
 

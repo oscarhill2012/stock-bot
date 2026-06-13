@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 
 import pytest
@@ -70,7 +71,6 @@ def test_all_bullish_high_confidence_aggregates_bullish():
         "technical": _ev("technical", "bullish", 0.8),
         "fundamental": _ev("fundamental", "bullish", 0.7),
         "news": _ev("news", "bullish", 0.6),
-        "smart_money": _ev("smart_money", "bullish", 0.9),
     }
     te = build_ticker_evidence(
         per_analyst, ticker="AAPL", tick_id="t", recorded_at=_now(), weights=DEFAULT_ANALYST_WEIGHTS
@@ -88,31 +88,30 @@ def test_all_bearish_aggregates_bearish():
 def test_split_low_confidence_falls_into_dead_zone_neutral():
     per_analyst = {
         "technical": _ev("technical", "bullish", 0.1),
-        "fundamental": _ev("fundamental", "bullish", 0.1),
+        "fundamental": _ev("fundamental", "bearish", 0.1),
         "news": _ev("news", "bearish", 0.1),
-        "smart_money": _ev("smart_money", "bearish", 0.1),
     }
     te = build_ticker_evidence(per_analyst, "AAPL", "t", _now(), DEFAULT_ANALYST_WEIGHTS)
     assert te.aggregate.lean == "neutral"
 
 
-def test_one_strong_bullish_beats_three_weak_neutrals_outside_dead_zone():
+def test_one_strong_bullish_beats_two_weak_neutrals_outside_dead_zone():
     per_analyst = {
         "technical": _ev("technical", "bullish", 0.95),
         "fundamental": _ev("fundamental", "neutral", 0.0),
         "news": _ev("news", "neutral", 0.0),
-        "smart_money": _ev("smart_money", "neutral", 0.0),
     }
     te = build_ticker_evidence(per_analyst, "AAPL", "t", _now(), DEFAULT_ANALYST_WEIGHTS)
     assert te.aggregate.lean == "bullish"
 
 
 def test_dead_zone_collapses_marginally_positive_to_neutral():
+    # With 3 analysts and denominator = 3.0, a confidence of 0.4 yields
+    # magnitude = 0.4 / 3 ≈ 0.133, which is below DIRECTION_DEAD_ZONE (0.15).
     per_analyst = {
-        "technical": _ev("technical", "bullish", 0.5),
+        "technical": _ev("technical", "bullish", 0.4),
         "fundamental": _ev("fundamental", "neutral", 0.0),
         "news": _ev("news", "neutral", 0.0),
-        "smart_money": _ev("smart_money", "neutral", 0.0),
     }
     te = build_ticker_evidence(per_analyst, "AAPL", "t", _now(), DEFAULT_ANALYST_WEIGHTS)
     assert te.aggregate.lean == "neutral"
@@ -126,7 +125,6 @@ def test_aggregate_confidence_is_mean_of_contributing_analysts():
         "technical": _ev("technical", "bullish", 0.4),
         "fundamental": _ev("fundamental", "bullish", 0.6),
         "news": _ev("news", "bullish", 0.8),
-        "smart_money": _ev("smart_money", "bullish", 0.6),
     }
     te = build_ticker_evidence(per_analyst, "AAPL", "t", _now(), DEFAULT_ANALYST_WEIGHTS)
     assert te.aggregate.confidence == pytest.approx(0.6, rel=0.01)
@@ -149,11 +147,10 @@ def test_aggregate_summary_describes_lean_breakdown():
     per_analyst = {
         "technical": _ev("technical", "bullish", 0.6),
         "fundamental": _ev("fundamental", "bullish", 0.6),
-        "news": _ev("news", "bullish", 0.6),
-        "smart_money": _ev("smart_money", "bearish", 0.6),
+        "news": _ev("news", "bearish", 0.6),
     }
     te = build_ticker_evidence(per_analyst, "AAPL", "t", _now(), DEFAULT_ANALYST_WEIGHTS)
-    assert "3" in te.aggregate.summary
+    assert "2" in te.aggregate.summary
     assert "bullish" in te.aggregate.summary.lower()
 
 
@@ -167,11 +164,11 @@ def test_unanimous_agreement_disagreement_zero():
 
 
 def test_max_split_disagreement_high():
+    # One bullish, two bearish — distinct signed confidences → non-trivial variance.
     per_analyst = {
         "technical": _ev("technical", "bullish", 1.0),
-        "fundamental": _ev("fundamental", "bullish", 1.0),
+        "fundamental": _ev("fundamental", "bearish", 1.0),
         "news": _ev("news", "bearish", 1.0),
-        "smart_money": _ev("smart_money", "bearish", 1.0),
     }
     te = build_ticker_evidence(per_analyst, "AAPL", "t", _now(), DEFAULT_ANALYST_WEIGHTS)
     assert te.aggregate.disagreement > 0.5
@@ -186,22 +183,25 @@ def test_missing_analysts_neutral_filled():
     }
     te = build_ticker_evidence(per_analyst, "AAPL", "t", _now(), DEFAULT_ANALYST_WEIGHTS)
     assert set(te.per_analyst.keys()) == set(DEFAULT_ANALYST_WEIGHTS.keys())
-    # Task 7 adds social; all four non-provided analysts should be neutral-filled.
-    for missing in ("fundamental", "news", "social", "smart_money"):
+
+    # The two absent analysts (fundamental, news) should be neutral-filled.
+    for missing in ("fundamental", "news"):
         assert te.per_analyst[missing].verdict.lean == "neutral"
         assert te.per_analyst[missing].verdict.magnitude == 0.0
         assert te.per_analyst[missing].verdict.confidence == 0.0
         assert te.per_analyst[missing].verdict.is_no_data is True
 
 
-def test_smart_money_no_data_flag_treated_as_neutral():
+def test_no_data_flag_treated_as_neutral_in_aggregate():
+    """An analyst evidence entry marked is_no_data must contribute 0.0 to the
+    weighted sum, keeping the aggregate driven by the three contributing analysts.
+    """
     per_analyst = {
         "technical": _ev("technical", "bullish", 0.6),
         "fundamental": _ev("fundamental", "bullish", 0.6),
-        "news": _ev("news", "bullish", 0.6),
-        "smart_money": AnalystEvidence(
+        "news": AnalystEvidence(
             ticker="AAPL",
-            analyst="smart_money",
+            analyst="news",
             tick_id="t",
             recorded_at=_now(),
             features={"is_no_data": 1.0},
@@ -218,9 +218,9 @@ def test_smart_money_no_data_flag_treated_as_neutral():
     }
     te = build_ticker_evidence(per_analyst, "AAPL", "t", _now(), DEFAULT_ANALYST_WEIGHTS)
     assert te.aggregate.lean == "bullish"
-    # Task 7 adds social as a 5th analyst (is_no_data → 0.0 contribution).
-    # Magnitude = (0.6 + 0.6 + 0.6) / 5 = 0.36.
-    assert te.aggregate.magnitude == pytest.approx(0.36, rel=0.01)
+
+    # news is_no_data → contributes 0.0; magnitude = (0.6 + 0.6) / 3 = 0.4.
+    assert te.aggregate.magnitude == pytest.approx(0.4, rel=0.01)
 
 
 # ── weights snapshotting (top-level on TickerEvidence) ────────────────────────
@@ -228,7 +228,7 @@ def test_smart_money_no_data_flag_treated_as_neutral():
 
 def test_weights_snapshotted_at_top_level():
     per_analyst = {a: _ev(a, "bullish", 0.5) for a in DEFAULT_ANALYST_WEIGHTS}
-    custom = {"technical": 2.0, "fundamental": 1.0, "news": 0.5, "smart_money": 1.0}
+    custom = {"technical": 2.0, "fundamental": 1.0, "news": 0.5}
     te = build_ticker_evidence(per_analyst, "AAPL", "t", _now(), custom)
     assert te.weights == custom
 
@@ -243,7 +243,6 @@ def test_per_analyst_magnitude_preserved_in_dump():
         "technical": _ev("technical", "bullish", 0.7, magnitude=0.9),
         "fundamental": _ev("fundamental", "neutral", 0.0),
         "news": _ev("news", "neutral", 0.0),
-        "smart_money": _ev("smart_money", "neutral", 0.0),
     }
     te = build_ticker_evidence(per_analyst, "AAPL", "t", _now(), DEFAULT_ANALYST_WEIGHTS)
     assert te.per_analyst["technical"].verdict.magnitude == pytest.approx(0.9)
@@ -261,8 +260,8 @@ def test_fill_missing_emits_structured_warning(caplog):
         ``feature_warnings`` so downstream can detect the synthesised nature
         without parsing log output.
     """
-    # Only supply technical — all other slots (fundamental, news, social,
-    # smart_money) are absent and should trigger warnings + machine-readable flags.
+    # Only supply technical — fundamental and news are absent and should each
+    # trigger a WARNING + machine-readable feature_warning flag.
     per_analyst = {"technical": _ev("technical", "bullish", 0.8)}
 
     with caplog.at_level("WARNING"):
@@ -274,8 +273,71 @@ def test_fill_missing_emits_structured_warning(caplog):
         for rec in caplog.records
     ), "expected a structured WARNING when a slot is missing"
 
-    # (b) The synthesised entry for 'social' carries the machine-readable marker.
-    assert "missing_slot:social" in te.per_analyst["social"].feature_warnings
+    # (b) The synthesised entry for 'fundamental' carries the machine-readable marker.
+    assert "missing_slot:fundamental" in te.per_analyst["fundamental"].feature_warnings
+
+
+# ── Dilution-fix regression: 3 unanimous analysts must reach magnitude 1.0 ────
+
+
+def test_three_unanimous_bullish_analysts_magnitude_is_one():
+    """Regression guard for the phantom-slot dilution bug.
+
+    Before the fix, DEFAULT_ANALYST_WEIGHTS had 5 entries (technical,
+    fundamental, news, social, smart_money) but only 3 could ever contribute.
+    The denominator was always 5.0 so three unanimous bullish analysts at
+    confidence 1.0 produced magnitude 3/5 = 0.6 instead of 1.0.
+
+    With the phantom entries removed the denominator matches the contributor
+    count and magnitude reaches 1.0.
+    """
+    per_analyst = {
+        "technical":   _ev("technical",   "bullish", 1.0),
+        "fundamental": _ev("fundamental", "bullish", 1.0),
+        "news":        _ev("news",        "bullish", 1.0),
+    }
+    te = build_ticker_evidence(per_analyst, "AAPL", "t", _now(), DEFAULT_ANALYST_WEIGHTS)
+
+    assert te.aggregate.lean == "bullish"
+    assert te.aggregate.magnitude == pytest.approx(1.0, abs=1e-9), (
+        "three unanimous bullish analysts at confidence 1.0 must produce magnitude "
+        "1.0 — if this is 0.6 then phantom slots are back in DEFAULT_ANALYST_WEIGHTS"
+    )
+
+
+# ── No spurious missing-slot warnings on a normal tick ───────────────────────
+
+
+def test_normal_tick_no_missing_slot_warning(caplog):
+    """A tick supplying all three wired analysts must produce ZERO
+    missing_analyst_slot WARNINGs (A-050 fires only on genuine pipeline gaps).
+
+    Also asserts that DEFAULT_ANALYST_WEIGHTS contains exactly the three
+    expected keys — a canary that breaks loudly if a phantom slot re-enters
+    the expected-set without the corresponding pipeline wiring.
+    """
+    assert set(DEFAULT_ANALYST_WEIGHTS.keys()) == {"technical", "fundamental", "news"}, (
+        "DEFAULT_ANALYST_WEIGHTS must contain exactly the three wired+consumed "
+        "analysts; adding a phantom entry without pipeline wiring causes both "
+        "false-positive warnings and aggregate-magnitude dilution"
+    )
+
+    per_analyst = {
+        "technical":   _ev("technical",   "bullish", 0.7),
+        "fundamental": _ev("fundamental", "bullish", 0.7),
+        "news":        _ev("news",        "bullish", 0.7),
+    }
+
+    with caplog.at_level(logging.WARNING, logger="contract.digest"):
+        build_ticker_evidence(per_analyst, "AAPL", "t", _now(), DEFAULT_ANALYST_WEIGHTS)
+
+    spurious = [
+        rec for rec in caplog.records
+        if rec.levelname == "WARNING" and "missing_analyst_slot" in rec.getMessage()
+    ]
+    assert spurious == [], (
+        f"unexpected missing_analyst_slot warnings on a complete tick: {spurious}"
+    )
 
 
 # ── Ticker / tick_id / recorded_at carry-through ──────────────────────────────

@@ -26,14 +26,37 @@ logger = logging.getLogger(__name__)
 # ⇒ +x) is deferred to a future spec; weights are per-analyst-family only for
 # now.  If a future spec needs these tunable without code changes, promote to
 # ``config/digest.json`` and add a loader.
+#
+# IMPORTANT — only analysts that are BOTH wired into the pipeline AND consumed
+# by the strategist context shim belong here.  Phantom entries cause two bugs:
+#
+#   1. False-positive ``missing_analyst_slot`` WARNINGs every tick (A-050
+#      noise that erodes the value of a genuine pipeline gap warning).
+#   2. ~40 % aggregate-magnitude dilution — the denominator is
+#      ``sum(weights.values())`` so phantom entries deflate every magnitude
+#      proportionally (e.g. 3/5 = 0.6 instead of 3/3 = 1.0 when only three
+#      analysts ever contribute).
+#
+# Shelved analysts and what is needed to revive them:
+#
+#   smart_money (shelved 2026-05-19):
+#       Re-add ``"smart_money": 1.0`` here AND uncomment
+#       ``_build_smart_money_analyst`` in ``orchestrator.pipeline._build_analyst_pool``
+#       once notable_holders / politician-trades providers are PIT-correct.
+#
+#   social (shelved 2026-06-13):
+#       Re-add ``"social": 1.0`` here AND ALSO wire ``social_evidence`` into
+#       ``agents.strategist.context_shim`` (the shim currently indexes only
+#       technical / fundamental / news / smart_money — it never reads
+#       ``social_evidence``).  BOTH changes are required, not just one.
+#       Additionally, uncomment ``_build_social_analyst`` in
+#       ``orchestrator.pipeline._build_analyst_pool``.
 # ---------------------------------------------------------------------------
 
 DEFAULT_ANALYST_WEIGHTS: dict[str, float] = {
     "technical":   1.0,
     "fundamental": 1.0,
     "news":        1.0,
-    "social":      1.0,   # added Task 7 — deterministic social analyst
-    "smart_money": 1.0,
 }
 
 DIRECTION_DEAD_ZONE: float = 0.15
