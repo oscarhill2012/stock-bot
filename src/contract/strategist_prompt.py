@@ -667,7 +667,9 @@ def render_ticker_block(te: TickerEvidence) -> str:
     # "where this is trading right now" without having to dig into the
     # technical block.  Falls back to a "(price n/a)" sentinel when no price
     # source was available (technical analyst missing AND not held).
-    if te.last_price is not None and te.last_price > 0:
+    # last_price is PositiveFloat | None (see contract.ticker_evidence) — the
+    # `> 0` clause is now redundant; the schema guarantees positivity when set.
+    if te.last_price is not None:
         parts.append(f"=== {te.ticker}  ${te.last_price:,.2f} ===")
     else:
         parts.append(f"=== {te.ticker}  (price n/a) ===")
