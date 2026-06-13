@@ -1,16 +1,11 @@
 """Fundamental analyst deterministic feature extractor.
 
-Phase 5 extends the extractor to consume the triad payload shape (post-split):
+Phase 5 extends the extractor to consume the triad payload shape (post-split).
 
-.. code-block:: python
+Phase 7 (providers-and-silent-gaps-v1) migrated all producers to the flat-list
+shape.  Plan 13 (A-054) retired the legacy ``Form4Bundle`` path entirely.
 
-    raw = {
-        "ratios":  dict | None,          # scalar company fundamentals (P/E, beta, …)
-        "filings": list[dict],            # serialised Filing objects
-        "insider": Form4Bundle | None,   # typed Form 4 bundle (legacy path)
-    }
-
-Phase 7 (providers-and-silent-gaps-v1) adds a flat-list path:
+The sole accepted payload shape is now:
 
 .. code-block:: python
 
@@ -21,8 +16,8 @@ Phase 7 (providers-and-silent-gaps-v1) adds a flat-list path:
         "insider_derivative_trades": list[dict], # InsiderDerivativeTrade.model_dump() rows
     }
 
-Both paths are accepted.  When ``insider_trades`` is present, the flat-list
-helpers take precedence over the ``Form4Bundle`` path.
+A missing ``insider_trades`` key raises ``KeyError`` rather than silently
+degrading — every producer must emit the Phase 7 flat-list shape.
 
 The ``"ratios"`` key replaces the old ``"stats"`` key from before the Phase 5
 data-model split.  Field names *inside* the ratios dict are unchanged so
@@ -33,7 +28,6 @@ The function returns a ``dict[str, float]`` with exactly the keys in ``_KEYS``
 """
 from __future__ import annotations
 
-import importlib
 from collections.abc import Mapping
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -372,8 +366,10 @@ def _insider_aggregates_from_flat(
     buys  = [t for t in window_trades if (t.get("side") or "").lower() == "buy"]
     sells = [t for t in window_trades if (t.get("side") or "").lower() == "sell"]
 
-    buy_value  = sum(float(t.get("shares") or 0) * float(t.get("price_per_share") or 0) for t in buys)
-    sell_value = sum(float(t.get("shares") or 0) * float(t.get("price_per_share") or 0) for t in sells)
+    # Seed both sums with 0.0 so an empty window yields a float (not int 0);
+    # the all-floats column contract requires every value be a plain float.
+    buy_value  = sum((float(t.get("shares") or 0) * float(t.get("price_per_share") or 0) for t in buys), 0.0)
+    sell_value = sum((float(t.get("shares") or 0) * float(t.get("price_per_share") or 0) for t in sells), 0.0)
 
     # Cluster flags — count distinct insider names on each side.
     buy_names  = {t.get("insider_name") for t in buys if t.get("insider_name")}
@@ -478,100 +474,6 @@ def _derivative_aggregates(
     }
 
 
-def _extract_insider_features_legacy(
-    bundle: Any,
-    now: datetime,
-) -> dict[str, float]:
-    """Compute insider feature columns from a ``Form4Bundle`` (legacy path).
-
-    Kept for backward-compatibility with callers that still pass the typed
-    ``Form4Bundle`` object.  New callers should use the flat-list path
-    (``raw["insider_trades"]``).
-
-    Parameters
-    ----------
-    bundle:
-        The ``Form4Bundle`` from the fundamental data payload.  ``None`` or an
-        empty bundle yields all-zero columns.
-    now:
-        Current UTC datetime used as the window anchor.
-
-    Returns
-    -------
-    dict[str, float]
-        Insider feature columns — never missing, never NaN.
-    """
-    # Import here to avoid circular dependency at module load time.
-    Form4Bundle = importlib.import_module("data.models").Form4Bundle
-
-    zero_insider = {
-        "insider_net_dollars_30d": 0.0,
-        "insider_n_buys_30d": 0.0,
-        "insider_n_sells_30d": 0.0,
-        "insider_cluster_buy_flag": 0.0,
-        "insider_cluster_sell_flag": 0.0,
-        "insider_planned_sale_ratio": 0.0,
-        "insider_open_market_buy_dollars_30d": 0.0,
-        "insider_open_market_sell_dollars_30d": 0.0,
-        "insider_tax_withholding_dollars_30d": 0.0,
-        "insider_gift_count_30d": 0.0,
-        "senior_officer_buy_dollars_30d": 0.0,
-        "insider_option_exercise_value_30d": 0.0,
-        "insider_derivative_planned_ratio_30d": 0.0,
-        "senior_officer_derivative_grant_shares_30d": 0.0,
-        "insider_derivative_exercise_count": 0.0,
-        "insider_derivative_grant_count": 0.0,
-    }
-
-    if bundle is None or not isinstance(bundle, Form4Bundle):
-        return zero_insider
-
-    cutoff_ts = now.timestamp() - _WINDOW_DAYS * 86400
-
-    # Filter common-stock trades to the 30-day window.
-    window_trades = [
-        t for t in bundle.trades
-        if t.filed_at.timestamp() >= cutoff_ts
-    ]
-
-    buys  = [t for t in window_trades if t.side == "buy"]
-    sells = [t for t in window_trades if t.side == "sell"]
-
-    # Dollar values.
-    buy_value  = sum((_f(t.shares) * _f(t.price_per_share) for t in buys), 0.0)
-    sell_value = sum((_f(t.shares) * _f(t.price_per_share) for t in sells), 0.0)
-
-    # Cluster flags.
-    buy_officers  = {t.insider_name for t in buys}
-    sell_officers = {t.insider_name for t in sells}
-    cluster_buy  = 1.0 if len(buy_officers)  >= _CLUSTER_THRESHOLD else 0.0
-    cluster_sell = 1.0 if len(sell_officers) >= _CLUSTER_THRESHOLD else 0.0
-
-    # Planned sale ratio.
-    n_sells_total = len(sells)
-    planned_ratio = (
-        sum(1 for t in sells if t.is_10b5_1) / n_sells_total
-        if n_sells_total > 0
-        else 0.0
-    )
-
-    # Derivative counts (legacy — point-in-time, not window-filtered).
-    exercise_count = sum(1 for d in bundle.derivatives if d.transaction_code == "M")
-    grant_count    = sum(1 for d in bundle.derivatives if d.transaction_code == "A")
-
-    return {
-        **zero_insider,
-        "insider_net_dollars_30d": buy_value - sell_value,
-        "insider_n_buys_30d":  float(len(buys)),
-        "insider_n_sells_30d": float(len(sells)),
-        "insider_cluster_buy_flag":  cluster_buy,
-        "insider_cluster_sell_flag": cluster_sell,
-        "insider_planned_sale_ratio": planned_ratio,
-        "insider_derivative_exercise_count": float(exercise_count),
-        "insider_derivative_grant_count":    float(grant_count),
-    }
-
-
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -585,9 +487,7 @@ def extract_fundamental_features(
 ) -> dict[str, float]:
     """Pull the locked fundamental feature catalogue from a raw payload dict.
 
-    Accepts two payload shapes:
-
-    **Phase 7 flat-list shape** (preferred for new providers):
+    The sole accepted payload shape is the Phase 7 flat-list form:
 
     .. code-block:: python
 
@@ -598,18 +498,8 @@ def extract_fundamental_features(
             "insider_derivative_trades": list[dict], # InsiderDerivativeTrade.model_dump()
         }
 
-    **Legacy Phase 5 shape**:
-
-    .. code-block:: python
-
-        {
-            "ratios":  dict | None,
-            "filings": list[dict],
-            "insider": Form4Bundle | None,
-        }
-
-    When ``insider_trades`` is present, the flat-list path is used.  Otherwise
-    falls back to the ``Form4Bundle`` path for backward compatibility.
+    A missing ``insider_trades`` key raises ``KeyError`` — the legacy
+    ``"insider": Form4Bundle`` path was retired in Plan 13 (A-054).
 
     Parameters
     ----------
@@ -667,25 +557,30 @@ def extract_fundamental_features(
     # --- 8-K item counters (Fix H) ---
     out.update(_item_counters_30d(filings_sub, as_of_date))
 
-    # --- insider trades ---
-    # Phase 7 flat-list path takes priority; fall back to Form4Bundle.
-    if "insider_trades" in raw:
-        trades_flat   = raw.get("insider_trades") or []
-        derivs_flat   = raw.get("insider_derivative_trades") or []
-        last_price_for_derivs = _f((stats_sub or {}).get("last_price"))
-
-        out.update(_insider_aggregates_from_flat(trades_flat, as_of_date))
-        out.update(_derivative_aggregates(derivs_flat, last_price_for_derivs, as_of_date))
-
-        # Legacy derivative counts from the flat deriv list (for _KEYS back-compat).
-        out["insider_derivative_exercise_count"] = float(
-            sum(1 for d in derivs_flat if (d.get("transaction_code") or "") == "M")
+    # --- insider trades (Phase 7 flat-list path — sole supported shape) ---
+    # The legacy 'insider: Form4Bundle' key was retired in Plan 13 (A-054).
+    # Every producer must now emit insider_trades + insider_derivative_trades.
+    if "insider_trades" not in raw:
+        raise KeyError(
+            "insider_trades missing from fundamental payload — every producer "
+            "must emit the Phase 7 flat-list shape "
+            "(insider_trades + insider_derivative_trades); the legacy "
+            "'insider: Form4Bundle' key was retired in Plan 13 (A-054)."
         )
-        out["insider_derivative_grant_count"] = float(
-            sum(1 for d in derivs_flat if (d.get("transaction_code") or "") == "A")
-        )
-    else:
-        insider_sub = raw.get("insider")
-        out.update(_extract_insider_features_legacy(insider_sub, now))
+
+    trades_flat   = raw.get("insider_trades") or []
+    derivs_flat   = raw.get("insider_derivative_trades") or []
+    last_price_for_derivs = _f((stats_sub or {}).get("last_price"))
+
+    out.update(_insider_aggregates_from_flat(trades_flat, as_of_date))
+    out.update(_derivative_aggregates(derivs_flat, last_price_for_derivs, as_of_date))
+
+    # Legacy derivative counts from the flat deriv list (for _KEYS back-compat).
+    out["insider_derivative_exercise_count"] = float(
+        sum(1 for d in derivs_flat if (d.get("transaction_code") or "") == "M")
+    )
+    out["insider_derivative_grant_count"] = float(
+        sum(1 for d in derivs_flat if (d.get("transaction_code") or "") == "A")
+    )
 
     return out

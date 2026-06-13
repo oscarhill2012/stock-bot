@@ -18,7 +18,12 @@ from contract.extractors.fundamental import extract_fundamental_features
 
 def test_fundamental_days_since_last_filing_uses_as_of() -> None:
     """Same raw bundle, two ``as_of`` values → two different ``days_since_last_filing``."""
-    raw = {"filings": [{"filed_at": "2023-01-01T00:00:00+00:00", "form_type": "10-K"}]}
+    # Flat-list insider shape is mandatory post-A-054; empty list here since
+    # this test only exercises the filing-date window, not insider columns.
+    raw = {
+        "filings": [{"filed_at": "2023-01-01T00:00:00+00:00", "form_type": "10-K"}],
+        "insider_trades": [],
+    }
 
     early = extract_fundamental_features(
         raw, ticker="AAPL", as_of=datetime(2023, 1, 31, tzinfo=UTC),
