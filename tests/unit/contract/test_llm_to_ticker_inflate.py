@@ -2,9 +2,6 @@
 """Identity-of-inflate: the LLM→canonical conversion lives in one place."""
 from __future__ import annotations
 
-import pytest
-from pydantic import ValidationError
-
 from contract.evidence import (
     AnalystReport,
     LlmTickerVerdict,
