@@ -44,7 +44,6 @@ def _ev(analyst: str, lean: str, magnitude: float, confidence: float) -> Analyst
         tick_id="tick_X",
         recorded_at=_now(),
         features={},
-        feature_warnings=[],
         verdict=AnalystVerdict(
             lean=lean,
             magnitude=magnitude,

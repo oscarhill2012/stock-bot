@@ -155,7 +155,6 @@ def _make_evidence(
         tick_id="tick_TEST",
         recorded_at=datetime(2026, 5, 14, 9, 45, tzinfo=UTC),
         features=features or {},
-        feature_warnings=[],
         verdict=_make_verdict(
             lean=lean,
             key_factors=key_factors,

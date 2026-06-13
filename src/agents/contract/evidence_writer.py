@@ -97,7 +97,6 @@ class EvidenceWriter(BaseAgent):
                     ticker=ev_dict["ticker"],
                     verdict=ev_dict["verdict"],
                     features=ev_dict.get("features", {}),
-                    feature_warnings=ev_dict.get("feature_warnings", []),
                     recorded_at=evidence_recorded_at,
                 )
 

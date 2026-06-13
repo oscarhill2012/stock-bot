@@ -20,7 +20,13 @@ from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event, EventActions
 
-from contract.evidence import AnalystEvidence, AnalystVerdict, TickerVerdict, VerdictBatch
+from contract.evidence import (
+    AnalystEvidence,
+    AnalystVerdict,
+    LlmTickerVerdict,
+    TickerVerdict,
+    VerdictBatch,
+)
 from contract.extractors.news import extract_news_features
 from data.timeguard import resolve_as_of
 from observability.terminal_log import emit_analyst_summary
@@ -75,10 +81,13 @@ class NewsJoinerAgent(BaseAgent):
                 )
                 ticker_verdict = TickerVerdict(ticker=ticker, **verdict.model_dump())
             else:
-                # Validate against the strict schema.  ADK's output_schema
-                # already validated once on write, but re-validate here so
-                # downstream consumers can rely on the shape unconditionally.
-                ticker_verdict = TickerVerdict.model_validate({**raw_v, "ticker": ticker})
+                # Validate against the strict LLM emit-schema first (re-validates
+                # what ADK's output_schema already enforced on write, so downstream
+                # consumers can rely on the shape unconditionally), then inflate
+                # via the sole canonical-conversion method.  Raises loudly if the
+                # post-conversion canonical shape is invalid.
+                llm_v = LlmTickerVerdict.model_validate({**raw_v, "ticker": ticker})
+                ticker_verdict = llm_v.to_ticker_verdict()
                 verdict = AnalystVerdict.model_validate(
                     {k: v for k, v in ticker_verdict.model_dump().items() if k != "ticker"}
                 )
@@ -94,13 +103,12 @@ class NewsJoinerAgent(BaseAgent):
             )
 
             ev = AnalystEvidence(
-                analyst        = "news",
-                ticker         = ticker,
-                tick_id        = tick_id,
-                recorded_at    = recorded_at,
-                verdict        = verdict,
-                features       = features,
-                feature_warnings = [],
+                analyst     = "news",
+                ticker      = ticker,
+                tick_id     = tick_id,
+                recorded_at = recorded_at,
+                verdict     = verdict,
+                features    = features,
             )
             evidence_list.append(ev.model_dump(mode="json"))
 

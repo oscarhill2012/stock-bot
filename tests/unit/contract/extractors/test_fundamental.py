@@ -1,9 +1,13 @@
 """Fundamental feature extractor tests — Tier 1, no LLM.
 
-Phase 5 update: the extractor now accepts a triad payload shape
-``{"ratios": dict, "filings": list, "insider": Form4Bundle}``.  Fixtures and
-tests have been updated accordingly; the locked key catalogue now includes
-insider and filings-derived columns.
+Phase 5 update: the extractor consumes a payload dict with ``ratios``,
+``filings``, and (post-Phase-7) ``insider_trades`` + ``insider_derivative_trades``
+keys.  Fixtures and tests have been updated accordingly; the locked key
+catalogue now includes insider and filings-derived columns.
+
+Plan 13 (A-054): the legacy ``"insider": Form4Bundle`` path was retired.
+Fixtures use the Phase 7 flat-list shape (``insider_trades`` +
+``insider_derivative_trades``); a missing ``insider_trades`` key now raises.
 
 Phase 5 data-model split: the ``"stats"`` key is renamed ``"ratios"`` at the
 fetch-callback and extractor levels.  Fixture wrappers updated here.
@@ -20,7 +24,6 @@ from pathlib import Path
 import pytest
 
 from contract.extractors.fundamental import _KEYS, extract_fundamental_features
-from data.models import Form4Bundle
 from data.models.filings import Filing
 from data.models.trades import InsiderDerivativeTrade, InsiderTrade
 
@@ -37,7 +40,7 @@ def aapl_data():
     return {
         "ratios": ratios,
         "filings": [],
-        "insider": Form4Bundle(trades=[], derivatives=[]),
+        "insider_trades": [],
     }
 
 
@@ -81,7 +84,7 @@ def test_handles_zero_market_cap_in_fcf_yield():
         {
             "ratios": {"free_cash_flow": 1_000_000, "market_cap": 0},
             "filings": [],
-            "insider": Form4Bundle(trades=[], derivatives=[]),
+            "insider_trades": [],
         },
         ticker="AAPL",
     )
@@ -102,7 +105,8 @@ def test_fundamental_emits_eight_ratio_features():
         debt_to_equity=1.5, roe=0.15, free_cash_flow=9.0e10,
         analyst_rating_avg=2.1, number_of_analyst_opinions=42,
     )
-    raw = {"ticker": "AAPL", "ratios": r.model_dump()}
+    # insider_trades is mandatory post-A-054 even when only ratios are asserted.
+    raw = {"ticker": "AAPL", "ratios": r.model_dump(), "insider_trades": []}
     features = extract_fundamental_features(raw, state={})
     assert features["peg"] == pytest.approx(1.8)
     assert features["revenue_growth_yoy"] == pytest.approx(0.07)

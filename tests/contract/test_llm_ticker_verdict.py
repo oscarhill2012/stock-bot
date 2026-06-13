@@ -241,3 +241,55 @@ def test_analyst_verdict_accepts_payload_without_rationale() -> None:
     )
 
     assert v.rationale == ""
+
+
+# ---------------------------------------------------------------------------
+# Sole-inflate-site grep guard (A-051, Plan 11 Block E hand-off)
+# ---------------------------------------------------------------------------
+
+
+def test_to_ticker_verdict_is_sole_inflate_site() -> None:
+    """Grep guard: no callsite outside ``contract/evidence.py`` inflates an
+    ``LlmTickerVerdict`` via the raw ``TickerVerdict.model_validate({**..., 'ticker': ...})``
+    dict-unpacking pattern.
+
+    ``LlmTickerVerdict.to_ticker_verdict`` (defined in ``contract/evidence.py``)
+    is the single canonical inflation path.  This test fails loudly the first
+    time a future contributor re-introduces an inline inflate, so the
+    conversion logic cannot silently fork.
+    """
+
+    import pathlib
+    import re
+
+    # ``__file__`` lives at ``tests/contract/test_llm_ticker_verdict.py``, so the
+    # worktree root is ``parents[2]`` and the source tree is ``parents[2]/src``.
+    # (The plan's draft assumed a deeper ``tests/unit/contract/`` home and used
+    # ``parents[3]``; the file was never relocated, hence ``parents[2]`` here.)
+    root = pathlib.Path(__file__).resolve().parents[2] / "src"
+
+    offenders: list[str] = []
+
+    # Negative lookbehind for an identifier char so the pattern matches the bare
+    # downstream ``TickerVerdict`` only — NOT ``LlmTickerVerdict`` (the strict
+    # emit-schema), whose ``model_validate({**raw_v, ...})`` in the joiners is
+    # the legitimate first step before ``to_ticker_verdict()``.  Without the
+    # lookbehind, ``TickerVerdict`` matches as a suffix of ``LlmTickerVerdict``
+    # and the guard fires on correct code.
+    pattern = re.compile(r"(?<![A-Za-z_])TickerVerdict\.model_validate\s*\(\s*\{\s*\*\*")
+
+    for py in root.rglob("*.py"):
+
+        # ``contract/evidence.py`` is the single allowed inflate site.
+        if py.name == "evidence.py" and py.parent.name == "contract":
+            continue
+
+        text = py.read_text(encoding="utf-8")
+        if pattern.search(text):
+            offenders.append(str(py.relative_to(root.parent)))
+
+    assert not offenders, (
+        "Inflate-path regression: the callers below should use "
+        "LlmTickerVerdict.to_ticker_verdict(), not the raw model_validate "
+        f"dict-unpacking pattern. Offenders: {offenders}"
+    )

@@ -120,8 +120,9 @@ def _fill_missing(
 
         # Loud-failure policy (A-050): a missing slot is a pipeline signal,
         # not ordinary sparseness. Emit a structured WARNING so operators can
-        # see which analyst failed to produce output this tick, and tag the
-        # synthesised entry so downstream can detect it without parsing logs.
+        # see which analyst failed to produce output this tick, and mark the
+        # synthesised entry ``is_no_data=True`` so downstream can detect the
+        # synthesised nature without parsing logs.
         logger.warning(
             "missing_analyst_slot ticker=%s slot=%s — neutral-filled "
             "(is_no_data=True); a missing slot is a pipeline signal, not data",
@@ -135,9 +136,9 @@ def _fill_missing(
             tick_id=tick_id,
             recorded_at=recorded_at,
             features={},
-            # Machine-readable marker so downstream can detect the synthesised
-            # nature without parsing log output (A-050 loud-failure policy).
-            feature_warnings=[f"missing_slot:{name}"],
+            # The missing-slot signal is surfaced via the logger.warning call
+            # above and the is_no_data=True flag on the synthesised verdict
+            # (A-050 loud-failure policy).
             verdict=AnalystVerdict(
                 lean="neutral",
                 magnitude=0.0,

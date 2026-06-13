@@ -48,10 +48,12 @@ class TickerEvidence(BaseModel):
     ``last_price`` carries the live close at evidence-build time so the
     strategist's per-ticker renderer can show "where the ticker is trading
     right now" in the section header — see ``contract.strategist_prompt``.
-    It is ``None`` when no price source is available for the ticker (the
-    technical analyst was missing AND the ticker is not held in the
-    portfolio).  Downstream renderers must treat ``None`` and ``0.0`` as
-    "no price" — both can arise depending on the path that populates it.
+
+    ``None`` is the SOLE "no price" sentinel.  Any zero, negative, infinite or
+    NaN value raises a ``ValidationError`` at schema validation — the upstream
+    that fed it (typically the technical extractor's ``last_close=0.0`` no-bars
+    case) must coerce to ``None`` at the emission site so the absence is loud,
+    not silent.  Renderers need only guard against ``None``, never ``0.0``.
     """
 
     ticker: str
@@ -60,4 +62,10 @@ class TickerEvidence(BaseModel):
     per_analyst: dict[str, AnalystEvidence]
     aggregate: AggregateVerdict
     weights: dict[str, float]
-    last_price: float | None = None
+
+    # ``gt=0`` rejects 0.0 and negatives; ``allow_inf_nan=False`` rejects inf
+    # and NaN (Pydantic's bare ``PositiveFloat`` permits inf, which a degenerate
+    # price feed could otherwise smuggle through).  None is the sole "no price
+    # available" signal — producers must coerce the no-bars / no-data case to
+    # None rather than 0.0.
+    last_price: float | None = Field(default=None, gt=0, allow_inf_nan=False)

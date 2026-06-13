@@ -21,9 +21,10 @@ Yielded state_delta keys (one event):
 
             {
                 "<TICKER>": {
-                    "ratios":  dict | None,
-                    "filings": [dict, ...],
-                    "insider": Form4Bundle,
+                    "ratios":                dict | None,
+                    "filings":               [dict, ...],
+                    "insider_trades":        [dict, ...],   # InsiderTrade.model_dump()
+                    "insider_derivative_trades": [dict, ...],  # InsiderDerivativeTrade.model_dump()
                 }
             }
 
@@ -166,16 +167,17 @@ class FundamentalFetchAgent(BaseAgent):
             fundamental_data[ticker] = {
                 "ratios":  ratios_payload,
                 "filings": filings_payload,
-                # Keep ``insider`` as a typed ``Form4Bundle`` instance —
-                # downstream consumers (``fundamental_hash_inputs_from_dict``
-                # in the per-ticker cache callback; the legacy branch of
-                # ``extract_fundamental_features``) gate on
-                # ``isinstance(_, Form4Bundle)`` / call ``.trades`` directly,
-                # so a ``.model_dump()`` here silently breaks both.  The
-                # strict decision-logger's recursive ``_coerce`` dumps any
-                # nested Pydantic model at log-write time, so we do not
-                # need to dump here for serialisation safety.
-                "insider": insider_bundle,
+                # Flat-list shape — Phase 7 extractor path.  The typed
+                # Form4Bundle is dumped to two flat lists (common + derivative)
+                # so the contract extractor sees the same shape regardless of
+                # provider (Phase 7 unified emission).
+                #
+                # insider_bundle is always a Form4Bundle at this point — the
+                # fetch block above guarantees a Form4Bundle(trades=[],
+                # derivatives=[]) on any provider failure, so these lists are
+                # always present (possibly empty) and never None.
+                "insider_trades":            [t.model_dump() for t in insider_bundle.trades],
+                "insider_derivative_trades": [d.model_dump() for d in insider_bundle.derivatives],
             }
 
             # Build the formatted LLM-readable block for this ticker.

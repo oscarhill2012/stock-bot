@@ -115,26 +115,12 @@ def test_evidence_valid():
         tick_id="2026-05-08T14:00:00Z",
         recorded_at=_now(),
         features={"rsi_14": 42.3, "pct_change_5d": -0.018},
-        feature_warnings=[],
         verdict=_verdict(lean="bearish", magnitude=0.4, confidence=0.6, rationale="weakening"),
     )
     assert e.ticker == "AAPL"
     assert e.analyst == "technical"
     assert e.tick_id == "2026-05-08T14:00:00Z"
     assert e.features["rsi_14"] == 42.3
-    assert e.feature_warnings == []
-
-
-def test_evidence_feature_warnings_default_empty():
-    e = AnalystEvidence(
-        ticker="AAPL",
-        analyst="technical",
-        tick_id="t",
-        recorded_at=_now(),
-        features={},
-        verdict=_verdict(),
-    )
-    assert e.feature_warnings == []
 
 
 def test_evidence_rejects_unknown_analyst():
@@ -156,7 +142,6 @@ def test_evidence_round_trip():
         tick_id="2026-05-08T15:00:00Z",
         recorded_at=_now(),
         features={"pe_trailing": 32.5, "fcf_yield_pct": 2.4},
-        feature_warnings=["pe_forward unavailable"],
         verdict=_verdict(lean="neutral", magnitude=0.1, confidence=0.4,
                          rationale="balanced", key_factors=["pe_trailing: 32.5"]),
     )

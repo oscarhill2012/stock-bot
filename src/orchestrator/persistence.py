@@ -221,7 +221,6 @@ class AnalystEvidenceRow(Base):
     is_no_data: Mapped[bool] = mapped_column(Boolean, default=False)
 
     features_json: Mapped[str] = mapped_column(String, default="{}")
-    feature_warnings_json: Mapped[str] = mapped_column(String, default="[]")
 
 
 def save_analyst_evidence(
@@ -232,7 +231,6 @@ def save_analyst_evidence(
     ticker: str,
     verdict: dict,
     features: dict,
-    feature_warnings: list[str],
     recorded_at: datetime | None = None,
 ) -> None:
     """Persist one AnalystEvidence row.
@@ -248,7 +246,6 @@ def save_analyst_evidence(
             protect against an out-of-contract partial dict — they are not
             licence to construct one.
         features: Raw feature dict fed to the analyst (e.g. RSI, ATR values).
-        feature_warnings: Any warnings raised during feature extraction.
         recorded_at: Timestamp to stamp the row with.  Pass ``state["as_of"]``
             in backtest mode for deterministic replay.  Defaults to wall-clock
             when ``None`` (preserves live behaviour).
@@ -273,7 +270,6 @@ def save_analyst_evidence(
         key_factors_json=json.dumps(verdict.get("key_factors", [])),
         is_no_data=bool(verdict.get("is_no_data", False)),
         features_json=json.dumps(features),
-        feature_warnings_json=json.dumps(feature_warnings),
     )
     session.add(row)
     session.flush()

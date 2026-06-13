@@ -47,7 +47,6 @@ def test_evidence_row_round_trip_for_new_analyst_names(analyst, sqlite_session):
             "is_no_data": False,
         },
         features={"score": 0.42},
-        feature_warnings=[],
     )
     sqlite_session.commit()
 

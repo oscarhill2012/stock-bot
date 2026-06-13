@@ -252,6 +252,10 @@ class StrategistContextShim(BaseAgent):
             # otherwise read the technical analyst's ``last_close`` feature
             # (the sentinel ``0.0`` indicates the extractor had no bars and
             # we should treat the value as absent).
+            # The ``> 0`` guards below are load-bearing: TickerEvidence.last_price
+            # is typed ``PositiveFloat | None`` (A-055), so passing 0.0 or a
+            # negative would raise a Pydantic ValidationError.  Non-positive values
+            # must coerce to ``None`` here, before construction.
             last_price: float | None = None
             held = portfolio.positions.get(t)
             if held is not None and held.last_price > 0:

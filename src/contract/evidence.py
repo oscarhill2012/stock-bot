@@ -346,6 +346,46 @@ class LlmTickerVerdict(BaseModel):
             raise ValueError("ticker must be a non-empty string")
         return self
 
+    def to_ticker_verdict(self) -> TickerVerdict:
+        """Inflate this narrow LLM emit-schema into the canonical TickerVerdict.
+
+        Sole conversion point between the LLM emit-shape and the downstream
+        canonical shape — every joiner and consumer goes through this method,
+        so the strict-shape boundary is named and singular.
+
+        ``rationale`` defaults to ``""`` on the canonical side: LLM analysts no
+        longer emit it (the field's pad-toward-cap pressure was the root cause
+        of the 2026-05-25 repetition pathology — see this class's docstring).
+        Deterministic analysts populate ``rationale`` directly via
+        ``TickerVerdict(rationale=..., ...)`` and never traverse this method.
+
+        Returns:
+            TickerVerdict: the canonical downstream shape, with ``rationale``
+            defaulted to ``""`` and every LLM-emitted field carried across.
+
+        Raises:
+            ValueError: if post-conversion the canonical shape would itself be
+                invalid (the ``AnalystVerdict._prose_surface_required_when_data_present``
+                validator fires) — re-raised so the failure site names the LLM,
+                not a downstream consumer. This is the loud-failure surface that
+                replaces the old silent
+                ``TickerVerdict.model_validate({**raw_v, "ticker": ticker})``
+                pattern duplicated across joiners.
+        """
+
+        # ``model_dump`` strips Pydantic's runtime model and emits a plain dict;
+        # ``rationale`` is absent (the LLM never emitted it), so the canonical
+        # constructor takes the default "" — exactly the downstream contract.
+        #
+        # Schema-coupling invariant: this conversion relies on every field NAME
+        # on ``LlmTickerVerdict`` being a subset of ``TickerVerdict``'s field
+        # names.  ``TickerVerdict`` does not set ``extra="forbid"``, so a field
+        # renamed on one side without updating the other would silently default
+        # on the canonical side rather than raise — a future refactor must
+        # update both classes in lockstep.
+        payload = self.model_dump()
+        return TickerVerdict.model_validate(payload)
+
 
 class VerdictBatch(BaseModel):
     """Top-level container for an LLM analyst's per-tick output.
@@ -364,10 +404,7 @@ class AnalystEvidence(BaseModel):
 
     `features` carries the deterministic feature extractor's output (numeric
     only — no strings). Keys are analyst-specific; see Phase 4 spec for the
-    locked catalogue per analyst. `feature_warnings` records any
-    extractor-emitted issues (missing data window, NaN replacement, etc.) so
-    downstream consumers can tell "extractor returned 0.0 because the input
-    was missing" apart from "extractor returned a real 0.0".
+    locked catalogue per analyst.
 
     `raw_text` is an optional pass-through of the raw provider text the LLM
     analyst saw (News headlines, Fundamental filing excerpts).  Empty / None
@@ -381,6 +418,5 @@ class AnalystEvidence(BaseModel):
     tick_id: str
     recorded_at: datetime
     features: dict[str, float]
-    feature_warnings: list[str] = Field(default_factory=list)
     verdict: AnalystVerdict
     raw_text: str | None = Field(default=None, max_length=10_000)
