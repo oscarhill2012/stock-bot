@@ -1,7 +1,7 @@
 """PIT-composite ratios provider — XBRL fundamentals + sliced OHLCV technicals."""
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -256,3 +256,130 @@ async def test_pit_composite_partial_xbrl(monkeypatch: pytest.MonkeyPatch) -> No
     # as_of must be set.
     from datetime import date
     assert out.as_of == date(2023, 6, 15)
+
+
+# ---------------------------------------------------------------------------
+# Revenue-concept selection — pick the genuinely-filed XBRL revenue concept.
+#
+# No single us-gaap revenue concept is correct across all filers.  ASC-606
+# filers (most tech) report their top line under
+# ``RevenueFromContractWithCustomerExcludingAssessedTax`` and leave a stale
+# single fragment under ``Revenues``; many energy/industrial filers are the
+# reverse.  ``_select_revenue_series`` discriminates by period-distinctness:
+# the genuinely-filed concept yields *different* TTM values a year apart,
+# whereas a stale fragment returns the identical value for any ``as_of``.
+# ---------------------------------------------------------------------------
+
+# Probe dates mirroring the live EDGAR investigation that motivated the fix.
+_AS_OF  = date(2025, 9, 2)
+_PRIOR  = date(2024, 9, 2)
+
+_REV_ASC606 = "RevenueFromContractWithCustomerExcludingAssessedTax"
+_REV_LEGACY = "Revenues"
+_REV_NET    = "SalesRevenueNet"
+
+
+def _ttm_lookup(table: dict[tuple[str, date], float | None]):
+    """Build a ``(concept, at) -> float | None`` callable backed by ``table``.
+
+    Any ``(concept, date)`` pair absent from ``table`` resolves to ``None`` —
+    modelling an XBRL concept the filer never reported.
+    """
+    def _lookup(concept: str, at: date) -> float | None:
+        return table.get((concept, at))
+
+    return _lookup
+
+
+def test_select_revenue_prefers_period_distinct_asc606_filer() -> None:
+    """ASC-606 filer (AAPL-shape): the ASC-606 concept moves year-on-year and wins.
+
+    ``Revenues`` carries a stale fragment (identical at both dates) and must be
+    rejected even though it is present.
+    """
+    from data.providers.company_ratios.pit_composite import _select_revenue_series
+
+    table = {
+        # Stale fragment — identical value at both dates → rejected.
+        (_REV_LEGACY, _AS_OF): 215.6e9,
+        (_REV_LEGACY, _PRIOR): 215.6e9,
+        # Genuinely-filed top line — distinct across the year → selected.
+        (_REV_ASC606, _AS_OF): 296.1e9,
+        (_REV_ASC606, _PRIOR): 293.8e9,
+    }
+    now, prior, concept = _select_revenue_series(_ttm_lookup(table), _AS_OF, _PRIOR)
+
+    assert concept == _REV_ASC606
+    assert now   == pytest.approx(296.1e9)
+    assert prior == pytest.approx(293.8e9)
+
+
+def test_select_revenue_skips_stale_asc606_for_energy_filer() -> None:
+    """Energy filer (XOM-shape): ASC-606 is the stale fragment; ``Revenues`` wins.
+
+    The ASC-606 concept is first in priority order but is stale (equal values),
+    so period-distinctness must fall through to the live ``Revenues`` series.
+    """
+    from data.providers.company_ratios.pit_composite import _select_revenue_series
+
+    table = {
+        # ASC-606 stale for this filer — identical → rejected despite priority.
+        (_REV_ASC606, _AS_OF): 199.0e9,
+        (_REV_ASC606, _PRIOR): 199.0e9,
+        # Live top line under the legacy concept.
+        (_REV_LEGACY, _AS_OF): 176.1e9,
+        (_REV_LEGACY, _PRIOR): 169.5e9,
+    }
+    now, prior, concept = _select_revenue_series(_ttm_lookup(table), _AS_OF, _PRIOR)
+
+    assert concept == _REV_LEGACY
+    assert now   == pytest.approx(176.1e9)
+    assert prior == pytest.approx(169.5e9)
+
+
+def test_select_revenue_fallback_to_current_only_when_no_prior() -> None:
+    """Recent IPO: a current value exists but no prior year — return (now, None).
+
+    revenue_growth_yoy is uncomputable, but the margin denominator still needs
+    a current revenue, so the first concept with a present current value wins.
+    """
+    from data.providers.company_ratios.pit_composite import _select_revenue_series
+
+    table = {
+        (_REV_ASC606, _AS_OF): 12.0e9,
+        # No (_REV_ASC606, _PRIOR) entry — company did not exist a year ago.
+    }
+    now, prior, concept = _select_revenue_series(_ttm_lookup(table), _AS_OF, _PRIOR)
+
+    assert concept == _REV_ASC606
+    assert now   == pytest.approx(12.0e9)
+    assert prior is None
+
+
+def test_select_revenue_returns_none_when_no_concept_has_data() -> None:
+    """Foreign filer / ADR with no us-gaap revenue at all → (None, None, None)."""
+    from data.providers.company_ratios.pit_composite import _select_revenue_series
+
+    now, prior, concept = _select_revenue_series(_ttm_lookup({}), _AS_OF, _PRIOR)
+
+    assert (now, prior, concept) == (None, None, None)
+
+
+def test_select_revenue_all_stale_falls_back_to_current() -> None:
+    """All concepts stale (current == prior): yoy is uncomputable but margin works.
+
+    The period-distinct pass finds nothing; the fallback pass returns the first
+    concept with a present current value and a ``None`` prior so the caller
+    leaves revenue_growth_yoy unset rather than computing a false 0.
+    """
+    from data.providers.company_ratios.pit_composite import _select_revenue_series
+
+    table = {
+        (_REV_LEGACY, _AS_OF): 50.0e9,
+        (_REV_LEGACY, _PRIOR): 50.0e9,
+    }
+    now, prior, concept = _select_revenue_series(_ttm_lookup(table), _AS_OF, _PRIOR)
+
+    assert concept == _REV_LEGACY
+    assert now   == pytest.approx(50.0e9)
+    assert prior is None
