@@ -31,7 +31,7 @@ of a window and ``"False"`` on every subsequent tick.
 The ``{temp:deployment_readout}`` placeholder is also set by
 ``StrategistContextShim`` — it is a one-line live summary of the
 current invested fraction (e.g. "Capital deployed: 51% invested across
-6 positions, 49% idle cash. Target band: 70–80%. You are 19pp BELOW
+6 positions, 49% idle cash. Target band: 70–95%. You are 19pp BELOW
 the band — idle cash is bearish drag."), placed immediately inside the
 ``## Deployment posture`` section so the model sees its live exposure
 right next to the target guidance.
@@ -199,10 +199,10 @@ trail must record what you considered, not just what you acted on.
 
 {temp:deployment_readout}
 
-You are aiming, at steady state, to have **70–80% of your portfolio
+You are aiming, at steady state, to have **70–95% of your portfolio
 invested in positions** — i.e. the sum of ``current weight`` across
 your open positions (shown live in the thesis book above) sitting in
-the band 0.70–0.80.
+the band 0.70–0.95.
 
 Compute this each tick.  Read the ``current weight`` line off every
 held position in the thesis book and sum them.  Where you sit
@@ -214,10 +214,13 @@ relative to the target band shapes the bias of your stance mix:
   position ceiling — a starter position does not need perfect
   evidence.  Holding cash on a name the evidence supports is a market
   view you must be able to defend.
-- **0.70 ≤ Sum ≤ 0.80 — in the target band.**  Rotate within the
+- **0.70 ≤ Sum ≤ 0.95 — in the target band.**  Rotate within the
   band: trim overweights with ``update`` (smaller weight) and add
-  fresh names where conviction warrants.
-- **Sum > 0.80 — over-deployed.**  Trim the lowest-conviction
+  fresh names where conviction warrants.  There is ample headroom
+  here — do not trim a high-conviction winner merely to make room;
+  only trim when a name's own thesis weakens or a better one needs
+  the capital.
+- **Sum > 0.95 — over-deployed.**  Trim the lowest-conviction
   positions back via ``update`` or ``close``.
 
 The target is what steady state looks like, not a per-tick quota.

@@ -97,7 +97,7 @@ def test_shim_yields_one_event_with_temp_prefixed_keys(populated_state: dict) ->
         # the placeholder adds zero tokens.
         "temp:first_tick_preamble",
         # iter-3 deployment-readout: one-line live summary of invested fraction
-        # vs the 70–80% target band, injected into ## Deployment posture so the
+        # vs the 70–95% target band, injected into ## Deployment posture so the
         # model sees its actual exposure alongside the target guidance.
         "temp:deployment_readout",
     }
@@ -442,7 +442,7 @@ def test_first_tick_preamble_empty_on_iterative_tick() -> None:
 # ---------------------------------------------------------------------------
 #
 # The readout is injected into ``## Deployment posture`` so the model sees
-# its live invested fraction alongside the 70–80% target band prose.
+# its live invested fraction alongside the 70–95% target band prose.
 # Tests cover: first-tick / empty portfolio, below-band, in-band, above-band,
 # and that the directional cue is always present and correct.
 # ---------------------------------------------------------------------------
@@ -487,7 +487,7 @@ def test_deployment_readout_empty_portfolio_first_tick() -> None:
 
 
 def test_deployment_readout_below_band() -> None:
-    """A portfolio at ~51% invested must report BELOW the 70–80% target band.
+    """A portfolio at ~51% invested must report BELOW the 70–95% target band.
 
     Uses a concrete scenario matching the iter-2 observed average: 6 positions
     each holding ~8.5% weight, totalling ~51% invested.
@@ -576,18 +576,22 @@ def test_deployment_readout_within_band() -> None:
 
 
 def test_deployment_readout_above_band() -> None:
-    """A portfolio at ~90% invested must report ABOVE the target band."""
+    """A portfolio above the 95% upper edge must report ABOVE the target band.
+
+    The target band is 70–95%; over-deployment is only flagged above 95%.
+    A 97%-invested book therefore sits 2pp above the band.
+    """
     from agents.strategist.context_shim import StrategistContextShim
     from broker.portfolio import Position, Portfolio
 
-    # 6 positions at ~15% each = 90% invested.
+    # 10 positions at 9.7% each = 97% invested (2pp above the 95% upper edge).
     nav = 100_000.0
-    pos_value = 15_000.0
-    n_pos = 6
-    cash = nav - (pos_value * n_pos)   # £10,000
+    pos_value = 9_700.0
+    n_pos = 10
+    cash = nav - (pos_value * n_pos)   # £3,000
 
     positions = {
-        f"TICK{i}": Position(quantity=100.0, avg_cost=150.0, last_price=150.0)
+        f"TICK{i}": Position(quantity=100.0, avg_cost=97.0, last_price=97.0)
         for i in range(n_pos)
     }
     portfolio = Portfolio(cash=cash, positions=positions)
@@ -603,11 +607,11 @@ def test_deployment_readout_above_band() -> None:
     readout = rendered["temp:deployment_readout"]
 
     assert "ABOVE" in readout, (
-        f"90%-invested portfolio must show ABOVE-band cue; got: {readout!r}"
+        f"97%-invested portfolio must show ABOVE-band cue; got: {readout!r}"
     )
-    # The pp gap above band: 90 − 80 = 10pp.
-    assert "10pp" in readout, (
-        f"Readout must state the 10pp overshoot; got: {readout!r}"
+    # The pp gap above band: 97 − 95 = 2pp.
+    assert "2pp" in readout, (
+        f"Readout must state the 2pp overshoot; got: {readout!r}"
     )
 
     assert "trim" in readout.lower(), (

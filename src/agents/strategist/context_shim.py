@@ -221,7 +221,7 @@ class StrategistContextShim(BaseAgent):
           ``target_price``, ``stop_price`` (removed in iter-3).
         - ``temp:deployment_readout`` — a one-line live summary of the current
           invested fraction, positioned inside ``## Deployment posture`` so the
-          model sees its actual exposure right next to the 70–80% target band.
+          model sees its actual exposure right next to the 70–95% target band.
 
         Separating the pure computation from the ADK plumbing in
         ``_run_async_impl`` lets unit tests call ``render()`` directly without
@@ -280,14 +280,14 @@ class StrategistContextShim(BaseAgent):
 
         # ── Live deployment readout ────────────────────────────────────────
         # Gives the model an explicit, computed signal about where it sits
-        # relative to the 70–80% target band.  Without this the model cannot
+        # relative to the 70–95% target band.  Without this the model cannot
         # tell it is under-deployed; it can only read the target prose and
         # try to infer its current exposure from the thesis-book weight lines.
         #
         # IMPORTANT: the band constants below must stay in sync with the prose
         # in the ``## Deployment posture`` section of prompts.py.  They are
         # intentionally NOT sourced from config — the prompt already hardcodes
-        # 70–80% as prose, and introducing a new config value for this shim
+        # 70–95% as prose, and introducing a new config value for this shim
         # would add indirection without any operational benefit.
         deployment_readout = _render_deployment_readout(portfolio)
 
@@ -489,7 +489,7 @@ class StrategistContextShim(BaseAgent):
                 # subsequent ticks (Deployment posture + Mode already cover it).
                 "temp:first_tick_preamble":     pure_keys["temp:first_tick_preamble"],
                 # Live deployment readout — one-line summary of current invested
-                # fraction vs the 70–80% target band, placed in ## Deployment
+                # fraction vs the 70–95% target band, placed in ## Deployment
                 # posture so the model sees its actual exposure alongside the
                 # target guidance.
                 "temp:deployment_readout":      pure_keys["temp:deployment_readout"],
@@ -522,7 +522,7 @@ def _render_deployment_readout(portfolio: Portfolio) -> str:
     The directional cue (BELOW / WITHIN / ABOVE) is on the same line so
     the model always knows where it stands — no arithmetic needed.
 
-    NOTE: the 70/80 band constants here intentionally mirror the prose in
+    NOTE: the 70/95 band constants here intentionally mirror the prose in
     ``## Deployment posture`` in prompts.py.  If you ever change the target
     band in the prompt, update these constants too.
 
@@ -536,12 +536,12 @@ def _render_deployment_readout(portfolio: Portfolio) -> str:
         str
             A single-line readout, e.g.:
             ``"Capital deployed: 51% invested across 6 positions, 49% idle cash.
-            Target band: 70–80%. You are 19pp BELOW the band — idle cash is
+            Target band: 70–95%. You are 19pp BELOW the band — idle cash is
             bearish drag."``
     """
     # ── Band constants — MUST match the prose in prompts.py ## Deployment posture.
     _BAND_LOW_PCT  = 70   # lower edge of the target band (%)
-    _BAND_HIGH_PCT = 80   # upper edge of the target band (%)
+    _BAND_HIGH_PCT = 95   # upper edge of the target band (%)
 
     weights = portfolio.current_weights()
 

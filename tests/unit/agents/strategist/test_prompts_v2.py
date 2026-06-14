@@ -339,7 +339,7 @@ def test_template_renders_with_all_required_slots():
         # Memory buffer is now a temp key rendered by StrategistContextShim.
         .replace("{temp:memory_buffer}",        "Memory Buffer (1 tick):\n  [01] no_action  executions=0  — (empty)")
         # iter-3 deployment readout — live one-liner injected into ## Deployment posture.
-        .replace("{temp:deployment_readout}",   "Capital deployed: 0% invested across 0 positions, 100% idle cash. Target band: 70–80%. You are 70pp BELOW the band — idle cash is bearish drag.")
+        .replace("{temp:deployment_readout}",   "Capital deployed: 0% invested across 0 positions, 100% idle cash. Target band: 70–95%. You are 70pp BELOW the band — idle cash is bearish drag.")
         # A-086: optional user-scoped thesis — resolves to empty string on cold start.
         .replace("{user:thesis?}",              "(empty)")
     )
