@@ -27,6 +27,14 @@ caps in one place.
 The ``{temp:first_tick_flag}`` placeholder is a runtime ADK slot set by
 ``StrategistContextShim``.  It resolves to ``"True"`` on the first tick
 of a window and ``"False"`` on every subsequent tick.
+
+The ``{temp:deployment_readout}`` placeholder is also set by
+``StrategistContextShim`` — it is a one-line live summary of the
+current invested fraction (e.g. "Capital deployed: 51% invested across
+6 positions, 49% idle cash. Target band: 70–80%. You are 19pp BELOW
+the band — idle cash is bearish drag."), placed immediately inside the
+``## Deployment posture`` section so the model sees its live exposure
+right next to the target guidance.
 """
 from __future__ import annotations
 
@@ -189,6 +197,8 @@ trail must record what you considered, not just what you acted on.
 
 ## Deployment posture
 
+{temp:deployment_readout}
+
 You are aiming, at steady state, to have **70–80% of your portfolio
 invested in positions** — i.e. the sum of ``current weight`` across
 your open positions (shown live in the thesis book above) sitting in
@@ -215,6 +225,28 @@ You should be moving toward the band over time — every tick where
 the evidence supports a new position and you stay flat is a tick of
 unforced cash drag.  Cash is the absence of a thesis; it earns
 nothing and does not compound.
+
+### Conviction-weighted position sizing
+
+Scale your position sizes to the strength of your evidence — do not
+distribute capital evenly across every watchlist name.
+
+- A name you genuinely back should reach **10% or more** of the
+  portfolio (built over a tick or two if needed; you do not have to
+  hit 10% in one trade — the 20%-per-trade cap still applies).
+- An **average of ~5% per held name** across the book is fine at
+  steady state.
+- **Do not hold all twenty watchlist names in small fragments.**
+  Spreading thin with twenty ~4–5% tokens is almost never the
+  evidence-supported decision — it is a bet-hedging reflex that
+  produces mediocre exposure everywhere.  Concentrate in the names
+  with the strongest evidence.
+- A name with a thin or uncertain thesis stays a **small ~5% starter
+  or no position at all** — do not pad a weak thesis up to match a
+  strong one.
+
+The principle: conviction → size.  Strongest evidence gets the
+biggest weight; weak evidence gets a probe or nothing.
 
 {temp:first_tick_preamble}
 

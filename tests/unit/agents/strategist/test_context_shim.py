@@ -96,6 +96,10 @@ def test_shim_yields_one_event_with_temp_prefixed_keys(populated_state: dict) ->
         # thesis book must be populated); empty string on iterative ticks so
         # the placeholder adds zero tokens.
         "temp:first_tick_preamble",
+        # iter-3 deployment-readout: one-line live summary of invested fraction
+        # vs the 70–80% target band, injected into ## Deployment posture so the
+        # model sees its actual exposure alongside the target guidance.
+        "temp:deployment_readout",
     }
     assert set(delta.keys()) == expected_keys, (
         f"state_delta keys mismatch: {set(delta.keys())} vs {expected_keys}"
@@ -430,4 +434,182 @@ def test_first_tick_preamble_empty_on_iterative_tick() -> None:
     assert preamble == "", (
         f"temp:first_tick_preamble must be an empty string on iterative ticks "
         f"(user:active_stances_initialised=True); got {preamble!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# iter-3 — deployment readout (temp:deployment_readout)
+# ---------------------------------------------------------------------------
+#
+# The readout is injected into ``## Deployment posture`` so the model sees
+# its live invested fraction alongside the 70–80% target band prose.
+# Tests cover: first-tick / empty portfolio, below-band, in-band, above-band,
+# and that the directional cue is always present and correct.
+# ---------------------------------------------------------------------------
+
+def test_deployment_readout_empty_portfolio_first_tick() -> None:
+    """An empty portfolio (first tick, no positions) must produce a 0%-invested readout.
+
+    The readout must explicitly state 0% invested, 100% idle cash, and that
+    the portfolio is BELOW the target band — so the model knows to open
+    positions rather than defaulting to cash.
+    """
+    from agents.strategist.context_shim import StrategistContextShim
+    from broker.portfolio import Portfolio
+
+    state = {
+        "user:positions":                  {},
+        "user:active_stances_initialised": False,
+        "portfolio":                       Portfolio(cash=100_000.0).model_dump(mode="json"),
+    }
+    shim = StrategistContextShim()
+    rendered = shim.render(state)
+
+    readout = rendered["temp:deployment_readout"]
+
+    # Must be a non-empty string — silent blank is a failure mode.
+    assert readout, "temp:deployment_readout must be non-empty even on first tick"
+
+    # Must show 0% invested (no positions open).
+    assert "0%" in readout, (
+        f"Empty-portfolio readout must show 0% invested; got: {readout!r}"
+    )
+
+    # Must show 100% idle cash.
+    assert "100%" in readout, (
+        f"Empty-portfolio readout must show 100% idle cash; got: {readout!r}"
+    )
+
+    # Must flag BELOW band so the model knows to open positions.
+    assert "BELOW" in readout, (
+        f"Empty-portfolio readout must contain 'BELOW' directional cue; got: {readout!r}"
+    )
+
+
+def test_deployment_readout_below_band() -> None:
+    """A portfolio at ~51% invested must report BELOW the 70–80% target band.
+
+    Uses a concrete scenario matching the iter-2 observed average: 6 positions
+    each holding ~8.5% weight, totalling ~51% invested.
+    """
+    from agents.strategist.context_shim import StrategistContextShim
+    from broker.portfolio import Position, Portfolio
+
+    # Build a portfolio with 6 positions at 8.5% weight each ≈ 51% invested.
+    # Total NAV = £100k; each position is ~£8,500.
+    nav = 100_000.0
+    pos_value = 8_500.0
+    n_pos = 6
+    cash = nav - (pos_value * n_pos)   # £49,000
+
+    positions = {
+        f"TICK{i}": Position(quantity=100.0, avg_cost=85.0, last_price=85.0)
+        for i in range(n_pos)
+    }
+    portfolio = Portfolio(cash=cash, positions=positions)
+
+    state = {
+        "user:positions":                  {},
+        "user:active_stances_initialised": True,
+        "portfolio":                       portfolio.model_dump(mode="json"),
+    }
+    shim = StrategistContextShim()
+    rendered = shim.render(state)
+
+    readout = rendered["temp:deployment_readout"]
+
+    # Invested fraction = 51%; directional cue must be BELOW.
+    assert "BELOW" in readout, (
+        f"51%-invested portfolio must show BELOW-band cue; got: {readout!r}"
+    )
+
+    # The pp gap must be present (70 − 51 = 19pp).
+    assert "19pp" in readout, (
+        f"Readout must state the 19pp gap below band; got: {readout!r}"
+    )
+
+    # Idle cash must be mentioned — it is the actionable insight (deploy it).
+    assert "idle cash" in readout, (
+        f"Below-band readout must mention idle cash; got: {readout!r}"
+    )
+
+
+def test_deployment_readout_within_band() -> None:
+    """A portfolio at ~75% invested must report WITHIN the target band.
+
+    Within-band readout must contain WITHIN and must NOT contain BELOW or ABOVE.
+    """
+    from agents.strategist.context_shim import StrategistContextShim
+    from broker.portfolio import Position, Portfolio
+
+    # 6 positions at ~12.5% each ≈ 75% invested.
+    nav = 100_000.0
+    pos_value = 12_500.0
+    n_pos = 6
+    cash = nav - (pos_value * n_pos)   # £25,000
+
+    positions = {
+        f"TICK{i}": Position(quantity=100.0, avg_cost=125.0, last_price=125.0)
+        for i in range(n_pos)
+    }
+    portfolio = Portfolio(cash=cash, positions=positions)
+
+    state = {
+        "user:positions":                  {},
+        "user:active_stances_initialised": True,
+        "portfolio":                       portfolio.model_dump(mode="json"),
+    }
+    shim = StrategistContextShim()
+    rendered = shim.render(state)
+
+    readout = rendered["temp:deployment_readout"]
+
+    assert "WITHIN" in readout, (
+        f"75%-invested portfolio must show WITHIN-band cue; got: {readout!r}"
+    )
+    assert "BELOW" not in readout, (
+        f"Within-band readout must not contain BELOW; got: {readout!r}"
+    )
+    assert "ABOVE" not in readout, (
+        f"Within-band readout must not contain ABOVE; got: {readout!r}"
+    )
+
+
+def test_deployment_readout_above_band() -> None:
+    """A portfolio at ~90% invested must report ABOVE the target band."""
+    from agents.strategist.context_shim import StrategistContextShim
+    from broker.portfolio import Position, Portfolio
+
+    # 6 positions at ~15% each = 90% invested.
+    nav = 100_000.0
+    pos_value = 15_000.0
+    n_pos = 6
+    cash = nav - (pos_value * n_pos)   # £10,000
+
+    positions = {
+        f"TICK{i}": Position(quantity=100.0, avg_cost=150.0, last_price=150.0)
+        for i in range(n_pos)
+    }
+    portfolio = Portfolio(cash=cash, positions=positions)
+
+    state = {
+        "user:positions":                  {},
+        "user:active_stances_initialised": True,
+        "portfolio":                       portfolio.model_dump(mode="json"),
+    }
+    shim = StrategistContextShim()
+    rendered = shim.render(state)
+
+    readout = rendered["temp:deployment_readout"]
+
+    assert "ABOVE" in readout, (
+        f"90%-invested portfolio must show ABOVE-band cue; got: {readout!r}"
+    )
+    # The pp gap above band: 90 − 80 = 10pp.
+    assert "10pp" in readout, (
+        f"Readout must state the 10pp overshoot; got: {readout!r}"
+    )
+
+    assert "trim" in readout.lower(), (
+        f"Above-band readout must advise trimming; got: {readout!r}"
     )

@@ -32,7 +32,7 @@ def test_round_trip(session):
         session, tick_id="tick_X", decision_tag="buy_aapl",
         recorded_at=datetime(2026, 5, 8, 14, tzinfo=UTC),
         stance={
-            "ticker": "AAPL", "preferred_weight": 0.05, "conviction": 0.7,
+            "ticker": "AAPL",
             "rationale": "FCF + insider",
         },
         lifecycle_action="buy",
@@ -43,10 +43,12 @@ def test_round_trip(session):
     r = rows[0]
     assert r.tick_id == "tick_X"
     assert r.ticker == "AAPL"
-    assert r.preferred_weight == 0.05
+    assert r.rationale == "FCF + insider"
     assert r.lifecycle_action == "buy"
     assert r.decision_tag == "buy_aapl"
-    # iter-3: dropped columns must not appear on the ORM model.
+    # Dropped columns must not appear on the ORM model.
+    assert not hasattr(r, "preferred_weight")
+    assert not hasattr(r, "conviction")
     assert not hasattr(r, "horizon")
     assert not hasattr(r, "target_price")
     assert not hasattr(r, "stop_price")
@@ -60,14 +62,16 @@ def test_nullable_lifecycle_fields(session):
         session, tick_id="tick_X", decision_tag="update_msft",
         recorded_at=datetime(2026, 5, 8, 14, tzinfo=UTC),
         stance={
-            "ticker": "MSFT", "preferred_weight": 0.05, "conviction": 0.6,
+            "ticker": "MSFT",
             "rationale": "still cheap",
         },
         lifecycle_action="update",
     )
     session.commit()
     r = session.query(TickerStanceRow).first()
-    # iter-3: catalyst, close_reason and trim_reason dropped from TickerStanceRow.
+    # Dropped columns must not appear on the ORM model.
+    assert not hasattr(r, "preferred_weight")
+    assert not hasattr(r, "conviction")
     assert not hasattr(r, "catalyst")
     assert not hasattr(r, "close_reason")
     assert not hasattr(r, "trim_reason")
@@ -86,8 +90,6 @@ def test_unique_constraint_tick_id_ticker():
 
     _stance = {
         "ticker": "AAPL",
-        "preferred_weight": 0.05,
-        "conviction": 0.7,
         "rationale": "test",
     }
     _recorded = datetime(2026, 5, 8, 14, tzinfo=UTC)

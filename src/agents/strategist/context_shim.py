@@ -219,6 +219,9 @@ class StrategistContextShim(BaseAgent):
           showing rationale, opened-at, current price/weight/P&L, and thesis
           staleness in ticks.  Intentionally omits ``horizon``,
           ``target_price``, ``stop_price`` (removed in iter-3).
+        - ``temp:deployment_readout`` — a one-line live summary of the current
+          invested fraction, positioned inside ``## Deployment posture`` so the
+          model sees its actual exposure right next to the 70–80% target band.
 
         Separating the pure computation from the ADK plumbing in
         ``_run_async_impl`` lets unit tests call ``render()`` directly without
@@ -230,11 +233,12 @@ class StrategistContextShim(BaseAgent):
                 ``user:positions`` (dict[ticker, thesis-dict], defaults to {}),
                 ``user:current_tick_index`` (int, defaults to 0),
                 ``portfolio`` (Portfolio dump, defaults to empty) — sourced so
-                the held-view can show live price/weight/P&L per position.
+                the held-view can show live price/weight/P&L per position, and
+                the deployment-readout can sum current weights.
 
         Returns:
             dict with keys ``temp:first_tick_flag``, ``temp:first_tick_preamble``,
-            and ``temp:held_positions_view``.
+            ``temp:held_positions_view``, and ``temp:deployment_readout``.
         """
         # ── Selective-output flag ─────────────────────────────────────────
         # ``user:active_stances_initialised`` is False (or absent) on the
@@ -274,10 +278,24 @@ class StrategistContextShim(BaseAgent):
             portfolio          = portfolio,
         )
 
+        # ── Live deployment readout ────────────────────────────────────────
+        # Gives the model an explicit, computed signal about where it sits
+        # relative to the 70–80% target band.  Without this the model cannot
+        # tell it is under-deployed; it can only read the target prose and
+        # try to infer its current exposure from the thesis-book weight lines.
+        #
+        # IMPORTANT: the band constants below must stay in sync with the prose
+        # in the ``## Deployment posture`` section of prompts.py.  They are
+        # intentionally NOT sourced from config — the prompt already hardcodes
+        # 70–80% as prose, and introducing a new config value for this shim
+        # would add indirection without any operational benefit.
+        deployment_readout = _render_deployment_readout(portfolio)
+
         return {
-            "temp:first_tick_flag":     first_tick_flag,
-            "temp:first_tick_preamble": first_tick_preamble,
-            "temp:held_positions_view": held_view,
+            "temp:first_tick_flag":      first_tick_flag,
+            "temp:first_tick_preamble":  first_tick_preamble,
+            "temp:held_positions_view":  held_view,
+            "temp:deployment_readout":   deployment_readout,
         }
 
     async def _run_async_impl(
@@ -470,6 +488,11 @@ class StrategistContextShim(BaseAgent):
                 # thesis book; model must populate), empty string on all
                 # subsequent ticks (Deployment posture + Mode already cover it).
                 "temp:first_tick_preamble":     pure_keys["temp:first_tick_preamble"],
+                # Live deployment readout — one-line summary of current invested
+                # fraction vs the 70–80% target band, placed in ## Deployment
+                # posture so the model sees its actual exposure alongside the
+                # target guidance.
+                "temp:deployment_readout":      pure_keys["temp:deployment_readout"],
                 "temp:ticker_evidence":         ticker_evidence_rendered,
                 "temp:ticker_evidence_objects": ticker_evidence_objects,
                 "temp:recent_trades_view":      recent_trades_view,
@@ -486,6 +509,71 @@ class StrategistContextShim(BaseAgent):
                 "temp:_last_schema_error":      "",
             }),
         )
+
+
+def _render_deployment_readout(portfolio: Portfolio) -> str:
+    """Produce a one-line live deployment summary for the strategist prompt.
+
+    Computes the fraction of portfolio NAV currently invested in positions
+    (i.e. sum of all position market values divided by total NAV) and
+    formats a plain-English readout that explicitly names the 70–80% target
+    band and whether the portfolio is below, within, or above it.
+
+    The directional cue (BELOW / WITHIN / ABOVE) is on the same line so
+    the model always knows where it stands — no arithmetic needed.
+
+    NOTE: the 70/80 band constants here intentionally mirror the prose in
+    ``## Deployment posture`` in prompts.py.  If you ever change the target
+    band in the prompt, update these constants too.
+
+    Args:
+        portfolio:
+            Live ``Portfolio`` snapshot.  An empty portfolio (no positions,
+            pure cash) degrades gracefully to a "0% invested / 100% cash"
+            readout rather than raising.
+
+    Returns:
+        str
+            A single-line readout, e.g.:
+            ``"Capital deployed: 51% invested across 6 positions, 49% idle cash.
+            Target band: 70–80%. You are 19pp BELOW the band — idle cash is
+            bearish drag."``
+    """
+    # ── Band constants — MUST match the prose in prompts.py ## Deployment posture.
+    _BAND_LOW_PCT  = 70   # lower edge of the target band (%)
+    _BAND_HIGH_PCT = 80   # upper edge of the target band (%)
+
+    weights = portfolio.current_weights()
+
+    # Sum of all position weights = invested fraction (remainder is cash).
+    invested_frac: float = sum(weights.values())
+    invested_pct:  int   = round(invested_frac * 100)
+    cash_pct:      int   = 100 - invested_pct
+    n_positions:   int   = len(weights)
+
+    # Positions noun (singular vs plural) for grammatical English.
+    pos_noun = "position" if n_positions == 1 else "positions"
+
+    # ── Directional cue relative to the target band ───────────────────────
+    if invested_pct < _BAND_LOW_PCT:
+        gap_pp = _BAND_LOW_PCT - invested_pct
+        direction_cue = (
+            f"You are {gap_pp}pp BELOW the band — idle cash is bearish drag."
+        )
+    elif invested_pct > _BAND_HIGH_PCT:
+        gap_pp = invested_pct - _BAND_HIGH_PCT
+        direction_cue = (
+            f"You are {gap_pp}pp ABOVE the band — trim the lowest-conviction positions."
+        )
+    else:
+        direction_cue = "You are WITHIN the target band."
+
+    return (
+        f"Capital deployed: {invested_pct}% invested across "
+        f"{n_positions} {pos_noun}, {cash_pct}% idle cash. "
+        f"Target band: {_BAND_LOW_PCT}–{_BAND_HIGH_PCT}%. "
+        f"{direction_cue}"
+    )
 
 
 def _render_positions_shim(

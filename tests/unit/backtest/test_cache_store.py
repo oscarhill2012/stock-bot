@@ -324,3 +324,159 @@ def test_politician_trades_pit_uses_disclosure_date(store: CachedDataStore) -> N
     politicians = [t.politician for t in result]
     assert "Rep. Jones" in politicians,  "early-disclosed trade must appear"
     assert "Sen. Smith" not in politicians, "late-disclosed trade must not appear"
+
+
+# ── delete_domain_rows ────────────────────────────────────────────────────────
+
+def test_delete_domain_rows_removes_company_ratios_and_returns_count(
+    store: CachedDataStore,
+) -> None:
+    """``delete_domain_rows`` removes every row for a ticker and returns the count.
+
+    Writes two CompanyRatios snapshots for AAPL, calls delete_domain_rows,
+    then asserts:
+    1.  The returned count equals the number of rows written (2).
+    2.  A subsequent read returns no data (the rows are gone).
+    """
+    early = CompanyRatios(ticker="AAPL", market_cap=1_000.0)
+    late  = CompanyRatios(ticker="AAPL", market_cap=2_000.0)
+
+    store.write_company_ratios("AAPL", early, date(2023, 3, 1))
+    store.write_company_ratios("AAPL", late,  date(2023, 3, 15))
+
+    # Sanity-check: rows are present before the delete.
+    assert store.read_company_ratios("AAPL", as_of=_dt(2023, 3, 15)) is not None
+
+    removed = store.delete_domain_rows("AAPL", "company_ratios")
+
+    assert removed == 2, f"expected 2 rows deleted, got {removed}"
+
+    # After deletion, the reader must return nothing.
+    assert store.read_company_ratios("AAPL", as_of=_dt(2023, 3, 15)) is None
+
+
+def test_delete_domain_rows_removes_ohlcv_and_returns_count(
+    store: CachedDataStore,
+) -> None:
+    """``delete_domain_rows`` works for multi-row domains like OHLCV."""
+    bars = [
+        OHLCBar(
+            timestamp=_dt(2023, 3, d),
+            open=1.0, high=2.0, low=0.5, close=1.5, volume=100.0,
+        )
+        for d in (6, 7, 8)
+    ]
+    store.write_ohlcv("AAPL", bars)
+
+    removed = store.delete_domain_rows("AAPL", "ohlcv")
+
+    assert removed == 3, f"expected 3 rows deleted, got {removed}"
+    assert store.read_ohlcv("AAPL", date(2023, 3, 6), date(2023, 3, 8)) == []
+
+
+def test_delete_domain_rows_only_removes_target_ticker(
+    store: CachedDataStore,
+) -> None:
+    """Deleting rows for AAPL must leave MSFT rows untouched."""
+    aapl = CompanyRatios(ticker="AAPL", market_cap=1_000.0)
+    msft = CompanyRatios(ticker="MSFT", market_cap=3_000.0)
+
+    store.write_company_ratios("AAPL", aapl, date(2023, 3, 1))
+    store.write_company_ratios("MSFT", msft, date(2023, 3, 1))
+
+    store.delete_domain_rows("AAPL", "company_ratios")
+
+    # AAPL gone, MSFT intact.
+    assert store.read_company_ratios("AAPL", as_of=_dt(2023, 3, 15)) is None
+    assert store.read_company_ratios("MSFT", as_of=_dt(2023, 3, 15)) is not None
+
+
+def test_delete_domain_rows_unknown_domain_raises(
+    store: CachedDataStore,
+) -> None:
+    """``delete_domain_rows`` with an unrecognised domain must raise, not silently no-op.
+
+    Silent no-ops are the exact failure mode this whole fix is addressing.
+    A typo in the domain name (e.g. ``"company_ratio"`` instead of
+    ``"company_ratios"``) must fail loudly so the user knows the refetch
+    was never applied.
+    """
+    import pytest
+
+    with pytest.raises((ValueError, KeyError)):
+        store.delete_domain_rows("AAPL", "bogus_domain")
+
+
+# ── honest writer rowcount ────────────────────────────────────────────────────
+
+def test_write_company_ratios_returns_one_on_fresh_insert(
+    store: CachedDataStore,
+) -> None:
+    """First write of a CompanyRatios snapshot returns 1 (one row inserted)."""
+    snapshot = CompanyRatios(ticker="AAPL", market_cap=1_000.0)
+
+    count = store.write_company_ratios("AAPL", snapshot, date(2023, 3, 1))
+
+    assert count == 1, f"expected 1 row inserted, got {count}"
+
+
+def test_write_company_ratios_returns_zero_on_duplicate(
+    store: CachedDataStore,
+) -> None:
+    """Writing the same (ticker, as_of_date) twice — second call must return 0.
+
+    This is the core silent-failure test: the old code always returned None
+    and the fetcher counted ``len(results)`` regardless of what actually
+    landed in the DB.  The new code returns 0 when on_conflict_do_nothing
+    absorbs the duplicate, making the no-op observable.
+    """
+    snapshot = CompanyRatios(ticker="AAPL", market_cap=1_000.0)
+    as_of = date(2023, 3, 1)
+
+    first  = store.write_company_ratios("AAPL", snapshot, as_of)
+    second = store.write_company_ratios("AAPL", snapshot, as_of)
+
+    assert first  == 1, f"first write must insert 1 row, got {first}"
+    assert second == 0, (
+        "duplicate write must return 0 (on_conflict_do_nothing absorbed it), "
+        f"got {second} — this was the silent-failure bug"
+    )
+
+
+def test_write_ohlcv_returns_full_count_on_fresh_insert(
+    store: CachedDataStore,
+) -> None:
+    """Inserting N fresh OHLCV bars returns N."""
+    bars = [
+        OHLCBar(
+            timestamp=_dt(2023, 3, d),
+            open=1.0, high=2.0, low=0.5, close=1.5, volume=100.0,
+        )
+        for d in (6, 7, 8)
+    ]
+
+    count = store.write_ohlcv("AAPL", bars)
+
+    assert count == 3, f"expected 3 rows inserted, got {count}"
+
+
+def test_write_ohlcv_returns_zero_on_duplicate_batch(
+    store: CachedDataStore,
+) -> None:
+    """Re-writing the same OHLCV bars returns 0 — on_conflict_do_nothing is now observable."""
+    bars = [
+        OHLCBar(
+            timestamp=_dt(2023, 3, d),
+            open=1.0, high=2.0, low=0.5, close=1.5, volume=100.0,
+        )
+        for d in (6, 7, 8)
+    ]
+
+    first  = store.write_ohlcv("AAPL", bars)
+    second = store.write_ohlcv("AAPL", bars)
+
+    assert first  == 3, f"first write must insert 3 rows, got {first}"
+    assert second == 0, (
+        "duplicate batch must return 0 — the provider-payload count (3) must "
+        f"not be returned when no rows were actually inserted; got {second}"
+    )

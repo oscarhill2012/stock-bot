@@ -383,3 +383,216 @@ def test_select_revenue_all_stale_falls_back_to_current() -> None:
     assert concept == _REV_LEGACY
     assert now   == pytest.approx(50.0e9)
     assert prior is None
+
+
+# ---------------------------------------------------------------------------
+# Regression test: _load_xbrl_summary must yield non-zero revenue_growth_yoy
+# for ASC-606 filers even when ``Revenues`` carries a stale fragment.
+#
+# This is the end-to-end path that was broken before the revenue-concept
+# selector was introduced.  The OLD code read revenue only from ``Revenues``;
+# for ASC-606 filers (AAPL, MSFT, META …) that concept carries a stale single
+# fragment returning the identical value at every date, collapsing
+# ``revenue_growth_yoy`` to a false 0.0 and inflating ``profit_margin``
+# because the denominator (the stale fragment) was smaller than the real
+# filed revenue.
+#
+# This test constructs a fake edgartools ``facts`` object whose query chain
+# mimics the ASC-606 scenario — ``Revenues`` stale, ``RevenueFromContract…``
+# genuinely distinct — then calls ``_load_xbrl_summary`` directly and asserts
+# the POSITIVE signal: non-zero YoY growth and a plausible margin (< 100%).
+# ---------------------------------------------------------------------------
+
+def _make_fake_facts(
+    concept_table: dict[tuple[str, date], float | None],
+    other_concepts: dict[str, float | None] | None = None,
+) -> object:
+    """Build a fake edgartools ``EntityFacts``-shaped object.
+
+    The returned object's ``query().by_concept(concept).as_of(at)`` chain
+    returns a fake row whose ``.value`` is looked up from ``concept_table``
+    keyed by ``(concept, date)``.  Concepts not in the table resolve to an
+    empty list from ``.latest()``.
+
+    ``other_concepts`` is an optional flat dict of ``{concept: value}`` for
+    concepts that are always queried at ``as_of_date`` (not varying by date).
+    These are looked up only by concept name — the date component is ignored.
+
+    Parameters
+    ----------
+    concept_table:
+        Mapping of ``(concept_name, date)`` → float value (or ``None``) for
+        revenue-selection concepts that must vary by date.
+    other_concepts:
+        Flat mapping of concept → value for balance-sheet / income-statement
+        concepts that are always pinned to the ``as_of_date``.
+
+    Returns
+    -------
+    object
+        A minimal fake that satisfies the ``facts.query().by_concept().as_of()``
+        call chain used inside ``_load_xbrl_summary._ttm_at``.
+    """
+    other_concepts = other_concepts or {}
+
+    def _make_query(concept: str):
+        """Return a chainable query stub for the given ``concept``."""
+
+        class _AsOf:
+            def __init__(self, _concept: str, _at):
+                self._concept = _concept
+                self._at      = _at
+
+            def latest(self):
+                """Return a list with one fake row, or an empty list."""
+                # First try the date-specific table (used for revenue concepts).
+                if isinstance(self._at, date):
+                    val = concept_table.get((self._concept, self._at))
+                else:
+                    val = None
+
+                # Fall back to the date-agnostic table (balance-sheet / P&L).
+                if val is None:
+                    val = other_concepts.get(self._concept)
+
+                if val is None:
+                    return []
+
+                return [SimpleNamespace(value=val)]
+
+        class _ByConcept:
+            def __init__(self, _concept: str):
+                self._concept = _concept
+
+            def as_of(self, at):
+                return _AsOf(self._concept, at)
+
+        class _Query:
+            def by_concept(self, concept: str):
+                return _ByConcept(concept)
+
+        return _Query()
+
+    class _FakeFacts:
+        def query(self):
+            return _make_query(concept)  # type: ignore[name-defined]
+
+    # Rebuild so each ``query()`` call gets a fresh query object keyed to the
+    # *actual* concept requested.  We need to close over the outer ``facts``
+    # object itself, so we use __getattr__ indirection.
+    class _FakeFacts2:
+        def query(self):
+            class _Q:
+                def by_concept(self_, concept_name):
+                    class _BC:
+                        def as_of(self_, at):
+                            val = concept_table.get((concept_name, at))
+                            if val is None:
+                                val = other_concepts.get(concept_name)
+                            if val is None:
+                                return SimpleNamespace(latest=lambda: [])
+                            row = SimpleNamespace(value=val)
+                            return SimpleNamespace(latest=lambda: [row])
+                    return _BC()
+            return _Q()
+
+    return _FakeFacts2()
+
+
+def test_load_xbrl_summary_asc606_filer_yields_nonzero_growth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ASC-606 filer scenario: ``Revenues`` stale → selector picks the live concept.
+
+    Before ``_select_revenue_series`` was introduced, ``_load_xbrl_summary``
+    read revenue only from ``Revenues``.  For ASC-606 filers that concept
+    carries a stale single fragment — identical value at every date — so
+    ``revenue_growth_yoy`` collapsed to ``(stale - stale) / stale = 0.0`` and
+    ``profit_margin`` used the wrong (smaller) denominator.
+
+    This test stubs the edgartools ``Company`` and ``EntityFacts`` objects so
+    no network call is made, then asserts the POSITIVE signals:
+    - ``revenue_growth_yoy`` is non-zero (regression: was 0.0 before the fix).
+    - ``profit_margin`` is between 0 and 1 (regression: was > 1.0 before fix,
+      because net income was divided by the stale fragment rather than real rev).
+    """
+    import data.providers.company_ratios.pit_composite as mod
+
+    # --- AAPL-shaped XBRL scenario -------------------------------------------
+    # ``Revenues`` carries a stale single fragment — same value at every date.
+    # ``RevenueFromContractWithCustomerExcludingAssessedTax`` is the live top
+    # line with distinct values year-on-year.  All other concepts are present
+    # but constant (they don't affect the revenue-selector logic).
+
+    _STALE_REV    = 215_638_000_000.0   # same at both dates → rejected
+    _REV_NOW      = 296_105_000_000.0   # genuinely-filed top line at as_of
+    _REV_PRIOR    = 293_787_000_000.0   # genuinely-filed top line a year ago
+    _NET_INCOME   =  79_000_000_000.0
+    _EQUITY       = 364_980_000_000.0
+
+    # Date pair matching the existing test suite's probe dates.
+    as_of = _AS_OF   # 2025-09-02
+    prior = _PRIOR   # 2024-09-02
+
+    concept_table: dict[tuple[str, date], float | None] = {
+        # Stale legacy concept — equal at both dates → must be rejected.
+        (_REV_LEGACY, as_of): _STALE_REV,
+        (_REV_LEGACY, prior): _STALE_REV,
+        # Live ASC-606 concept — distinct values → must be selected.
+        (_REV_ASC606, as_of): _REV_NOW,
+        (_REV_ASC606, prior): _REV_PRIOR,
+    }
+
+    other_concepts: dict[str, float | None] = {
+        "NetIncomeLoss":                                       _NET_INCOME,
+        "StockholdersEquity":                                  _EQUITY,
+        "LongTermDebtNoncurrent":                              85_750_000_000.0,
+        "LongTermDebtCurrent":                                 10_912_000_000.0,
+        "ShortTermBorrowings":                                  5_980_000_000.0,
+        "NetCashProvidedByUsedInOperatingActivities":          91_443_000_000.0,
+        "PaymentsToAcquirePropertyPlantAndEquipment":           6_539_000_000.0,
+    }
+
+    fake_facts = _make_fake_facts(concept_table, other_concepts)
+
+    # Patch ``Company`` so ``_load_xbrl_summary`` never hits the network.
+    class _FakeCompany:
+        def get_facts(self):
+            return fake_facts
+
+    monkeypatch.setattr(mod, "_ensure_identity", lambda: None)
+    # Patch ``Company`` in the module's own namespace — ``pit_composite.py``
+    # imports it as ``from edgar import Company``, so we must patch the name
+    # where it is actually looked up, not on the ``edgar`` package itself.
+    monkeypatch.setattr(mod, "Company", lambda symbol: _FakeCompany())
+
+    result = mod._load_xbrl_summary("AAPL", as_of)
+
+    expected_growth = (_REV_NOW - _REV_PRIOR) / _REV_PRIOR
+    expected_margin = _NET_INCOME / _REV_NOW
+
+    # --- Positive-signal assertions (the point of the regression test) -------
+
+    # Before the fix: revenue_growth_yoy was (stale - stale) / stale = 0.0.
+    # After the fix: it must be non-zero and match the live concept's growth.
+    assert result["revenue_growth_yoy"] is not None, (
+        "revenue_growth_yoy must not be None for an ASC-606 filer with EDGAR data"
+    )
+    assert result["revenue_growth_yoy"] != 0.0, (
+        "revenue_growth_yoy collapsed to 0.0 — selector is using the stale "
+        "Revenues fragment instead of RevenueFromContractWithCustomer…"
+    )
+    assert result["revenue_growth_yoy"] == pytest.approx(expected_growth, rel=1e-6), (
+        f"Expected growth ≈ {expected_growth:.4%}, got {result['revenue_growth_yoy']:.4%}"
+    )
+
+    # Before the fix: profit_margin was net_income / stale_rev — overstated.
+    # After the fix: it must use the real filed revenue as denominator.
+    assert result["profit_margin"] is not None, (
+        "profit_margin must not be None when NetIncomeLoss and revenue are present"
+    )
+    assert 0.0 < result["profit_margin"] < 1.0, (
+        f"profit_margin = {result['profit_margin']:.4%} is implausible "
+        f"(was > 1.0 before fix due to wrong revenue denominator)"
+    )
+    assert result["profit_margin"] == pytest.approx(expected_margin, rel=1e-6)

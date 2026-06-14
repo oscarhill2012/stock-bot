@@ -3,7 +3,15 @@
 Readers honour the point-in-time filter: rows whose canonical timestamp is
 after the supplied ``as_of`` are never returned.  Writers are idempotent on
 the primary key — re-running the fetcher is safe (INSERT OR IGNORE semantics
-via SQLAlchemy's SQLite dialect).
+via SQLAlchemy's SQLite dialect).  Each writer now returns the number of rows
+*actually inserted* (``result.rowcount``); with ``on_conflict_do_nothing`` a
+duplicate insert returns 0, not the provider-payload count.
+
+For genuine replacement (e.g. ``--refetch-domain company_ratios`` after a bug
+fix), the fetcher calls ``delete_domain_rows`` *after* a successful provider
+fetch and *before* calling the writer.  This delete-first path is the only
+supported way to replace existing rows; the writers themselves keep
+``on_conflict_do_nothing`` so re-running a plain fill is always idempotent.
 
 PIT filter rules (enforced throughout):
 - News: filter on ``published_at`` (publication date).
@@ -35,7 +43,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, delete, func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
@@ -63,6 +71,27 @@ from data.models import (
 from data.models.missing import is_missing_timestamp
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Domain → ORM Row class map.
+#
+# Used by ``CachedDataStore.delete_domain_rows`` to resolve which table to
+# clear when the fetcher is running a refetch.  All listed tables carry a
+# ``ticker`` column so a single ``WHERE ticker = ?`` predicate suffices for
+# each.
+#
+# Keeping this at module level means adding a new domain requires only a
+# one-line entry here — no changes inside the method body.
+# ---------------------------------------------------------------------------
+_ROW_BY_DOMAIN: dict[str, type] = {
+    "ohlcv":             OHLCVBarRow,
+    "company_ratios":    CompanyRatiosRow,
+    "news":              NewsArticleRow,
+    "filings":           FilingRow,
+    "insider_trades":    InsiderTradeRow,
+    "politician_trades": PoliticianTradeRow,
+    "notable_holders":   NotableHolderRow,
+}
 
 
 def _promote_date_only(value: date | datetime) -> datetime:
@@ -205,9 +234,68 @@ class CachedDataStore:
         self._writes_skipped_missing_ts.clear()
         return counts
 
+    # ── domain-level delete (refetch support) ─────────────────────────────────
+
+    def delete_domain_rows(self, ticker: str, domain: str) -> int:
+        """Delete every cached row for ``(ticker, domain)`` and return the count.
+
+        This method exists specifically so ``--refetch-domain <domain>`` can
+        genuinely REPLACE stale data rather than silently no-oping against the
+        ``on_conflict_do_nothing`` clause every writer uses.  The caller
+        (``Fetcher._fetch_one``) invokes this *after* a successful provider
+        fetch and *before* calling the writer, so an empty/failed provider
+        never wipes good data.
+
+        This store is per-window (one SQLite file per backtest window), so the
+        delete is already window-scoped — no additional window predicate needed.
+
+        Parameters
+        ----------
+        ticker:
+            Ticker symbol whose rows should be cleared.
+        domain:
+            Domain key (e.g. ``"ohlcv"``, ``"company_ratios"``).  Must be
+            a key in ``_ROW_BY_DOMAIN``; any other value raises ``ValueError``
+            immediately — silent no-ops are the bug we are here to fix.
+
+        Returns
+        -------
+        int
+            Number of rows actually deleted (``result.rowcount``).
+
+        Raises
+        ------
+        ValueError
+            If ``domain`` is not a known key in ``_ROW_BY_DOMAIN``.
+        """
+        # Fail loudly on unknown domains — a typo must never silently do
+        # nothing and then have the writer's on_conflict_do_nothing absorb the
+        # new rows as if a refetch happened.
+        if domain not in _ROW_BY_DOMAIN:
+            raise ValueError(
+                f"delete_domain_rows: unknown domain {domain!r}.  "
+                f"Known domains: {sorted(_ROW_BY_DOMAIN)}"
+            )
+
+        row_cls = _ROW_BY_DOMAIN[domain]
+
+        with Session(self._engine) as s:
+            result = s.execute(
+                delete(row_cls).where(row_cls.ticker == ticker)
+            )
+            s.commit()
+
+        removed = result.rowcount
+        logger.info(
+            "store.delete_domain_rows: cleared %d row(s) for %s/%s "
+            "(preparing for refetch replacement)",
+            removed, ticker, domain,
+        )
+        return removed
+
     # ── OHLCV ─────────────────────────────────────────────────────────────────
 
-    def write_ohlcv(self, ticker: str, bars: list[OHLCBar]) -> None:
+    def write_ohlcv(self, ticker: str, bars: list[OHLCBar]) -> int:
         """Upsert daily OHLCV bars for ``ticker``.
 
         ``OHLCBar.timestamp`` is stored in the ``ts`` column (DateTime).  The
@@ -220,7 +308,16 @@ class CachedDataStore:
             Ticker symbol (e.g. ``"AAPL"``).
         bars:
             List of ``OHLCBar`` instances to persist.
+
+        Returns
+        -------
+        int
+            Number of rows *actually inserted*.  With ``on_conflict_do_nothing``
+            any bar already in the cache contributes 0, not 1, so this is an
+            honest count of net-new rows rather than the provider-payload size.
         """
+        total_inserted = 0
+
         with Session(self._engine) as s:
             for b in bars:
                 stmt = sqlite_insert(OHLCVBarRow).values(
@@ -232,8 +329,11 @@ class CachedDataStore:
                     close=b.close,
                     volume=b.volume,
                 ).on_conflict_do_nothing(index_elements=["ticker", "ts"])
-                s.execute(stmt)
+                result = s.execute(stmt)
+                total_inserted += result.rowcount
             s.commit()
+
+        return total_inserted
 
     def read_ohlcv(
         self, ticker: str, start: date, end: date,
@@ -294,7 +394,7 @@ class CachedDataStore:
         ticker: str,
         snapshot: CompanyRatios,
         as_of_date: date,
-    ) -> None:
+    ) -> int:
         """Upsert one ``CompanyRatios`` snapshot for ``(ticker, as_of_date)``.
 
         Parameters
@@ -306,6 +406,12 @@ class CachedDataStore:
         as_of_date:
             The date this snapshot was captured (used as the PIT key for
             subsequent reads).
+
+        Returns
+        -------
+        int
+            ``1`` if the row was inserted, ``0`` if it was already present and
+            skipped by ``on_conflict_do_nothing``.
         """
         with Session(self._engine) as s:
             stmt = sqlite_insert(CompanyRatiosRow).values(
@@ -331,8 +437,10 @@ class CachedDataStore:
                 free_cash_flow=snapshot.free_cash_flow,
                 peg=snapshot.peg,
             ).on_conflict_do_nothing(index_elements=["ticker", "as_of_date"])
-            s.execute(stmt)
+            result = s.execute(stmt)
             s.commit()
+
+        return result.rowcount
 
     def read_company_ratios(
         self, ticker: str, as_of: datetime,
@@ -372,7 +480,7 @@ class CachedDataStore:
 
     # ── news ──────────────────────────────────────────────────────────────────
 
-    def write_news(self, ticker: str, articles: list[NewsArticle]) -> None:
+    def write_news(self, ticker: str, articles: list[NewsArticle]) -> int:
         """Upsert news articles for ``ticker``.
 
         Rows whose ``published_at`` is :data:`~data.models.missing.MISSING_TIMESTAMP`
@@ -385,7 +493,15 @@ class CachedDataStore:
             Ticker symbol.
         articles:
             List of ``NewsArticle`` instances to persist.
+
+        Returns
+        -------
+        int
+            Number of rows *actually inserted* (excludes skipped
+            MISSING_TIMESTAMP rows and rows ignored by ``on_conflict_do_nothing``).
         """
+        total_inserted = 0
+
         with Session(self._engine) as s:
             for a in articles:
                 if is_missing_timestamp(a.published_at):
@@ -408,8 +524,11 @@ class CachedDataStore:
                     published_at=a.published_at,
                     sentiment=a.sentiment,
                 ).on_conflict_do_nothing(index_elements=["ticker", "url"])
-                s.execute(stmt)
+                result = s.execute(stmt)
+                total_inserted += result.rowcount
             s.commit()
+
+        return total_inserted
 
     def read_news(
         self, ticker: str, as_of: datetime, lookback_days: int = 30,
@@ -455,7 +574,7 @@ class CachedDataStore:
 
     # ── filings ───────────────────────────────────────────────────────────────
 
-    def write_filings(self, ticker: str, filings: list[Filing]) -> None:
+    def write_filings(self, ticker: str, filings: list[Filing]) -> int:
         """Upsert SEC filings for ``ticker``.
 
         ``Filing.ticker`` carries the ticker, but it is also stored in the row
@@ -472,7 +591,15 @@ class CachedDataStore:
             symmetry with other write methods).
         filings:
             List of ``Filing`` instances to persist.
+
+        Returns
+        -------
+        int
+            Number of rows *actually inserted* (excludes skipped
+            MISSING_TIMESTAMP rows and rows ignored by ``on_conflict_do_nothing``).
         """
+        total_inserted = 0
+
         with Session(self._engine) as s:
             for f in filings:
                 if is_missing_timestamp(f.filed_at):
@@ -496,8 +623,11 @@ class CachedDataStore:
                     risk_factors_excerpt=f.risk_factors_excerpt,
                     mda_excerpt=f.mda_excerpt,
                 ).on_conflict_do_nothing(index_elements=["accession_no"])
-                s.execute(stmt)
+                result = s.execute(stmt)
+                total_inserted += result.rowcount
             s.commit()
+
+        return total_inserted
 
     def read_filings(self, ticker: str, as_of: datetime) -> list[Filing]:
         """Return every filing with ``filed_at <= as_of`` — no lower bound.
@@ -550,7 +680,7 @@ class CachedDataStore:
 
     def write_insider_trades(
         self, ticker: str, trades: list[InsiderTrade],
-    ) -> None:
+    ) -> int:
         """Upsert Form 4 insider trades for ``ticker``.
 
         ``InsiderTrade`` does not carry an ``accession_no`` field (that lives
@@ -568,7 +698,15 @@ class CachedDataStore:
             Ticker symbol.
         trades:
             List of ``InsiderTrade`` instances to persist.
+
+        Returns
+        -------
+        int
+            Number of rows *actually inserted* (excludes skipped
+            MISSING_TIMESTAMP rows and rows ignored by ``on_conflict_do_nothing``).
         """
+        total_inserted = 0
+
         with Session(self._engine) as s:
             for t in trades:
                 if is_missing_timestamp(t.filed_at):
@@ -608,8 +746,11 @@ class CachedDataStore:
                     is_10b5_1=t.is_10b5_1,
                     footnote=t.footnote,
                 ).on_conflict_do_nothing(index_elements=["row_hash"])
-                s.execute(stmt)
+                result = s.execute(stmt)
+                total_inserted += result.rowcount
             s.commit()
+
+        return total_inserted
 
     def read_insider_trades(
         self, ticker: str, as_of: datetime, lookback_days: int = 90,
@@ -673,7 +814,7 @@ class CachedDataStore:
 
     def write_politician_trades(
         self, ticker: str, trades: list[PoliticianTrade],
-    ) -> None:
+    ) -> int:
         """Upsert politician trades for ``ticker``.
 
         PK is a synthetic SHA-1 of ``(ticker, politician, transaction_date,
@@ -691,7 +832,15 @@ class CachedDataStore:
             Ticker symbol.
         trades:
             List of ``PoliticianTrade`` instances to persist.
+
+        Returns
+        -------
+        int
+            Number of rows *actually inserted*
+            (ignored rows score 0 via ``on_conflict_do_nothing``).
         """
+        total_inserted = 0
+
         with Session(self._engine) as s:
             for t in trades:
                 disc_dt = _promote_date_only(t.disclosure_date) if t.disclosure_date else None
@@ -719,8 +868,11 @@ class CachedDataStore:
                     amount_min_usd=t.amount_min_usd,
                     amount_max_usd=t.amount_max_usd,
                 ).on_conflict_do_nothing(index_elements=["row_hash"])
-                s.execute(stmt)
+                result = s.execute(stmt)
+                total_inserted += result.rowcount
             s.commit()
+
+        return total_inserted
 
     def read_politician_trades(
         self, ticker: str, as_of: datetime, lookback_days: int = 90,
@@ -782,7 +934,7 @@ class CachedDataStore:
 
     def write_notable_holders(
         self, ticker: str, holders: list[NotableHolder],
-    ) -> None:
+    ) -> int:
         """Upsert SC 13D / 13G / 13F filings for ``ticker``.
 
         Rows whose ``filed_at`` is :data:`~data.models.missing.MISSING_TIMESTAMP`
@@ -795,7 +947,15 @@ class CachedDataStore:
             Ticker symbol.
         holders:
             List of ``NotableHolder`` instances to persist.
+
+        Returns
+        -------
+        int
+            Number of rows *actually inserted* (excludes skipped
+            MISSING_TIMESTAMP rows and rows ignored by ``on_conflict_do_nothing``).
         """
+        total_inserted = 0
+
         with Session(self._engine) as s:
             for h in holders:
                 if is_missing_timestamp(h.filed_at):
@@ -819,8 +979,11 @@ class CachedDataStore:
                     filed_at=h.filed_at,
                     url=h.url,
                 ).on_conflict_do_nothing(index_elements=["accession_no"])
-                s.execute(stmt)
+                result = s.execute(stmt)
+                total_inserted += result.rowcount
             s.commit()
+
+        return total_inserted
 
     def read_notable_holders(
         self, ticker: str, as_of: datetime, lookback_days: int = 365,
