@@ -810,3 +810,66 @@ def test_llm_analyst_block_renders_report_summary() -> None:
     sm_start = block.find("[SmartMoney]", news_start)
     news_section = block[news_start:sm_start] if sm_start != -1 else block[news_start:]
     assert '-> Rationale:' not in news_section
+
+
+# ---------------------------------------------------------------------------
+# Tests — holding-discipline section (Change 4)
+# ---------------------------------------------------------------------------
+#
+# A ``### Holding discipline`` section was added to ``_RAW_INSTRUCTION``
+# immediately before the ``## OUTPUT CONTRACT`` header.  It instructs the
+# strategist to default to holding when the thesis is intact and to sell only
+# when the view has genuinely changed — not as a way to bank small gains.
+#
+# These tests assert on distinctive phrases so a future prompt edit that
+# accidentally removes or relocates the section is caught immediately.
+# ---------------------------------------------------------------------------
+
+def test_holding_discipline_section_present() -> None:
+    """The ``## Holding discipline`` section must be present in the rendered prompt.
+
+    This is the positive sentinel: it confirms the section was not accidentally
+    dropped, indented away, or collapsed during a template edit.
+    """
+    from agents.strategist.prompts import STRATEGIST_INSTRUCTION
+
+    assert "the default is to hold" in STRATEGIST_INSTRUCTION, (
+        "Holding-discipline section header ('the default is to hold') is missing "
+        "from the rendered STRATEGIST_INSTRUCTION"
+    )
+
+
+def test_holding_discipline_churn_is_a_cost() -> None:
+    """The 'Churn is a cost' closing line must appear verbatim.
+
+    This phrase is the most distinctive and memorable line of the section.
+    Its presence confirms the full closing sentence was not truncated.
+    """
+    from agents.strategist.prompts import STRATEGIST_INSTRUCTION
+
+    # The text in the template spans a line break: "Churn\nis a cost"
+    # (or "Churn is a cost" after whitespace normalisation).  Check both.
+    normalised = " ".join(STRATEGIST_INSTRUCTION.split())
+    assert "Churn is a cost" in normalised, (
+        "'Churn is a cost' closing line is missing from the holding-discipline section"
+    )
+
+
+def test_holding_discipline_positioned_before_output_contract() -> None:
+    """The holding-discipline section must appear BEFORE the ``## OUTPUT CONTRACT`` header.
+
+    Positioning matters: the strategist reads the prompt top-to-bottom and
+    must see the sell discipline before the verb contract table that defines
+    how to use ``sell``.
+    """
+    from agents.strategist.prompts import STRATEGIST_INSTRUCTION
+
+    holding_idx = STRATEGIST_INSTRUCTION.find("the default is to hold")
+    contract_idx = STRATEGIST_INSTRUCTION.find("## OUTPUT CONTRACT")
+
+    assert holding_idx != -1, "Holding-discipline section not found"
+    assert contract_idx != -1, "## OUTPUT CONTRACT header not found"
+    assert holding_idx < contract_idx, (
+        "Holding-discipline section must appear BEFORE ## OUTPUT CONTRACT; "
+        f"holding_idx={holding_idx}, contract_idx={contract_idx}"
+    )

@@ -218,6 +218,23 @@ nothing and does not compound.
 
 {temp:first_tick_preamble}
 
+### Holding discipline — the default is to hold
+
+A position whose thesis is intact is a position you hold.  Selling is
+not how you express satisfaction with a winner — it is how you express a
+*changed view*.  Sell only when one of these is true:
+
+- the thesis has broken (the reason you bought no longer holds),
+- the position has run to an over-weight that crowds out better ideas
+  (trim, don't exit), or
+- you have a higher-conviction use for the capital.
+
+A rising price is **not** itself a sell signal.  Banking a small gain on
+a name whose thesis still holds forfeits the compounding that makes a
+winner worth owning — and forces you to redeploy into a weaker idea or
+sit in cash.  Let winners run; cut losers when the thesis fails.  Churn
+is a cost, not a strategy.
+
 ## OUTPUT CONTRACT — every rule is enforced; violations abort the tick
 
 | Intent     | What it means                                       | Required            | Optional |
