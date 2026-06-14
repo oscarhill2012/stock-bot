@@ -68,13 +68,11 @@ class TickerStanceRow(Base):
     # encounter ambiguous duplicates (FU-06).
     __table_args__ = (UniqueConstraint("tick_id", "ticker", name="uq_ticker_stance_tick_ticker"),)
 
-    id: Mapped[int]                 = mapped_column(Integer, primary_key=True, autoincrement=True)
-    tick_id: Mapped[str]            = mapped_column(String, index=True)
-    recorded_at: Mapped[datetime]   = mapped_column(DateTime)
-    ticker: Mapped[str]             = mapped_column(String, index=True)
-    preferred_weight: Mapped[float] = mapped_column(Float)
-    conviction: Mapped[float]       = mapped_column(Float)
-    rationale: Mapped[str]          = mapped_column(String)
+    id: Mapped[int]               = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tick_id: Mapped[str]          = mapped_column(String, index=True)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime)
+    ticker: Mapped[str]           = mapped_column(String, index=True)
+    rationale: Mapped[str]        = mapped_column(String)
     # horizon / target_price / stop_price dropped in iter-3 — the audit
     # found they were hallucinated 80 % of the time and never consumed
     # downstream (Bug #9, docs/backtest-audits/baseline-window-2025-09-iter-2.md).
@@ -104,9 +102,6 @@ def save_ticker_stance(
             (timezone-aware).
         stance: Dump of a ``TickerStance`` (a dict produced by
             ``TickerStance.model_dump(mode="json")``). Must contain ``ticker``.
-            ``preferred_weight`` and ``conviction`` are legacy DB columns
-            (user-gated rename per spec-b-plan-3) — they default to 0.0 when
-            absent from the dump (Band 3 deleted them from ``TickerStance``).
             ``rationale`` is required on ``open`` stances; optional on others.
             Remaining lifecycle fields may be missing or ``None``.
         lifecycle_action: One of ``"buy" | "sell" | "update"`` (iter-3
@@ -119,21 +114,14 @@ def save_ticker_stance(
         controls commit ordering so that the stance write can be batched with
         other writes for the same tick.
     """
-    # ``preferred_weight`` and ``conviction`` are legacy DB columns that are
-    # user-gated for rename (see spec-b-plan-3).  Band 3 deleted them from
-    # ``TickerStance``, so stance dicts produced by ``model_dump`` no longer
-    # carry them.  Fall back to 0.0 so the non-nullable columns receive a value
-    # until the column rename migration runs.
-    # ``horizon`` / ``target_price`` / ``stop_price`` were dropped from
-    # ``TickerStanceRow`` in iter-3; they are no longer read from the
-    # stance dict.  Any caller still passing those keys is silently
-    # ignored at the dict-access level — the ORM column no longer exists.
+    # ``horizon`` / ``target_price`` / ``stop_price`` / ``preferred_weight`` /
+    # ``conviction`` were all dropped from ``TickerStanceRow`` in earlier
+    # iterations.  Any caller still passing those keys is silently ignored at
+    # the dict-access level — the ORM columns no longer exist.
     row = TickerStanceRow(
         tick_id=tick_id,
         recorded_at=recorded_at,
         ticker=stance["ticker"],
-        preferred_weight=stance.get("preferred_weight", 0.0),
-        conviction=stance.get("conviction", 0.0),
         rationale=stance.get("rationale") or "",  # only populated on buy stances
         lifecycle_action=lifecycle_action,
         decision_tag=decision_tag,

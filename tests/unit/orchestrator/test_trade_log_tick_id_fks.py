@@ -64,7 +64,7 @@ def test_trade_log_join_to_ticker_stance(session):
     # close_reason / trim_reason.
     session.add(TickerStanceRow(
         tick_id="tick_OPEN", recorded_at=datetime(2026, 4, 1, 14, tzinfo=UTC),
-        ticker="AAPL", preferred_weight=0.05, conviction=0.7, rationale="x",
+        ticker="AAPL", rationale="x",
         lifecycle_action="buy", decision_tag="buy_aapl",
     ))
     session.add(_make_trade_log_row(
