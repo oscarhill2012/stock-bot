@@ -19,15 +19,43 @@ def aapl_data():
 
 
 def test_extracts_required_keys(aapl_data):
-    """The returned dict must contain exactly the keys declared in _KEYS."""
+    """The returned dict must be a subset of _KEYS, all float.
+
+    Three keys (``vol_ratio_20d``, ``pct_change_20d``, ``beta_confidence_damping``)
+    are conditionally absent when data is insufficient.  The AAPL fixture has
+    only 23 bars (no ratios), so ``vol_ratio_20d`` (needs ≥50 bars) and
+    ``beta_confidence_damping`` (needs beta in ratios) will be absent.
+    """
+    # Keys conditionally absent when data is insufficient.
+    nullable_keys = {"vol_ratio_20d", "pct_change_20d", "beta_confidence_damping"}
+
     features = extract_technical_features(aapl_data, ticker="AAPL")
-    assert set(features.keys()) == set(_KEYS)
+
+    # Every key in the returned dict must belong to _KEYS.
+    assert set(features.keys()).issubset(set(_KEYS)), (
+        f"Unexpected keys: {set(features.keys()) - set(_KEYS)}"
+    )
+
+    # Non-nullable keys must always be present.
+    mandatory_keys = set(_KEYS) - nullable_keys
+    assert mandatory_keys.issubset(set(features.keys())), (
+        f"Mandatory keys missing: {mandatory_keys - set(features.keys())}"
+    )
 
 
 def test_all_features_are_floats(aapl_data):
+    """All feature values present in the dict must be plain float (never None or NaN).
+
+    Three keys (``vol_ratio_20d``, ``pct_change_20d``, ``beta_confidence_damping``)
+    may be **absent** when data is insufficient, but when present they must be float.
+    The AAPL fixture has ≥50 bars and full ratios so all should be present here.
+    """
+    import math
+
     features = extract_technical_features(aapl_data, ticker="AAPL")
     for k, v in features.items():
-        assert isinstance(v, float), f"{k} = {v!r}"
+        assert isinstance(v, float), f"{k} = {v!r} (expected float, got {type(v).__name__})"
+        assert not math.isnan(v), f"{k} must not be NaN — use absent key for 'no data'"
 
 
 def test_uptrend_fixture_has_positive_5d_change(aapl_data):
@@ -49,21 +77,30 @@ def test_dist_from_52w_high_negative(aapl_data):
 
 
 def test_handles_empty_data_gracefully():
-    """Empty data → zeroed features (no exception), except ``vol_ratio_20d`` is NaN.
+    """Empty data → zeroed features (no exception); three nullable keys are absent.
 
-    Bug #14 changed the ``vol_ratio_20d`` sentinel from 0.0 to NaN so a
-    short-/empty-history state is distinguishable from a real low-volume
-    reading.  All other locked-catalogue features still default to 0.0.
+    Bug #20 / #23b / #23c: three keys are OMITTED rather than emitting 0.0 or NaN
+    when data is absent, so ``.get()`` returns ``None`` (→ renderer shows "(no data)"):
+
+    - ``vol_ratio_20d``          — absent (needs ≥50 bars)
+    - ``pct_change_20d``         — absent (needs ≥21 bars)
+    - ``beta_confidence_damping`` — absent (needs beta in ratios)
+
+    All other locked-catalogue features default to 0.0.
     """
-    import math
+    nullable_keys = {"vol_ratio_20d", "pct_change_20d", "beta_confidence_damping"}
 
     features = extract_technical_features({}, ticker="AAPL")
 
+    # Nullable keys must be absent, not 0.0 or NaN.
+    for k in nullable_keys:
+        assert k not in features, (
+            f"{k} should be absent (not computable), but found value {features.get(k)!r}"
+        )
+
+    # All present keys must be 0.0 (the safe zero default).
     for k, v in features.items():
-        if k == "vol_ratio_20d":
-            assert math.isnan(v), f"{k} expected NaN, got {v!r}"
-        else:
-            assert v == 0.0, f"{k} expected 0.0, got {v!r}"
+        assert v == 0.0, f"{k} expected 0.0, got {v!r}"
 
 
 def test_handles_short_history_gracefully():
@@ -81,16 +118,19 @@ def test_handles_short_history_gracefully():
     assert features["atr_pct_14"] == 0.0
 
 
-def test_vol_ratio_20d_is_nan_when_history_too_short():
-    """Bug #14: short history (<50 bars) must emit NaN for ``vol_ratio_20d``.
+def test_vol_ratio_20d_absent_when_history_too_short():
+    """Bug #20: short history (<50 bars) must NOT emit ``vol_ratio_20d`` at all.
 
-    The prior default of 0.0 was a real-looking value that downstream
-    consumers compared against the dry-up threshold (0.7) and spuriously
-    appended ``vol_dry_up`` to the factor list — see
-    docs/backtest-audits/baseline-window-2025-09-iter-2.md Bug #14.
+    The prior sentinel of ``float('nan')`` was not handled by the strategist
+    prompt renderer and produced the nonsense token "nanx" on ~98 % of rows
+    during cache warm-up.  Omitting the key (so ``.get()`` returns ``None``) is
+    the correct "not computable" signal — the renderer maps ``None`` → "(no data)".
+
+    Regression cover also for Bug #14 (the earlier fix that changed 0.0 → NaN):
+    the original 0.0 default was a real-looking value that compared less than
+    the dry-up threshold (0.7) and spuriously appended ``vol_dry_up`` to the
+    factor list.
     """
-    import math
-
     # 30 bars — enough for RSI/ATR but well below the 50-bar volume window.
     bars = [
         {
@@ -104,16 +144,14 @@ def test_vol_ratio_20d_is_nan_when_history_too_short():
 
     features = extract_technical_features(raw, ticker="AAPL")
 
-    # NaN sentinel — distinguishable from a real "volume is 70 % of normal".
-    assert math.isnan(features["vol_ratio_20d"]), (
-        f"expected NaN sentinel, got {features['vol_ratio_20d']!r}"
+    # Key must be absent — not 0.0 and not NaN.
+    assert "vol_ratio_20d" not in features, (
+        f"vol_ratio_20d should be absent for 30 bars, but got {features.get('vol_ratio_20d')!r}"
     )
 
 
 def test_vol_ratio_20d_populated_when_enough_history():
-    """With ≥50 bars present, ``vol_ratio_20d`` is a real (non-NaN) float."""
-    import math
-
+    """With ≥50 bars present, ``vol_ratio_20d`` is a real float key in the dict."""
     # 60 bars — comfortably above the 50-bar requirement.
     bars = [
         {
@@ -127,8 +165,10 @@ def test_vol_ratio_20d_populated_when_enough_history():
 
     features = extract_technical_features(raw, ticker="AAPL")
 
-    # All-equal volumes → ratio is 1.0; the key point is that it's not NaN.
-    assert not math.isnan(features["vol_ratio_20d"])
+    # All-equal volumes → ratio is 1.0; key must be present and correct.
+    assert "vol_ratio_20d" in features, (
+        "vol_ratio_20d should be present with 60 bars"
+    )
     assert features["vol_ratio_20d"] == pytest.approx(1.0)
 
 
@@ -457,15 +497,22 @@ def test_deterministic_verdict_no_longer_fabricates_report() -> None:
 
 
 def test_no_data_branch_uses_canonical_builder() -> None:
-    """The all-zero fingerprint branch produces is_no_data=True with the
+    """The no-price-data fingerprint branch produces is_no_data=True with the
     canonical shape (report=None, non-empty rationale).
+
+    The fingerprint keys are:
+    - ``rsi_14 == 0``
+    - ``pct_change_20d`` absent (Bug #23c: absent key = "not computable")
+    - ``atr_pct_14 == 0``
     """
-    features = {k: 0.0 for k in (
-        "rsi_14", "pct_change_20d", "pct_change_5d", "vol_ratio_20d",
+    # Omit pct_change_20d to trigger the no-data fingerprint.
+    features: dict = {k: 0.0 for k in (
+        "rsi_14", "pct_change_5d",
         "atr_pct_14", "dist_from_high_52w_pct", "dist_from_low_52w_pct",
-        "golden_cross", "death_cross", "beta_confidence_damping",
-        "last_close",
+        "golden_cross", "death_cross", "last_close",
     )}
+    # vol_ratio_20d and beta_confidence_damping are also absent (no bars / no ratios).
+    # pct_change_20d intentionally omitted — the no-data fingerprint checks for absence.
 
     from agents.analysts.heuristics import TechnicalHeuristics
     from contract.extractors.technical import derive_technical_verdict

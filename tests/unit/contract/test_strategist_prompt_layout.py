@@ -24,8 +24,9 @@ Layout under test (see spec §3):
       -> Report summary: ...  # only when report is present
       -> Drivers: ...          # only when report is present
 
-    [SmartMoney]  is_no_data: true
-    [Social]      is_no_data: true
+Note: SmartMoney and Social are intentionally excluded from _ANALYST_ORDER
+because neither has a scored data source — they were emitting ``is_no_data: true``
+noise on every tick.  The tests below no longer assert their presence.
 """
 from __future__ import annotations
 
@@ -333,20 +334,27 @@ def test_news_block_present():
     assert "[News]" in out
 
 
-def test_smart_money_no_data():
-    """SmartMoney marked no-data must render as a compact no-data line."""
+def test_smart_money_not_rendered():
+    """SmartMoney must NOT appear in the rendered block.
+
+    SmartMoney was removed from ``_ANALYST_ORDER`` because it has no scored
+    data source and emitted ``is_no_data: true`` noise every tick.  Once a real
+    data source is wired up, re-add ``"smart_money"`` to ``_ANALYST_ORDER`` and
+    update this test accordingly.
+    """
     out = render_ticker_block(_make_ticker_evidence())
-    assert "[SmartMoney]" in out
-    # The renderer always emits the literal "is_no_data: true" for no-data slots.
-    assert "is_no_data: true" in out
+    assert "[SmartMoney]" not in out
 
 
-def test_social_no_data():
-    """Social marked no-data must render as a compact no-data line."""
+def test_social_not_rendered():
+    """Social must NOT appear in the rendered block.
+
+    Social was removed from ``_ANALYST_ORDER`` for the same reason as
+    SmartMoney — no scored data source.  Re-add ``"social"`` to
+    ``_ANALYST_ORDER`` and update this test when a real source is available.
+    """
     out = render_ticker_block(_make_ticker_evidence())
-    assert "[Social]" in out
-    # The renderer always emits the literal "is_no_data: true" for no-data slots.
-    assert "is_no_data: true" in out
+    assert "[Social]" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -475,13 +483,13 @@ def test_no_report_omits_drivers_block():
     te = _make_ticker_evidence(news_report=None, news_no_data=True)
     out = render_ticker_block(te)
 
-    # Isolate the [News] section by finding its start and the next section marker.
+    # Isolate the [News] section by finding its start.
+    # News is now the last rendered analyst (SmartMoney and Social are excluded
+    # from _ANALYST_ORDER), so the section extends to the end of the output.
     news_start = out.find("[News]")
     assert news_start != -1, "[News] section header must be present"
 
-    # The next section after News is [SmartMoney].
-    next_section = out.find("[SmartMoney]", news_start)
-    news_section = out[news_start:next_section] if next_section != -1 else out[news_start:]
+    news_section = out[news_start:]
 
     # No Drivers block must appear within the News section itself.
     assert "-> Drivers:" not in news_section
@@ -495,21 +503,24 @@ def test_no_data_analyst_renders_compactly():
     """A no-data analyst slot must produce a short line, not a full feature block.
 
     The no-data branch skips all feature bullets and just marks the slot.
+    SmartMoney and Social are excluded from ``_ANALYST_ORDER`` (no data source),
+    so this test uses the News analyst in no-data mode as the exercise vehicle.
     """
-    te = _make_ticker_evidence()
+    te = _make_ticker_evidence(news_no_data=True)
     out = render_ticker_block(te)
-    # SmartMoney is no_data — its block should be short (no bullet lines).
-    # A rough proxy: the rendered line should not contain "RSI" or "P/E" under SmartMoney.
-    sm_idx = out.find("[SmartMoney]")
-    social_idx = out.find("[Social]")
-    assert sm_idx != -1
-    if social_idx != -1 and social_idx > sm_idx:
-        sm_section = out[sm_idx:social_idx]
-    else:
-        sm_section = out[sm_idx:sm_idx + 200]
-    # SmartMoney section should not contain technical or fundamental bullet labels.
-    assert "RSI" not in sm_section
-    assert "P/E" not in sm_section
+
+    # [News] in no-data mode must appear as a compact one-liner.
+    news_idx = out.find("[News]")
+    assert news_idx != -1
+
+    # The News section ends at the end of the block (News is the last rendered
+    # analyst now that SmartMoney/Social are excluded).
+    news_section = out[news_idx:]
+
+    # No feature bullets should appear inside the News no-data section.
+    assert "RSI" not in news_section
+    assert "P/E" not in news_section
+    assert "is_no_data: true" in news_section
 
 
 def test_lean_and_confidence_in_header():
@@ -806,9 +817,10 @@ def test_llm_analyst_block_renders_report_summary() -> None:
     # The rationale fallback line must not appear in the News section — the
     # news verdict was built with rationale="" (LLM path) so there is nothing
     # to fall back to.
+    # News is now the last rendered analyst (SmartMoney/Social are excluded from
+    # _ANALYST_ORDER), so the section extends to the end of the output.
     news_start = block.find("[News]")
-    sm_start = block.find("[SmartMoney]", news_start)
-    news_section = block[news_start:sm_start] if sm_start != -1 else block[news_start:]
+    news_section = block[news_start:]
     assert '-> Rationale:' not in news_section
 
 
@@ -937,7 +949,7 @@ def test_conviction_sizing_positioned_inside_deployment_posture() -> None:
     """The conviction-sizing section must appear within ``## Deployment posture``.
 
     Placement matters — the model must see the per-name sizing guidance
-    directly alongside the overall 70–80% band target.
+    directly alongside the overall 70–95% band target.
     """
     from agents.strategist.prompts import STRATEGIST_INSTRUCTION
 
@@ -990,7 +1002,7 @@ def test_deployment_readout_placeholder_present_in_raw_template() -> None:
 def test_deployment_readout_placeholder_positioned_in_deployment_posture() -> None:
     """The ``{temp:deployment_readout}`` placeholder must sit inside ``## Deployment posture``.
 
-    The readout must appear before the 70–80% band prose so the model sees the
+    The readout must appear before the 70–95% band prose so the model sees the
     live number right next to the target guidance.
     """
     from agents.strategist.prompts import _RAW_INSTRUCTION

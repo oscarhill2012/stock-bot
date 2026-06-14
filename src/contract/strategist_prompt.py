@@ -31,6 +31,7 @@ Formatters
 """
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 
 from contract.evidence import AnalystEvidence, AnalystReport
@@ -419,8 +420,16 @@ _TAG_LINE_LABEL: dict[str, str] = {
     "social":      "Rationale tags",
 }
 
-# Canonical analyst display order for consistent output.
-_ANALYST_ORDER = ("technical", "fundamental", "news", "smart_money", "social")
+# Canonical analyst rendering order for the strategist prompt.
+#
+# ``smart_money`` and ``social`` are intentionally omitted: neither has a
+# scored data source, so every tick they emit an ``is_no_data: true`` line that
+# is pure noise for the LLM.  The bullet registries (``SMART_MONEY_BULLETS``,
+# ``SOCIAL_BULLETS``), their ``_ANALYST_BULLETS`` entries, and their
+# ``_TAG_LINE_LABEL`` entries are all kept dormant so re-enabling is a one-line
+# change here — just add ``"smart_money"`` and/or ``"social"`` back to the tuple
+# once a real data source is wired up and scored.
+_ANALYST_ORDER = ("technical", "fundamental", "news")
 
 
 # ---------------------------------------------------------------------------
@@ -470,6 +479,15 @@ def _render_features(
         # Present-but-None occurs when an extractor reports missing data without
         # dropping the key (e.g. a provider returned null for this field).
         if value is None:
+            lines.append(f"  {label:<30} (no data)")
+            continue
+
+        # Belt-and-braces NaN guard: the technical extractor previously emitted
+        # float('nan') for some features (e.g. vol_ratio_20d) when not computable.
+        # A sibling agent now normalises those to None at the source, but we map
+        # any stray NaN here too so a future extractor regression can never again
+        # produce a nonsense token such as "nanx" in the LLM prompt.
+        if isinstance(value, float) and math.isnan(value):
             lines.append(f"  {label:<30} (no data)")
             continue
 
@@ -650,9 +668,6 @@ def render_ticker_block(te: TickerEvidence) -> str:
           -> Closed-vocab tags: catalyst:legal
           -> Report summary: "..."
           -> Drivers: ...
-
-        [SmartMoney]  is_no_data: true
-        [Social]      is_no_data: true
 
     Parameters
     ----------

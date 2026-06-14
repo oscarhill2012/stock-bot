@@ -3,7 +3,17 @@
 Two public entry points:
 
 - ``extract_technical_features`` — converts raw OHLCV history into the locked
-  feature catalogue (``_KEYS``).  Forgiving: missing keys default to 0.0.
+  feature catalogue (``_KEYS``).  Forgiving: most keys default to 0.0, but
+  three indicators emit **no key at all** when not computable (insufficient
+  bars, missing input) to avoid misleading values reaching downstream:
+
+  - ``vol_ratio_20d``           — absent until ≥50 bars present.
+  - ``pct_change_20d``          — absent until ≥21 bars present.
+  - ``beta_confidence_damping`` — absent when beta is missing from ratios.
+
+  Callers should use ``features.get("vol_ratio_20d")`` etc. and treat the
+  ``None`` return as "(no data)".  ``0.0`` always means a genuine zero reading
+  for these keys.
 
 - ``derive_technical_verdict`` — maps the feature catalogue to an
   ``AnalystVerdict`` using the Phase-5 heuristic rules.  Pure function; safe
@@ -19,6 +29,15 @@ Input for the extractor: the dict that lives under
 The extractor accepts ``state`` as a keyword argument (Phase 7) or ``ticker``
 as a positional argument (legacy Phase 5); both are optional so existing call
 sites continue to work unchanged.
+
+Sentinel convention
+-------------------
+- key absent / ``.get()`` → ``None`` — indicator not computable.  The three
+  nullable features above use this convention.  Downstream renderers should
+  treat ``None`` as "(no data)".
+- ``0.0``     — genuine zero reading (truly flat price, truly flat volume, etc.)
+- ``float('nan')`` — NOT emitted by this module.  Any NaN that reaches the
+                     verdict layer is a bug, not an intended sentinel.
 """
 from __future__ import annotations
 
@@ -44,6 +63,11 @@ if TYPE_CHECKING:
     from contract.evidence import AnalystVerdict
 
 # The complete, locked set of feature keys this extractor always returns.
+# ``None`` may appear as the value for any key whose indicator cannot be
+# computed (insufficient bars, missing input) — callers must handle ``None``.
+# ``beta_confidence_damping`` is only emitted when ``beta`` is available in
+# the ratios sub-dict; it is absent (not in _KEYS) when beta is unknown, to
+# avoid the misleading 0.0 default that read as "extreme deviation from 1".
 _KEYS = (
     "rsi_14",
     "pct_change_5d",
@@ -181,8 +205,29 @@ def _bar_date(bar: Any) -> date:
 
 
 def _zero_features() -> dict[str, float]:
-    """Return a zeroed feature dict — the safe fallback for any missing-data path."""
-    return {k: 0.0 for k in _KEYS}
+    """Return the baseline feature dict used as the starting point for every extraction.
+
+    Only keys whose ``0.0`` default is a *safe* value are included.  Three
+    features are intentionally **excluded** from this baseline dict — they are
+    only inserted when data is sufficient to compute a meaningful value:
+
+    - ``vol_ratio_20d``          — omitted until ≥50 bars present (Bug #20).
+                                   The old NaN sentinel was not handled by the
+                                   renderer, producing the token "nanx" on ~98 %
+                                   of rows during cache warm-up.
+    - ``pct_change_20d``         — omitted until ≥21 bars present (Bug #23c).
+                                   The old 0.0 default read as "+0.0% 20d
+                                   momentum" on the first (all-buys) tick.
+    - ``beta_confidence_damping`` — omitted when beta is absent from ratios
+                                   (Bug #23b).  The old 0.0 default read as
+                                   "infinite deviation from 1" — never true.
+
+    Callers use ``features.get("vol_ratio_20d")`` (→ ``None`` if absent) and
+    treat ``None`` as "(no data)".  ``0.0`` is always a genuine zero reading.
+    """
+    # Nullable keys excluded; they are inserted conditionally downstream.
+    _NULLABLE = {"vol_ratio_20d", "pct_change_20d", "beta_confidence_damping"}
+    return {k: 0.0 for k in _KEYS if k not in _NULLABLE}
 
 
 def _df_from_history(history: list[Mapping[str, Any]]) -> pd.DataFrame | None:
@@ -246,9 +291,15 @@ def _emit_ratios_features(raw: dict) -> dict[str, float]:
         out["death_cross"]  = 1.0 if ma50 < ma200 and last < ma50 else 0.0
 
     if beta is not None:
-        # Damping factor applied to confidence in the verdict layer; surfaced
-        # as a feature so the strategist can audit it.
-        # Value is 1.0 for beta==1, falling off symmetrically for betas above/below 1.
+        # Bug #23b: only emit this key when beta is actually known.  When beta
+        # is absent the feature stays at the _zero_features default of None,
+        # which the renderer maps to "(no data)".  The old 0.0 default was a
+        # dead computation — it read as "beta is infinitely far from 1" which
+        # is never true for real equities; the strategist silently received 0.0
+        # on every row where beta was missing from the ratios sub-dict.
+        #
+        # Formula: 1.0 for beta == 1 (unit market sensitivity, full confidence);
+        # decreases symmetrically as beta deviates from 1 in either direction.
         out["beta_confidence_damping"] = 1.0 / (1.0 + abs(beta - 1.0))
 
     return out
@@ -322,16 +373,20 @@ def extract_technical_features(
     Returns
     -------
     dict[str, float]
-        Exactly the keys in ``_KEYS``, all ``float``.
-        Missing or insufficient data yields ``0.0`` for the affected indicator.
+        All keys from ``_KEYS`` that are computable, all ``float``.  Three keys
+        are **conditionally absent** (not just ``0.0``) when data is insufficient:
+
+        - ``vol_ratio_20d``          — absent until ≥50 bars present (Bug #20).
+        - ``pct_change_20d``         — absent until ≥21 bars present (Bug #23c).
+        - ``beta_confidence_damping`` — absent when beta missing from ratios (Bug #23b).
+
+        Use ``.get("vol_ratio_20d")`` (returns ``None``) and treat ``None`` as
+        "(no data)".  ``0.0`` is always a genuine zero reading for these keys.
     """
     out = _zero_features()
-
-    # Bug #14: ``vol_ratio_20d`` defaults to NaN rather than 0.0 so that a
-    # short-history "no data" state is distinguishable from a real
-    # "volume is 70 % of normal" reading.  The downstream verdict heuristic
-    # explicitly guards against NaN before classifying the volume context.
-    out["vol_ratio_20d"] = float("nan")
+    # ``vol_ratio_20d``, ``pct_change_20d``, and ``beta_confidence_damping``
+    # are NOT in the baseline ``out`` dict (see _zero_features docstring).
+    # They are inserted as genuine floats only when bar/data count is sufficient.
 
     if not raw:
         return out
@@ -347,11 +402,21 @@ def extract_technical_features(
     close = df["close"]
 
     # --- Percentage change windows ---
-    # Require at least n+1 rows so iloc[-1] and iloc[-(n+1)] are distinct bars.
+    # Require at least n+1 rows so iloc[-1] and iloc[-(n+1)] are distinct bars
+    # (i.e. >= n+1, equivalently > n).  When the bar count is insufficient the
+    # feature stays at its _zero_features default:
+    #   pct_change_5d  → 0.0  (rarely an issue; 5-bar window fills quickly)
+    #   pct_change_20d → None (Bug #23c: the explicit "not computable" sentinel,
+    #                          NOT 0.0 which reads as "+0.0% 20d momentum")
     if len(close) > 5:
         out["pct_change_5d"] = float((close.iloc[-1] / close.iloc[-6]) - 1.0)
 
-    if len(close) > 20:
+    # Bug #23c: boundary is >= 21 (equivalently > 20).  On the first tick of
+    # a fresh backtest window the cache may hold exactly 20 bars (US Labor Day
+    # 2025-09-01 shrinks the available history by one session), which with the
+    # old implicit 0.0 default caused "+0.0% 20d momentum" on every name.
+    # The None sentinel propagates to the renderer as "(no data)" instead.
+    if len(close) >= 21:
         out["pct_change_20d"] = float((close.iloc[-1] / close.iloc[-21]) - 1.0)
 
     # --- RSI(14) ---
@@ -380,8 +445,11 @@ def extract_technical_features(
                 out["atr_pct_14"] = float(last_atr / last_close * 100.0)
 
     # --- Volume ratio: recent 20-bar average vs prior 50-bar average ---
-    # Requires at least 50 bars; returns 0.0 (not 1.0) when insufficient data
-    # to make the "no data" state obvious.
+    # Bug #20: requires at least 50 bars.  The feature starts as ``None`` (from
+    # _zero_features) and is only replaced with a real float when enough history
+    # is present.  ``None`` propagates to the renderer as "(no data)"; the old
+    # ``float('nan')`` sentinel was NOT handled by the renderer and produced the
+    # nonsense token "nanx" on ~98 % of rows during cache warm-up.
     if len(df) >= 50:
         vol = df["volume"]
         v20 = float(vol.iloc[-20:].mean())
@@ -515,12 +583,20 @@ def derive_technical_verdict(
     from contract.evidence import AnalystVerdict  # noqa: PLC0415
 
     # --- No-data fingerprint --------------------------------------------------
-    # The extractor emits all-zero features when price history is missing.
-    # Detect this state via the three core indicators that would otherwise be
-    # non-zero for any real ticker.
+    # The extractor omits ``pct_change_20d`` (and other nullable features) when
+    # bars are insufficient — use ``.get()`` so a missing key reads as ``None``.
+    # The fingerprint fires when all three core indicators are absent/zero,
+    # which is the reliable signal that no usable price history was available.
+    #
+    # - ``rsi_14 == 0``         — RSI defaults to 0.0 (needs ≥15 bars)
+    # - ``pct_change_20d`` absent (None from .get) — needs ≥21 bars
+    # - ``atr_pct_14 == 0``     — ATR defaults to 0.0 (needs ≥15 bars)
+    pct20_raw = features.get("pct_change_20d")   # float | None (absent = not computable)
+    pct20 = pct20_raw if pct20_raw is not None else 0.0  # coerce for downstream maths
+
     if (
         features["rsi_14"] == 0
-        and features["pct_change_20d"] == 0
+        and pct20_raw is None  # absent key = "not computable" — triggers no-data branch
         and features["atr_pct_14"] == 0
     ):
         # Route through the canonical no-data builder so every synthesis site
@@ -533,7 +609,10 @@ def derive_technical_verdict(
     factors: list[str] = []
 
     # --- Base lean from 20-day momentum ---------------------------------------
-    pct20 = features["pct_change_20d"]
+    # ``pct20`` is already coerced to 0.0 when the raw value was absent/None
+    # (i.e. insufficient bars).  That produces a neutral lean, which is the
+    # safest default when we lack the 21 bars needed for a meaningful 20d
+    # comparison.
     pct5  = features["pct_change_5d"]
 
     sign20 = copysign(1.0, pct20) if pct20 != 0 else 0.0
@@ -572,15 +651,16 @@ def derive_technical_verdict(
             lean = "bullish"
 
     # --- Volume context -------------------------------------------------------
-    # Bug #14: ``vol_ratio_20d`` is NaN when the OHLCV series is shorter than
-    # the 50-bar window needed to compute the ratio.  Treat NaN as "no signal"
-    # — append neither factor — so a missing-data state is not mistaken for a
-    # genuine low-volume dry-up.  Magnitude adjustments downstream key off the
-    # factor list, so skipping the append is sufficient.
-    vol_ratio = features["vol_ratio_20d"]
+    # Bug #20: ``vol_ratio_20d`` is absent from the feature dict (key missing)
+    # when the OHLCV series has fewer than 50 bars.  ``.get()`` returns ``None``
+    # for a missing key — treat that as "no signal" and append neither factor,
+    # so a missing-data state is not mistaken for a genuine low-volume dry-up.
+    # A defensive ``math.isnan`` check is also kept in case a stale NaN from
+    # old cached data escapes through — it should not produce a spurious factor.
+    vol_ratio = features.get("vol_ratio_20d")  # None if key absent (insufficient bars)
 
-    if math.isnan(vol_ratio):
-        pass  # no volume signal available
+    if vol_ratio is None or (isinstance(vol_ratio, float) and math.isnan(vol_ratio)):
+        pass  # no volume signal available — insufficient bar history
     elif vol_ratio > h.vol_ratio_breakout:
         factors.append("vol_breakout")
     elif vol_ratio < h.vol_ratio_dry_up:

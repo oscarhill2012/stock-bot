@@ -64,11 +64,19 @@ def _features(**overrides) -> dict:
 # ---------------------------------------------------------------------------
 
 def test_no_data_path():
-    """All-zero core features ⇒ is_no_data flag set and lean is neutral."""
-    v = derive_technical_verdict(
-        _features(rsi_14=0, pct_change_20d=0, atr_pct_14=0),
-        _h(),
-    )
+    """No-price-data fingerprint ⇒ is_no_data flag set and lean is neutral.
+
+    The fingerprint fires when:
+    - ``rsi_14 == 0``
+    - ``pct_change_20d`` is ABSENT from the dict (Bug #23c: key omitted = "not
+      computable"; ``.get()`` returns ``None`` which triggers the branch)
+    - ``atr_pct_14 == 0``
+    """
+    # Build features dict without pct_change_20d to simulate insufficient bars.
+    feats = _features(rsi_14=0, atr_pct_14=0)
+    feats.pop("pct_change_20d", None)  # omit key → .get() returns None → no-data branch
+
+    v = derive_technical_verdict(feats, _h())
     assert v.is_no_data is True
     assert v.lean == "neutral"
     assert v.magnitude == 0.0
@@ -149,13 +157,28 @@ def test_oversold_capitulation_flips_to_bullish():
 # Volume effects on magnitude
 # ---------------------------------------------------------------------------
 
-def test_vol_ratio_nan_emits_neither_factor():
-    """Bug #14: NaN ``vol_ratio_20d`` (insufficient history) emits no volume factor.
+def test_vol_ratio_absent_emits_neither_factor():
+    """Bug #20: absent ``vol_ratio_20d`` (insufficient history) emits no volume factor.
 
     Previously, the extractor defaulted ``vol_ratio_20d`` to 0.0 on short
     windows, which compared less than ``h.vol_ratio_dry_up`` (0.7) and
-    spuriously appended ``vol_dry_up``.  With a NaN sentinel, neither
-    ``vol_breakout`` nor ``vol_dry_up`` should appear.
+    spuriously appended ``vol_dry_up``.  Bug #20 changed the sentinel from
+    NaN → absent key.  ``.get()`` returns ``None`` which suppresses the factor.
+    """
+    feats = _features(pct_change_20d=0.05)
+    feats.pop("vol_ratio_20d", None)  # omit key → .get() returns None → no factor
+
+    v = derive_technical_verdict(feats, _h())
+    assert "vol_dry_up" not in v.key_factors
+    assert "vol_breakout" not in v.key_factors
+
+
+def test_vol_ratio_nan_also_emits_neither_factor():
+    """Defensive: legacy NaN ``vol_ratio_20d`` also suppresses volume factors.
+
+    A stray ``float('nan')`` from an older code path or test fixture must not
+    produce a spurious ``vol_dry_up`` factor — the verdict layer has a defensive
+    ``math.isnan`` guard alongside the primary ``is None`` check.
     """
     v = derive_technical_verdict(
         _features(pct_change_20d=0.05, vol_ratio_20d=float("nan")),
