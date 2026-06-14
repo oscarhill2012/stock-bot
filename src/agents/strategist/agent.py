@@ -256,6 +256,20 @@ def build_strategist():
         instruction             = STRATEGIST_INSTRUCTION,
         output_schema           = StrategistLLMDecision,
         output_key              = "strategist_decision",
+        # Suppress ADK's default behaviour of forwarding every upstream
+        # agent's content events into this agent's prompt as conversation
+        # history.  Without this, analyst sub-agent outputs arrive as
+        # "[NewsAnalyst_X] said: {json}" context lines — duplicating data
+        # the curated ``## Ticker Evidence`` section already renders.
+        # The strategist runs purely on its instruction template plus the
+        # ``{temp:*}`` placeholders hydrated by StrategistContextShim.
+        #
+        # Schema-retry safety: the RetryingAgentWrapper feeds correction
+        # feedback via the ``{temp:_last_schema_error}`` instruction
+        # placeholder (seeded in StrategistContextShim, overwritten by the
+        # wrapper before each retry).  It does NOT rely on conversation
+        # history — so ``include_contents='none'`` is safe.
+        include_contents        = "none",
         before_model_callback   = before_model,
         after_model_callback    = after_model,
         generate_content_config = genai_types.GenerateContentConfig(
