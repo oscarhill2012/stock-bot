@@ -51,6 +51,115 @@ from data.timeguard import resolve_as_of
 from observability.trace import trace_maybe
 
 
+def collapse_repeat_buffer_entries(raw_buffer: list[dict]) -> str:
+    """Render the memory buffer for injection into the strategist prompt.
+
+    Collapses consecutive runs of ``is_repeat=True`` / no-execution entries
+    into a single summary line so the strategist is not flooded with near-
+    identical no-op records.  Every entry that involved an actual execution
+    (``executions_count > 0``) or that is NOT marked as a repeat is preserved
+    verbatim and in chronological order.
+
+    The collapse is render-time only — the persisted ``state["memory_buffer"]``
+    list is never touched, keeping the change fully reversible.
+
+    Strategy
+    --------
+    Walk the buffer in chronological order.  Maintain a counter for the
+    current run of repeat/no-op entries.  When the run ends (either at an
+    action entry or at the buffer end), flush the run as a single summary
+    line before emitting the action entry.
+
+    Parameters
+    ----------
+    raw_buffer:
+        List of raw buffer-entry dicts as stored in ``state["memory_buffer"]``.
+        Each entry must at minimum have ``decision_tag`` (str),
+        ``reasoning_summary`` (str), ``is_repeat`` (bool), and
+        ``executions_count`` (int).  Missing keys degrade gracefully.
+
+    Returns
+    -------
+    str
+        Human-readable text block ready for splicing into the strategist
+        prompt.  Returns a sentinel when the buffer is empty.
+    """
+    if not raw_buffer:
+        return "(no prior ticks this window)"
+
+    lines: list[str] = []
+
+    # Counter tracking the index (1-based, matching the prompt display) of
+    # the first entry in the current repeat-run so the summary line can cite
+    # "… no action since tick N".
+    repeat_run_start_idx: int | None = None
+    repeat_run_count: int            = 0
+
+    def _flush_repeat_run(before_idx: int) -> None:
+        """Emit a single summary line for a completed repeat run.
+
+        Parameters
+        ----------
+        before_idx:
+            The 1-based display index of the action entry *after* the run
+            (or ``len(raw_buffer) + 1`` when flushing at the end of the
+            buffer).  Used to phrase the range accurately.
+        """
+        nonlocal repeat_run_start_idx, repeat_run_count
+
+        if repeat_run_count == 0:
+            return
+
+        # Single-entry run: suppress entirely (the next action entry is
+        # adjacent, so a summary would be noisier than silence).
+        if repeat_run_count == 1 and repeat_run_start_idx is not None:
+            idx = repeat_run_start_idx
+            entry = raw_buffer[idx - 1]
+            tag   = entry.get("decision_tag", "unknown")
+            lines.append(f"  [{idx:02d}] {tag}  (no-op / repeat — no change)")
+        else:
+            # Multi-entry run: collapse to a single line.
+            end_idx = before_idx - 1
+            lines.append(
+                f"  [{repeat_run_start_idx:02d}–{end_idx:02d}] "
+                f"no action / repeat across {repeat_run_count} tick(s)"
+            )
+
+        repeat_run_start_idx = None
+        repeat_run_count     = 0
+
+    for i, entry in enumerate(raw_buffer, start=1):
+        is_repeat_entry   = bool(entry.get("is_repeat", False))
+        executions_count  = int(entry.get("executions_count", 0))
+        is_action         = executions_count > 0
+
+        if is_repeat_entry and not is_action:
+            # Start or continue a repeat run.
+            if repeat_run_start_idx is None:
+                repeat_run_start_idx = i
+            repeat_run_count += 1
+
+        else:
+            # Flush any preceding repeat run before emitting this action entry.
+            _flush_repeat_run(before_idx=i)
+
+            tag     = entry.get("decision_tag", "unknown")
+            summary = entry.get("reasoning_summary", "")
+            exec_n  = executions_count
+
+            # Action entry: render verbatim so no trade is ever lost from the log.
+            lines.append(
+                f"  [{i:02d}] {tag}  executions={exec_n}  — {summary}"
+            )
+
+    # Flush any trailing repeat run at the end of the buffer.
+    _flush_repeat_run(before_idx=len(raw_buffer) + 1)
+
+    total = len(raw_buffer)
+    header = f"Memory Buffer (last {total} tick(s)):"
+    return header + "\n" + "\n".join(lines)
+
+
 def _index_evidence(state, key: str) -> dict[str, AnalystEvidence]:
     """Index a per-analyst evidence list by ticker.
 
@@ -309,6 +418,24 @@ class StrategistContextShim(BaseAgent):
             state.get("user:closed_trades_log") or [],
         )
 
+        # ── Memory buffer — collapse repeat/no-op runs at render time ─────
+        # The persisted ``state["memory_buffer"]`` list may have up to 24
+        # entries, of which many are ``is_repeat=True`` no-ops that carry
+        # virtually identical reasoning summaries.  Forwarding all 24 raw
+        # entries wastes tokens and buries action entries in noise.
+        #
+        # Render-time collapse: consecutive repeat/no-op entries are
+        # summarised as a single "… no action across N tick(s)" line, while
+        # every entry with actual executions (``executions_count > 0``) is
+        # preserved verbatim.  The persisted list is NOT modified — this is
+        # presentation-only and fully reversible.
+        #
+        # We inject the result as ``temp:memory_buffer`` (a ``temp:``-prefixed
+        # key rendered by the shim) rather than the raw ``memory_buffer`` list
+        # (resolved by ADK's inject_session_state as a Python repr string).
+        raw_memory_buffer: list[dict] = state.get("memory_buffer") or []
+        memory_buffer_rendered = collapse_repeat_buffer_entries(raw_memory_buffer)
+
         # ── Yield exactly one Event carrying all required keys ────────────
         yield Event(
             author        = self.name,
@@ -322,6 +449,10 @@ class StrategistContextShim(BaseAgent):
                 "temp:ticker_evidence":         ticker_evidence_rendered,
                 "temp:ticker_evidence_objects": ticker_evidence_objects,
                 "temp:recent_trades_view":      recent_trades_view,
+                # Rendered (collapsed) memory buffer — injected as a temp
+                # key so render-time collapse happens before prompt assembly,
+                # not via ADK's raw-list stringify of state["memory_buffer"].
+                "temp:memory_buffer":           memory_buffer_rendered,
                 # Schema-error feedback slot — empty on the first attempt;
                 # the RetryingAgentWrapper overwrites it with the formatted
                 # Pydantic validation error before each schema retry so the

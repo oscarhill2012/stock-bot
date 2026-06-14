@@ -128,7 +128,7 @@ per-ticker stance for the next trading hour.
 
 ## Current State
 Portfolio:    {portfolio}
-Memory Buffer (last 8 ticks): {memory_buffer}
+{temp:memory_buffer}
 Day Digest:   {day_digest}
 Thesis:       {user:thesis?}
 

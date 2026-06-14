@@ -48,7 +48,17 @@ def test_template_has_state_slots():
     directly.  The bare ``{thesis}`` placeholder must NOT appear.
     """
     assert "{portfolio}" in STRATEGIST_INSTRUCTION
-    assert "{memory_buffer}" in STRATEGIST_INSTRUCTION
+    # Memory buffer is now injected as a rendered temp key so the shim can
+    # collapse repeat/no-op entries before prompt assembly.  The raw
+    # ``{memory_buffer}`` bare key was replaced by ``{temp:memory_buffer}``.
+    assert "{temp:memory_buffer}" in STRATEGIST_INSTRUCTION, (
+        "Memory buffer must use {temp:memory_buffer} (rendered by StrategistContextShim) "
+        "not the bare {memory_buffer} (which ADK would stringify as a raw Python list)"
+    )
+    assert "{memory_buffer}" not in STRATEGIST_INSTRUCTION, (
+        "Bare {memory_buffer} placeholder removed — use {temp:memory_buffer} instead "
+        "so collapse_repeat_buffer_entries runs at injection time"
+    )
     assert "{day_digest}" in STRATEGIST_INSTRUCTION
     # A-086: optional user-scoped placeholder — resolves to empty string on cold start.
     assert "{user:thesis?}" in STRATEGIST_INSTRUCTION
@@ -304,12 +314,13 @@ def test_template_renders_with_all_required_slots():
         .replace("{temp:recent_trades_view}",  "(No closed positions yet this run.)")
         .replace("{temp:_last_schema_error}",  "")
         .replace("{temp:first_tick_flag}",     "True")
+        # Memory buffer is now a temp key rendered by StrategistContextShim.
+        .replace("{temp:memory_buffer}",       "Memory Buffer (1 tick):\n  [01] no_action  executions=0  — (empty)")
         # A-086: optional user-scoped thesis — resolves to empty string on cold start.
         .replace("{user:thesis?}",             "(empty)")
     )
     rendered = template.format(
         portfolio="cash=100, positions={}",
-        memory_buffer="[]",
         day_digest="(empty)",
         tickers="['AAPL','MSFT']",
     )

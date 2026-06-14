@@ -80,6 +80,10 @@ def test_shim_yields_one_event_with_temp_prefixed_keys(populated_state: dict) ->
         # Past-trades memory addition — rendered from user:closed_trades_log
         # (empty-state copy when no closes have happened yet this run).
         "temp:recent_trades_view",
+        # Rendered (collapsed) memory buffer — injected as temp key so
+        # collapse_repeat_buffer_entries runs at injection time rather than
+        # having ADK stringify the raw list from state["memory_buffer"].
+        "temp:memory_buffer",
         # A-086: the bare "thesis" key is NOT emitted here — the strategist
         # prompt uses {user:thesis?} which ADK resolves from state["user:thesis"]
         # directly.  No bridge into a bare key is needed or permitted.
