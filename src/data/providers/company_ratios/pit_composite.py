@@ -30,6 +30,7 @@ import asyncio
 import logging
 import math
 import statistics
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
@@ -181,6 +182,78 @@ def _fetch_xbrl_facts(symbol: str, as_of_date: date) -> _Facts:
     )
 
 
+# Candidate us-gaap revenue concepts, in the order we prefer them.  No single
+# concept is the top line for every filer: ASC-606 adopters (most tech) report
+# under ``RevenueFromContractWithCustomerExcludingAssessedTax`` and leave a
+# stale fragment under ``Revenues``; many energy / industrial filers are the
+# reverse, and some older filers only ever filed ``SalesRevenueNet``.  Priority
+# is a tie-breaker only — period-distinctness (below) decides first, so a
+# higher-priority concept that is stale for a given filer is skipped in favour
+# of a lower-priority concept that genuinely moves year-on-year.
+_REVENUE_CONCEPTS: tuple[str, ...] = (
+    "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "Revenues",
+    "SalesRevenueNet",
+)
+
+
+def _select_revenue_series(
+    ttm_at:     Callable[[str, date], float | None],
+    as_of_date: date,
+    prior_date: date,
+) -> tuple[float | None, float | None, str | None]:
+    """Pick the XBRL revenue concept that actually reflects the filer's TTM top line.
+
+    No single us-gaap revenue concept is correct across all filers (see
+    ``_REVENUE_CONCEPTS``).  The reliable discriminator is *period-distinctness*:
+    the genuinely-filed concept yields different TTM values at ``as_of_date``
+    versus a year earlier, whereas a stale single-fact fragment returns the
+    identical value for any date.  A real operating company's TTM revenue never
+    lands on the same figure to the dollar two years running, so an exact
+    equality is a dependable "stale fragment" signal — and exact equality is
+    safer here than a tolerance, which could wrongly reject a genuinely
+    near-flat live series.
+
+    Parameters
+    ----------
+    ttm_at:
+        Callable returning the TTM value of a concept as of a given date, or
+        ``None`` when the filer never reported it.  Injected so the selection
+        logic is unit-testable without an EDGAR round-trip.
+    as_of_date:
+        The point-in-time date for the current TTM figure.
+    prior_date:
+        One year before ``as_of_date`` — the comparison point for growth.
+
+    Returns
+    -------
+    tuple[float | None, float | None, str | None]
+        ``(rev_now, rev_prior, concept)`` for the first concept (in priority
+        order) whose current and prior values are both present and distinct.
+        Falls back to ``(rev_now, None, concept)`` for the first concept with a
+        present current value but no usable prior (e.g. a recent IPO, or a
+        filer whose every concept is stale) — so the margin denominator still
+        resolves while revenue_growth_yoy is left unset rather than computed as
+        a false 0.  Returns ``(None, None, None)`` when no concept has data.
+    """
+    # First pass — prefer a concept that genuinely moves year-on-year.
+    for concept in _REVENUE_CONCEPTS:
+        now   = ttm_at(concept, as_of_date)
+        prior = ttm_at(concept, prior_date)
+        if now is not None and prior is not None and now != prior:
+            return now, prior, concept
+
+    # Second pass — no period-distinct concept found.  Use the first concept
+    # with a present current value so profit_margin still has a denominator;
+    # the ``None`` prior signals "do not compute revenue_growth_yoy".
+    for concept in _REVENUE_CONCEPTS:
+        now = ttm_at(concept, as_of_date)
+        if now is not None:
+            return now, None, concept
+
+    return None, None, None
+
+
 def _load_xbrl_summary(symbol: str, as_of_date: date) -> dict[str, float | None]:
     """Derive five ratio fields from XBRL ``EntityFacts`` filed at or before ``as_of_date``.
 
@@ -230,8 +303,8 @@ def _load_xbrl_summary(symbol: str, as_of_date: date) -> dict[str, float | None]
         logger.warning("XBRL facts unavailable for %s; returning empty ratio summary.", symbol, exc_info=True)
         return result  # type: ignore[return-value]
 
-    def _ttm(concept: str) -> float | None:
-        """Return the trailing-twelve-month value for ``concept`` at ``as_of_date``.
+    def _ttm_at(concept: str, at: date) -> float | None:
+        """Return the trailing-twelve-month value for ``concept`` as of ``at``.
 
         Uses ``EntityFacts.query().by_concept().as_of()`` and the ``.latest()``
         result.  Returns ``None`` for any error, including missing concept.
@@ -241,6 +314,10 @@ def _load_xbrl_summary(symbol: str, as_of_date: date) -> dict[str, float | None]
         concept:
             US-GAAP concept name without namespace prefix (e.g.
             ``"NetIncomeLoss"``).
+        at:
+            Point-in-time gate — only facts filed on or before this date are
+            considered.  Parameterised (rather than closing over ``as_of_date``)
+            so the revenue selector can probe the prior-year value too.
 
         Returns
         -------
@@ -248,7 +325,7 @@ def _load_xbrl_summary(symbol: str, as_of_date: date) -> dict[str, float | None]
             Parsed finite float, or ``None`` on any failure.
         """
         try:
-            q    = facts.query().by_concept(concept).as_of(as_of_date)
+            q    = facts.query().by_concept(concept).as_of(at)
             # ``q.latest()`` returns a *list* of FinancialFact rows from the
             # most recent filing — take the first (the canonical TTM/period
             # value for the concept).
@@ -256,14 +333,24 @@ def _load_xbrl_summary(symbol: str, as_of_date: date) -> dict[str, float | None]
             row  = rows[0] if rows else None
             return _safe_float(getattr(row, "value", None)) if row else None
         except Exception:  # noqa: BLE001 — edgartools internals raise unpredictably; log and degrade
-            logger.debug("XBRL TTM fetch failed for concept=%r symbol=%r", concept, symbol)
+            logger.debug("XBRL TTM fetch failed for concept=%r symbol=%r at=%r", concept, symbol, at)
             return None
 
-    # --- profit_margin: NetIncomeLoss / Revenues (both TTM) ---
+    def _ttm(concept: str) -> float | None:
+        """Trailing-twelve-month value for ``concept`` at the snapshot ``as_of_date``."""
+        return _ttm_at(concept, as_of_date)
+
+    # --- Revenue: pick the genuinely-filed concept for this filer (see
+    #     ``_select_revenue_series``) and reuse it for both the margin
+    #     denominator and the YoY growth calculation, so the two never disagree
+    #     about which concept is the top line. ---
+    prior_date = as_of_date.replace(year=as_of_date.year - 1)
+    rev_now, rev_prior, _rev_concept = _select_revenue_series(_ttm_at, as_of_date, prior_date)
+
+    # --- profit_margin: NetIncomeLoss / selected revenue (both TTM) ---
     net_income = _ttm("NetIncomeLoss")
-    revenues   = _ttm("Revenues")
-    if net_income is not None and revenues is not None and revenues != 0:
-        result["profit_margin"] = net_income / revenues
+    if net_income is not None and rev_now is not None and rev_now != 0:
+        result["profit_margin"] = net_income / rev_now
 
     # --- debt_to_equity: total_debt / StockholdersEquity ---
     # Missing debt addends default to 0; negative equity → None (meaningless).
@@ -280,20 +367,12 @@ def _load_xbrl_summary(symbol: str, as_of_date: date) -> dict[str, float | None]
         result["roe"] = net_income / equity
 
     # --- revenue_growth_yoy: (rev_now - rev_1y_ago) / rev_1y_ago ---
-    prior_date = as_of_date.replace(year=as_of_date.year - 1)
-    try:
-        q_prior    = facts.query().by_concept("Revenues").as_of(prior_date)
-        # Same list-unwrap as ``_ttm`` / ``_scalar`` — ``q.latest()`` returns a
-        # list of rows from the latest filing on or before ``prior_date``.
-        rows_prior = q_prior.latest() if hasattr(q_prior, "latest") else None
-        row_prior  = rows_prior[0] if rows_prior else None
-        rev_prior  = _safe_float(getattr(row_prior, "value", None)) if row_prior else None
-    except Exception:  # noqa: BLE001 — edgartools internals raise unpredictably; log and degrade
-        logger.debug("XBRL prior-year revenue fetch failed for symbol=%r as_of=%r", symbol, prior_date)
-        rev_prior = None
-
-    if revenues is not None and rev_prior is not None and rev_prior != 0:
-        result["revenue_growth_yoy"] = (revenues - rev_prior) / rev_prior
+    # Both legs come from the *same* selected concept (above), so a filer whose
+    # ``Revenues`` fragment is stale no longer collapses to a false 0% growth.
+    # ``rev_prior`` is None when no period-distinct series exists, in which case
+    # growth is intentionally left unset rather than fabricated.
+    if rev_now is not None and rev_prior is not None and rev_prior != 0:
+        result["revenue_growth_yoy"] = (rev_now - rev_prior) / rev_prior
 
     # --- free_cash_flow: OperatingCashFlow - CapEx (both TTM) ---
     operating_cf = _ttm("NetCashProvidedByUsedInOperatingActivities")

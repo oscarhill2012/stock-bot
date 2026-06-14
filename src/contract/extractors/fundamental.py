@@ -38,17 +38,22 @@ from typing import Any
 # Any change to _KEYS must be coordinated with the analyst contract schema.
 _KEYS = (
     # Company fundamentals extracted from the "ratios" sub-dict.
+    #
+    # NB: forward-looking and broker-consensus fields — ``pe_forward``,
+    # ``peg``, ``analyst_rating_avg``, ``number_of_analyst_opinions`` — were
+    # retired from this catalogue (audit: full-backtest-iter-1).  Their sole
+    # source is yfinance ``.info``, a wall-clock value that leaks future
+    # information into PIT backtests, so the ``pit_composite`` provider always
+    # surfaces them as ``None``.  Emitting them coerced-to-0.0 told the
+    # strategist "forward P/E = 0" / "analyst rating = 0" — actively
+    # misleading.  They are now simply absent (0/19 ticker coverage confirmed).
     "pe_trailing",
-    "pe_forward",
-    "peg",
     "revenue_growth_yoy",
     "profit_margin",
     "debt_to_equity",
     "fcf_yield_pct",
     "roe",
     "free_cash_flow",
-    "analyst_rating_avg",
-    "number_of_analyst_opinions",
     # Filings-derived numerics.
     "days_since_last_filing",
     "n_filings_30d",
@@ -170,16 +175,15 @@ def _extract_stats_features(stats: Mapping[str, Any] | None) -> dict[str, float]
     if not stats:
         return out
 
+    # forward-looking / broker-consensus fields (pe_forward, peg,
+    # analyst_rating_avg, number_of_analyst_opinions) are intentionally NOT
+    # extracted — see the note on _KEYS.  They have no PIT-correct source.
     out["pe_trailing"]               = _f(stats.get("trailing_pe") or stats.get("pe_trailing"))
-    out["pe_forward"]                = _f(stats.get("forward_pe") or stats.get("pe_forward"))
-    out["peg"]                       = _f(stats.get("peg"))
     out["revenue_growth_yoy"]        = _f(stats.get("revenue_growth_yoy") or stats.get("revenue_growth"))
     out["profit_margin"]             = _f(stats.get("profit_margin"))
     out["debt_to_equity"]            = _f(stats.get("debt_to_equity"))
     out["roe"]                       = _f(stats.get("return_on_equity") or stats.get("roe"))
-    out["analyst_rating_avg"]        = _f(stats.get("analyst_rating_avg"))
     out["free_cash_flow"]            = _f(stats.get("free_cash_flow") or stats.get("fcf"))
-    out["number_of_analyst_opinions"]= _f(stats.get("number_of_analyst_opinions"))
 
     # FCF yield = (free cash flow / market cap) × 100.
     # Guard against zero market cap to avoid ZeroDivisionError.

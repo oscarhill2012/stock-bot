@@ -50,3 +50,32 @@ def test_build_strategist_wires_llm_caps_from_config() -> None:
 
     assert cfg is not None
     assert cfg.max_output_tokens == 16000
+
+
+def test_strategist_llm_has_include_contents_none() -> None:
+    """The Strategist LlmAgent must be constructed with ``include_contents='none'``.
+
+    ADK's default is ``'default'``, which forwards every upstream agent's
+    content events into the strategist's prompt as conversation history — a
+    duplication of analyst outputs that the curated ``## Ticker Evidence``
+    section already renders.  Setting ``'none'`` suppresses that forwarding
+    so the strategist runs purely on its instruction template and the
+    ``{temp:*}`` placeholders hydrated by StrategistContextShim.
+
+    This test is a positive sentinel: if someone removes the kwarg or
+    changes the value, the duplicate-news regression will re-appear silently.
+    """
+    branch = build_strategist()
+
+    retrying = branch.sub_agents[1]
+    assert isinstance(retrying, RetryingAgentWrapper)
+
+    llm = retrying.inner
+
+    # ``include_contents`` is set on the LlmAgent at construction time.
+    # The ADK attribute name mirrors the kwarg name.
+    assert getattr(llm, "include_contents", None) == "none", (
+        "Strategist LlmAgent must have include_contents='none' to prevent ADK "
+        "from forwarding analyst sub-agent outputs as conversation history, "
+        "which would duplicate the curated Ticker Evidence block."
+    )
