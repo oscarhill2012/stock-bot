@@ -253,29 +253,56 @@ class Fetcher:
                 end=self._window.end,
             )
 
+            # ── Refetch delete-first ──────────────────────────────────────────
+            # CRITICAL ORDERING: the delete MUST come after a successful
+            # provider fetch.  If the provider raised above, we never reach
+            # this block and the existing cached rows are preserved.  A failed
+            # or empty provider call must never wipe good data on the strength
+            # of nothing.
+            #
+            # Note: there is a small window between the delete and the write
+            # below where, if the write raises, the old rows are gone.  The
+            # ``except`` below records ``status='error'`` so the user sees the
+            # failure and re-runs.  The deleted data was the stale/wrong data
+            # we wanted gone anyway, so this trade-off is acceptable — we
+            # deliberately do not add cross-Session transaction complexity to
+            # cover this edge case.
+            if domain in self._refetch_domains:
+                removed = self._store.delete_domain_rows(ticker, domain)
+                logger.info(
+                    "refetch %s/%s — cleared %d stale row(s) before re-write",
+                    ticker, domain, removed,
+                )
+
             # Resolve the writer from the domain map and call it.
             # ``company_ratios`` has a three-argument signature
             # ``write_company_ratios(ticker, snapshot, as_of_date)`` — callers
             # that supply a ``company_ratios`` provider fn must return a
             # list of ``(CompanyRatios, date)`` two-tuples so the fetcher can
             # unpack them correctly.
+            #
+            # Writers now return the number of rows *actually inserted* (not
+            # the provider-payload count).  With ``on_conflict_do_nothing`` a
+            # duplicate contributes 0 — this is the honesty the audit row needs.
             writer_name = _WRITER_BY_DOMAIN[domain]
             writer      = getattr(self._store, writer_name)
 
             if domain == "company_ratios":
                 # Provider returns list[(snapshot, as_of_date)] tuples.
-                for snapshot, as_of_date in results:
+                # Sum the per-snapshot inserted counts from the writer.
+                rows_written = sum(
                     writer(ticker, snapshot, as_of_date)
-                rows_written = len(results)
+                    for snapshot, as_of_date in results
+                )
             else:
-                writer(ticker, results)
-                rows_written = len(results) if hasattr(results, "__len__") else 0
+                # Writer accepts the full list and returns total inserted.
+                rows_written = writer(ticker, results)
 
             # Success line — explicit row count + elapsed seconds so the
             # user can spot the slow domains at a glance during a long fill.
             elapsed = (datetime.now(tz=UTC) - started).total_seconds()
             logger.info(
-                "done %s/%s — %d row(s) in %.1fs",
+                "done %s/%s — %d row(s) inserted in %.1fs",
                 ticker, domain, rows_written, elapsed,
             )
 

@@ -1,4 +1,5 @@
-"""Tests that the fetcher supersedes (replaces) stale ``cache_runs`` rows.
+"""Tests that the fetcher supersedes (replaces) stale ``cache_runs`` rows, and
+that ``--refetch-domain`` genuinely replaces cached data (not a silent no-op).
 
 ``cache_runs`` is a *current-status ledger*, one row per
 ``(window_key, ticker, domain)``.  Each fetch attempt must delete any prior row
@@ -25,11 +26,13 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from datetime import date as date_type
+
 from backtest.cache.fetcher import Fetcher
 from backtest.cache.schema import CacheRunRow
 from backtest.cache.store import CachedDataStore
 from backtest.windows import Window
-from data.models import OHLCBar
+from data.models import CompanyRatios, OHLCBar
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -292,3 +295,77 @@ async def test_supersede_does_not_touch_other_triples(tmp_path: Path) -> None:
         f"AAPL/news row must not be disturbed; found {len(aapl_news)} rows"
     )
     assert aapl_news[0].run_id == "aapl-news-seed"
+
+
+# ---------------------------------------------------------------------------
+# Test 4: refetch genuinely replaces cached data (the original silent-failure bug)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_refetch_domain_genuinely_replaces_cached_data(tmp_path: Path) -> None:
+    """A forced refetch must replace stale values in the store, not silently drop them.
+
+    Regression test for the bug where ``--refetch-domain company_ratios`` re-ran
+    the provider but wrote nothing new because ``on_conflict_do_nothing`` absorbed
+    every row — and the audit row still reported ``rows_written=N`` because it
+    counted the provider-payload size, not actual DB inserts.
+
+    Scenario:
+    1.  Seed a stale ``CompanyRatios`` snapshot via ``write_company_ratios``
+        (market_cap=1_000.0 — the "buggy" value).
+    2.  Run the fetcher with ``refetch_domains={"company_ratios"}`` and a
+        provider that returns the corrected value (market_cap=9_999.0).
+    3.  Assert the store now holds the corrected value, not the stale one.
+    4.  Assert the ``cache_runs`` row records the actual inserted count (1),
+        not the stale-absorbed count (0 without delete-first).
+    """
+    store  = _store(tmp_path)
+    window = _window()
+
+    # ── Step 1: seed stale data ───────────────────────────────────────────────
+    stale_snapshot = CompanyRatios(ticker="AAPL", market_cap=1_000.0)
+    store.write_company_ratios("AAPL", stale_snapshot, date_type(2023, 3, 6))
+
+    # Confirm the stale value is in the cache.
+    as_of = datetime(2023, 3, 10, tzinfo=UTC)
+    cached = store.read_company_ratios("AAPL", as_of=as_of)
+    assert cached is not None and cached.market_cap == 1_000.0, (
+        "stale value should be in the cache before refetch"
+    )
+
+    # ── Step 2: run the fetcher with the corrected provider ───────────────────
+    corrected_snapshot = CompanyRatios(ticker="AAPL", market_cap=9_999.0)
+
+    # Provider returns list[(snapshot, as_of_date)] tuples (company_ratios convention).
+    async def corrected_provider(
+        ticker: str, *, start: date_type, end: date_type
+    ) -> list:
+        return [(corrected_snapshot, date_type(2023, 3, 6))]
+
+    fetcher = Fetcher(
+        store=store,
+        window_key=_WINDOW_KEY,
+        window=window,
+        watchlist=["AAPL"],
+        provider_fns={"company_ratios": corrected_provider},
+        live_providers_for_domain={"company_ratios": "sec_edgar"},
+        refetch_domains={"company_ratios"},
+    )
+    await fetcher.run()
+
+    # ── Step 3: assert the store now holds the corrected value ────────────────
+    refreshed = store.read_company_ratios("AAPL", as_of=as_of)
+    assert refreshed is not None, "corrected snapshot must be readable after refetch"
+    assert refreshed.market_cap == 9_999.0, (
+        f"expected corrected market_cap=9_999.0 after refetch, "
+        f"got {refreshed.market_cap} — delete-first did not fire or write failed"
+    )
+
+    # ── Step 4: assert the audit row records honest inserted count ────────────
+    run_rows = _count_cache_runs(store, "AAPL", "company_ratios")
+    assert len(run_rows) == 1, f"expected exactly 1 cache_runs row, got {len(run_rows)}"
+    assert run_rows[0].rows_written == 1, (
+        f"rows_written must be 1 (actual DB insert), "
+        f"got {run_rows[0].rows_written} — provider-payload count must not be used"
+    )
+    assert run_rows[0].status == "ok"
