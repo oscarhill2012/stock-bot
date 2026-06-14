@@ -873,3 +873,140 @@ def test_holding_discipline_positioned_before_output_contract() -> None:
         "Holding-discipline section must appear BEFORE ## OUTPUT CONTRACT; "
         f"holding_idx={holding_idx}, contract_idx={contract_idx}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Tests — conviction-weighted position sizing (iter-3, Change 1)
+# ---------------------------------------------------------------------------
+#
+# A ``### Conviction-weighted position sizing`` section was added to
+# ``_RAW_INSTRUCTION`` inside ``## Deployment posture``.  It instructs the
+# strategist to concentrate capital in high-conviction names (10%+ targets)
+# rather than spreading thin across all twenty watchlist tickers.
+#
+# These tests assert on distinctive phrases so a future prompt edit that
+# accidentally removes the section is caught immediately.
+# ---------------------------------------------------------------------------
+
+def test_conviction_sizing_section_present() -> None:
+    """The conviction-sizing subsection must be present in the rendered prompt.
+
+    The section title phrase ``Conviction-weighted position sizing`` is the
+    most unambiguous sentinel — its absence means the whole subsection was
+    dropped.
+    """
+    from agents.strategist.prompts import STRATEGIST_INSTRUCTION
+
+    assert "Conviction-weighted position sizing" in STRATEGIST_INSTRUCTION, (
+        "Conviction-weighted position sizing section is missing from "
+        "STRATEGIST_INSTRUCTION — Change 1 of iter-3 may have been dropped"
+    )
+
+
+def test_conviction_sizing_ten_percent_target() -> None:
+    """The 10%-or-more target for genuinely backed names must appear in the prompt.
+
+    This is the primary numerical anchor of the conviction-sizing guidance.
+    Its presence confirms the model will see a concrete target, not just vague
+    'concentrate' language.
+    """
+    from agents.strategist.prompts import STRATEGIST_INSTRUCTION
+
+    assert "10%" in STRATEGIST_INSTRUCTION, (
+        "10% position target is missing from the conviction-sizing section"
+    )
+
+
+def test_conviction_sizing_anti_spreading_warning() -> None:
+    """The warning against spreading thin across twenty names must be present.
+
+    The phrase 'all twenty watchlist names' or equivalent thin-spreading
+    language is the key counter-instruction — without it the model may still
+    default to spreading evenly.
+    """
+    from agents.strategist.prompts import STRATEGIST_INSTRUCTION
+
+    # The specific phrase used in the template.
+    assert "twenty watchlist" in STRATEGIST_INSTRUCTION or "all twenty" in STRATEGIST_INSTRUCTION, (
+        "Anti-spreading warning (thin twenty-name distribution) is missing from "
+        "the conviction-sizing section"
+    )
+
+
+def test_conviction_sizing_positioned_inside_deployment_posture() -> None:
+    """The conviction-sizing section must appear within ``## Deployment posture``.
+
+    Placement matters — the model must see the per-name sizing guidance
+    directly alongside the overall 70–80% band target.
+    """
+    from agents.strategist.prompts import STRATEGIST_INSTRUCTION
+
+    deployment_idx = STRATEGIST_INSTRUCTION.find("## Deployment posture")
+    sizing_idx     = STRATEGIST_INSTRUCTION.find("Conviction-weighted position sizing")
+    # The next top-level header after Deployment posture is Holding discipline.
+    holding_idx    = STRATEGIST_INSTRUCTION.find("### Holding discipline")
+
+    assert deployment_idx != -1, "## Deployment posture section not found"
+    assert sizing_idx     != -1, "Conviction-weighted position sizing section not found"
+    assert holding_idx    != -1, "### Holding discipline section not found"
+
+    # The sizing section must come after Deployment posture and before (or at)
+    # the start of Holding discipline.
+    assert deployment_idx < sizing_idx, (
+        "Conviction-sizing section must be after ## Deployment posture"
+    )
+    assert sizing_idx < holding_idx, (
+        "Conviction-sizing section must appear before ### Holding discipline"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tests — live deployment readout placeholder (iter-3, Change 2)
+# ---------------------------------------------------------------------------
+#
+# ``{temp:deployment_readout}`` is a runtime ADK slot set by
+# ``StrategistContextShim`` and placed inside ``## Deployment posture``.
+# These tests confirm the placeholder is wired into the raw template (before
+# build-time substitution removes the ``{{...}}`` markers) and is positioned
+# in the right section.
+# ---------------------------------------------------------------------------
+
+def test_deployment_readout_placeholder_present_in_raw_template() -> None:
+    """The ``{temp:deployment_readout}`` placeholder must appear in ``_RAW_INSTRUCTION``.
+
+    The raw template carries both build-time ``{{NAME}}`` markers and runtime
+    ``{temp:...}`` placeholders.  ADK's ``inject_session_state`` resolves the
+    latter at invocation time.  If the placeholder is absent from the raw
+    template the model never sees the live deployment number.
+    """
+    from agents.strategist.prompts import _RAW_INSTRUCTION
+
+    assert "{temp:deployment_readout}" in _RAW_INSTRUCTION, (
+        "{temp:deployment_readout} placeholder is missing from _RAW_INSTRUCTION — "
+        "the model will never see its live deployment number"
+    )
+
+
+def test_deployment_readout_placeholder_positioned_in_deployment_posture() -> None:
+    """The ``{temp:deployment_readout}`` placeholder must sit inside ``## Deployment posture``.
+
+    The readout must appear before the 70–80% band prose so the model sees the
+    live number right next to the target guidance.
+    """
+    from agents.strategist.prompts import _RAW_INSTRUCTION
+
+    deployment_idx = _RAW_INSTRUCTION.find("## Deployment posture")
+    readout_idx    = _RAW_INSTRUCTION.find("{temp:deployment_readout}")
+    # The next major section after Deployment posture is Holding discipline.
+    holding_idx    = _RAW_INSTRUCTION.find("### Holding discipline")
+
+    assert deployment_idx != -1, "## Deployment posture section not found in _RAW_INSTRUCTION"
+    assert readout_idx    != -1, "{temp:deployment_readout} placeholder not found"
+    assert holding_idx    != -1, "### Holding discipline not found in _RAW_INSTRUCTION"
+
+    assert deployment_idx < readout_idx, (
+        "{temp:deployment_readout} must appear after ## Deployment posture"
+    )
+    assert readout_idx < holding_idx, (
+        "{temp:deployment_readout} must appear before ### Holding discipline"
+    )
