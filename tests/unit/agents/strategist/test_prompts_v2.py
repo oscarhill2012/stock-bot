@@ -28,9 +28,27 @@ def test_template_has_ticker_evidence_slot():
     assert "{temp:ticker_evidence}" in STRATEGIST_INSTRUCTION
 
 
-def test_template_has_first_tick_flag_slot():
-    """Task 8: FIRST_TICK_FLAG placeholder present for Task 9 wiring."""
-    assert "{temp:first_tick_flag}" in STRATEGIST_INSTRUCTION
+def test_template_has_first_tick_preamble_slot():
+    """Change 3: the prompt uses ``{temp:first_tick_preamble}`` (populated only
+    on the first tick) instead of the old ``{temp:first_tick_flag}`` literal.
+
+    On the first tick StrategistContextShim injects the full first-tick guidance
+    block into this slot.  On iterative ticks it injects an empty string so the
+    placeholder renders to nothing, saving tokens and eliminating the
+    duplication of the ``## Deployment posture`` / ``## Mode`` guidance.
+    """
+    # New: the preamble placeholder must be present.
+    assert "{temp:first_tick_preamble}" in STRATEGIST_INSTRUCTION, (
+        "Prompt must contain {temp:first_tick_preamble} — the conditional "
+        "first-tick guidance block (empty on iterative ticks)"
+    )
+    # Old: the raw first_tick_flag literal must no longer be in the prompt
+    # because it conveyed no additional information beyond what the Mode
+    # section and the preamble already express.
+    assert "{temp:first_tick_flag}" not in STRATEGIST_INSTRUCTION, (
+        "{temp:first_tick_flag} removed from prompt — its information is now "
+        "encoded in {temp:first_tick_preamble} (non-empty only on first tick)"
+    )
 
 
 def test_template_has_state_slots():
@@ -308,16 +326,20 @@ def test_template_renders_with_all_required_slots():
     # .format() can handle the remaining plain slots without colon confusion.
     template = (
         STRATEGIST_INSTRUCTION
-        .replace("{temp:strategist_mode}",     "Cold start — your portfolio is empty.")
-        .replace("{temp:held_positions_view}", "(No held positions — portfolio is flat.)")
-        .replace("{temp:ticker_evidence}",     "AAPL\n  Aggregate: bullish (magnitude 0.42)")
-        .replace("{temp:recent_trades_view}",  "(No closed positions yet this run.)")
-        .replace("{temp:_last_schema_error}",  "")
-        .replace("{temp:first_tick_flag}",     "True")
+        .replace("{temp:strategist_mode}",      "Cold start — your portfolio is empty.")
+        .replace("{temp:held_positions_view}",  "(No held positions — portfolio is flat.)")
+        .replace("{temp:ticker_evidence}",      "AAPL\n  Aggregate: bullish (magnitude 0.42)")
+        .replace("{temp:recent_trades_view}",   "(No closed positions yet this run.)")
+        .replace("{temp:_last_schema_error}",   "")
+        # Change 3: first-tick preamble replaces the old first_tick_flag literal.
+        # On the first tick the shim injects FIRST_TICK_PREAMBLE; on iterative
+        # ticks it injects an empty string.  The smoke test exercises the
+        # non-empty (first-tick) path.
+        .replace("{temp:first_tick_preamble}",  "This is your baseline tick — populate the thesis book.")
         # Memory buffer is now a temp key rendered by StrategistContextShim.
-        .replace("{temp:memory_buffer}",       "Memory Buffer (1 tick):\n  [01] no_action  executions=0  — (empty)")
+        .replace("{temp:memory_buffer}",        "Memory Buffer (1 tick):\n  [01] no_action  executions=0  — (empty)")
         # A-086: optional user-scoped thesis — resolves to empty string on cold start.
-        .replace("{user:thesis?}",             "(empty)")
+        .replace("{user:thesis?}",              "(empty)")
     )
     rendered = template.format(
         portfolio="cash=100, positions={}",
@@ -328,8 +350,10 @@ def test_template_renders_with_all_required_slots():
     # Basic sanity checks on the rendered output.
     assert "No held positions" in rendered
     assert "AAPL" in rendered
-    # The first-tick flag value must appear after substitution.
-    assert "True" in rendered
+    # The first-tick preamble text must appear after substitution.
+    assert "baseline tick" in rendered, (
+        "First-tick preamble must appear in the rendered output"
+    )
     # Three-verb contract must survive rendering intact.
     assert "buy" in rendered
     assert "sell" in rendered

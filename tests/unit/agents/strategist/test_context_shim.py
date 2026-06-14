@@ -92,6 +92,10 @@ def test_shim_yields_one_event_with_temp_prefixed_keys(populated_state: dict) ->
         "temp:_last_schema_error",
         # Task 9: selective-output flag — "True" on first tick, "False" thereafter.
         "temp:first_tick_flag",
+        # Change 3: first-tick-only preamble.  Full guidance on tick 0 (empty
+        # thesis book must be populated); empty string on iterative ticks so
+        # the placeholder adds zero tokens.
+        "temp:first_tick_preamble",
     }
     assert set(delta.keys()) == expected_keys, (
         f"state_delta keys mismatch: {set(delta.keys())} vs {expected_keys}"
@@ -358,3 +362,72 @@ def test_context_shim_ignores_bare_positions_key() -> None:
 
     # The bridge value must NOT appear in the rendered held-view.
     assert "bridge-leak" not in out["temp:held_positions_view"]
+
+
+# ---------------------------------------------------------------------------
+# Change 3 — first-tick-only preamble (temp:first_tick_preamble)
+# ---------------------------------------------------------------------------
+
+def test_first_tick_preamble_non_empty_on_first_tick() -> None:
+    """On the first tick the preamble must contain meaningful guidance.
+
+    The full ``FIRST_TICK_PREAMBLE`` block is injected under
+    ``temp:first_tick_preamble`` when ``user:active_stances_initialised``
+    is absent or False.  The strategist must receive explicit instruction to
+    populate the thesis book — without it the model has no guidance on how
+    to handle an empty-portfolio cold start.
+
+    Positive assertions: the preamble must mention the baseline-tick context
+    and guide the model to buy / update / avoid no_action as a default.
+    """
+    from agents.strategist.context_shim import StrategistContextShim
+    from broker.portfolio import Portfolio
+
+    state = {
+        "user:positions":                  {},
+        "user:active_stances_initialised": False,
+        "portfolio":                       Portfolio(cash=0.0).model_dump(mode="json"),
+    }
+    shim = StrategistContextShim()
+    rendered = shim.render(state)
+
+    preamble = rendered["temp:first_tick_preamble"]
+
+    # Must be non-empty — the model needs guidance on the cold-start path.
+    assert preamble, (
+        "temp:first_tick_preamble must be non-empty on the first tick "
+        "(user:active_stances_initialised=False)"
+    )
+
+    # Must reference the baseline / cold-start context.
+    assert "baseline" in preamble.lower() or "first" in preamble.lower(), (
+        "First-tick preamble must mention the baseline/first-tick context"
+    )
+
+
+def test_first_tick_preamble_empty_on_iterative_tick() -> None:
+    """On iterative ticks the preamble must be an empty string.
+
+    The ``## Mode`` section and ``## Deployment posture`` already cover the
+    incremental framing.  Injecting the preamble again would repeat the same
+    guidance and waste tokens.  An empty string causes the
+    ``{temp:first_tick_preamble}`` placeholder to render to nothing.
+    """
+    from agents.strategist.context_shim import StrategistContextShim
+    from broker.portfolio import Portfolio
+
+    state = {
+        "user:positions":                  {},
+        "user:active_stances_initialised": True,   # iterative tick
+        "portfolio":                       Portfolio(cash=0.0).model_dump(mode="json"),
+    }
+    shim = StrategistContextShim()
+    rendered = shim.render(state)
+
+    preamble = rendered["temp:first_tick_preamble"]
+
+    # Must be empty — no duplicate guidance on iterative ticks.
+    assert preamble == "", (
+        f"temp:first_tick_preamble must be an empty string on iterative ticks "
+        f"(user:active_stances_initialised=True); got {preamble!r}"
+    )

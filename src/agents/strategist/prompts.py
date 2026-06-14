@@ -81,6 +81,32 @@ else:
 # ``{temp:strategist_mode}`` placeholder that ADK's ``inject_session_state``
 # resolves at runtime.
 
+# ─────────────────────────────────────────────────────────────────────────────
+# First-tick preamble constants
+# ─────────────────────────────────────────────────────────────────────────────
+# The tick-mode paragraph is shown ONLY on the first tick of a window, when
+# it adds genuinely new information (the thesis book is empty; the model must
+# populate it).  On iterative ticks, the ``## Mode`` section and
+# ``## Deployment posture`` already cover the incremental framing — repeating
+# the same guidance wastes tokens and dilutes the signal.
+#
+# ``StrategistContextShim`` selects the appropriate constant and injects it
+# under ``temp:first_tick_preamble``.  On iterative ticks the empty string is
+# injected so the placeholder renders to nothing.
+
+FIRST_TICK_PREAMBLE: str = (
+    "This is your **baseline tick** (``first_tick_flag=True``).  The thesis "
+    "book is empty — your job is to populate it.  ``buy`` where you have "
+    "conviction today.  ``update`` every other watchlist ticker with an "
+    "opening thesis so you have a view to iterate on.  ``no_action`` is the "
+    "wrong answer for any ticker you can form an opinion about; reserve it "
+    "for tickers where the evidence genuinely tells you nothing."
+)
+
+# On iterative ticks the preamble is intentionally empty — the Mode section
+# and Deployment posture already cover the incremental framing.
+INCREMENTAL_PREAMBLE: str = ""
+
 COLD_START_MODE_TEMPLATE: str = (
     "Cold start — the portfolio is flat and the thesis book is empty.  This "
     "is your baseline tick: develop a thesis on every watchlist ticker, and "
@@ -190,19 +216,7 @@ the evidence supports a new position and you stay flat is a tick of
 unforced cash drag.  Cash is the absence of a thesis; it earns
 nothing and does not compound.
 
-This tick's mode (``first_tick_flag={temp:first_tick_flag}``) shapes the
-expected stance mix:
-
-- ``first_tick_flag=True`` — baseline tick.  The thesis book is empty.
-  Your job is to populate it: ``buy`` where you have conviction, and
-  ``update`` every other watchlist ticker with an opening thesis so you
-  have a view to iterate on.  ``no_action`` is the wrong answer for any
-  ticker you can form an opinion about; reserve it for tickers where the
-  evidence genuinely tells you nothing.
-- ``first_tick_flag=False`` — iterative tick.  You already have a thesis
-  book.  ``update`` whenever your view has shifted — refining theses as
-  evidence accumulates is how this agent learns.  ``no_action`` is for
-  tickers where nothing in this tick's evidence warrants any change.
+{temp:first_tick_preamble}
 
 ## OUTPUT CONTRACT — every rule is enforced; violations abort the tick
 

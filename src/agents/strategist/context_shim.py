@@ -40,7 +40,9 @@ from google.adk.events import Event, EventActions
 
 from agents.strategist.prompts import (
     COLD_START_MODE_TEMPLATE,
+    FIRST_TICK_PREAMBLE,
     INCREMENTAL_MODE_TEMPLATE,
+    INCREMENTAL_PREAMBLE,
 )
 from broker.portfolio import Portfolio
 from contract.digest import DEFAULT_ANALYST_WEIGHTS, build_ticker_evidence
@@ -205,8 +207,14 @@ class StrategistContextShim(BaseAgent):
 
         - ``temp:first_tick_flag`` — ``"True"`` when this is the first tick of
           a window (``user:active_stances_initialised`` is absent or ``False``),
-          ``"False"`` thereafter.  The prompt uses this flag to decide whether
-          to emit a full baseline stance set or an incremental update.
+          ``"False"`` thereafter.  Still emitted for backward compatibility
+          with tests that read the flag directly; the prompt now uses
+          ``{temp:first_tick_preamble}`` instead to avoid repeating
+          ``first_tick_flag=True/False`` text the model does not need.
+        - ``temp:first_tick_preamble`` — the full first-tick guidance block
+          (``FIRST_TICK_PREAMBLE``) on the first tick; an empty string on
+          every subsequent tick so the placeholder renders to nothing and
+          adds zero tokens.
         - ``temp:held_positions_view`` — the lightweight held-positions block
           showing rationale, opened-at, current price/weight/P&L, and thesis
           staleness in ticks.  Intentionally omits ``horizon``,
@@ -225,8 +233,8 @@ class StrategistContextShim(BaseAgent):
                 the held-view can show live price/weight/P&L per position.
 
         Returns:
-            dict with keys ``temp:first_tick_flag`` and
-            ``temp:held_positions_view``.
+            dict with keys ``temp:first_tick_flag``, ``temp:first_tick_preamble``,
+            and ``temp:held_positions_view``.
         """
         # ── Selective-output flag ─────────────────────────────────────────
         # ``user:active_stances_initialised`` is False (or absent) on the
@@ -236,6 +244,16 @@ class StrategistContextShim(BaseAgent):
         # "False" → subsequent tick (incremental update).
         initialised = state.get("user:active_stances_initialised", False)
         first_tick_flag: str = "True" if not initialised else "False"
+
+        # ── Tick-mode preamble — first tick only ──────────────────────────
+        # On the first tick of a window the thesis book is empty and the model
+        # needs explicit guidance to populate it.  On iterative ticks the
+        # ``## Mode`` section and ``## Deployment posture`` already cover the
+        # incremental framing, so the preamble collapses to an empty string
+        # and adds zero tokens to the prompt.
+        first_tick_preamble: str = (
+            FIRST_TICK_PREAMBLE if first_tick_flag == "True" else INCREMENTAL_PREAMBLE
+        )
 
         # ── Lightweight held-positions view with staleness ────────────────
         # A-014: read only the canonical user-namespaced key.  The
@@ -258,6 +276,7 @@ class StrategistContextShim(BaseAgent):
 
         return {
             "temp:first_tick_flag":     first_tick_flag,
+            "temp:first_tick_preamble": first_tick_preamble,
             "temp:held_positions_view": held_view,
         }
 
@@ -442,10 +461,15 @@ class StrategistContextShim(BaseAgent):
             invocation_id = ctx.invocation_id,
             actions       = EventActions(state_delta={
                 "temp:strategist_mode":         mode_text,
-                # Held-positions view and first-tick flag from the pure
-                # render() helper — separated so tests can call it directly.
+                # Held-positions view, first-tick flag, and first-tick preamble
+                # from the pure render() helper — separated so unit tests can
+                # call render() directly without a fake InvocationContext.
                 "temp:held_positions_view":     pure_keys["temp:held_positions_view"],
                 "temp:first_tick_flag":         pure_keys["temp:first_tick_flag"],
+                # First-tick-only guidance block — full text on tick 0 (empty
+                # thesis book; model must populate), empty string on all
+                # subsequent ticks (Deployment posture + Mode already cover it).
+                "temp:first_tick_preamble":     pure_keys["temp:first_tick_preamble"],
                 "temp:ticker_evidence":         ticker_evidence_rendered,
                 "temp:ticker_evidence_objects": ticker_evidence_objects,
                 "temp:recent_trades_view":      recent_trades_view,
