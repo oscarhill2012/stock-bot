@@ -54,15 +54,18 @@ will score its candidates *against this scoreboard's metric*.
   the rest of the watchlist moved on the same tick — so the number
   reflects stock-selection skill, not market direction. A "bullish on
   everything" analyst must score ≈ 0 in a bull window, not brilliantly.
-- **Automatic generation.** Produced by every backtest as part of the
-  end-of-run report, with no manual step.
+- **Automatic generation, published in the run report.** Produced by
+  every backtest and written as a section of that run's
+  `report/metrics.md` — the existing canonical report — with no manual
+  step and no separate file to go hunting for.
 - **Cross-window comparability.** The headline is a *per-verdict mean*
   (in basis points), not a sum, so windows of different length compare
   directly.
 - **Reproducible and cheaply iterable.** The scorer is a pure function
-  over already-persisted data (`analyst_evidence` + the price cache).
-  Changing a metric formula re-derives the scoreboard from an existing
-  run's `db.sqlite` **without** re-running the backtest.
+  over already-persisted data — the run's `db.sqlite` (verdicts) **and**
+  the window's golden cache `store.sqlite` (prices), two distinct files.
+  Changing a metric formula re-derives the scoreboard from those two
+  existing artefacts **without** re-running the backtest.
 - **Signal vs noise.** Report a t-statistic so a real edge is
   distinguishable from bull-window noise (the audit's fwd_5d inversion
   was noise at p = 0.17; its fwd_20d inversion was real at p = 0.0018 —
@@ -151,8 +154,8 @@ edge while it never emitted bullish):
 
 ### Edge cases
 
-- **Window-edge coverage.** Verdicts whose `tick_date + h` bar falls
-  beyond the cache (the last ~20 trading days of a window have no +20d
+- **Window-edge coverage.** Verdicts whose `as_of_date + h` bar falls
+  beyond the cache (the last ~20 calendar days of a window have no +20d
   bar) are **excluded** from that horizon, and `n` reflects the reduced
   coverage. No silent truncation — the reduced `n` is visible in the
   output.
@@ -170,6 +173,12 @@ A single **pure scoring function** plus a thin entrypoint. No new
 database tables; no new config (reuses the existing
 `forward_return_horizons_days` setting).
 
+Two SQLite files feed it, and they are **not** the same store:
+
+- the run's `runs/<run-id>/db.sqlite` — the **verdicts** (`analyst_evidence`);
+- the window's golden cache `<backtests_root>/<window>/store.sqlite` —
+  the **prices** (`OHLCVBarRow`), read via `CachedDataStore.read_ohlcv`.
+
 ```
 src/backtest/
   scoreboard.py      # NEW — pure function:
@@ -177,16 +186,20 @@ src/backtest/
                      #     → ScoreboardResult (per analyst × horizon × subset)
                      #   render_scoreboard_md(result) → str
   reporting.py       # MODIFIED — end-of-run, after _backfill_forward_returns:
-                     #   call build_analyst_scoreboard(...) and write
-                     #   report/analyst_scoreboard.md
+                     #   call build_analyst_scoreboard(...) and APPEND the
+                     #   rendered section to report/metrics.md — the same
+                     #   append-after-headline pattern already used for the
+                     #   pipeline-efficiency section (reporting.py ~L238).
 
 scripts/
   backtest_scoreboard.py   # NEW — thin standalone entrypoint:
-                           #   point at an existing run's db.sqlite +
-                           #   its window cache, call the SAME pure
-                           #   function, re-emit the scoreboard.
-                           #   Lets us iterate on metric formulas with
-                           #   zero re-backtest.
+                           #   point at an existing run's db.sqlite AND its
+                           #   window's store.sqlite cache, call the SAME
+                           #   pure function, and PRINT the rendered section
+                           #   to stdout (not append — avoids duplicating
+                           #   the section in a committed metrics.md on
+                           #   re-runs).  Lets us iterate on metric formulas
+                           #   with zero re-backtest.
 ```
 
 ### Data flow
@@ -202,10 +215,14 @@ scripts/
       and the forward bars from the cache, computing `fwd_return_h`;
    c. computes per-tick cross-sectional means and demeans;
    d. aggregates per analyst × horizon × subset.
-3. `render_scoreboard_md` formats the result; `reporting.py` writes it
-   to `report/analyst_scoreboard.md`.
+3. `render_scoreboard_md` formats the result into a markdown section;
+   `reporting.py` **appends** it to `report/metrics.md` (after the
+   headline financials and pipeline-efficiency sections), so every run's
+   canonical report carries the eval inline.
 4. `scripts/backtest_scoreboard.py` is the same call path (2b–3) over an
-   existing run, for formula iteration without re-running the pipeline.
+   existing run's `db.sqlite` + window `store.sqlite`, printing the
+   section to stdout — formula iteration without re-running the pipeline
+   and without mutating the committed report.
 
 ### Why this shape
 
