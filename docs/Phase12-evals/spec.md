@@ -185,11 +185,15 @@ src/backtest/
                      #   build_analyst_scoreboard(db, cache, horizons)
                      #     → ScoreboardResult (per analyst × horizon × subset)
                      #   render_scoreboard_md(result) → str
-  reporting.py       # MODIFIED — end-of-run, after _backfill_forward_returns:
+  reporting.py       # MODIFIED — inside report_progress (the per-tick path):
+                     #   after _write_metrics + the pipeline-efficiency append,
                      #   call build_analyst_scoreboard(...) and APPEND the
-                     #   rendered section to report/metrics.md — the same
-                     #   append-after-headline pattern already used for the
-                     #   pipeline-efficiency section (reporting.py ~L238).
+                     #   rendered section to report/metrics.md.  Because
+                     #   _write_metrics rewrites the file whole each tick, the
+                     #   scoreboard refreshes every tick (joining the live
+                     #   equity-curve dashboard) and never accumulates dup
+                     #   sections.  Reuses the cache report_progress already
+                     #   opens for the SPY benchmark.
 
 scripts/
   backtest_scoreboard.py   # NEW — thin standalone entrypoint:
@@ -207,18 +211,23 @@ scripts/
 1. The backtest runs as today; `analyst_evidence` is persisted per tick
    (already happens) and the price cache is populated for the window
    (already happens).
-2. At end-of-run, `reporting.py` already calls
-   `_backfill_forward_returns` for traded decisions. Immediately after,
-   it calls `build_analyst_scoreboard`, which:
-   a. reads all `analyst_evidence` rows;
+2. At the end of **every tick**, the driver calls `report_progress`, which
+   (after refreshing the equity curve + financial metrics) calls
+   `build_analyst_scoreboard`, which:
+   a. reads all `analyst_evidence` rows so far;
    b. for each row, looks up `base_price` (reference price at the tick)
       and the forward bars from the cache, computing `fwd_return_h`;
    c. computes per-tick cross-sectional means and demeans;
    d. aggregates per analyst × horizon × subset.
 3. `render_scoreboard_md` formats the result into a markdown section;
-   `reporting.py` **appends** it to `report/metrics.md` (after the
-   headline financials and pipeline-efficiency sections), so every run's
-   canonical report carries the eval inline.
+   `report_progress` **appends** it to `report/metrics.md` (after the
+   headline financials and pipeline-efficiency sections), so the live
+   dashboard carries the eval inline and it grows toward the full picture
+   as ticks accrue. Forward bars are read straight from the pre-fetched
+   golden cache regardless of the simulation clock, so the running
+   scoreboard "peeks" past the current tick — acceptable for a backtest
+   eval artefact (whole window cached, nothing fed back into trading); a
+   live deployment would instead lag by the longest horizon.
 4. `scripts/backtest_scoreboard.py` is the same call path (2b–3) over an
    existing run's `db.sqlite` + window `store.sqlite`, printing the
    section to stdout — formula iteration without re-running the pipeline

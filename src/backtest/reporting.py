@@ -9,9 +9,9 @@ retriever wants.
 Two public entry points exist:
 
 - ``report_progress`` — equity curve + metrics.md (with the pipeline-efficiency
-  section appended).  Cheap enough to call at the end of every tick from the
-  driver, so an operator watching the run gets a live, on-disk dashboard
-  rather than a single artefact at the end.
+  and analyst predictive-power scoreboard sections appended).  Cheap enough to
+  call at the end of every tick from the driver, so an operator watching the
+  run gets a live, on-disk dashboard rather than a single artefact at the end.
 - ``report`` — calls ``report_progress`` then runs the forward-return backfill.
   Backfill walks every decision JSON and only gains useful data as time
   passes within the cache window, so it stays end-of-run.
@@ -69,10 +69,12 @@ def report_progress(run_dir: Path, settings: BacktestSettings, *, window: str) -
     """Refresh ``report/equity_curve.png`` and ``report/metrics.md`` only.
 
     The cheap, per-tick slice of :func:`report`: load snapshots, render the
-    equity curve, write the financial metrics file, and append the
-    pipeline-efficiency section.  The forward-return backfill is **not**
-    performed here — it walks every decision JSON and only gains useful data
-    as time advances within the cache window, so it stays end-of-run.
+    equity curve, write the financial metrics file, append the
+    pipeline-efficiency section, and append the analyst predictive-power
+    scoreboard.  The forward-return **backfill** is still **not** performed
+    here — it walks and mutates every decision JSON, so it stays end-of-run.
+    The scoreboard, by contrast, is a read-only computed section, so it
+    refreshes every tick like the equity curve and joins the live dashboard.
 
     Safe to call after every tick.  Returns silently if no portfolio
     snapshots have been written yet (e.g. the snapshotter has not run on the
@@ -239,6 +241,27 @@ def report_progress(run_dir: Path, settings: BacktestSettings, *, window: str) -
             with (report_dir / "metrics.md").open("a", encoding="utf-8") as f:
                 f.write(section)
 
+    # ── analyst predictive-power scoreboard ──────────────────────────────────
+    # Joins the per-tick live dashboard alongside the equity curve and financial
+    # metrics, so an operator watching a run sees the analysts' running edge
+    # accumulate rather than only at end-of-run.  Reuses the ``cache`` opened
+    # above for the SPY benchmark.  Because ``_write_metrics`` rewrites
+    # ``metrics.md`` whole on every call, this append is fresh each tick and
+    # never accumulates stale sections.
+    #
+    # Note on look-ahead: the scoreboard reads realised forward bars straight
+    # from the pre-fetched golden cache, independent of the simulation clock.
+    # That is fine for a backtest eval artefact (the whole window is cached and
+    # nothing is fed back into trading), but means the per-tick scoreboard
+    # already reflects outcomes the simulation has not "reached" yet.  In a
+    # future live deployment the equivalent scoreboard would necessarily lag by
+    # the longest horizon.
+    _append_scoreboard_section(
+        run_dir=run_dir,
+        cache=cache,
+        horizons=settings.forward_return_horizons_days,
+    )
+
 
 def report(run_dir: Path, settings: BacktestSettings, *, window: str) -> None:
     """Generate the full end-of-window report.
@@ -272,16 +295,9 @@ def report(run_dir: Path, settings: BacktestSettings, *, window: str) -> None:
     horizons = settings.forward_return_horizons_days
     _backfill_forward_returns(Path(run_dir) / "decisions", cache, horizons)
 
-    # ── analyst predictive-power scoreboard ──────────────────────────────────
-    # Build the scoreboard from the run's analyst_evidence DB and the window's
-    # price cache, then APPEND the rendered section to report/metrics.md
-    # (the same append-after-existing-content pattern used by the pipeline-
-    # efficiency section above).
-    _append_scoreboard_section(
-        run_dir=Path(run_dir),
-        cache=cache,
-        horizons=horizons,
-    )
+    # The analyst predictive-power scoreboard is appended per-tick by
+    # ``report_progress`` (called above), so it already reflects the full run by
+    # the time we reach here — no separate end-of-run append is needed.
 
 
 # ── Private helpers ───────────────────────────────────────────────────────────
@@ -325,8 +341,9 @@ def _append_scoreboard_section(
         logger.exception("scoreboard: failed to build scoreboard for %s", run_dir)
         return
 
-    # Append the section to the existing metrics.md.  ``report_progress`` is
-    # always called before ``report``, so the file already exists by this point.
+    # Append the section to the existing metrics.md.  This runs inside
+    # ``report_progress`` after ``_write_metrics`` has (re)written the file, so
+    # it always exists by this point.
     metrics_path = report_dir / "metrics.md"
     with metrics_path.open("a", encoding="utf-8") as f:
         f.write(section)
