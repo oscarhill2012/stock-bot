@@ -282,3 +282,130 @@ def test_callback_fill_price_used_as_opened_price():
     assert row.opened_price == fill, (
         f"opened_price should be the fill price {fill!r}, got {row.opened_price!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Broker-rejection tests (fix: rejected buys must NOT be mislabelled as
+# wiring bugs — they are expected runtime outcomes, e.g. insufficient cash
+# under the relaxed 70-95 % deployment band).
+# ---------------------------------------------------------------------------
+
+
+def _rejected_execution_for(ticker: str) -> dict:
+    """Return a minimal execution record representing a broker-rejected order.
+
+    ``actual_price`` is absent (None) because the order never filled.
+    ``status`` is "rejected" so the callback can classify it correctly.
+    """
+
+    return {
+        "order":        {"ticker": ticker, "action": "BUY"},
+        "actual_price": None,
+        "status":       "rejected",
+    }
+
+
+def test_rejected_buy_skipped_quietly_at_info(caplog):
+    """A buy stance whose broker order was rejected must be skipped at INFO.
+
+    Scenario:
+    - Decision has one buy stance for AVGO.
+    - executions list carries a rejected row for AVGO (no actual_price).
+    - Expected behaviour:
+        (a) No entry written to user:positions for AVGO.
+        (b) No ERROR or AssertionError surfaced.
+        (c) An INFO log with the stable "buy_rejected_no_fill" key is emitted.
+    """
+
+    import logging
+
+    state = _minimal_state(
+        stances    = [_open_stance("AVGO")],
+        executions = [_rejected_execution_for("AVGO")],
+    )
+    ctx = _make_callback_context(state)
+
+    with caplog.at_level(logging.INFO, logger="agents.executor.agent"):
+        _executor_thesis_writer_callback(ctx)
+
+    # (a) No position row for the rejected ticker.
+    positions = ctx.state.get("user:positions", {})
+    assert "AVGO" not in positions, (
+        "rejected buy must NOT create a position row"
+    )
+
+    # (b) No ERROR logged.
+    error_records = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert not error_records, (
+        f"rejected buy must not log at ERROR; got: {[r.message for r in error_records]}"
+    )
+
+    # (c) INFO log with the stable message key present.
+    info_keys = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
+    assert any("buy_rejected_no_fill" in msg for msg in info_keys), (
+        f"expected 'buy_rejected_no_fill' INFO log; got INFO messages: {info_keys}"
+    )
+
+
+def test_rejected_buy_does_not_affect_other_stances(caplog):
+    """Other stances in the same decision still process normally.
+
+    Scenario:
+    - Two buy stances: AVGO (rejected) and AAPL (filled at 200.0).
+    - Only AAPL should appear in user:positions.
+    - No ERROR emitted; INFO key present for AVGO.
+    """
+
+    import logging
+
+    state = _minimal_state(
+        stances    = [_open_stance("AVGO"), _open_stance("AAPL")],
+        executions = [
+            _rejected_execution_for("AVGO"),
+            _execution_for("AAPL", 200.0),
+        ],
+    )
+    ctx = _make_callback_context(state)
+
+    with caplog.at_level(logging.INFO, logger="agents.executor.agent"):
+        _executor_thesis_writer_callback(ctx)
+
+    positions = ctx.state.get("user:positions", {})
+    assert "AAPL" in positions, "filled buy for AAPL must still produce a thesis row"
+    assert "AVGO" not in positions, "rejected buy for AVGO must not produce a thesis row"
+
+    error_records = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert not error_records, "no ERRORs expected when the only anomaly is a rejection"
+
+
+def test_buy_no_fill_no_rejection_triggers_wiring_bug_error(caplog):
+    """A buy stance with no fill AND no rejection record must log at ERROR.
+
+    This guards against masking genuine wiring bugs.  The existing
+    ``AssertionError`` backstop in apply_stance_to_thesis must still fire
+    and be reported through the loud ERROR path.
+    """
+
+    import logging
+
+    # executions list is empty — broker never saw this ticker at all.
+    state = _minimal_state(
+        stances    = [_open_stance("MSFT")],
+        executions = [],
+    )
+    ctx = _make_callback_context(state)
+
+    with caplog.at_level(logging.DEBUG, logger="agents.executor.agent"):
+        _executor_thesis_writer_callback(ctx)
+
+    # The callback must have logged an ERROR (wiring bug path).
+    error_records = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert error_records, (
+        "a buy with no fill and no rejection must trigger the ERROR wiring-bug log"
+    )
+
+    # And no position row must have been created (the stance was skipped).
+    positions = ctx.state.get("user:positions", {})
+    assert "MSFT" not in positions, (
+        "the anomalous buy must not create a position row"
+    )

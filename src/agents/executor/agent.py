@@ -525,6 +525,19 @@ def _executor_thesis_writer_callback(callback_context) -> None:
     # testable.  A-068: only canonical actual_price is read; no None entries.
     fill_prices = _build_fill_prices(state)
 
+    # Build a set of tickers whose broker order was rejected this tick.
+    # A rejected row has status="rejected" and no actual_price (None).
+    # This is used below to distinguish an *expected* broker rejection
+    # (e.g. insufficient cash under the relaxed deployment band) from a
+    # genuine wiring bug where a buy stance has no fill AND no rejection
+    # record.
+    rejected_tickers: set[str] = {
+        (row.get("order") or {}).get("ticker")
+        for row in state.get("executions", [])
+        if row and row.get("status") == "rejected"
+        and (row.get("order") or {}).get("ticker") is not None
+    }
+
     # ---- prior persisted thesis book (Phase 2 merge) -------------------
     # Shallow copy so we can mutate without affecting the merged dict
     # ADK keeps around for the in-tick view.
@@ -544,6 +557,31 @@ def _executor_thesis_writer_callback(callback_context) -> None:
 
         ticker     = stance.ticker
         fill_price = fill_prices.get(ticker)
+
+        # Guard: a buy stance with no fill is either an expected broker
+        # rejection (e.g. insufficient cash under the relaxed 70-95 %
+        # deployment band) or a genuine wiring bug.  Classify early so we
+        # can skip the rejected case QUIETLY before apply_stance_to_thesis
+        # fires its assertion.
+        #
+        # Case 1 — rejected: skip quietly at INFO (no position was opened).
+        # Case 2 — no fill, no rejection: fall through to the existing
+        #   AssertionError backstop so the loud ERROR "wiring bug" path fires.
+        if stance.intent == "buy" and fill_price is None and ticker in rejected_tickers:
+            # Broker rejected the order — normal runtime outcome.
+            # Log at INFO with a stable message key so it is searchable but
+            # does not clutter the error log.
+            logger.info(
+                "buy_rejected_no_fill: broker rejected buy for %s"
+                " — no fill, skipping thesis row",
+                ticker,
+                extra={"ticker": ticker, "intent": stance.intent},
+            )
+            continue
+
+        # If fill_price is None with no rejection record (stance.intent == "buy"),
+        # we fall through here intentionally — apply_stance_to_thesis will assert
+        # and the existing loud ERROR "wiring bug" log will fire below.
 
         prior_row = (
             NewPositionThesis.model_validate(prior_positions[ticker])
