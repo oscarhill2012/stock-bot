@@ -56,6 +56,27 @@ class TechnicalHeuristics(_Frozen):
     code change.
     """
 
+    rsi_mean_reversion: float = Field(default=35.0, ge=0.0, le=50.0)
+    """Moderate-oversold mean-reversion guard for the 20-day bearish lean.
+
+    When a name is called bearish (sign of 20d return is negative) and its
+    RSI is strictly below this threshold, the call is downgraded to neutral
+    rather than propagated as bearish.  Back-testing shows moderate-oversold
+    names (RSI 25–35) tend to mean-revert at the 20-day horizon, making a
+    straight bearish call anti-predictive in that band.
+
+    The stronger RSI<``rsi_oversold`` capitulation flip (→ bullish when
+    pct_change_5d < 0) still wins for genuinely capitulating names because
+    25 < 35 — an RSI-20 name is first neutralised by this rule and then
+    re-promoted to bullish by the capitulation branch.
+
+    Set to ``0.0`` to disable this rule entirely (the condition
+    ``rsi < 0.0`` can never be true for a real RSI value).
+
+    Valid range: 0–50 (must not exceed ``rsi_oversold``'s upper bound).
+    Tune via ``config/analyst_heuristics.json`` without a code change.
+    """
+
 
 class SocialHeuristics(_Frozen):
     """Thresholds for the deterministic social verdict."""

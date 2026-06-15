@@ -111,6 +111,7 @@ Thresholds used by `derive_technical_verdict()`.
 | `confidence_penalty_step` | float [0–1] | Confidence removed per contradicting signal. |
 | `magnitude_cap` | float (0–1] | Maximum magnitude value emitted. |
 | `momentum_neutral_band_pct` | float [0–1] | **Conviction gate.** If `abs(pct_change_20d)` is below this threshold the analyst abstains (`lean="neutral"`), regardless of sign. Units: fractional return — the same units as `pct_change_20d` (e.g. `0.02` = ±2 %). **Provisional value** — pending a measured sweep against the eval scoreboard. Tune here without a code change. |
+| `rsi_mean_reversion` | float [0–50] | **Moderate-oversold mean-reversion guard.** When the 20-day trend calls bearish and RSI is strictly below this level, the call is downgraded to neutral. Names with RSI in the 25–35 band tend to mean-revert at the 20-day horizon, making a straight bearish call anti-predictive. The stronger capitulation flip (`RSI < rsi_oversold` AND `pct_change_5d < 0` → bullish) still wins for genuinely capitulating names because `rsi_oversold` (default 25) is below this threshold. Set to `0.0` to disable the rule entirely. Default 35. |
 
 ### `social` — deterministic Social analyst
 

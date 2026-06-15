@@ -15,7 +15,10 @@ from agents.analysts.heuristics import TechnicalHeuristics
 from contract.extractors.technical import derive_technical_verdict
 
 
-def _h(momentum_neutral_band_pct: float = 0.02) -> TechnicalHeuristics:
+def _h(
+    momentum_neutral_band_pct: float = 0.02,
+    rsi_mean_reversion: float = 35.0,
+) -> TechnicalHeuristics:
     """Canonical fixture heuristics — matches the shapes used by the spec examples.
 
     Parameters
@@ -24,6 +27,9 @@ def _h(momentum_neutral_band_pct: float = 0.02) -> TechnicalHeuristics:
         Conviction gate threshold in fractional-return units (e.g. 0.02 = ±2 %).
         Defaults to the provisional config value so tests exercise a realistic band.
         Pass ``0.0`` to disable the gate and test raw sign-based lean behaviour.
+    rsi_mean_reversion:
+        RSI level below which a bearish 20d-trend call is downgraded to neutral.
+        Defaults to the config default of 35.  Pass ``0.0`` to disable the rule.
     """
     return TechnicalHeuristics(
         rsi_overbought=75,
@@ -38,6 +44,7 @@ def _h(momentum_neutral_band_pct: float = 0.02) -> TechnicalHeuristics:
         confidence_penalty_step=0.3,
         magnitude_cap=1.0,
         momentum_neutral_band_pct=momentum_neutral_band_pct,
+        rsi_mean_reversion=rsi_mean_reversion,
     )
 
 
@@ -352,6 +359,7 @@ def test_closed_vocabulary():
         "trend_up_20d", "trend_down_20d",
         "momentum_agree", "momentum_disagree",
         "rsi_overbought", "rsi_oversold",
+        "rsi_moderate_oversold",
         "near_52w_high", "near_52w_low",
         "vol_breakout", "vol_dry_up",
         "high_volatility",
@@ -503,3 +511,105 @@ def test_neutral_band_exact_zero_pct20_unaffected():
         _h(momentum_neutral_band_pct=0.02),
     )
     assert v.lean == "neutral"
+
+
+# ---------------------------------------------------------------------------
+# RSI mean-reversion neutralisation (two-tier RSI rule)
+# ---------------------------------------------------------------------------
+#
+# When a bearish 20d-trend call fires and RSI is below ``rsi_mean_reversion``
+# (default 35), the lean is downgraded to neutral.  This reflects the
+# empirical observation that moderately-oversold names tend to mean-revert
+# at the 20-day horizon rather than continuing to fall.
+#
+# The existing RSI<rsi_oversold capitulation flip (→ bullish) still wins for
+# genuinely capitulating names because rsi_oversold (25) < rsi_mean_reversion
+# (35) — they compose in the right order.
+# ---------------------------------------------------------------------------
+
+def test_rsi_mean_reversion_bearish_rsi30_becomes_neutral():
+    """Bearish 20d trend + RSI 30 (< 35 threshold) → downgraded to neutral.
+
+    RSI 30 is in the moderate-oversold band — anti-predictive at 20d horizon.
+    The lean is downgraded and the ``rsi_moderate_oversold`` factor is appended.
+    """
+    v = derive_technical_verdict(
+        _features(pct_change_20d=-0.08, pct_change_5d=-0.03, rsi_14=30.0),
+        _h(rsi_mean_reversion=35.0),
+    )
+    assert v.lean == "neutral", (
+        f"Expected neutral for bearish + RSI 30, got {v.lean!r}"
+    )
+    assert "rsi_moderate_oversold" in v.key_factors, (
+        "Expected rsi_moderate_oversold factor when lean was neutralised"
+    )
+
+
+def test_rsi_mean_reversion_bearish_rsi45_stays_bearish():
+    """Bearish 20d trend + RSI 45 (≥ 35 threshold) → stays bearish.
+
+    RSI 45 is above the moderate-oversold threshold, so the rule does not
+    fire and the plain bearish 20d-trend call is preserved.
+    """
+    v = derive_technical_verdict(
+        _features(pct_change_20d=-0.08, pct_change_5d=-0.03, rsi_14=45.0),
+        _h(rsi_mean_reversion=35.0),
+    )
+    assert v.lean == "bearish", (
+        f"Expected bearish for RSI 45 (above threshold), got {v.lean!r}"
+    )
+    assert "rsi_moderate_oversold" not in v.key_factors
+
+
+def test_rsi_mean_reversion_capitulation_still_wins():
+    """Bearish + RSI 20 + pct5 < 0 → bullish (capitulation flip still wins).
+
+    RSI 20 is below both the mean-reversion threshold (35) and the oversold
+    threshold (25).  The two-tier rule first neutralises the bearish call, then
+    the capitulation branch (RSI < rsi_oversold AND pct5 < 0) re-promotes it
+    to bullish — confirming the composition is correct.
+    """
+    v = derive_technical_verdict(
+        _features(pct_change_20d=-0.08, pct_change_5d=-0.04, rsi_14=20.0),
+        _h(rsi_mean_reversion=35.0),
+    )
+    assert v.lean == "bullish", (
+        f"Expected capitulation bullish flip for RSI 20 + pct5 < 0, got {v.lean!r}"
+    )
+    # Both factors should appear: the neutralisation and the oversold tag.
+    assert "rsi_moderate_oversold" in v.key_factors
+    assert "rsi_oversold" in v.key_factors
+
+
+def test_rsi_mean_reversion_rsi20_pct5_nonnegative_stays_neutral():
+    """Bearish + RSI 20 + pct5 ≥ 0 → neutral (no capitulation flip).
+
+    RSI 20 triggers the mean-reversion neutralisation.  The capitulation branch
+    requires ``pct5 < 0`` which is not satisfied here, so the lean stays at
+    neutral after the neutralisation — it is not re-promoted to bullish.
+    """
+    v = derive_technical_verdict(
+        _features(pct_change_20d=-0.08, pct_change_5d=0.01, rsi_14=20.0),
+        _h(rsi_mean_reversion=35.0),
+    )
+    assert v.lean == "neutral", (
+        f"Expected neutral for RSI 20 + pct5 ≥ 0 (no capitulation), got {v.lean!r}"
+    )
+    assert "rsi_moderate_oversold" in v.key_factors
+
+
+def test_rsi_mean_reversion_disabled_bearish_unaffected():
+    """With rsi_mean_reversion=0.0, bearish calls are never neutralised by this rule.
+
+    Setting the threshold to 0.0 disables the rule entirely: the condition
+    ``rsi < 0.0`` cannot be true for any real RSI value (range 0–100), so
+    bearish calls with moderate RSI propagate unchanged.
+    """
+    v = derive_technical_verdict(
+        _features(pct_change_20d=-0.08, pct_change_5d=-0.03, rsi_14=30.0),
+        _h(rsi_mean_reversion=0.0),
+    )
+    assert v.lean == "bearish", (
+        f"Expected bearish when rule disabled (rsi_mean_reversion=0), got {v.lean!r}"
+    )
+    assert "rsi_moderate_oversold" not in v.key_factors

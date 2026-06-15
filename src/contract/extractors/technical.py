@@ -658,6 +658,23 @@ def derive_technical_verdict(
         # see docs/backtest-audits/baseline-window-2025-09-iter-2.md §Bug #12.)
         factors.append("rsi_overbought")
 
+    # Moderate-oversold mean reversion: a bearish 20-day-trend call on a name
+    # that is already moderately oversold tends to mean-revert at the 20-day
+    # horizon, so downgrade it to neutral rather than leaning bearish.  The
+    # stronger RSI<rsi_oversold capitulation flip below can still promote a
+    # genuinely capitulating name to bullish.
+    #
+    # Composition note: because rsi_oversold (default 25) < rsi_mean_reversion
+    # (default 35), a name with RSI=20 will first be neutralised here, then
+    # (if pct5 < 0) re-promoted to bullish by the capitulation branch below —
+    # the two rules compose correctly without an explicit guard.
+    #
+    # Setting rsi_mean_reversion=0.0 disables the rule: ``rsi < 0.0`` is never
+    # true for a real RSI value, so the neutralisation branch is never entered.
+    if lean == "bearish" and rsi < h.rsi_mean_reversion:
+        lean = "neutral"
+        factors.append("rsi_moderate_oversold")
+
     if rsi < h.rsi_oversold:
         factors.append("rsi_oversold")
         # Capitulation: sharp recent sell-off at extreme RSI suggests bounce.

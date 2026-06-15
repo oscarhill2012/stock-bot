@@ -11,7 +11,8 @@
     "confidence_boost_step": 0.2,
     "confidence_penalty_step": 0.3,
     "magnitude_cap": 1.0,
-    "momentum_neutral_band_pct": 0.02
+    "momentum_neutral_band_pct": 0.02,
+    "rsi_mean_reversion": 35.0
   },
   "social": {
     "score_neutral_band": 0.05,
