@@ -28,6 +28,8 @@ def _valid_payload() -> dict:
     return {
         "technical": {
             "rsi_overbought": 75, "rsi_oversold": 25,
+            "rsi_mean_reversion": 35.0,
+            "momentum_neutral_band_pct": 0.02,
             "pct_change_momentum_scale": 4.0,
             "vol_ratio_breakout": 1.5, "vol_ratio_dry_up": 0.7,
             "atr_high_volatility_pct": 5.0, "near_52w_extreme_pct": 5.0,

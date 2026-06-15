@@ -25,6 +25,7 @@ def _write_config(tmp_path: Path, *, cap: int, headroom: int) -> Path:
         "slack_percent": 15,
         "news": {
             "max_articles_per_ticker": 50,
+            "max_generic_articles_per_ticker": 10,
             "max_summary_chars": 800,
             "llm": {
                 "timeout_seconds":   60,
@@ -36,6 +37,7 @@ def _write_config(tmp_path: Path, *, cap: int, headroom: int) -> Path:
         "fundamental": {
             "max_filing_mda_chars":       8000,
             "max_filing_risk_chars":      4000,
+            "max_filing_8k_body_chars":   4000,
             "max_insider_footnotes":      10,
             "max_insider_footnote_chars": 800,
             "llm": {
