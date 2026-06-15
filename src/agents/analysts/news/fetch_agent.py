@@ -93,7 +93,7 @@ class NewsFetchAgent(BaseAgent):
 
             # Build the per-ticker formatted block.  ADK's instruction template
             # will fill this into ``{news_context}`` for the ticker's LlmAgent.
-            per_ticker_blocks[ticker] = _build_ticker_news_context(ticker, serialised)
+            per_ticker_blocks[ticker] = _build_ticker_news_context(ticker, serialised, as_of=as_of)
 
         # Build the state_delta payload.  All keys are temp:-prefixed
         # (Rule 2) so ADK strips them at the invocation boundary.

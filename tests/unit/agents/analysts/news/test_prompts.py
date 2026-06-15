@@ -64,6 +64,42 @@ def test_instruction_describes_single_verdict_output():
     assert "report"     in instruction
 
 
+def test_instruction_contains_recency_priced_in_guidance():
+    """The rendered prompt must instruct the model to discount already-priced-in news.
+
+    The recency/priced-in block was added to address the anti-predictive
+    behaviour at the 1-day horizon — the model was reacting to news the
+    market had already absorbed.  The block must reference:
+
+    - The ``As of:`` anchor (so the LLM is told it has a reference date).
+    - The per-article age mechanism (``Nd ago`` labels).
+    - Explicit instruction to discount older / widely-reported stories.
+    - Guidance to lean neutral when the freshest article is stale.
+    """
+    instruction = build_news_instruction(_vocab())
+
+    # The anchor reference must be mentioned so the LLM knows to look for it.
+    assert "As of:" in instruction, (
+        "Expected 'As of:' anchor reference in prompt — recency block missing"
+    )
+
+    # The per-article age format must be described.
+    assert "ago" in instruction, (
+        "Expected per-article age label reference (e.g. 'Nd ago') in prompt"
+    )
+
+    # The prompt must explicitly mention discounting already-priced-in news.
+    # The section heading uses "priced-in" (hyphenated) — check the lower-cased form.
+    assert "priced-in" in instruction.lower(), (
+        "Expected 'priced-in' wording in recency block"
+    )
+
+    # Staleness guidance — if the freshest article is old, lean neutral.
+    assert "neutral" in instruction.lower(), (
+        "Expected neutral-lean guidance for stale news in prompt"
+    )
+
+
 def test_instruction_honours_output_caps_from_config():
     """Prose-only caps from ``config/analysts.json::output_caps`` must still
     be substituted into the rendered instruction.

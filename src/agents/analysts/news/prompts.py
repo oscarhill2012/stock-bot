@@ -113,6 +113,24 @@ Decision rule:
   executive departure, regulatory action, or adverse legal outcome —
   do NOT default to neutral when evidence is materially negative.
 
+Recency and already-priced-in discount:
+- The context block opens with an ``As of:`` anchor date.  Each headline
+  shows how many days old it is (e.g. ``3d ago``).  Use this information
+  actively — do not treat all articles as equally fresh.
+- Weight recent articles (0–1 days old) more heavily; treat older articles
+  as progressively less actionable because the market has had more time to
+  absorb and price in the information.
+- Widely-reported, multi-day-old stories (e.g. an earnings miss that broke
+  three days ago and has been discussed everywhere) are likely already
+  reflected in the current price.  Lower your magnitude and confidence
+  accordingly, and lean neutral unless you see a clear incremental
+  development that the market has *not* yet had time to react to.
+- If the freshest article is several days old, lean toward neutral with low
+  confidence rather than taking a strong directional position — stale news
+  is weak signal at the 1-day horizon.
+- If a published age is marked ``age unknown``, treat that article
+  conservatively: do not let it anchor your confidence upward.
+
 Stop emitting if you are about to repeat a token or symbol three or more times in a row.
 Return the verdict as-is and never emit filler tokens.
 

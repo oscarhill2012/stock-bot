@@ -9,7 +9,7 @@ watchlist ticker, and yields exactly one state_delta event containing:
 from __future__ import annotations
 
 from datetime import datetime
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from google.adk.agents.invocation_context import InvocationContext
