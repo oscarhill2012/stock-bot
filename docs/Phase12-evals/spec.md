@@ -96,17 +96,28 @@ will score its candidates *against this scoreboard's metric*.
 
 For each verdict in `analyst_evidence` (one row per analyst × ticker ×
 tick), and for each horizon *h* ∈ `forward_return_horizons_days`
-(currently `{1, 5, 20}` trading days):
+(currently `{1, 5, 20}` — **calendar-day** offsets, matching the
+existing `_backfill_forward_returns` convention, *not* trading days):
 
 ```
-base_price    = the ticker's reference price at the verdict's tick
-                (the same reference price the technical analyst already
-                uses; available for ALL rows, not just traded ones —
-                this is what generalises the existing forward-return
-                backfill from 35 traded decisions to all ~1 200 rows)
+base_price    = the ticker's bar price at the verdict's tick, sampled at
+                the tick's intraday phase — bar.open for open-phase ticks
+                (recorded_at hour < 17 UTC), bar.close otherwise — read
+                from the per-window golden cache.  Available for ALL rows,
+                not just traded ones; this is what generalises the
+                forward-return backfill from 35 traded decisions to all
+                ~1 200 verdicts.  (NB: NOT the live state["reference_prices"]
+                the technical analyst reads — the scoreboard runs post-hoc
+                from db.sqlite + cache with no live state; and NOT
+                features_json, which holds RSI/ATR-type features, not a
+                clean price.)
 
-fwd_return_h  = (close at tick_date + h trading days − base_price)
-                / base_price
+fwd_return_h  = (forward_close_h − base_price) / base_price
+                where forward_close_h = the close of the first available
+                bar in [as_of_date + h days, as_of_date + h + 4 days] —
+                the same calendar-day-offset, first-available-bar lookup
+                _backfill_forward_returns already uses (extracted into a
+                shared helper, not duplicated)
 
 excess_h      = fwd_return_h
                 − mean(fwd_return_h over all watchlist tickers that have
@@ -204,6 +215,61 @@ eval is one function reading two things on disk. That keeps it lite
 because the verdicts are already on disk, so re-scoring is free. The
 pure function is unit-testable on a small fixture `db.sqlite` + fixture
 bars, with no pipeline, no LLM calls, no network.
+
+## Implementation notes (resolved unknowns)
+
+Verified against the codebase on 2026-06-15 so a subagent can implement
+from this spec without re-discovering them:
+
+- **`base_price` source — the cache, phase-matched.** `analyst_evidence`
+  does **not** persist a usable price (`features_json` is RSI/ATR-type
+  features), and the live `state["reference_prices"]` the technical
+  analyst uses is gone post-hoc. So read it from the per-window
+  `CachedDataStore.read_ohlcv(ticker, date, date)` and pick
+  `bar.open if recorded_at.hour < 17 else bar.close` — the exact
+  intraday-phase rule already used by the SPY benchmark in
+  `reporting.py` (`_spy_benchmark_series`, ~L971-987). Phase-matching
+  the base (rather than blunt close-to-close) also makes the open-phase
+  and close-phase ticks of the same day **distinct** observations and
+  removes same-day look-ahead at the base.
+
+- **Forward price — reuse, don't duplicate.** `_backfill_forward_returns`
+  (`reporting.py` ~L1079-1131) already does the
+  `target = as_of_date + timedelta(days=h)` → `read_ohlcv(target,
+  target + 4d)` → first-available `bar.close` lookup. Extract that
+  per-`(ticker, base_date, h)` lookup into a shared helper
+  (e.g. `_forward_close(cache, ticker, base_date, h)`) and call it from
+  **both** the decision backfill and the scoreboard, so the two can
+  never drift apart on methodology. This is an in-pass refactor of a
+  sibling, not new surface.
+
+- **Cross-sectional mean is analyst-independent — compute once per
+  `(tick_id, h)`.** The forward return of a ticker at a tick is a market
+  fact, not an analyst opinion. Group all verdicts by `tick_id`
+  (persisted on every row), compute the mean forward return over the
+  distinct tickers in that tick once per horizon, then every analyst's
+  verdict at that tick demeans against the same value. `recorded_at`
+  (a `DateTime` stamped from `state["as_of"]`) supplies both the date
+  and the phase hour.
+
+- **Reading the verdicts.** Query the run's `db.sqlite` via the existing
+  `AnalystEvidenceRow` SQLAlchemy model (`src/orchestrator/persistence.py`
+  L184) — columns `analyst, ticker, tick_id, recorded_at, lean,
+  magnitude, confidence`. No raw SQL, no new table.
+
+- **t-stat.** `scipy` (1.17.1) and `numpy` (2.4.4) are installed; use
+  `scipy.stats.ttest_1samp(scores, 0.0)` per analyst × horizon × subset.
+
+- **Missing bars / window edge.** When `read_ohlcv` yields no bar in the
+  forward window (last ~h calendar days of the run), that
+  `(verdict, horizon)` is dropped — excluded from both the cross-sectional
+  mean and the aggregation, with `n` reflecting the reduced coverage.
+  Same `None`-handling the backfill already applies.
+
+- **Same-day open/close ticks.** With phase-matched base prices the two
+  daily ticks are distinct observations (open→close vs close→close
+  returns), so no de-duplication is needed and the t-stat sample is not
+  artificially inflated.
 
 ## Testing
 
