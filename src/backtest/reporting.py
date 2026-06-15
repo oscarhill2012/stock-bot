@@ -57,6 +57,7 @@ from sqlalchemy.orm import Session
 
 from backtest.cache.store import CachedDataStore
 from backtest.settings import BacktestSettings
+from data.models.market import OHLCBar
 from orchestrator.persistence import PortfolioSnapshotRow, TradeLogRow
 
 logger = logging.getLogger(__name__)
@@ -271,8 +272,67 @@ def report(run_dir: Path, settings: BacktestSettings, *, window: str) -> None:
     horizons = settings.forward_return_horizons_days
     _backfill_forward_returns(Path(run_dir) / "decisions", cache, horizons)
 
+    # ── analyst predictive-power scoreboard ──────────────────────────────────
+    # Build the scoreboard from the run's analyst_evidence DB and the window's
+    # price cache, then APPEND the rendered section to report/metrics.md
+    # (the same append-after-existing-content pattern used by the pipeline-
+    # efficiency section above).
+    _append_scoreboard_section(
+        run_dir=Path(run_dir),
+        cache=cache,
+        horizons=horizons,
+    )
+
 
 # ── Private helpers ───────────────────────────────────────────────────────────
+
+def _append_scoreboard_section(
+    run_dir: Path,
+    cache: CachedDataStore,
+    horizons: list[int],
+) -> None:
+    """Build the analyst scoreboard and append it to ``report/metrics.md``.
+
+    Reads ``analyst_evidence`` from the run's ``db.sqlite``, scores every
+    verdict against realised forward returns from ``cache``, then formats
+    the result as a Markdown section and APPENDS it to the existing
+    ``report/metrics.md``.
+
+    No-ops gracefully if the DB does not exist yet (e.g. a zero-tick run).
+
+    Parameters
+    ----------
+    run_dir:
+        Root directory for the run (contains ``db.sqlite``).
+    cache:
+        ``CachedDataStore`` backed by the per-window golden-cache SQLite.
+    horizons:
+        Forward horizons in calendar days (e.g. ``[1, 5, 20]``).
+    """
+    from backtest.scoreboard import build_analyst_scoreboard, render_scoreboard_md
+
+    db_path    = run_dir / "db.sqlite"
+    report_dir = run_dir / "report"
+
+    if not db_path.exists():
+        logger.warning("scoreboard: db.sqlite not found at %s — skipping", db_path)
+        return
+
+    try:
+        result  = build_analyst_scoreboard(db_path=db_path, cache=cache, horizons=horizons)
+        section = render_scoreboard_md(result)
+    except Exception:
+        logger.exception("scoreboard: failed to build scoreboard for %s", run_dir)
+        return
+
+    # Append the section to the existing metrics.md.  ``report_progress`` is
+    # always called before ``report``, so the file already exists by this point.
+    metrics_path = report_dir / "metrics.md"
+    with metrics_path.open("a", encoding="utf-8") as f:
+        f.write(section)
+
+    logger.info("scoreboard: appended scoreboard section to %s", metrics_path)
+
 
 def _write_equity_curve(
     series: list[tuple[datetime, float]],
@@ -1076,6 +1136,79 @@ def _compute_vs_spy_delta(
     return bot_total_return - spy_total_return
 
 
+def _forward_bar(
+    cache: CachedDataStore,
+    ticker: str,
+    base_date: date,
+    h: int,
+) -> OHLCBar | None:
+    """Return the first available bar at ``base_date + h`` calendar days.
+
+    Looks up to 4 calendar days forward from the target date to skip weekends
+    and public holidays.  Returns ``None`` when no bar is found within that
+    window (e.g. the verdict / decision sits at the edge of the cache window).
+
+    This is the single source of forward-price lookup methodology, shared by
+    ``_backfill_forward_returns`` (which needs the bar's close *and* its actual
+    date) and ``_forward_close`` / ``backtest.scoreboard`` (which need only the
+    close), so the two paths can never drift apart.
+
+    Parameters
+    ----------
+    cache:
+        ``CachedDataStore`` backed by the per-window golden-cache SQLite.
+    ticker:
+        Stock ticker symbol (e.g. ``"AAPL"``).
+    base_date:
+        The calendar date of the verdict or decision entry.
+    h:
+        Forward horizon in calendar days (e.g. 1, 5, 20).
+
+    Returns
+    -------
+    OHLCBar | None
+        The first bar in ``[base_date + h, base_date + h + 4d]``, or ``None``
+        if no bar exists in that window.
+    """
+    target = base_date + timedelta(days=h)
+    bars   = cache.read_ohlcv(ticker, target, target + timedelta(days=4))
+    if not bars:
+        return None
+    return bars[0]
+
+
+def _forward_close(
+    cache: CachedDataStore,
+    ticker: str,
+    base_date: date,
+    h: int,
+) -> float | None:
+    """Return the close of the first available bar at ``base_date + h`` days.
+
+    Thin wrapper over :func:`_forward_bar` for callers that need only the
+    closing price (e.g. ``backtest.scoreboard``).  Returns ``None`` when no
+    bar exists within the forward window.
+
+    Parameters
+    ----------
+    cache:
+        ``CachedDataStore`` backed by the per-window golden-cache SQLite.
+    ticker:
+        Stock ticker symbol (e.g. ``"AAPL"``).
+    base_date:
+        The calendar date of the verdict or decision entry.
+    h:
+        Forward horizon in calendar days (e.g. 1, 5, 20).
+
+    Returns
+    -------
+    float | None
+        The close price of the first forward bar, or ``None``.
+    """
+    bar = _forward_bar(cache, ticker, base_date, h)
+    return bar.close if bar is not None else None
+
+
 def _backfill_forward_returns(
     decisions_dir: Path,
     cache: CachedDataStore,
@@ -1085,8 +1218,8 @@ def _backfill_forward_returns(
 
     For each ``*.json`` file in ``decisions_dir``, looks up the closing price
     at each horizon offset from the decision's entry date using the golden
-    cache.  Writes the return fractions (or ``None`` if no bar available) back
-    into the file in place.
+    cache via the shared ``_forward_bar`` helper.  Writes the return
+    fractions (or ``None`` if no bar available) back into the file in place.
 
     Parameters
     ----------
@@ -1117,17 +1250,15 @@ def _backfill_forward_returns(
             actual_dates:  dict[str, str | None]   = {}
 
             for h in horizons_days:
-                target = entry_date + timedelta(days=h)
-                # Look up to 4 calendar days forward to skip weekends / holidays.
-                bars = cache.read_ohlcv(ticker, target, target + timedelta(days=4))
-                if not bars:
+                # Shared forward-bar lookup — the scoreboard scores against the
+                # same helper, so the two paths can never drift on methodology.
+                bar = _forward_bar(cache, ticker, entry_date, h)
+                if bar is None:
                     forwards[f"+{h}d"]     = None
                     # Record None so the two dicts always have identical key sets.
                     actual_dates[f"+{h}d"] = None
                     continue
 
-                # Use the first available bar's close as the horizon price.
-                bar = bars[0]
                 forwards[f"+{h}d"]     = (bar.close - entry_price) / entry_price
                 # Record the actual calendar date of the bar used.  When a target
                 # date is a holiday, the bar lands on a later date; supervision
