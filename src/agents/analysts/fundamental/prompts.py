@@ -46,8 +46,16 @@ a structured verdict for that single ticker.
 
 The data block for {ticker} contains:
 
+  -- COMPANY RATIOS (SCALAR) --
+    Non-null scalar fundamentals: valuation multiples (trailing P/E, forward
+    P/E, PEG, beta), growth/profitability (revenue growth YoY, profit margin,
+    ROE, free cash flow), price reference (50/200-day average, 52-week
+    high/low), and analyst consensus rating.  Omitted when unavailable.
+
   -- COMPANY FILINGS (PROSE) --
-    MD&A and risk-factor excerpts from recent 10-K / 10-Q / 8-K filings.
+    MD&A and risk-factor excerpts from recent 10-K / 10-Q filings.
+    8-K filings render a body excerpt (catalyst, earnings, or guidance event)
+    in place of MD&A/risk sections, which 8-Ks do not carry.
 
   -- INSIDER ACTIVITY (30d, structured) --
     Net Form-4 dollars, buy/sell counts, cluster flags, planned-sale ratio

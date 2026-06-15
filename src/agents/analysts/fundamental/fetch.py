@@ -101,18 +101,103 @@ def _caps() -> FundamentalCaps:
     return get_analysts_config().fundamental
 
 
+def _render_ratios_block(lines: list[str], ratios: dict) -> None:
+    """Append a ``-- COMPANY RATIOS (SCALAR) --`` block to *lines* in-place.
+
+    Iterates over the known ``CompanyRatios`` scalar fields and appends a
+    labelled line for every non-null value.  Fields are grouped loosely:
+    valuation multiples, then growth/profitability, then price/market
+    reference data, then analyst consensus.
+
+    Fraction fields (dividend yield, revenue growth, profit margin, ROE) are
+    multiplied by 100 and formatted as percentages so the LLM receives a
+    human-readable number rather than a decimal fraction.
+
+    The section is omitted entirely when *ratios* is falsy — the caller
+    already guards with ``if ratios``.
+
+    Parameters
+    ----------
+    lines:
+        Mutable list of output lines being assembled by ``_build_ticker_context``.
+        Modified in-place; nothing is returned.
+    ratios:
+        ``CompanyRatios.model_dump()`` dict.  Unknown keys are silently
+        ignored so future model extensions do not break existing renders.
+    """
+    # Fields that are stored as decimal fractions but should be shown as %.
+    _PERCENT_FIELDS = {
+        "dividend_yield",
+        "revenue_growth_yoy",
+        "profit_margin",
+        "roe",
+    }
+
+    # Fields stored in raw USD that we display in millions for readability.
+    _MILLIONS_FIELDS = {"free_cash_flow"}
+
+    # Ordered list of (dict_key, human_label) pairs to render.
+    # Grouped: valuation → growth/profitability → price reference → analyst.
+    _FIELD_ORDER: list[tuple[str, str]] = [
+        ("market_cap",                   "Market cap (B USD)"),
+        ("trailing_pe",                  "Trailing P/E"),
+        ("forward_pe",                   "Forward P/E"),
+        ("peg",                          "PEG ratio"),
+        ("beta",                         "Beta"),
+        ("debt_to_equity",               "Debt/equity"),
+        ("revenue_growth_yoy",           "Revenue growth YoY"),
+        ("profit_margin",                "Profit margin"),
+        ("roe",                          "Return on equity (ROE)"),
+        ("free_cash_flow",               "Free cash flow TTM (M USD)"),
+        ("dividend_yield",               "Dividend yield"),
+        ("fifty_day_average",            "50-day avg price"),
+        ("two_hundred_day_average",      "200-day avg price"),
+        ("fifty_two_week_high",          "52-week high"),
+        ("fifty_two_week_low",           "52-week low"),
+        ("analyst_rating_avg",           "Analyst rating avg (1=Strong Buy, 5=Sell)"),
+        ("number_of_analyst_opinions",   "Analyst opinion count"),
+    ]
+
+    rendered_rows: list[str] = []
+
+    for key, label in _FIELD_ORDER:
+        value = ratios.get(key)
+        if value is None:
+            continue
+
+        if key == "market_cap":
+            # Convert raw USD → billions for readability.
+            formatted = f"{value / 1e9:.3f} B"
+        elif key in _MILLIONS_FIELDS:
+            formatted = f"{value / 1e6:.2f} M"
+        elif key in _PERCENT_FIELDS:
+            formatted = f"{value * 100:.2f}%"
+        elif isinstance(value, int):
+            formatted = str(value)
+        else:
+            formatted = f"{value:.2f}"
+
+        rendered_rows.append(f"  {label}: {formatted}")
+
+    if rendered_rows:
+        lines.append("-- COMPANY RATIOS (SCALAR) --")
+        lines.extend(rendered_rows)
+
+
 def _build_ticker_context(
     ticker: str,
     filings_payload: list[dict],
     insider_bundle: Form4Bundle,
     insider_lookback_days: int,
+    ratios: dict | None = None,
 ) -> str:
     """Build the LLM-readable context block for a single ticker.
 
-    Combines filing excerpts (MD&A + risk factors) and a structured insider
-    activity section (numeric metrics + footnote prose) into one formatted
-    text block.  This text is concatenated across all tickers and written to
-    ``state["fundamental_context"]`` by the fetch callback.
+    Combines a scalar ratios block (revenue growth, margins, valuation
+    multiples, etc.), filing excerpts (MD&A + risk factors + 8-K body), and a
+    structured insider activity section (numeric metrics + footnote prose) into
+    one formatted text block.  This text is concatenated across all tickers and
+    written to ``state["fundamental_context"]`` by the fetch callback.
 
     Parameters
     ----------
@@ -122,6 +207,12 @@ def _build_ticker_context(
         List of ``Filing.model_dump()`` dicts for the ticker.
     insider_bundle:
         Typed ``Form4Bundle`` containing common-stock trades and derivatives.
+    insider_lookback_days:
+        Number of days the insider fetch window covers — used as the window
+        label in the insider activity section header.
+    ratios:
+        ``CompanyRatios.model_dump()`` dict for the ticker, or ``None`` / an
+        empty dict if unavailable.  Only non-null scalar fields are rendered.
 
     Returns
     -------
@@ -130,25 +221,54 @@ def _build_ticker_context(
     """
     lines: list[str] = [f"=== {ticker} ==="]
 
-    # Read all four caps from config once per call.
+    # Read all caps from config once per call.
     caps = _caps()
 
+    # --- Company ratios (scalar fundamentals) ---
+    # Render non-null CompanyRatios fields so the LLM can reason about
+    # valuation, margins, and growth — these were previously fetched + cached
+    # but never forwarded to the LLM context (silent data drop, audit fix).
+    #
+    # Fields rendered and their formatting:
+    #   - market_cap: billions (3 dp) to keep the figure readable
+    #   - trailing_pe, forward_pe, peg, beta, debt_to_equity: plain 2 dp
+    #   - dividend_yield, revenue_growth_yoy, profit_margin, roe: percentage (2 dp)
+    #   - free_cash_flow: millions (2 dp) — raw figure is in USD
+    #   - fifty_day_average, two_hundred_day_average,
+    #     fifty_two_week_high, fifty_two_week_low: price (2 dp)
+    #   - analyst_rating_avg: plain 2 dp (scale: 1.0 = Strong Buy, 5.0 = Sell)
+    #   - number_of_analyst_opinions: integer
+    #   - long_name, sector: string — omitted; not decision-relevant scalars
+    if ratios:
+        _render_ratios_block(lines, ratios)
+
     # --- Filing excerpts ---
+    # For annual / quarterly filings (10-K, 10-Q) we render MD&A and risk
+    # factors.  For event-driven filings (8-K) those sections are absent;
+    # instead we render the body_excerpt which captures the catalyst, guidance
+    # update, or earnings announcement (Phase 7 audit 2.7 addition).
     if filings_payload:
         lines.append("-- COMPANY FILINGS (PROSE) --")
         for filing in filings_payload:
             form_type = filing.get("form_type", "?")
             filed_at  = filing.get("filed_at", "?")
 
-            mda      = (filing.get("mda_excerpt") or "").strip()
-            risk_fac = (filing.get("risk_factors_excerpt") or "").strip()
+            mda       = (filing.get("mda_excerpt") or "").strip()
+            risk_fac  = (filing.get("risk_factors_excerpt") or "").strip()
+            body_expt = (filing.get("body_excerpt") or "").strip()
 
             if mda or risk_fac:
+                # 10-K / 10-Q style: MD&A + risk factors sections available.
                 lines.append(f"  [{form_type}, filed {filed_at}]")
                 if mda:
                     lines.append(f"  MD&A: {mda[:caps.max_filing_mda_chars]}")
                 if risk_fac:
                     lines.append(f"  Risk factors: {risk_fac[:caps.max_filing_risk_chars]}")
+            elif body_expt:
+                # 8-K style: no MD&A/risk sections, but there is a body excerpt
+                # capturing the event (earnings, guidance, material disclosure).
+                lines.append(f"  [{form_type}, filed {filed_at}]")
+                lines.append(f"  Body: {body_expt[:caps.max_filing_8k_body_chars]}")
     else:
         lines.append("-- COMPANY FILINGS (PROSE) --")
         lines.append("  (no filings available)")
@@ -288,9 +408,14 @@ def _build_ticker_fundamental_context(ticker: str, data: dict) -> str:
     # always matches the actual fetch window used by the agent.
     insider_lookback_days: int = get_config().defaults.insider_lookback_days
 
+    # Forward the ratios dict — previously fetched and cached but silently
+    # dropped before this call (audit fix: render dropped ratios into LLM ctx).
+    ratios: dict | None = data.get("ratios") or None
+
     return _build_ticker_context(
         ticker,
         filings_payload,
         insider_bundle,
         insider_lookback_days=insider_lookback_days,
+        ratios=ratios,
     )

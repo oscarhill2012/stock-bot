@@ -209,6 +209,7 @@ process restart is required after edits.
 |---|---|---|
 | `fundamental.max_filing_mda_chars` | int [1–20000] | Character cap on the MD&A excerpt for each filing. Default 1500 (widened from 500). |
 | `fundamental.max_filing_risk_chars` | int [1–20000] | Character cap on the risk-factors excerpt for each filing. Default 1500 (widened from 500). |
+| `fundamental.max_filing_8k_body_chars` | int [1–20000] | Character cap on the `body_excerpt` rendered for 8-K filings (catalysts, earnings, guidance events). Applied when `mda_excerpt` and `risk_factors_excerpt` are both absent/empty. Default 1500. |
 | `fundamental.max_insider_footnotes` | int [0–50] | Maximum insider footnote snippets included in the LLM prompt per ticker. Default 5. |
 | `fundamental.max_insider_footnote_chars` | int [1–5000] | Character cap per footnote excerpt. Default 400 (widened from 200). |
 | `fundamental.llm.timeout_seconds` | float (0–600] | Wall-clock timeout (seconds) for one Fundamental-analyst LLM call. Range `(0, 600]`. Default 60. |

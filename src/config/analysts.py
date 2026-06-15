@@ -86,6 +86,7 @@ class FundamentalCaps(BaseModel):
 
     max_filing_mda_chars:       int     = Field(ge=1, le=20_000)
     max_filing_risk_chars:      int     = Field(ge=1, le=20_000)
+    max_filing_8k_body_chars:   int     = Field(ge=1, le=20_000)
     max_insider_footnotes:      int     = Field(ge=0, le=50)
     max_insider_footnote_chars: int     = Field(ge=1, le=5_000)
     llm:                        LlmCaps                        # NEW — per-call runtime caps
