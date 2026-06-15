@@ -17,6 +17,9 @@ Covers:
   (h) Generic cap enforced; total cap respected; thin-ticker fallback.
   (i) Case-insensitive name matching and first-word match.
   (j) Specifics exceeding total cap → zero generics included.
+  (k) Roundup demotion — a headline naming ≥ threshold watchlist companies
+      scores 0 for every named ticker; single-company and two-company
+      headlines are unaffected.
 """
 from __future__ import annotations
 
@@ -27,6 +30,7 @@ import pytest
 
 from agents.analysts.news.fetch import (
     _build_ticker_news_context,
+    _count_roundup_companies,
     _parse_published,
     _rerank_articles,
     _score_article_specificity,
@@ -49,6 +53,7 @@ def _make_fake_caps(
     max_articles: int = 10,
     max_generic: int = 5,
     max_summary_chars: int = 200,
+    roundup_company_threshold: int = 3,
 ) -> MagicMock:
     """Return a MagicMock that mimics a ``NewsCaps`` object.
 
@@ -60,17 +65,39 @@ def _make_fake_caps(
         Value for ``max_generic_articles_per_ticker``.
     max_summary_chars:
         Value for ``max_summary_chars``.
+    roundup_company_threshold:
+        Minimum distinct watchlist companies in a headline to trigger roundup
+        demotion.  Mirrors ``NewsCaps.roundup_company_threshold``.
 
     Returns
     -------
     MagicMock
-        A mock with the three fields set.
+        A mock with the four fields set.
     """
     caps = MagicMock()
     caps.max_articles_per_ticker         = max_articles
     caps.max_generic_articles_per_ticker = max_generic
     caps.max_summary_chars               = max_summary_chars
+    caps.roundup_company_threshold       = roundup_company_threshold
     return caps
+
+
+# ---------------------------------------------------------------------------
+# Minimal watchlist universe used by roundup-demotion tests.
+# Mirrors the real watchlist.json format; kept small so test assertions are
+# easy to reason about without relying on the live config file.
+# ---------------------------------------------------------------------------
+
+_SMALL_UNIVERSE: list[dict[str, str]] = [
+    {"symbol": "AAPL",  "name": "Apple"},
+    {"symbol": "NVDA",  "name": "Nvidia"},
+    {"symbol": "AMD",   "name": "AMD"},
+    {"symbol": "TSLA",  "name": "Tesla"},
+    {"symbol": "AVGO",  "name": "Broadcom"},
+    {"symbol": "MSFT",  "name": "Microsoft"},
+    {"symbol": "GOOGL", "name": "Alphabet"},
+    {"symbol": "LMT",   "name": "Lockheed Martin"},
+]
 
 
 def _build(
@@ -81,14 +108,17 @@ def _build(
     company_name: str | None = None,
     max_articles: int = 10,
     max_generic: int = 5,
+    roundup_threshold: int = 3,
+    universe: list[dict[str, str]] | None = None,
 ) -> str:
-    """Call ``_build_ticker_news_context`` with config caps patched to sane values.
+    """Call ``_build_ticker_news_context`` with config caps and universe patched.
 
     Uses a ``MagicMock`` instead of constructing a real ``NewsCaps`` object
     so the test is insulated from changes to ``NewsCaps`` field requirements.
-    The mock exposes the three fields read by ``_build_ticker_news_context``:
-    ``max_articles_per_ticker``, ``max_generic_articles_per_ticker``, and
-    ``max_summary_chars``.
+    Also patches ``_watchlist_universe`` so the function does not depend on
+    the live ``config/watchlist.json`` file — tests that exercise roundup
+    demotion should pass an explicit ``universe``; others get an empty list
+    (disables roundup detection, preserving prior test behaviour).
 
     Parameters
     ----------
@@ -104,15 +134,29 @@ def _build(
         Override for ``max_articles_per_ticker`` on the fake caps.
     max_generic:
         Override for ``max_generic_articles_per_ticker`` on the fake caps.
+    roundup_threshold:
+        Override for ``roundup_company_threshold`` on the fake caps.
+    universe:
+        Watchlist universe passed to the roundup detector.  ``None`` (the
+        default) substitutes an empty list, which disables roundup demotion
+        and keeps pre-existing tests unaffected.
 
     Returns
     -------
     str
         The rendered context block.
     """
-    fake_caps = _make_fake_caps(max_articles=max_articles, max_generic=max_generic)
+    fake_caps    = _make_fake_caps(
+        max_articles=max_articles,
+        max_generic=max_generic,
+        roundup_company_threshold=roundup_threshold,
+    )
+    fake_universe = universe if universe is not None else []
 
-    with patch("agents.analysts.news.fetch._caps", return_value=fake_caps):
+    with (
+        patch("agents.analysts.news.fetch._caps", return_value=fake_caps),
+        patch("agents.analysts.news.fetch._watchlist_universe", return_value=fake_universe),
+    ):
         return _build_ticker_news_context(
             ticker, articles, as_of=as_of, company_name=company_name,
         )
@@ -541,4 +585,141 @@ def test_build_context_respects_specificity_order():
 
     assert idx_specific < idx_generic, (
         "Specific article should appear before generic in the rendered block"
+    )
+
+
+# ---------------------------------------------------------------------------
+# (k) Roundup demotion — _score_article_specificity with universe
+# ---------------------------------------------------------------------------
+
+def test_roundup_headline_five_companies_scores_zero_for_each_named_ticker():
+    """A headline naming 5 watchlist companies must score 0 for every named ticker.
+
+    Mirrors "Nvidia, AMD, Tesla, Broadcom, Apple Are Big Movers" — each of
+    those tickers would previously score 2 because their name appeared in the
+    headline.  With roundup demotion enabled, all must score 0.
+    """
+    headline = "Nvidia, AMD, Tesla, Broadcom, Apple Are Big Movers"
+    article  = _make_article(title=headline, summary="Market roundup.")
+
+    for symbol, name in [
+        ("NVDA", "Nvidia"),
+        ("AMD",  "AMD"),
+        ("TSLA", "Tesla"),
+        ("AVGO", "Broadcom"),
+        ("AAPL", "Apple"),
+    ]:
+        score = _score_article_specificity(
+            article, symbol, name,
+            watchlist_universe=_SMALL_UNIVERSE,
+            roundup_threshold=3,
+        )
+        assert score == 0, (
+            f"Expected score 0 for {symbol} in roundup headline; got {score}"
+        )
+
+
+def test_roundup_single_company_headline_unaffected():
+    """A headline naming only one watchlist company must still score 2.
+
+    "Apple's Latest Attempt to Launch New Siri…" names only Apple — well
+    below the threshold, so no demotion should occur.
+    """
+    article = _make_article(
+        title="Apple's Latest Attempt to Launch New Siri for AI Era",
+        summary="Apple is working on a revamped Siri.",
+    )
+
+    score = _score_article_specificity(
+        article, "AAPL", "Apple",
+        watchlist_universe=_SMALL_UNIVERSE,
+        roundup_threshold=3,
+    )
+
+    assert score == 2, (
+        f"Single-company headline should still score 2; got {score}"
+    )
+
+
+def test_roundup_two_company_headline_unaffected():
+    """A headline naming the target ticker plus one peer must still score 2.
+
+    Two companies is below the default threshold of 3, so the comparison
+    article should not be demoted.  "Apple vs Microsoft: Which AI Giant
+    Leads?" names two watchlist companies.
+    """
+    article = _make_article(
+        title="Apple vs Microsoft: Which AI Giant Leads?",
+        summary="A deep dive into both companies' AI strategies.",
+    )
+
+    score = _score_article_specificity(
+        article, "AAPL", "Apple",
+        watchlist_universe=_SMALL_UNIVERSE,
+        roundup_threshold=3,
+    )
+
+    assert score == 2, (
+        f"Two-company headline should still score 2 (below threshold); got {score}"
+    )
+
+
+def test_roundup_generic_article_with_no_watchlist_names_stays_zero():
+    """A genuinely generic article naming zero watchlist companies still scores 0.
+
+    Roundup demotion must not change the score of an article that was already
+    classified as generic via the standard path.
+    """
+    article = _make_article(
+        title="Risk Is Back On — Dow Hits 50,000",
+        summary="Broad market sentiment turned bullish as macro fears eased.",
+    )
+
+    score = _score_article_specificity(
+        article, "AAPL", "Apple",
+        watchlist_universe=_SMALL_UNIVERSE,
+        roundup_threshold=3,
+    )
+
+    assert score == 0, (
+        f"Generic article should score 0 regardless of roundup logic; got {score}"
+    )
+
+
+def test_count_roundup_companies_counts_distinct_companies():
+    """``_count_roundup_companies`` must count each company at most once.
+
+    Even if a company's symbol and name both appear, it still counts as 1.
+    """
+    # "nvidia" and "nvda" both appear — still just Nvidia (1 company).
+    text  = "nvidia nvda amd tsla"
+    count = _count_roundup_companies(text, _SMALL_UNIVERSE)
+
+    # Nvidia (matched by name + symbol, counts once), AMD (matched by symbol),
+    # Tesla (matched by name abbreviation "tsla").
+    assert count == 3, (
+        f"Expected 3 distinct companies; got {count}"
+    )
+
+
+def test_roundup_summary_spill_demotes_to_zero():
+    """When the company list spills into the summary, the combined check fires.
+
+    Simulates the pattern: short teaser headline + company list in summary.
+    The combined (headline + summary) check must trigger demotion.
+    """
+    article = _make_article(
+        title="These Stocks Are Today's Movers:",
+        # Summary names ≥3 watchlist companies.
+        summary="Nvidia, AMD, Tesla, Broadcom and Apple all moved sharply today.",
+    )
+
+    score = _score_article_specificity(
+        article, "NVDA", "Nvidia",
+        watchlist_universe=_SMALL_UNIVERSE,
+        roundup_threshold=3,
+    )
+
+    assert score == 0, (
+        f"Teaser headline + company-list summary should demote to 0; got {score}"
     )

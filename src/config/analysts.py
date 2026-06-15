@@ -89,6 +89,14 @@ class NewsCaps(BaseModel):
         market roundup pieces cannot crowd out genuine company news.
     max_summary_chars:
         Maximum characters of each article's summary kept in the prompt.
+    roundup_company_threshold:
+        Minimum number of **distinct** watchlist companies that must be
+        named in a headline (or summary) for the article to be classified
+        as a macro roundup and demoted to score 0 (generic), regardless of
+        whether the target ticker is among them.  The rationale: naming a
+        ticker in a multi-company roundup ("Nvidia, AMD, Tesla, Apple Are
+        Big Movers") is not company-specificity — it is name-dropping in a
+        list article.  Default 3.
     llm:
         Per-call LLM runtime caps (timeout, token limit, retry counts).
     """
@@ -96,6 +104,7 @@ class NewsCaps(BaseModel):
     max_articles_per_ticker:         int     = Field(ge=1,  le=200)
     max_generic_articles_per_ticker: int     = Field(ge=0,  le=200)
     max_summary_chars:               int     = Field(ge=1,  le=10_000)
+    roundup_company_threshold:       int     = Field(ge=2,  le=50,   default=3)
     llm:                             LlmCaps                           # per-call runtime caps
 
 

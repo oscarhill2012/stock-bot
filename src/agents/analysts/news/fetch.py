@@ -30,6 +30,18 @@ admitted only up to ``max_generic_articles_per_ticker`` (config default 5)
 AND the remaining total-cap budget, whichever is smaller.  A ticker with
 zero specific articles receives up to the generic cap — it is never left
 empty when articles exist.
+
+Roundup demotion
+----------------
+A headline (or summary) that names **N or more distinct watchlist companies**
+is classified as a macro roundup and demoted to score 0 (generic), regardless
+of whether the target ticker appears.  The threshold N is configurable via
+``config/analysts.json`` → ``news.roundup_company_threshold`` (default 3).
+
+This addresses a known false-positive: "Nvidia, AMD, Tesla, Apple Are Big
+Movers" would previously score 2 ("company-specific") for every ticker it
+names, bypassing the generic cap entirely.  Name-dropping in a roundup is
+not company-specificity.
 """
 from __future__ import annotations
 
@@ -37,6 +49,7 @@ import logging
 from datetime import UTC, datetime
 
 from config.analysts import NewsCaps, get_analysts_config
+from orchestrator.stock_picker import get_watchlist_with_names
 
 _logger = logging.getLogger(__name__)
 
@@ -57,6 +70,22 @@ def _caps() -> NewsCaps:
         ``max_summary_chars`` as configured in ``config/analysts.json``.
     """
     return get_analysts_config().news
+
+
+def _watchlist_universe() -> list[dict[str, str]]:
+    """Return the full watchlist as ``{"symbol": ..., "name": ...}`` dicts.
+
+    Delegates to :func:`orchestrator.stock_picker.get_watchlist_with_names`,
+    which already handles both the legacy (flat-string) and the extended
+    (``{symbol, name}``) watchlist formats.  Called lazily at scoring time so
+    that import-time side effects and test isolation are unaffected.
+
+    Returns
+    -------
+    list[dict[str, str]]
+        Each entry has ``"symbol"`` and ``"name"`` keys, in watchlist order.
+    """
+    return get_watchlist_with_names()
 
 
 def _parse_published(raw: str | datetime | None) -> datetime | None:
@@ -106,10 +135,91 @@ def _parse_published(raw: str | datetime | None) -> datetime | None:
     return parsed
 
 
+def _build_company_terms(company_name: str | None, symbol: str) -> list[str]:
+    """Build the list of search terms for one watchlist company.
+
+    Replicates the same term-expansion logic used throughout the specificity
+    scorer so that roundup detection uses identical matching behaviour to the
+    existing headline/summary checks.
+
+    The terms produced for a given company are:
+      * The ticker symbol (lower-cased), e.g. ``"aapl"``.
+      * The full company name (lower-cased), e.g. ``"apple"``.
+      * The first word of a multi-word name (lower-cased), e.g. ``"lockheed"``
+        for ``"Lockheed Martin"`` — omitted for single-word names since it
+        would duplicate the full-name term.
+
+    Parameters
+    ----------
+    company_name:
+        Human-readable name from the watchlist, e.g. ``"Lockheed Martin"``.
+        ``None`` or empty string → only the symbol term is returned.
+    symbol:
+        Ticker symbol, e.g. ``"LMT"``.
+
+    Returns
+    -------
+    list[str]
+        Lower-cased search terms, deduplicated by order of insertion.
+    """
+    terms: list[str] = [symbol.lower()]
+
+    if company_name:
+        full_name = company_name.strip().lower()
+        terms.append(full_name)
+
+        # First word of a multi-word name only — single-word names are
+        # already fully covered by the full-name term above.
+        if " " in full_name:
+            first_word = full_name.split()[0]
+            if first_word not in terms:
+                terms.append(first_word)
+
+    return terms
+
+
+def _count_roundup_companies(
+    text: str,
+    watchlist_universe: list[dict[str, str]],
+) -> int:
+    """Count how many distinct watchlist companies are mentioned in ``text``.
+
+    Uses the same term-expansion logic as :func:`_build_company_terms` so
+    that matching behaviour is consistent across the whole scorer.  A company
+    is counted at most once regardless of how many of its terms appear.
+
+    Parameters
+    ----------
+    text:
+        Lower-cased text to search (typically a headline or headline + summary).
+    watchlist_universe:
+        Full list of ``{"symbol": ..., "name": ...}`` dicts from the watchlist,
+        as returned by :func:`_watchlist_universe`.
+
+    Returns
+    -------
+    int
+        Number of distinct watchlist companies whose terms appear in ``text``.
+    """
+    count = 0
+
+    for entry in watchlist_universe:
+        terms = _build_company_terms(entry.get("name"), entry["symbol"])
+
+        # A company is counted once if ANY of its terms appear in the text.
+        if any(term in text for term in terms):
+            count += 1
+
+    return count
+
+
 def _score_article_specificity(
     article: dict,
     ticker: str,
     company_name: str | None,
+    *,
+    watchlist_universe: list[dict[str, str]] | None = None,
+    roundup_threshold: int = 3,
 ) -> int:
     """Score how company-specific a single article is.
 
@@ -118,7 +228,17 @@ def _score_article_specificity(
 
       2 — headline match  (symbol OR name found in headline)
       1 — summary-only match  (symbol OR name found in summary, not headline)
-      0 — generic  (neither field mentions the company)
+      0 — generic  (neither field mentions the company, OR the article is a
+                    macro roundup naming ≥ ``roundup_threshold`` distinct
+                    watchlist companies)
+
+    **Roundup demotion:** before assigning score 2 or 1, the scorer checks
+    whether the headline (and, as a fallback, the combined headline + summary)
+    names ``roundup_threshold`` or more distinct watchlist companies.  If so,
+    the article is demoted to score 0 regardless of the target ticker's
+    presence.  The rationale: listing a ticker alongside five peers in a
+    "Big Movers" roundup is not company-specificity — the story is about the
+    market, not the company.
 
     Matching is case-insensitive.  For multi-word company names (e.g.
     "Lockheed Martin") the first word alone is also treated as a match
@@ -138,6 +258,15 @@ def _score_article_specificity(
         Human-readable company name from the watchlist, e.g. ``"Apple"``.
         ``None`` or empty string disables name matching (falls back to
         symbol-only matching).
+    watchlist_universe:
+        Full list of ``{"symbol": ..., "name": ...}`` dicts used for roundup
+        detection.  When ``None``, roundup demotion is skipped (safe fallback
+        for callers that do not have the universe available, and for tests that
+        only exercise the basic score path).
+    roundup_threshold:
+        Minimum number of distinct watchlist companies that must be named in
+        the headline (or headline + summary) for the article to be classified
+        as a roundup.  Must be ≥ 2.  Default 3.
 
     Returns
     -------
@@ -152,22 +281,29 @@ def _score_article_specificity(
 
     summary = (article.get("summary") or "").lower()
 
+    # --- Roundup demotion ---------------------------------------------------
+    # If the headline alone names enough distinct watchlist companies, the
+    # article is a macro roundup — demote to generic regardless of whether
+    # the target ticker is among those named.  We also check headline + summary
+    # as a combined body in case a short teaser headline spreads its company
+    # list across the first sentence of the summary.
+    if watchlist_universe and roundup_threshold >= 2:
+        # Headline-only check first — most roundups are self-contained in
+        # the headline ("Nvidia, AMD, Tesla, Apple Are Big Movers").
+        if _count_roundup_companies(headline, watchlist_universe) >= roundup_threshold:
+            return 0
+
+        # Fallback: headline + summary combined — catches the pattern where
+        # the headline is a teaser ("These Stocks Are Today's Movers:") and
+        # the company list spills into the first line of the summary.
+        combined = headline + " " + summary
+        if _count_roundup_companies(combined, watchlist_universe) >= roundup_threshold:
+            return 0
+
+    # --- Standard specificity scoring ---------------------------------------
     # Build the set of search terms to look for in each field.
     # Always include the ticker symbol (e.g. "aapl").
-    terms: list[str] = [ticker.lower()]
-
-    if company_name:
-        # Full company name, lower-cased (e.g. "apple", "lockheed martin").
-        full_name = company_name.strip().lower()
-        terms.append(full_name)
-
-        # First word of the name — catches shortened references such as
-        # "Lockheed" for "Lockheed Martin" or "ExxonMobil" for "ExxonMobil".
-        # We only add the first word if it differs from the full name
-        # (single-word names like "Apple" are already covered above).
-        first_word = full_name.split()[0] if " " in full_name else ""
-        if first_word:
-            terms.append(first_word)
+    terms = _build_company_terms(company_name, ticker)
 
     # Check headline first — a match here earns the highest score.
     if any(term in headline for term in terms):
@@ -224,11 +360,23 @@ def _rerank_articles(
         Re-ordered, capped article list.  Each entry is the same object
         (no copies) from the input list.
     """
+    # Load the roundup-detection universe and threshold once for the whole
+    # batch — avoids repeated config + file reads inside the per-article loop.
+    caps            = _caps()
+    universe        = _watchlist_universe()
+    roundup_thresh  = caps.roundup_company_threshold
+
     # Score every article and attach the score for sorting.
     scored: list[tuple[int, int, object]] = []
 
     for article in articles:
-        score = _score_article_specificity(article, ticker, company_name)
+        score = _score_article_specificity(
+            article,
+            ticker,
+            company_name,
+            watchlist_universe=universe,
+            roundup_threshold=roundup_thresh,
+        )
 
         # Extract published_at as a sortable key.  Missing timestamps sort to
         # the oldest position (epoch zero) so they don't displace real articles.
