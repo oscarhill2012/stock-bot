@@ -258,22 +258,45 @@ rationale-truncation bug would be undetectable at the DB level.
 
 ---
 
-### Bug #26 — GOOGL / CRM `revenue_growth_yoy` still wrong in this window (−44 % / −46 %) despite the refetch  ·  **MEDIUM — needs verification**
+### Bug #26 — GOOGL / CRM `revenue_growth_yoy` wrong (−44 % / −46 %): period-duration mismatch in `_ttm_at`  ·  **MEDIUM — VERIFIED, distinct unfixed bug**
 
 **Symptom.** The fundamental features show GOOGL `revenue_growth_yoy =
-−44.2 %` (constant, all 60 ticks) and CRM `−45.8 %` (first 37 ticks).
-GOOGL's profit_margin of 58.7 % is incompatible with a 44 % revenue
-collapse — these are almost certainly XBRL concept-selection artefacts,
-the same family as the known ASC-606 megacap revenue bug.
+−44.2 %` (constant, all 60 ticks) and CRM `−45.8 %` (first 4 ticks, then
++9.5 % from tick 5 on). GOOGL's profit_margin of 58.7 % is incompatible
+with a 44 % revenue collapse.
 
-**Why it's flagged for verification.** Project memory records that the
-`baseline-2025-09` cache was *refetched and verified* after the revenue
-concept-selection fix (SHA `29481ef`). If GOOGL/CRM **YoY-growth** is
-still wrong here, then either the refetch did not cover this window, or
-the fix corrected the absolute-revenue concept but the **YoY-growth
-comparison still selects the wrong prior-period concept** — a distinct
-bug. This needs a direct check before any conclusion; it is the single
-thread most worth pulling first.
+**Verified root cause (not what the audit first assumed).** This is
+**not** stale cache and **not** the concept-selection bug we already
+fixed. The window was fetched 2026-06-14, ~21 h *after* the
+concept-selection fix (`b1e78d5`) landed, so the correct revenue concept
+is being selected. The remaining defect is a **period-duration
+mismatch** in `_ttm_at` (`pit_composite.py`, ~L306-337): it calls
+edgartools `FactQuery.latest()`, which returns the single most-recently-
+**filed** fact with **no filter on reporting-period length**. So:
+
+- current leg at `as_of = 2025-09-02` → GOOGL's **6-month YTD** revenue
+  (~$175 B, from the Q2-2025 10-Q, the latest filing as of that date);
+- prior leg at `2024-09-02` → a **12-month annual** value (~$307 B, from
+  the FY-2023 10-K, the latest filing before that date);
+- ratio = (175 − 307) / 307 ≈ **−43 %** (observed −44.2 %).
+
+The `_select_revenue_series` period-distinctness guard (`now ≠ prior`)
+does **not** catch this — the two legs *are* distinct, they just span
+different-length periods. CRM's jump to +9.5 % at tick 5 is the same
+mechanism resolving: CRM filed its Q2-FY26 10-Q mid-window, after which
+both legs become 6-month and the comparison becomes apples-to-apples.
+
+**Scope.** Likely affects **any megacap whose latest filing as-of is a
+mid-year YTD**, not just GOOGL/CRM. The prior commits did not touch this:
+`b1e78d5` fixed *which concept* to read (GOOGL/CRM were not in its
+validation set); `29481ef` fixed the `--refetch-domain` plumbing only.
+
+**Fix path.** Constrain `_ttm_at` to **annual (12-month duration)** facts
+for both legs — e.g. edgartools `latest_periods(n=1, annual=True)` or a
+post-filter on `period_end − period_start ≈ 12 months` — so current and
+prior always cover the same reporting window. Then refetch
+`company_ratios` for `baseline-2025-09` (and the two known-stale windows
+`long-baseline-2025` / `iran-conflict-2026-02`).
 
 **Mitigating note.** The wrong value did not cause wrong *trades* —
 fundamental rated both names neutral throughout (Bug #21), so the bad
@@ -350,7 +373,7 @@ This is a judgement call, not a settled conclusion — open to discussion.
 | 23 | MED-HIGH | Technical anti-predictive in trend; conf anti-calibrated; 2 dead/sentinel features |
 | 24 | MEDIUM | News bearish 83 % wrong; confidence inverted; hype-chasing |
 | 25 | MEDIUM | `analyst_evidence.rationale` empty for all 1200 rows |
-| 26 | MEDIUM | GOOGL/CRM revenue_growth_yoy still wrong despite refetch — verify |
+| 26 | MEDIUM | GOOGL/CRM revenue_growth_yoy wrong — VERIFIED: `_ttm_at` period-duration mismatch (6mo vs 12mo legs); fix + refetch |
 | 27 | LOW | Dead inputs (smart_money/social) + empty observability tables |
 
 **Verified clean:** analyst→strategist fidelity (byte-exact),
