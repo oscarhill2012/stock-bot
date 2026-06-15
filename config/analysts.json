@@ -2,7 +2,7 @@
   "slack_percent": 15,
   "news": {
     "max_articles_per_ticker":         25,
-    "max_generic_articles_per_ticker":  5,
+    "max_generic_articles_per_ticker": 10,
     "max_summary_chars":               1500,
     "llm": {
       "timeout_seconds":   60,

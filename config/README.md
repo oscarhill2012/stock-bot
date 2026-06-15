@@ -217,7 +217,7 @@ process restart is required after edits.
 | Setting | Type | Meaning |
 |---|---|---|
 | `news.max_articles_per_ticker` | int [1–200] | Hard ceiling on the total number of articles per ticker fed to the News LLM, applied **after** specificity re-ranking. Default 25. |
-| `news.max_generic_articles_per_ticker` | int [0–200] | Maximum number of generic (score 0) off-topic macro articles kept after the specificity re-rank. Specific articles (ticker symbol or company name found in headline/summary) fill the budget first; generic articles backfill up to this cap AND the remaining total budget — whichever is smaller. Prevents broad market-roundup pieces from crowding out genuine company news. Set to `0` to exclude generic articles entirely. Default 5. |
+| `news.max_generic_articles_per_ticker` | int [0–200] | Maximum number of generic (score 0) off-topic macro articles kept after the specificity re-rank. Specific articles (ticker symbol or company name found in headline/summary) fill the budget first; generic articles backfill up to this cap AND the remaining total budget — whichever is smaller. Prevents broad market-roundup pieces from crowding out genuine company news. Set to `0` to exclude generic articles entirely. Default 10. |
 | `news.max_summary_chars` | int [1–10000] | Maximum characters of each article's summary kept in the prompt. Default 1500. |
 | `news.llm.timeout_seconds` | float (0–600] | Wall-clock timeout (seconds) for one News-analyst LLM call. Range `(0, 600]`. Default 60. |
 | `news.llm.max_output_tokens` | int [256–32768] | Cap on output tokens per call. Range `[256, 32768]`. Default 2000. |
