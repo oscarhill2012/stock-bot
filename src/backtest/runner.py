@@ -57,6 +57,7 @@ from backtest.windows import load_windows
 from broker.fake import FakeBroker
 from data.registry import DOMAINS, set_active_provider
 from orchestrator.persistence import create_all, make_engine
+from orchestrator.stock_picker import normalise_to_symbols
 
 logger = logging.getLogger(__name__)
 
@@ -284,7 +285,13 @@ class Runner:
 
         self._settings  = settings if settings is not None else get_backtest_settings()
         self._windows   = load_windows(Path(windows_path))
-        self._watchlist = json.loads(Path(watchlist_path).read_text())["tickers"]
+
+        # watchlist.json supports two formats: the legacy flat list of symbol
+        # strings and the extended list of ``{"symbol", "name"}`` objects (added
+        # for the news re-ranker).  Normalise via the shared helper so the runner
+        # always works with bare symbols, regardless of which format is on disk.
+        raw_tickers     = json.loads(Path(watchlist_path).read_text())["tickers"]
+        self._watchlist = normalise_to_symbols(raw_tickers)
 
     @staticmethod
     def _runs_root_from_config(window: str) -> Path:

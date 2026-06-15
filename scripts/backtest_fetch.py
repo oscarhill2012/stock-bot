@@ -34,6 +34,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from data.reference_symbols import REFERENCE_SYMBOLS
+from orchestrator.stock_picker import normalise_to_symbols
 
 # ---------------------------------------------------------------------------
 # Provider function factories
@@ -463,7 +464,9 @@ async def _main_async(args: argparse.Namespace) -> None:
 
     settings  = get_backtest_settings()
     watchlist_path = Path(args.watchlist)
-    watchlist = json.loads(watchlist_path.read_text())["tickers"]
+    # Normalise both watchlist.json formats (legacy strings / extended objects)
+    # to bare symbols so the fetch loop always works with ticker strings.
+    watchlist = normalise_to_symbols(json.loads(watchlist_path.read_text())["tickers"])
 
     windows = load_windows(Path("config/backtest_windows.json"))
     if args.window not in windows:

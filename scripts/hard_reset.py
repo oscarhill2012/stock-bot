@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 from lifecycle.hard_reset import hard_reset
+from orchestrator.stock_picker import normalise_to_symbols
 
 
 def _resolve_default_db_url() -> str:
@@ -63,7 +64,9 @@ def main(argv: list[str] | None = None) -> int:
     watchlist: list[str] = []
     wl = Path(args.watchlist)
     if wl.exists():
-        watchlist = json.loads(wl.read_text()).get("tickers", [])
+        # Normalise both watchlist.json formats (legacy strings / extended
+        # objects) to bare symbols.
+        watchlist = normalise_to_symbols(json.loads(wl.read_text()).get("tickers", []))
 
     result = hard_reset(
         db_url=db_url,

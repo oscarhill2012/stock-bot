@@ -42,6 +42,33 @@ def _load_raw() -> list[dict | str]:
         return json.load(f)["tickers"]
 
 
+def normalise_to_symbols(raw: list[dict | str]) -> list[str]:
+    """Reduce a raw ``tickers`` list to a flat list of symbol strings.
+
+    Accepts either the legacy (list-of-strings) or the extended
+    (list-of-objects) representation and returns just the symbols.  Centralising
+    this here ensures every caller — including those that read watchlist.json
+    directly with their own path (e.g. the backtest runner) — normalises the
+    two formats identically, rather than re-deriving the logic and drifting.
+
+    Parameters
+    ----------
+    raw:
+        The raw ``tickers`` list as parsed from watchlist.json — each item is
+        either a plain string (legacy) or a dict with at least a ``symbol`` key
+        (extended format).
+
+    Returns
+    -------
+    list[str]
+        Ticker symbols in their original order.
+    """
+    return [
+        item if isinstance(item, str) else item["symbol"]
+        for item in raw
+    ]
+
+
 def get_watchlist() -> list[str]:
     """Return the watchlist tickers as a flat list of symbol strings.
 
@@ -54,14 +81,7 @@ def get_watchlist() -> list[str]:
     list[str]
         Ticker symbols in the order they appear in watchlist.json.
     """
-    raw = _load_raw()
-
-    # Each entry is either a plain string (legacy) or a dict with a ``symbol``
-    # key (extended format).
-    return [
-        item if isinstance(item, str) else item["symbol"]
-        for item in raw
-    ]
+    return normalise_to_symbols(_load_raw())
 
 
 def get_watchlist_with_names() -> list[dict[str, str]]:

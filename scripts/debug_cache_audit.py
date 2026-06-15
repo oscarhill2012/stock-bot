@@ -29,6 +29,8 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
 
+from orchestrator.stock_picker import normalise_to_symbols
+
 
 # ---------------------------------------------------------------------------
 # Domain registry — covers every domain the fetcher knows about.  The PIT
@@ -1249,7 +1251,9 @@ def main() -> int:
 
     start_iso = windows[args.window]["start"]
     end_iso   = windows[args.window]["end"]
-    tickers   = watchlist["tickers"]
+    # Normalise both watchlist.json formats (legacy strings / extended objects)
+    # to bare symbols.
+    tickers   = normalise_to_symbols(watchlist["tickers"])
 
     # Per-window: ``<backtests_root>/<window>/store.sqlite``.  ``--cache-path``
     # remains as an explicit override hatch for ad-hoc forensic work.

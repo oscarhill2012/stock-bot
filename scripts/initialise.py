@@ -18,6 +18,7 @@ from lifecycle.initialise import (
     NonEmptyTablesError,
     initialise,
 )
+from orchestrator.stock_picker import normalise_to_symbols
 
 
 def _resolve_default_db_url() -> str:
@@ -56,7 +57,9 @@ async def main_async(argv: list[str] | None = None) -> int:
     if not wl_path.exists():
         print(f"Watchlist not found: {wl_path}", file=sys.stderr)
         return 1
-    watchlist = json.loads(wl_path.read_text())["tickers"]
+    # Normalise both watchlist.json formats (legacy strings / extended objects)
+    # to bare symbols.
+    watchlist = normalise_to_symbols(json.loads(wl_path.read_text())["tickers"])
 
     broker = _build_broker(args.broker_mode)
 
