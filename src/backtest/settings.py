@@ -48,7 +48,10 @@ class BacktestSettings(BaseModel):
     times.  Only ``ticks_per_day`` is a real policy knob.
     ``ohlcv_warmup_days`` has a default because the SVB-2023 backfill
     landed it as a tactical add-on; legacy files without the field still
-    load.
+    load.  90 calendar days (≈ 63 trading days) is the minimum needed so
+    50-bar features such as ``vol_ratio_20d`` are valid from the very first
+    replay tick — 50 trading bars ≈ 70 calendar days, so 90 gives a
+    comfortable margin while also covering RSI(14) and ATR(14).
 
     ``backtests_root`` is the single root directory under which every
     window's cache and runs are nested.  Per-window paths are computed by
@@ -62,7 +65,7 @@ class BacktestSettings(BaseModel):
     failed_tick_abort_ratio:       float = Field(ge=0.0, le=1.0)
     fake_broker_starting_cash:     float
     forward_return_horizons_days:  list[int]
-    ohlcv_warmup_days:             int = 30
+    ohlcv_warmup_days:             int = 90
 
 
 _DEFAULT_PATH:                 Path = Path("config/backtest_settings.json")

@@ -138,7 +138,7 @@ async def _fill_per_tick_ratios(ticker: str, start, end) -> list:
     return out
 
 
-def _build_provider_fns(warmup_days: int = 30) -> dict:
+def _build_provider_fns(warmup_days: int = 90) -> dict:
     """Return the domain → public-wrapper fetch-function map for the Fetcher.
 
     Each function has the signature ``async fn(ticker, *, start, end)`` and
@@ -150,10 +150,12 @@ def _build_provider_fns(warmup_days: int = 30) -> dict:
     ----------
     warmup_days:
         Number of extra calendar days of OHLCV history to include *before*
-        the window start.  Rolling indicators such as RSI(14), ATR(14), and
-        pct_change_20d need at least this many bars of prior history to
-        produce valid values on the first tick; without them the technical
-        extractor's no-data heuristic fires for the whole window.
+        the window start.  90 calendar days (≈ 63 trading bars) is the
+        minimum needed so 50-bar features such as ``vol_ratio_20d`` are valid
+        from the very first replay tick (50 bars ≈ 70 calendar days, so 90
+        gives a comfortable margin).  RSI(14) and ATR(14) remain covered.
+        Without the warm-up buffer the technical extractor's no-data
+        heuristic fires for the first ~30 ticks of every window.
 
     Returns
     -------
@@ -173,10 +175,11 @@ def _build_provider_fns(warmup_days: int = 30) -> dict:
         """Pull max-period history through the active price-history provider, then slice.
 
         The lower bound is extended by ``warmup_days`` so that rolling
-        indicators (RSI(14), ATR(14), pct_change_20d) have enough bars of
-        prior history to compute correctly on the first replay tick.  Without
-        this buffer the technical extractor trips its no-data heuristic for
-        the entire window.
+        indicators (RSI(14), ATR(14), pct_change_20d, vol_ratio_20d) have
+        enough bars of prior history to compute correctly on the first replay
+        tick.  ``vol_ratio_20d`` requires at least 50 bars; without the
+        full warm-up buffer the technical extractor trips its no-data
+        heuristic for the first ~30 ticks of every window.
         """
         warmup_start = start - timedelta(days=warmup_days)
         history = await get_price_history(

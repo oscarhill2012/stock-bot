@@ -477,7 +477,7 @@ the project root.
 | `failed_tick_abort_ratio` | float [0–1] | Fraction of ticks allowed to fail before the harness aborts the run. |
 | `fake_broker_starting_cash` | float | Starting cash balance (USD) for the in-memory fake broker used in backtests. |
 | `forward_return_horizons_days` | list[int] | Horizons (in calendar days) over which forward returns are computed for scoring. |
-| `ohlcv_warmup_days` | int | Extra calendar days of OHLCV history fetched before the window start during cache fill, so rolling indicators (RSI(14), ATR(14), pct_change_20d) have enough bars to compute on the first tick. |
+| `ohlcv_warmup_days` | int | Extra calendar days of OHLCV history fetched before the window start during cache fill. 90 calendar days (≈ 63 trading bars) ensures 50-bar features such as `vol_ratio_20d` are valid from the first replay tick (50 bars ≈ 70 calendar days, so 90 gives a comfortable margin), while also covering RSI(14) and ATR(14). |
 
 **Per-window storage layout.** Each window owns its own subtree — there is
 no shared cache across windows.  Example:

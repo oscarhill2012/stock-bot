@@ -10,7 +10,7 @@ bleed_ceiling]``.
 
 - ``lookback_floor`` (default 90 days) is sized to cover the longest
   per-domain lookback the fetcher uses (insider window-span + 30 day
-  analyst lookback, news 7 days, ohlcv warmup ~30 days).
+  analyst lookback, news 7 days, ohlcv warmup ~90 days).
 - ``bleed_ceiling`` (default 365 days) catches any future-bleed rows that
   a buggy provider may have written past ``window_end``.
 
