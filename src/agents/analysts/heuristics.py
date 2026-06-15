@@ -39,6 +39,22 @@ class TechnicalHeuristics(_Frozen):
     confidence_boost_step: float     = Field(ge=0.0, le=1.0)
     confidence_penalty_step: float   = Field(ge=0.0, le=1.0)
     magnitude_cap: float             = Field(gt=0.0, le=1.0)
+    momentum_neutral_band_pct: float = Field(ge=0.0, le=1.0)
+    """Conviction gate for the base lean.
+
+    If ``abs(pct_change_20d)`` is strictly less than this value, the analyst
+    abstains and emits ``lean="neutral"`` regardless of the sign of the
+    20-day return.  This prevents the analyst from expressing a directional
+    view on negligible momentum.
+
+    Units: fractional return — the same units as ``pct_change_20d`` (e.g.
+    ``0.02`` means ±2 %).  The extractor computes ``pct_change_20d`` as
+    ``(close[-1] / close[-21]) - 1.0``.
+
+    Value is provisional — pending a measured sweep against the eval
+    scoreboard.  Adjust via ``config/analyst_heuristics.json`` without any
+    code change.
+    """
 
 
 class SocialHeuristics(_Frozen):

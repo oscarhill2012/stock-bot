@@ -487,6 +487,7 @@ def test_deterministic_verdict_no_longer_fabricates_report() -> None:
         atr_high_volatility_pct=5.0, near_52w_extreme_pct=5.0,
         confidence_base=0.5, confidence_boost_step=0.2,
         confidence_penalty_step=0.3, magnitude_cap=1.0,
+        momentum_neutral_band_pct=0.02,
     )
 
     v = derive_technical_verdict(features, h)
@@ -524,6 +525,7 @@ def test_no_data_branch_uses_canonical_builder() -> None:
         atr_high_volatility_pct=5.0, near_52w_extreme_pct=5.0,
         confidence_base=0.5, confidence_boost_step=0.2,
         confidence_penalty_step=0.3, magnitude_cap=1.0,
+        momentum_neutral_band_pct=0.02,
     )
 
     v = derive_technical_verdict(features, h)

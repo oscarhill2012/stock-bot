@@ -110,6 +110,7 @@ Thresholds used by `derive_technical_verdict()`.
 | `confidence_boost_step` | float [0–1] | Confidence added per corroborating signal. |
 | `confidence_penalty_step` | float [0–1] | Confidence removed per contradicting signal. |
 | `magnitude_cap` | float (0–1] | Maximum magnitude value emitted. |
+| `momentum_neutral_band_pct` | float [0–1] | **Conviction gate.** If `abs(pct_change_20d)` is below this threshold the analyst abstains (`lean="neutral"`), regardless of sign. Units: fractional return — the same units as `pct_change_20d` (e.g. `0.02` = ±2 %). **Provisional value** — pending a measured sweep against the eval scoreboard. Tune here without a code change. |
 
 ### `social` — deterministic Social analyst
 

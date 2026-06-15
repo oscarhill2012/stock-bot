@@ -15,8 +15,16 @@ from agents.analysts.heuristics import TechnicalHeuristics
 from contract.extractors.technical import derive_technical_verdict
 
 
-def _h() -> TechnicalHeuristics:
-    """Canonical fixture heuristics — matches the shapes used by the spec examples."""
+def _h(momentum_neutral_band_pct: float = 0.02) -> TechnicalHeuristics:
+    """Canonical fixture heuristics — matches the shapes used by the spec examples.
+
+    Parameters
+    ----------
+    momentum_neutral_band_pct:
+        Conviction gate threshold in fractional-return units (e.g. 0.02 = ±2 %).
+        Defaults to the provisional config value so tests exercise a realistic band.
+        Pass ``0.0`` to disable the gate and test raw sign-based lean behaviour.
+    """
     return TechnicalHeuristics(
         rsi_overbought=75,
         rsi_oversold=25,
@@ -29,6 +37,7 @@ def _h() -> TechnicalHeuristics:
         confidence_boost_step=0.2,
         confidence_penalty_step=0.3,
         magnitude_cap=1.0,
+        momentum_neutral_band_pct=momentum_neutral_band_pct,
     )
 
 
@@ -361,3 +370,136 @@ def test_closed_vocabulary():
     )
     for tag in v.key_factors:
         assert tag in allowed, f"out-of-vocabulary tag emitted: {tag!r}"
+
+
+# ---------------------------------------------------------------------------
+# Momentum neutral-band conviction gate
+# ---------------------------------------------------------------------------
+#
+# The gate fires when ``abs(pct_change_20d) < h.momentum_neutral_band_pct``,
+# forcing ``lean="neutral"`` regardless of sign.  Units throughout are
+# fractional returns (0.02 = 2 %).
+# ---------------------------------------------------------------------------
+
+def test_neutral_band_inside_band_yields_neutral():
+    """A small positive return inside the band ⇒ lean neutral (abstention).
+
+    pct_change_20d=+0.01 is well inside the ±0.02 band; the analyst must
+    not commit to bullish even though the sign is positive.
+    """
+    v = derive_technical_verdict(
+        _features(pct_change_20d=0.01, pct_change_5d=0.0),
+        _h(momentum_neutral_band_pct=0.02),
+    )
+    assert v.lean == "neutral", (
+        f"Expected neutral for pct_change_20d=0.01 inside ±0.02 band, got {v.lean!r}"
+    )
+
+
+def test_neutral_band_negative_inside_band_yields_neutral():
+    """A small negative return inside the band ⇒ lean neutral (abstention).
+
+    pct_change_20d=-0.015 is inside the ±0.02 band; the analyst must not
+    commit to bearish.
+    """
+    v = derive_technical_verdict(
+        _features(pct_change_20d=-0.015, pct_change_5d=0.0),
+        _h(momentum_neutral_band_pct=0.02),
+    )
+    assert v.lean == "neutral", (
+        f"Expected neutral for pct_change_20d=-0.015 inside ±0.02 band, got {v.lean!r}"
+    )
+
+
+def test_neutral_band_outside_band_bullish():
+    """A return clearly above the band still yields bullish.
+
+    pct_change_20d=+0.05 is outside the ±0.02 band; normal sign-based lean applies.
+    """
+    v = derive_technical_verdict(
+        _features(pct_change_20d=0.05, pct_change_5d=0.02),
+        _h(momentum_neutral_band_pct=0.02),
+    )
+    assert v.lean == "bullish", (
+        f"Expected bullish for pct_change_20d=0.05 outside ±0.02 band, got {v.lean!r}"
+    )
+
+
+def test_neutral_band_outside_band_bearish():
+    """A return clearly below the (negated) band still yields bearish.
+
+    pct_change_20d=-0.05 is outside the ±0.02 band; normal sign-based lean applies.
+    """
+    v = derive_technical_verdict(
+        _features(pct_change_20d=-0.05, pct_change_5d=-0.02),
+        _h(momentum_neutral_band_pct=0.02),
+    )
+    assert v.lean == "bearish", (
+        f"Expected bearish for pct_change_20d=-0.05 outside ±0.02 band, got {v.lean!r}"
+    )
+
+
+def test_neutral_band_exact_boundary_is_directional():
+    """A return exactly at the band boundary is NOT neutralised (strict less-than gate).
+
+    abs(pct_change_20d) == momentum_neutral_band_pct is outside the dead zone —
+    the gate is ``abs(pct20) < band``, so equality passes through to sign logic.
+    """
+    v = derive_technical_verdict(
+        _features(pct_change_20d=0.02, pct_change_5d=0.0),
+        _h(momentum_neutral_band_pct=0.02),
+    )
+    # abs(0.02) < 0.02 is False → sign logic fires → bullish
+    assert v.lean == "bullish", (
+        f"Boundary value 0.02 should be directional (strict less-than), got {v.lean!r}"
+    )
+
+
+def test_neutral_band_zero_band_preserves_existing_sign_behaviour():
+    """With band=0.0 the gate never fires and behaviour is identical to the old sign logic.
+
+    Regression guard: disabling the band (setting it to 0.0) must restore the
+    original "any non-zero momentum is directional" semantics so that existing
+    test values remain coherent.
+    """
+    bullish_v = derive_technical_verdict(
+        _features(pct_change_20d=0.001, pct_change_5d=0.0),
+        _h(momentum_neutral_band_pct=0.0),
+    )
+    bearish_v = derive_technical_verdict(
+        _features(pct_change_20d=-0.001, pct_change_5d=0.0),
+        _h(momentum_neutral_band_pct=0.0),
+    )
+    assert bullish_v.lean == "bullish"
+    assert bearish_v.lean == "bearish"
+
+
+def test_neutral_band_no_data_path_unaffected():
+    """No-data fingerprint still fires regardless of the neutral band.
+
+    When all three core indicators are absent/zero (the no-data condition),
+    ``is_no_data=True`` must be returned — the band gate must not interfere.
+    """
+    feats = _features(rsi_14=0, atr_pct_14=0)
+    feats.pop("pct_change_20d", None)   # absent key triggers the no-data branch
+
+    v = derive_technical_verdict(feats, _h(momentum_neutral_band_pct=0.02))
+
+    assert v.is_no_data is True
+    assert v.lean == "neutral"
+    assert v.magnitude == 0.0
+    assert v.confidence == 0.0
+
+
+def test_neutral_band_exact_zero_pct20_unaffected():
+    """Exact-zero pct_change_20d (e.g. flat 20d) still produces neutral lean.
+
+    abs(0.0) < any positive band → gate fires → lean neutral.
+    This test is mostly a documentation check — the existing behaviour is
+    preserved, and the gate makes it explicit rather than relying on sign20==0.
+    """
+    v = derive_technical_verdict(
+        _features(pct_change_20d=0.0, pct_change_5d=0.0),
+        _h(momentum_neutral_band_pct=0.02),
+    )
+    assert v.lean == "neutral"

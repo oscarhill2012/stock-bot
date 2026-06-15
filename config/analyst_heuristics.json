@@ -10,7 +10,8 @@
     "confidence_base": 0.5,
     "confidence_boost_step": 0.2,
     "confidence_penalty_step": 0.3,
-    "magnitude_cap": 1.0
+    "magnitude_cap": 1.0,
+    "momentum_neutral_band_pct": 0.02
   },
   "social": {
     "score_neutral_band": 0.05,

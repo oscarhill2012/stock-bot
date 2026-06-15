@@ -618,7 +618,21 @@ def derive_technical_verdict(
     sign20 = copysign(1.0, pct20) if pct20 != 0 else 0.0
     sign5  = copysign(1.0, pct5)  if pct5  != 0 else 0.0
 
-    if sign20 > 0:
+    # Conviction gate — momentum neutral band.
+    # ``pct20`` is a fractional return (e.g. 0.05 = +5 %).
+    # ``h.momentum_neutral_band_pct`` is expressed in the same fractional units.
+    # If the absolute 20d return is inside the band, the analyst abstains:
+    # the momentum is too weak to commit to a direction.  This gate fires
+    # BEFORE the sign check so it takes precedence over both bullish and
+    # bearish branches.  Exact-zero and no-data cases fall naturally into the
+    # neutral branch even without the gate (abs(0.0) < any positive band),
+    # but they are preserved here for clarity.
+    #
+    # Provisional band value — pending a sweep against the eval scoreboard;
+    # tune via ``config/analyst_heuristics.json`` without a code change.
+    if abs(pct20) < h.momentum_neutral_band_pct:
+        lean = "neutral"
+    elif sign20 > 0:
         lean = "bullish"
         factors.append("trend_up_20d")
     elif sign20 < 0:
