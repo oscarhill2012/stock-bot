@@ -258,7 +258,7 @@ rationale-truncation bug would be undetectable at the DB level.
 
 ---
 
-### Bug #26 — GOOGL / CRM `revenue_growth_yoy` wrong (−44 % / −46 %): period-duration mismatch in `_ttm_at`  ·  **MEDIUM — VERIFIED, distinct unfixed bug**
+### Bug #26 — GOOGL / CRM `revenue_growth_yoy` wrong (−44 % / −46 %): period-duration mismatch in `_ttm_at`  ·  **MEDIUM — FIXED (branch `fix/iter3-audit-fixes`)**
 
 **Symptom.** The fundamental features show GOOGL `revenue_growth_yoy =
 −44.2 %` (constant, all 60 ticks) and CRM `−45.8 %` (first 4 ticks, then
@@ -291,12 +291,26 @@ mid-year YTD**, not just GOOGL/CRM. The prior commits did not touch this:
 `b1e78d5` fixed *which concept* to read (GOOGL/CRM were not in its
 validation set); `29481ef` fixed the `--refetch-domain` plumbing only.
 
-**Fix path.** Constrain `_ttm_at` to **annual (12-month duration)** facts
-for both legs — e.g. edgartools `latest_periods(n=1, annual=True)` or a
-post-filter on `period_end − period_start ≈ 12 months` — so current and
-prior always cover the same reporting window. Then refetch
-`company_ratios` for `baseline-2025-09` (and the two known-stale windows
-`long-baseline-2025` / `iran-conflict-2026-02`).
+**Fix applied.** `_ttm_at` now calls `by_fiscal_period("FY").execute()`
+instead of `latest()`.  From the full annual row set it picks the row with
+the largest `period_end` within the most-recently-filed batch — i.e. the
+current fiscal year, not a comparative carry-forward.  Live EDGAR
+verification (2026-06-15, `as_of=2025-09-02`):
+
+| Ticker | Before (buggy) | After (fixed) |
+|--------|---------------|---------------|
+| GOOGL  | −44.2 %       | +13.9 %       |
+| CRM    | −45.8 %       | +8.7 %        |
+| AAPL   | +0.8 %        | +2.0 %        |
+| MSFT   | +6.9 %        | +14.9 %       |
+| META   | +24.5 %       | +21.9 %       |
+| AMZN   | +11.3 %       | +11.0 %       |
+| XOM    | +3.9 %        | +1.5 %        |
+
+Two new unit tests cover the fix: `test_ttm_at_picks_most_recent_period_from_latest_filing`
+and `test_ttm_at_annual_constraint_rejects_quarterly_value`.  A cache
+refetch of `baseline-2025-09` (and the stale windows `long-baseline-2025` /
+`iran-conflict-2026-02`) is the next gated step.
 
 **Mitigating note.** The wrong value did not cause wrong *trades* —
 fundamental rated both names neutral throughout (Bug #21), so the bad

@@ -304,10 +304,25 @@ def _load_xbrl_summary(symbol: str, as_of_date: date) -> dict[str, float | None]
         return result  # type: ignore[return-value]
 
     def _ttm_at(concept: str, at: date) -> float | None:
-        """Return the trailing-twelve-month value for ``concept`` as of ``at``.
+        """Return the most-recent ANNUAL (full-year) value for ``concept`` as of ``at``.
 
-        Uses ``EntityFacts.query().by_concept().as_of()`` and the ``.latest()``
-        result.  Returns ``None`` for any error, including missing concept.
+        **Why annual-only?**  The edgartools ``FactQuery.latest()`` primitive
+        returns the single most-recently-*filed* fact with no period-duration
+        filter.  For mega-cap tech companies this is typically a mid-year 10-Q
+        that covers only 3- or 6-month YTD periods.  Without filtering, the
+        current leg and the prior-year leg can cover different period lengths —
+        e.g. a Q2 YTD value (~$175B for GOOGL at as_of=2025-09-02) vs a full
+        FY annual value (~$307B at the prior-year date), producing a spurious
+        ~-44% revenue_growth_yoy.  Constraining both legs to ``fiscal_period='FY'``
+        facts guarantees like-for-like annual comparisons (#26).
+
+        Strategy:
+        1. Query with ``.by_fiscal_period('FY')`` to restrict to full-year rows.
+        2. Call ``.execute()`` to retrieve all matching rows (not just one —
+           an annual 10-K includes comparative prior years in the same filing).
+        3. Among rows with the most-recent ``filing_date``, take the one with
+           the largest ``period_end`` — that is the current fiscal year, not a
+           comparative carry-forward.
 
         Parameters
         ----------
@@ -322,18 +337,43 @@ def _load_xbrl_summary(symbol: str, as_of_date: date) -> dict[str, float | None]
         Returns
         -------
         float | None
-            Parsed finite float, or ``None`` on any failure.
+            Parsed finite float from the most-recent annual filing, or ``None``
+            on any failure or when no annual fact exists.
         """
         try:
-            q    = facts.query().by_concept(concept).as_of(at)
-            # ``q.latest()`` returns a *list* of FinancialFact rows from the
-            # most recent filing — take the first (the canonical TTM/period
-            # value for the concept).
-            rows = q.latest() if hasattr(q, "latest") else None
-            row  = rows[0] if rows else None
+            # Restrict to full-year (annual 10-K) facts only, then retrieve all
+            # qualifying rows so we can pick the correct period from the set.
+            q    = facts.query().by_concept(concept).as_of(at).by_fiscal_period("FY")
+            rows = q.execute() if hasattr(q, "execute") else []
+
+            if not rows:
+                return None
+
+            # Among all annual rows, find the most-recently-filed batch.
+            # A single 10-K filing includes the current year AND 2–3 comparative
+            # prior years as separate rows — all sharing the same ``filing_date``.
+            max_filing = max(
+                (r.filing_date for r in rows if getattr(r, "filing_date", None)),
+                default=None,
+            )
+            if max_filing is None:
+                return None
+
+            # From the latest filing batch, take the row whose period covers the
+            # most-recent fiscal year (i.e. the largest ``period_end``).
+            from_latest_filing = [
+                r for r in rows
+                if getattr(r, "filing_date", None) == max_filing
+            ]
+            from_latest_filing.sort(
+                key=lambda r: getattr(r, "period_end", None) or date.min,
+                reverse=True,
+            )
+            row = from_latest_filing[0] if from_latest_filing else None
             return _safe_float(getattr(row, "value", None)) if row else None
+
         except Exception:  # noqa: BLE001 — edgartools internals raise unpredictably; log and degrade
-            logger.debug("XBRL TTM fetch failed for concept=%r symbol=%r at=%r", concept, symbol, at)
+            logger.debug("XBRL annual fetch failed for concept=%r symbol=%r at=%r", concept, symbol, at)
             return None
 
     def _ttm(concept: str) -> float | None:
