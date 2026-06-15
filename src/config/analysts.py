@@ -74,11 +74,29 @@ class LlmCaps(BaseModel):
 
 
 class NewsCaps(BaseModel):
-    """Truncation caps for the News analyst's LLM context."""
+    """Truncation caps for the News analyst's LLM context.
 
-    max_articles_per_ticker: int     = Field(ge=1, le=200)
-    max_summary_chars:       int     = Field(ge=1, le=10_000)
-    llm:                     LlmCaps                           # NEW — per-call runtime caps
+    Attributes
+    ----------
+    max_articles_per_ticker:
+        Hard ceiling on the total number of articles included per ticker in
+        the LLM prompt (after specificity re-ranking).
+    max_generic_articles_per_ticker:
+        Maximum number of generic (score 0) off-topic macro articles kept
+        after the specificity re-rank.  Specific articles (score 1 or 2)
+        fill the budget first; generic articles backfill up to this cap AND
+        the remaining total budget — whichever is smaller.  Ensures broad
+        market roundup pieces cannot crowd out genuine company news.
+    max_summary_chars:
+        Maximum characters of each article's summary kept in the prompt.
+    llm:
+        Per-call LLM runtime caps (timeout, token limit, retry counts).
+    """
+
+    max_articles_per_ticker:         int     = Field(ge=1,  le=200)
+    max_generic_articles_per_ticker: int     = Field(ge=0,  le=200)
+    max_summary_chars:               int     = Field(ge=1,  le=10_000)
+    llm:                             LlmCaps                           # per-call runtime caps
 
 
 class FundamentalCaps(BaseModel):

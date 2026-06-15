@@ -74,13 +74,31 @@ unregistered names refuse to import the `data` package.
 
 The static set of tickers the bot considers each tick.
 
+Two formats are supported:
+
+**Legacy (flat strings):**
+```json
+{"tickers": ["AAPL", "MSFT"]}
+```
+
+**Extended (objects with symbol + name):**
+```json
+{"tickers": [{"symbol": "AAPL", "name": "Apple"}, ...]}
+```
+
 | Setting | Type | Meaning |
 |---|---|---|
-| `tickers` | list[string] | Watchlist tickers (e.g. `["AAPL", "MSFT", ...]`). Order is not significant. |
+| `tickers` | list | Watchlist entries — either plain ticker strings (legacy) or objects with `symbol` and `name` keys (extended). |
+| `tickers[].symbol` | string | Ticker symbol (e.g. `"AAPL"`). |
+| `tickers[].name` | string | Human-readable company name (e.g. `"Apple"`). Used by the News analyst's specificity re-ranker to identify company-specific articles via headline/summary matching. Should be the shortest unambiguous reference a journalist would use (e.g. `"Apple"` not `"Apple Inc."`, `"JPMorgan"` not `"JPMorgan Chase & Co."`). |
 
-Loaded once via `orchestrator.stock_picker.get_watchlist()`. Strategist + risk
-gate both expect every ticker in this list to appear in their inputs (see
-`make_exhaustive_validator`).
+Loaded via `orchestrator.stock_picker.get_watchlist()` (returns `list[str]`
+of symbols — existing callers are unaffected by the format upgrade) and
+`orchestrator.stock_picker.get_watchlist_with_names()` (returns
+`list[{"symbol": ..., "name": ...}]` — used by the News fetch agent).
+
+Strategist + risk gate both expect every ticker in this list to appear in
+their inputs (see `make_exhaustive_validator`).
 
 ---
 
@@ -198,8 +216,9 @@ process restart is required after edits.
 
 | Setting | Type | Meaning |
 |---|---|---|
-| `news.max_articles_per_ticker` | int [1–200] | Maximum article count per ticker fed to the News LLM. Wider than the old hard-coded 10 — default 20. |
-| `news.max_summary_chars` | int [1–10000] | Maximum characters of each article's summary kept in the prompt. Default 500 (widened from 300). |
+| `news.max_articles_per_ticker` | int [1–200] | Hard ceiling on the total number of articles per ticker fed to the News LLM, applied **after** specificity re-ranking. Default 25. |
+| `news.max_generic_articles_per_ticker` | int [0–200] | Maximum number of generic (score 0) off-topic macro articles kept after the specificity re-rank. Specific articles (ticker symbol or company name found in headline/summary) fill the budget first; generic articles backfill up to this cap AND the remaining total budget — whichever is smaller. Prevents broad market-roundup pieces from crowding out genuine company news. Set to `0` to exclude generic articles entirely. Default 5. |
+| `news.max_summary_chars` | int [1–10000] | Maximum characters of each article's summary kept in the prompt. Default 1500. |
 | `news.llm.timeout_seconds` | float (0–600] | Wall-clock timeout (seconds) for one News-analyst LLM call. Range `(0, 600]`. Default 60. |
 | `news.llm.max_output_tokens` | int [256–32768] | Cap on output tokens per call. Range `[256, 32768]`. Default 2000. |
 | `news.llm.timeout_retries` | int [1–10] | Total attempts on timeout (1 initial try + retries). Range `[1, 10]`. Default 3. |

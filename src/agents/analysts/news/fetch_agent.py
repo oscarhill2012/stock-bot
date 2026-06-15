@@ -32,6 +32,7 @@ from agents.analysts.news.fetch import _build_ticker_news_context
 from data import get_stock_news
 from data.timeguard import resolve_as_of
 from observability.trace import trace_maybe
+from orchestrator.stock_picker import get_watchlist_with_names
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -74,6 +75,14 @@ class NewsFetchAgent(BaseAgent):
             state.get("as_of"), allow_wallclock=True, site="news/fetch_agent",
         )
 
+        # Build a symbol → company-name lookup from the watchlist so the
+        # specificity re-ranker can match headlines like "Apple …" for AAPL.
+        # Falls back gracefully — tickers absent from the watchlist get None.
+        watchlist_names: dict[str, str] = {
+            entry["symbol"]: entry["name"]
+            for entry in get_watchlist_with_names()
+        }
+
         news_data: dict[str, dict] = {}
         per_ticker_blocks: dict[str, str] = {}
 
@@ -93,7 +102,14 @@ class NewsFetchAgent(BaseAgent):
 
             # Build the per-ticker formatted block.  ADK's instruction template
             # will fill this into ``{news_context}`` for the ticker's LlmAgent.
-            per_ticker_blocks[ticker] = _build_ticker_news_context(ticker, serialised, as_of=as_of)
+            # Pass the company name so the specificity re-ranker can match on
+            # "Apple" as well as "AAPL" — symbol-only matching misses most
+            # headlines since financial journalism rarely uses ticker symbols
+            # in prose.
+            company_name = watchlist_names.get(ticker)
+            per_ticker_blocks[ticker] = _build_ticker_news_context(
+                ticker, serialised, as_of=as_of, company_name=company_name,
+            )
 
         # Build the state_delta payload.  All keys are temp:-prefixed
         # (Rule 2) so ADK strips them at the invocation boundary.
