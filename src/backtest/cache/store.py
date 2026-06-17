@@ -43,12 +43,13 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import create_engine, delete, func, select
+from sqlalchemy import create_engine, delete, func, inspect, select, text
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from backtest.cache.schema import (
     SCHEMA_VERSION,
+    CacheBase,
     CompanyRatiosRow,
     FilingRow,
     InsiderTradeRow,
@@ -161,18 +162,134 @@ class CachedDataStore:
     """
 
     def __init__(self, path: Path) -> None:
-        """Open (or create) the SQLite file at ``path``; initialise schema."""
+        """Open (or create) the SQLite file at ``path``; initialise schema.
+
+        Initialisation sequence:
+
+        1. ``create_all`` — creates any wholly-missing tables.
+        2. ``_migrate_additive_columns`` — adds any nullable, non-PK columns
+           that exist in the ORM model but are absent from the on-disk table.
+           This self-heals cache files that pre-date a DDL-additive change
+           (e.g. a new nullable column added without a SCHEMA_VERSION bump).
+        3. ``_ensure_meta`` — enforces the schema-version guard.  Breaking
+           changes (column drops, renames, new NOT-NULL / PK columns) must
+           still go through a SCHEMA_VERSION bump.
+        """
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
 
         self._engine = create_engine(f"sqlite:///{path}", future=True)
+
+        # Step 1: create wholly-missing tables.
         create_all(self._engine)
+
+        # Step 2: add any nullable non-PK columns missing from existing tables.
+        self._migrate_additive_columns()
+
+        # Step 3: enforce schema-version agreement.
         self._ensure_meta()
 
         # Per-domain count of rows dropped at write-time because their
         # primary timestamp is MISSING_TIMESTAMP.  Drained by the fetcher
         # to surface shrinkage in fill_audit.json (Phase 7 B3).
         self._writes_skipped_missing_ts: dict[str, int] = {}
+
+    # ── additive schema migration ──────────────────────────────────────────────
+
+    def _migrate_additive_columns(self) -> None:
+        """Add nullable non-PK columns present in the ORM model but absent from the file.
+
+        SQLite allows ``ALTER TABLE … ADD COLUMN`` for columns that are either
+        nullable or carry a default value.  This method uses that capability to
+        self-heal cache files that pre-date a DDL-additive change without
+        requiring a full ``SCHEMA_VERSION`` bump + refetch cycle.
+
+        Only safe additions are performed automatically:
+
+        - **Nullable, non-PK columns** — SQLite fills existing rows with NULL,
+          which matches the column's declared nullability.  Safe to add at
+          runtime.
+        - **Non-nullable or PK columns** — SQLite cannot add a NOT-NULL column
+          without a default value to a non-empty table, and cannot add PK
+          columns via ALTER.  These represent *breaking* changes.  A WARNING is
+          logged naming the table + column, and the column is skipped.  The
+          caller must bump ``SCHEMA_VERSION`` in ``schema.py`` and have users
+          rebuild their cache.
+
+        Tables that do not yet exist in the file are skipped (``create_all``
+        already handles them in the step before this method is called).
+
+        Column type strings are rendered via SQLAlchemy's SQLite dialect so
+        they match what ``CREATE TABLE`` would have produced.
+
+        Parameters
+        ----------
+        (none — operates on ``self._engine`` and ``CacheBase.metadata``)
+
+        Returns
+        -------
+        None
+        """
+        dialect = self._engine.dialect
+
+        # SQLAlchemy inspector lets us read the live column list per table.
+        inspector = inspect(self._engine)
+
+        # Collect the set of tables that currently exist on-disk.
+        existing_table_names = set(inspector.get_table_names())
+
+        for table_name, table_obj in CacheBase.metadata.tables.items():
+
+            # Tables absent from the file are handled by create_all; skip them.
+            if table_name not in existing_table_names:
+                continue
+
+            # Build a set of column names that are already on-disk.
+            on_disk_columns = {
+                col["name"]
+                for col in inspector.get_columns(table_name)
+            }
+
+            for col in table_obj.columns:
+                # Column already present — nothing to do.
+                if col.name in on_disk_columns:
+                    continue
+
+                # Determine whether this column is safe to auto-add.
+                is_pk       = col.primary_key
+                is_nullable = col.nullable  # True → NULL is allowed
+
+                if is_pk or not is_nullable:
+                    # Breaking change: cannot safely add via ALTER.
+                    logger.warning(
+                        "_migrate_additive_columns: table=%r column=%r is "
+                        "non-nullable or a primary-key column — cannot be "
+                        "added automatically.  Bump SCHEMA_VERSION in "
+                        "schema.py and rebuild the cache to pick up this "
+                        "column.",
+                        table_name,
+                        col.name,
+                    )
+                    continue
+
+                # Render the SQLite-compatible type string (e.g. "TEXT", "FLOAT").
+                col_type_str = col.type.compile(dialect=dialect)
+
+                logger.info(
+                    "_migrate_additive_columns: adding column %r.%r (%s)",
+                    table_name,
+                    col.name,
+                    col_type_str,
+                )
+
+                # ALTER TABLE is DDL — use engine.begin() for auto-commit.
+                # Column names come from the ORM metadata (not user input) so
+                # f-string interpolation is safe here.
+                with self._engine.begin() as conn:
+                    conn.execute(text(
+                        f"ALTER TABLE {table_name}"
+                        f" ADD COLUMN {col.name} {col_type_str}"
+                    ))
 
     # ── schema version ────────────────────────────────────────────────────────
 
