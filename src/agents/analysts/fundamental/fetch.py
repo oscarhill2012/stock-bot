@@ -409,9 +409,11 @@ def _build_ticker_context(
         ``CompanyRatios.model_dump()`` dict for the ticker, or ``None`` / an
         empty dict if unavailable.  Only non-null scalar fields are rendered.
     baseline_filings_payload:
-        List of ``Filing.model_dump()`` dicts from the prior-year provider call
-        (``as_of = as_of - 400 days``).  Used for MD&A de-boilerplate pairing.
-        ``None`` or empty list disables pairing for all filings in this call.
+        List of ``Filing.model_dump()`` dicts from the prior-year periodic
+        *pool* provider call (range mode, reaching ~800 days back).  The pairing
+        layer picks the same-period-prior-year filing out of this pool by
+        ``period_of_report``.  Used for MD&A de-boilerplate pairing.  ``None``
+        or an empty list disables pairing for all filings in this call.
 
     Returns
     -------

@@ -60,9 +60,13 @@ from data.timeguard import resolve_as_of
 from observability.trace import trace_maybe
 
 # How far back to reach for prior-year periodic baselines (Phase 13).
-# Mirrors _PERIODIC_BASELINE_REACH_DAYS in edgar.py — 365 days + 35-day
-# guard band for late-filer extensions (Form 12b-25).
-_BASELINE_REACH_DAYS = 400
+# Mirrors _PERIODIC_BASELINE_REACH_DAYS in edgar.py.  This is a *pool* reach,
+# not a single anchor: the worst case is a current 10-K filed ~1 year after its
+# period end, whose prior-year 10-K sits ~2 years (730 days) before the tick.
+# 800 = 730 + a ~70-day guard band for late-filer extensions (Form 12b-25) and
+# irregular fiscal calendars.  The pairing layer then matches the correct
+# same-period-prior-year filing out of the pool on `period_of_report`.
+_BASELINE_REACH_DAYS = 800
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -153,20 +157,29 @@ class FundamentalFetchAgent(BaseAgent):
                 filings_payload = []
 
             # --- Prior-year baseline filings (Phase 13 — de-boilerplate) ---
-            # Issue a second provider call 400 days in the past to retrieve
-            # the prior-year periodic filings (10-K, 10-Q).  The same provider
-            # dispatch table routes this call to the edgar provider (live) or
-            # the cache provider (backtest), so parity is maintained without
-            # any special-casing here.
+            # Issue a second provider call in *pool* mode (from_date given) to
+            # retrieve the raw periodic-filing pool reaching ~800 days back.
+            # The same provider dispatch table routes this call to the edgar
+            # provider (live, backfill path) or the cache provider (backtest,
+            # pool branch), so parity is maintained without any special-casing
+            # here — both return the same unbounded-below window of filings.
+            #
+            # Pool mode (rather than a single -400d anchor) is essential: a
+            # current 10-K filed long after its period end can leave the
+            # prior-year 10-K nearly two years before the tick.  A single
+            # anchor narrows to ONE filing and silently misses the correct
+            # same-period-prior-year baseline; the pool hands every candidate
+            # to the pairing layer, which matches on `period_of_report`.
             #
             # We filter to periodic forms only (no 8-Ks) because 8-Ks don't
             # carry MD&A and are never used as de-boilerplate baselines.
             baseline_payload: list[dict] = []
             try:
-                baseline_as_of = as_of - timedelta(days=_BASELINE_REACH_DAYS)
+                baseline_from = as_of - timedelta(days=_BASELINE_REACH_DAYS)
                 baseline_filings = await get_company_filings(
                     ticker,
-                    as_of=baseline_as_of,
+                    as_of=as_of,
+                    from_date=baseline_from,
                     include_excerpts=include_filing_excerpts,
                 )
                 baseline_payload = [
@@ -176,8 +189,9 @@ class FundamentalFetchAgent(BaseAgent):
                     in _PERIODIC_FORMS
                 ]
                 _LOGGER.debug(
-                    "baseline filings for %s: %d periodic filings at as_of=%s",
-                    ticker, len(baseline_payload), baseline_as_of.date(),
+                    "baseline pool for %s: %d periodic filings in [%s, %s]",
+                    ticker, len(baseline_payload),
+                    baseline_from.date(), as_of.date(),
                 )
             except Exception as exc:  # noqa: BLE001 — degrade gracefully
                 # Baseline failure must never abort the main analysis — log and

@@ -68,9 +68,18 @@ from ...models import Filing
 _BODY_EXCERPT_CHARS = 1500
 
 # How far back (in calendar days) to reach for prior-year periodic-form
-# baselines in backfill mode.  365 days + 35-day guard band covers companies
-# with late-filing extensions (Form 12b-25).
-_PERIODIC_BASELINE_REACH_DAYS = 400
+# baselines in backfill mode — the de-boilerplate diff pairs each current
+# filing with the same-fiscal-period filing one year earlier.
+#
+# 800 days (not 365) because the *current* periodic filing can itself already
+# be up to ~1 year old at the window start: a 10-K is annual, so at an
+# arbitrary tick the latest 10-K may have been filed ~360 days ago, which
+# puts its prior-year counterpart's FILING date ~2 years (≈730 days) back.
+# 800 = ~730 worst case + a guard band for non-calendar fiscal years and
+# late-filing extensions (Form 12b-25).  The pairing itself still matches on
+# fiscal *period* (~365-day delta) — this constant only governs how far back
+# the cache is populated so the right prior-year filing is present to pair.
+_PERIODIC_BASELINE_REACH_DAYS = 800
 
 
 # ---------------------------------------------------------------------------
@@ -565,18 +574,22 @@ async def fetch(
             window_lower,
         ))
 
-        # Prior-year periodic anchors — supply N-1 filing prose for de-boilerplate
-        # pairing at context-assembly.  400 days = 365 + 35-day guard band for
-        # late filers (Form 12b-25 extension).  These are stored in the cache
-        # alongside the current-period anchors; ``select_current_filings`` will
-        # not surface them as "current" (they are too old), so they only reach
-        # the analyst when the assembly layer explicitly requests baseline filings
-        # via a second provider call with ``as_of = as_of - 400 days``.
-        baseline_anchor = window_lower - timedelta(days=_PERIODIC_BASELINE_REACH_DAYS)
-        for form in _PERIODIC_FORMS:
-            _add(await asyncio.to_thread(
-                _iter_latest_filing, symbol, form, baseline_anchor,
-            ))
+        # Prior-year periodic POOL — supply the N-1 filing prose the
+        # de-boilerplate pairing needs at context-assembly.  A single "latest
+        # as of window_start - N" anchor is NOT enough: the pairing must locate
+        # the filing whose fiscal *period* is one year before the current
+        # filing's period, and which specific filing that is depends on the
+        # company's fiscal calendar and on how recently it last filed.  So we
+        # cache the FULL range of periodic filings from the baseline floor up
+        # to the window start, giving the read-side pairing a complete pool to
+        # choose from.  ``select_current_filings`` will not surface these as
+        # "current" (they are superseded); they only reach the analyst when the
+        # assembly layer explicitly requests baseline filings via a range-mode
+        # provider call (``from_date`` given) — see filings_cache.fetch.
+        baseline_lower = window_lower - timedelta(days=_PERIODIC_BASELINE_REACH_DAYS)
+        _add(await asyncio.to_thread(
+            _iter_filings_range, symbol, _PERIODIC_FORMS, baseline_lower, window_lower,
+        ))
 
     # Convert raw edgartools objects into Filing models.  The registry's
     # dispatch already acquired one EDGAR token for the listing queries;

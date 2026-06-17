@@ -315,11 +315,14 @@ async def get_company_filings(
     as_of:
         Historical clock timestamp.  Defaults to ``datetime.now(UTC)``.
     from_date:
-        When given, the live EDGAR provider switches to backfill mode and
-        returns the raw cacheable superset for ``[from_date, as_of]`` —
-        every filing in the range plus the anchor set as of ``from_date``.
-        Used by the backtest cache-fill; live analyst callers leave it
-        unset.
+        When given, the provider switches to *pool* mode and returns the raw
+        filings in ``[from_date, as_of]`` with NO selection narrowing — the
+        live EDGAR provider via its backfill path, the backtest cache provider
+        via its pool branch.  Two callers use this: the backtest cache-fill,
+        and the Phase 13 de-boilerplate baseline retrieval (which needs the
+        prior-year periodic pool so the pairing layer can pick the correct
+        same-period-prior-year filing).  Default per-tick analyst reads leave
+        it unset and receive the narrowed selection.
 
     Returns
     -------
