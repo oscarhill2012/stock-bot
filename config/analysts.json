@@ -13,11 +13,12 @@
     }
   },
   "fundamental": {
-    "max_filing_mda_chars":       1500,
+    "max_filing_mda_chars":       12000,
     "max_filing_risk_chars":      1500,
     "max_filing_8k_body_chars":   1500,
     "max_insider_footnotes":      5,
     "max_insider_footnote_chars": 400,
+    "mda_stub_char_threshold":    400,
     "llm": {
       "timeout_seconds":   60,
       "max_output_tokens": 2000,

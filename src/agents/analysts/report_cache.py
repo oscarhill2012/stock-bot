@@ -27,10 +27,12 @@ from hashlib import blake2b
 from pathlib import Path
 from typing import Any
 
+from agents.analysts.fundamental.deboilerplate import MDA_DEBOILERPLATE_ALGO_VERSION
 from agents.analysts.fundamental.fetch import _bundle_from_flat_lists
 from agents.analysts.fundamental.prompts import build_fundamental_instruction
 from agents.analysts.heuristics import load_heuristics
 from agents.analysts.news.prompts import build_news_instruction
+from config.analysts import get_analysts_config
 from data.models import (
     CompanyRatios,
     Filing,
@@ -256,11 +258,23 @@ def fundamental_hash_inputs(
         for d in (insider.derivatives if insider else [])
     )
 
+    # Phase 13 additions: include the de-boilerplate algorithm version and
+    # the MD&A char cap in the hash so that:
+    # (a) bumping MDA_DEBOILERPLATE_ALGO_VERSION invalidates all cached entries
+    #     (the rendered MD&A text would change after an algorithm update).
+    # (b) changing max_filing_mda_chars also invalidates the cache
+    #     (a wider cap may expose paragraphs that were previously cut off).
+    cfg = get_analysts_config()
+    deboilerplate_version = MDA_DEBOILERPLATE_ALGO_VERSION
+    max_mda_chars = cfg.fundamental.max_filing_mda_chars
+
     payload = {
-        "ratios":               ratios_payload,
-        "filings":              filings_accessions,
-        "insider_trades":       insider_trades,
-        "insider_derivatives":  insider_derivatives,
+        "ratios":                  ratios_payload,
+        "filings":                 filings_accessions,
+        "insider_trades":          insider_trades,
+        "insider_derivatives":     insider_derivatives,
+        "deboilerplate_version":   deboilerplate_version,
+        "max_filing_mda_chars":    max_mda_chars,
     }
     return _digest(payload)
 

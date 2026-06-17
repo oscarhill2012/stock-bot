@@ -54,6 +54,13 @@ The data block for {ticker} contains:
 
   -- COMPANY FILINGS (PROSE) --
     MD&A and risk-factor excerpts from recent 10-K / 10-Q filings.
+    MD&A text has been de-boilerplated against the prior-year filing where
+    a fiscal-period pair was available: unchanged paragraphs have been removed
+    so you see only what actually changed year-over-year.  A header line at
+    the start of each MD&A block describes how many paragraphs were dropped
+    and which prior period was used as the baseline.  When no prior-year pair
+    was available (e.g. pre-Phase 13 cache, new listing, or stub text), the
+    full current MD&A is shown with a "[no prior-year pair ...]" marker.
     8-K filings render a body excerpt (catalyst, earnings, or guidance event)
     in place of MD&A/risk sections, which 8-Ks do not carry.
 
@@ -163,19 +170,26 @@ Below is HOW to read each signal source — not a lookup table of
 your verdict in or out the same way an analyst on a desk would.
 
 1. MD&A tone — read the verbs, not the headlines.
-   Compare how management frames the same topic across the dump.  Watch
-   for:
+   The MD&A text shown has already had boilerplate paragraphs stripped
+   (those matching the prior-year filing verbatim).  Every paragraph you
+   see is either NEW or CHANGED — treat it with correspondingly higher
+   signal weight.  Watch for:
      - Commitment strength.  "We are confident we will" >> "We expect to"
        >> "We may be able to" >> "We are working toward".  A downgrade
-       of verb commitment between filings is itself a directional move
-       even if the headline guidance number is unchanged.
+       of verb commitment is itself a directional move even if the headline
+       guidance number is unchanged.
      - Forward vs historical framing.  "We saw" describes the past;
        "we are seeing" commits the company to a continuing trend.
        Tense shifts matter.
      - Hedge density.  Count the qualifiers ("subject to", "could",
-       "potentially", "may", "in part") in passages that previously
-       carried fewer.  Hedge inflation is bearish even when the noun
-       is positive.
+       "potentially", "may", "in part") in passages.  Hedge inflation is
+       bearish even when the noun is positive.
+     - De-boilerplate header: the ``[de-boilerplate vs ...]`` line at the
+       start of each MD&A block tells you how many paragraphs were removed.
+       A low coverage_pct (e.g. "3 of 40 paragraphs retained") means most
+       language is unchanged — the retained paragraphs are the critical
+       deltas.  A "[no prior-year pair ...]" marker means the full text is
+       shown and you must read it without a diff baseline.
 
 2. Insider activity — the asymmetry is the signal.
    Insiders sell for many innocent reasons (diversification, tax

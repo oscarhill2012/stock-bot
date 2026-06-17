@@ -60,9 +60,17 @@ from data.secrets import require_key
 
 from ...models import Filing
 
-_EXCERPT_CHARS = 2000
 # Maximum chars captured for the 8-K body excerpt (Phase 7 — audit 2.7).
+# NOTE: the old _EXCERPT_CHARS = 2000 cap on MD&A/risk-factor sections was
+# removed in Phase 13.  MD&A is now fetched unbounded and de-boilerplated
+# at assembly time.  The assembly layer applies max_filing_mda_chars after
+# paragraph diffing, so there is no point truncating here.
 _BODY_EXCERPT_CHARS = 1500
+
+# How far back (in calendar days) to reach for prior-year periodic-form
+# baselines in backfill mode.  365 days + 35-day guard band covers companies
+# with late-filing extensions (Form 12b-25).
+_PERIODIC_BASELINE_REACH_DAYS = 400
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +151,25 @@ def _coerce_date(v: Any) -> date | None:
 
 
 def _section_text(obj: Any, key: str) -> str | None:
+    """Extract the full text for a named section from an edgartools filing object.
+
+    Returns the stripped section text with NO truncation — the assembly layer
+    is responsible for de-boilerplating and capping the rendered output.
+    (Phase 13 removed the old _EXCERPT_CHARS = 2000 truncation that was
+    discarding most of the MD&A before the LLM ever saw it.)
+
+    Parameters
+    ----------
+    obj:
+        Parsed edgartools filing object (result of ``filing.obj()``).
+    key:
+        Section key as expected by edgartools, e.g. ``"part_ii_item_7"``.
+
+    Returns
+    -------
+    str | None
+        Stripped section text, or ``None`` if the section is absent or empty.
+    """
     sections = getattr(obj, "sections", None)
     if sections is None:
         return None
@@ -155,8 +182,7 @@ def _section_text(obj: Any, key: str) -> str | None:
     text = section.text() if hasattr(section, "text") else str(section)
     if not text:
         return None
-    text = text.strip()
-    return text[:_EXCERPT_CHARS] if text else None
+    return text.strip() or None
 
 
 def _build_filing(filing: Any, symbol: str, include_excerpts: bool) -> Filing:
@@ -225,6 +251,13 @@ def _build_filing(filing: Any, symbol: str, include_excerpts: bool) -> Filing:
             if part.strip()
         ]
 
+    # Extract the conformed period of report from SGML header metadata.
+    # edgartools exposes this as a string attribute (e.g. "20240930") at no
+    # extra network cost — it is already in the filing index entry.
+    # Returns None when the attribute is absent or empty (e.g. some older 8-Ks).
+    raw_period = getattr(filing, "period_of_report", None)
+    period_of_report: str | None = str(raw_period).strip() if raw_period else None
+
     return Filing(
         ticker=symbol,
         form_type=form_type,
@@ -236,6 +269,7 @@ def _build_filing(filing: Any, symbol: str, include_excerpts: bool) -> Filing:
         mda_excerpt=mda,
         body_excerpt=body_excerpt,
         items_8k=items_8k,
+        period_of_report=period_of_report,
     )
 
 
@@ -530,6 +564,19 @@ async def fetch(
             window_lower - timedelta(days=staleness_days),
             window_lower,
         ))
+
+        # Prior-year periodic anchors — supply N-1 filing prose for de-boilerplate
+        # pairing at context-assembly.  400 days = 365 + 35-day guard band for
+        # late filers (Form 12b-25 extension).  These are stored in the cache
+        # alongside the current-period anchors; ``select_current_filings`` will
+        # not surface them as "current" (they are too old), so they only reach
+        # the analyst when the assembly layer explicitly requests baseline filings
+        # via a second provider call with ``as_of = as_of - 400 days``.
+        baseline_anchor = window_lower - timedelta(days=_PERIODIC_BASELINE_REACH_DAYS)
+        for form in _PERIODIC_FORMS:
+            _add(await asyncio.to_thread(
+                _iter_latest_filing, symbol, form, baseline_anchor,
+            ))
 
     # Convert raw edgartools objects into Filing models.  The registry's
     # dispatch already acquired one EDGAR token for the listing queries;

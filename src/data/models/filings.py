@@ -20,6 +20,14 @@ class Filing(BaseModel):
     - ``items_8k`` — structured list of reported Item numbers (e.g.
       ``["2.02", "9.01"]``) extracted from the 8-K header, allowing the
       extractor to filter for material events without parsing prose.
+
+    Phase 13 additions (remove-filing-boilerplate):
+    - ``period_of_report`` — the conformed period of report from the SEC SGML
+      header (YYYYMMDD string, e.g. ``"20240930"``).  Used to pair current
+      periodic filings with their prior-year counterparts so the assembly
+      layer can de-boilerplate MD&A text by diffing out unchanged paragraphs.
+      Available from edgartools ``Filing.period_of_report`` at no extra
+      network cost (extracted from SGML header metadata).
     """
 
     ticker: str
@@ -31,11 +39,18 @@ class Filing(BaseModel):
 
     risk_factors_excerpt: str | None = Field(
         default=None,
-        description="First ~2k chars of Item 1A (Risk Factors) when available.",
+        description=(
+            "Full text of Item 1A (Risk Factors) when available. "
+            "No truncation at fetch time — the assembly layer caps the rendered output."
+        ),
     )
     mda_excerpt: str | None = Field(
         default=None,
-        description="First ~2k chars of Item 7 (MD&A) when available.",
+        description=(
+            "Full text of Item 7 (MD&A) when available. "
+            "No truncation at fetch time — the assembly layer applies de-boilerplate "
+            "diffing then caps the rendered output via max_filing_mda_chars."
+        ),
     )
 
     # --- Phase 7 extensions (audit 2.7) — 8-K body capture ---
@@ -44,4 +59,16 @@ class Filing(BaseModel):
     items_8k: list[str] = Field(
         default_factory=list,
         description='Reported Item numbers, e.g. ["2.02", "9.01"].',
+    )
+
+    # --- Phase 13 extensions — period-of-report for fiscal pairing ---
+    period_of_report: str | None = Field(
+        default=None,
+        description=(
+            "Conformed period of report from SEC SGML header (YYYYMMDD), "
+            "e.g. '20240930'.  Used to pair a current periodic filing with its "
+            "prior-year counterpart for de-boilerplate diffing.  None when the "
+            "SGML header omits this field (e.g. some older 8-Ks) or when the "
+            "filing was read from a cache populated before Phase 13."
+        ),
     )

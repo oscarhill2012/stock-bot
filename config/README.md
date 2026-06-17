@@ -219,7 +219,6 @@ process restart is required after edits.
 | `news.max_articles_per_ticker` | int [1–200] | Hard ceiling on the total number of articles per ticker fed to the News LLM, applied **after** specificity re-ranking. Default 25. |
 | `news.max_generic_articles_per_ticker` | int [0–200] | Maximum number of generic (score 0) off-topic macro articles kept after the specificity re-rank. Specific articles (ticker symbol or company name found in headline/summary) fill the budget first; generic articles backfill up to this cap AND the remaining total budget — whichever is smaller. Prevents broad market-roundup pieces from crowding out genuine company news. Set to `0` to exclude generic articles entirely. Default 10. |
 | `news.max_summary_chars` | int [1–10000] | Maximum characters of each article's summary kept in the prompt. Default 1500. |
-| `news.roundup_company_threshold` | int [2–50] | Minimum number of **distinct** watchlist companies named in a headline (or summary) for the article to be classified as a macro roundup and demoted to score 0 (generic), regardless of whether the target ticker appears. Addresses the false-positive where "Nvidia, AMD, Tesla, Apple Are Big Movers" scores as "specific" for every named ticker — name-dropping in a list article is not company-specificity. Set higher to widen the definition of "specific"; lower to demote roundups more aggressively. Minimum 2 (a single-peer comparison headline is not a roundup). Default 3. |
 | `news.llm.timeout_seconds` | float (0–600] | Wall-clock timeout (seconds) for one News-analyst LLM call. Range `(0, 600]`. Default 60. |
 | `news.llm.max_output_tokens` | int [256–32768] | Cap on output tokens per call. Range `[256, 32768]`. Default 2000. |
 | `news.llm.timeout_retries` | int [1–10] | Total attempts on timeout (1 initial try + retries). Range `[1, 10]`. Default 3. |
@@ -229,11 +228,12 @@ process restart is required after edits.
 
 | Setting | Type | Meaning |
 |---|---|---|
-| `fundamental.max_filing_mda_chars` | int [1–20000] | Character cap on the MD&A excerpt for each filing. Default 1500 (widened from 500). |
+| `fundamental.max_filing_mda_chars` | int [1–20000] | Character cap on the MD&A text rendered per periodic filing. Applied **after** Phase 13 de-boilerplate diffing (unchanged paragraphs are stripped first, then the survivors are capped here). Raised from 1500 → 12000 in Phase 13. |
 | `fundamental.max_filing_risk_chars` | int [1–20000] | Character cap on the risk-factors excerpt for each filing. Default 1500 (widened from 500). |
 | `fundamental.max_filing_8k_body_chars` | int [1–20000] | Character cap on the `body_excerpt` rendered for 8-K filings (catalysts, earnings, guidance events). Applied when `mda_excerpt` and `risk_factors_excerpt` are both absent/empty. Default 1500. |
 | `fundamental.max_insider_footnotes` | int [0–50] | Maximum insider footnote snippets included in the LLM prompt per ticker. Default 5. |
 | `fundamental.max_insider_footnote_chars` | int [1–5000] | Character cap per footnote excerpt. Default 400 (widened from 200). |
+| `fundamental.mda_stub_char_threshold` | int [1–2000] | Minimum character count that **both** the current and prior-year MD&A must exceed before de-boilerplate diffing is attempted. Below this the text is considered a stub (too short to diff meaningfully); the full current text is rendered with a marker. Default 400. |
 | `fundamental.llm.timeout_seconds` | float (0–600] | Wall-clock timeout (seconds) for one Fundamental-analyst LLM call. Range `(0, 600]`. Default 60. |
 | `fundamental.llm.max_output_tokens` | int [256–32768] | Cap on output tokens per call. Range `[256, 32768]`. Default 2000. |
 | `fundamental.llm.timeout_retries` | int [1–10] | Total attempts on timeout (1 initial try + retries). Range `[1, 10]`. Default 3. |

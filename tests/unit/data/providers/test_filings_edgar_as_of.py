@@ -192,13 +192,20 @@ async def test_backfill_mode_returns_range_plus_anchors(
     # Raw union — anchors AND in-window rows, superseded forms kept.
     assert {f.accession_no for f in out} == {"K-anchor", "Q-anchor", "Q-mid", "E-mid"}
 
-    # Anchor queries must be pinned to window start, not window end.
+    # Anchor queries: two sets of latest-filing calls are expected —
+    # (a) window-start anchors (as_of = window_lower) for the current-period
+    #     10-K and 10-Q, and
+    # (b) baseline anchors (as_of = window_lower - 400 days) for the
+    #     prior-year 10-K and 10-Q (Phase 13 de-boilerplate supply).
+    window_lower = datetime.combine(window_start, datetime.min.time(), tzinfo=UTC)
+    baseline_lower = window_lower - timedelta(days=400)
+
     anchor_as_ofs = {a for _, _, a in captured["latest_calls"]}
-    assert anchor_as_ofs == {datetime.combine(window_start, datetime.min.time(), tzinfo=UTC)}
+    assert window_lower  in anchor_as_ofs, "window-start anchor missing"
+    assert baseline_lower in anchor_as_ofs, "baseline anchor (400d earlier) missing"
 
     # Two range queries: the window body and the pre-window 8-K staleness reach.
     spans = [(forms, lower, upper) for _, forms, lower, upper in captured["range_calls"]]
-    window_lower = datetime.combine(window_start, datetime.min.time(), tzinfo=UTC)
     assert (("10-K", "10-Q", "8-K"), window_lower, AS_OF) in spans
     assert ((("8-K",)), window_lower - timedelta(days=90), window_lower) in spans
 

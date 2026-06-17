@@ -90,13 +90,9 @@ class NewsCaps(BaseModel):
     max_summary_chars:
         Maximum characters of each article's summary kept in the prompt.
     roundup_company_threshold:
-        Minimum number of **distinct** watchlist companies that must be
-        named in a headline (or summary) for the article to be classified
-        as a macro roundup and demoted to score 0 (generic), regardless of
-        whether the target ticker is among them.  The rationale: naming a
-        ticker in a multi-company roundup ("Nvidia, AMD, Tesla, Apple Are
-        Big Movers") is not company-specificity — it is name-dropping in a
-        list article.  Default 3.
+        Minimum number of distinct watchlist companies that must be named in
+        a headline (or summary) for the article to be classified as a macro
+        roundup and demoted to score 0 (generic).  Default 3.
     llm:
         Per-call LLM runtime caps (timeout, token limit, retry counts).
     """
@@ -109,14 +105,42 @@ class NewsCaps(BaseModel):
 
 
 class FundamentalCaps(BaseModel):
-    """Truncation caps for the Fundamental analyst's LLM context."""
+    """Truncation caps for the Fundamental analyst's LLM context.
+
+    Attributes
+    ----------
+    max_filing_mda_chars:
+        Maximum characters of MD&A text included in the LLM prompt per
+        periodic filing.  Applied after Phase 13 de-boilerplate diffing, so
+        the effective input to the LLM is the de-duplicated survivors
+        truncated to this limit.  Raised from 1500 → 12000 in Phase 13 to
+        accommodate the additional context now that boilerplate is stripped.
+    max_filing_risk_chars:
+        Maximum characters of risk-factor text included per filing.
+        No de-boilerplate pass is applied to risk factors.
+    max_filing_8k_body_chars:
+        Maximum characters of 8-K body excerpt (event-driven filings).
+    max_insider_footnotes:
+        Maximum number of prose footnotes included from Form 4 filings.
+    max_insider_footnote_chars:
+        Maximum characters per footnote.
+    mda_stub_char_threshold:
+        Minimum character count that BOTH the current and prior-year MD&A
+        must exceed before de-boilerplate diffing is attempted.  Below this
+        threshold the text is a stub (e.g. a single placeholder sentence)
+        that would produce meaningless diffs; the full current text is
+        rendered with a marker instead.
+    llm:
+        Per-call LLM runtime caps (timeout, token limit, retry counts).
+    """
 
     max_filing_mda_chars:       int     = Field(ge=1, le=20_000)
     max_filing_risk_chars:      int     = Field(ge=1, le=20_000)
     max_filing_8k_body_chars:   int     = Field(ge=1, le=20_000)
     max_insider_footnotes:      int     = Field(ge=0, le=50)
     max_insider_footnote_chars: int     = Field(ge=1, le=5_000)
-    llm:                        LlmCaps                        # NEW — per-call runtime caps
+    mda_stub_char_threshold:    int     = Field(ge=1, le=2_000, default=400)
+    llm:                        LlmCaps                        # per-call runtime caps
 
 
 class CacheSettings(BaseModel):

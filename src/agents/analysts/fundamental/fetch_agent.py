@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncGenerator
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
@@ -54,9 +54,15 @@ from google.adk.events import Event, EventActions
 from agents.analysts.fundamental.fetch import _build_ticker_fundamental_context
 from data import get_company_filings, get_company_ratios, get_insider_trades
 from data.config import get_config
+from data.filing_selection import _PERIODIC_FORMS
 from data.models import Form4Bundle
 from data.timeguard import resolve_as_of
 from observability.trace import trace_maybe
+
+# How far back to reach for prior-year periodic baselines (Phase 13).
+# Mirrors _PERIODIC_BASELINE_REACH_DAYS in edgar.py — 365 days + 35-day
+# guard band for late-filer extensions (Form 12b-25).
+_BASELINE_REACH_DAYS = 400
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -126,7 +132,7 @@ class FundamentalFetchAgent(BaseAgent):
                 _LOGGER.warning("company_ratios fetch failed for %s: %s", ticker, exc)
                 ratios_payload = None
 
-            # --- SEC filings ---
+            # --- SEC filings (current tick) ---
             # The selection rule (latest 10-K + latest 10-Q + recent 8-Ks)
             # is handled by the shared analyst-visibility rule inside the
             # provider — no per-form count is passed here.
@@ -145,6 +151,42 @@ class FundamentalFetchAgent(BaseAgent):
             except Exception as exc:  # noqa: BLE001 — degrade gracefully
                 _LOGGER.warning("filings fetch failed for %s: %s", ticker, exc)
                 filings_payload = []
+
+            # --- Prior-year baseline filings (Phase 13 — de-boilerplate) ---
+            # Issue a second provider call 400 days in the past to retrieve
+            # the prior-year periodic filings (10-K, 10-Q).  The same provider
+            # dispatch table routes this call to the edgar provider (live) or
+            # the cache provider (backtest), so parity is maintained without
+            # any special-casing here.
+            #
+            # We filter to periodic forms only (no 8-Ks) because 8-Ks don't
+            # carry MD&A and are never used as de-boilerplate baselines.
+            baseline_payload: list[dict] = []
+            try:
+                baseline_as_of = as_of - timedelta(days=_BASELINE_REACH_DAYS)
+                baseline_filings = await get_company_filings(
+                    ticker,
+                    as_of=baseline_as_of,
+                    include_excerpts=include_filing_excerpts,
+                )
+                baseline_payload = [
+                    f.model_dump() if hasattr(f, "model_dump") else f
+                    for f in baseline_filings
+                    if (f.form_type if hasattr(f, "form_type") else f.get("form_type", ""))
+                    in _PERIODIC_FORMS
+                ]
+                _LOGGER.debug(
+                    "baseline filings for %s: %d periodic filings at as_of=%s",
+                    ticker, len(baseline_payload), baseline_as_of.date(),
+                )
+            except Exception as exc:  # noqa: BLE001 — degrade gracefully
+                # Baseline failure must never abort the main analysis — log and
+                # continue with empty baseline (de-boilerplate disabled for this tick).
+                _LOGGER.warning(
+                    "baseline filings fetch failed for %s: %s — de-boilerplate disabled",
+                    ticker, exc,
+                )
+                baseline_payload = []
 
             # --- Insider trades (Form 4) ---
             try:
@@ -167,6 +209,10 @@ class FundamentalFetchAgent(BaseAgent):
             fundamental_data[ticker] = {
                 "ratios":  ratios_payload,
                 "filings": filings_payload,
+                # Prior-year periodic filings for MD&A de-boilerplate (Phase 13).
+                # Empty list when the baseline fetch failed — de-boilerplate is
+                # then silently disabled for this ticker/tick.
+                "baseline_filings": baseline_payload,
                 # Flat-list shape — Phase 7 extractor path.  The typed
                 # Form4Bundle is dumped to two flat lists (common + derivative)
                 # so the contract extractor sees the same shape regardless of

@@ -622,6 +622,10 @@ class CachedDataStore:
                     url=f.url,
                     risk_factors_excerpt=f.risk_factors_excerpt,
                     mda_excerpt=f.mda_excerpt,
+                    # Phase 13 — fiscal-period pairing field.  None for old
+                    # cache rows (pre-Phase 13 fetches); also None for form
+                    # types where EDGAR doesn't populate this (some 8-Ks).
+                    period_of_report=f.period_of_report,
                 ).on_conflict_do_nothing(index_elements=["accession_no"])
                 result = s.execute(stmt)
                 total_inserted += result.rowcount
