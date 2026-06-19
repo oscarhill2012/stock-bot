@@ -167,6 +167,48 @@ def test_is_rate_limit_recognises_429_client_error() -> None:
     assert _classify(err)      == "rate_limit"
 
 
+def test_is_rate_limit_recognises_anthropic_rate_limit_error() -> None:
+    """An anthropic 429 (the Claude-on-Vertex path) classifies as rate_limit.
+
+    ADK's native ``Claude`` model wraps the ``anthropic`` SDK, which maps a
+    Vertex HTTP 429 onto ``anthropic.RateLimitError`` rather than a
+    ``google.genai`` error; without Layer 3 of ``_is_rate_limit`` this would
+    fall through to ``None`` and be re-raised with no backoff.
+    """
+
+    import httpx
+    from anthropic import RateLimitError as _AnthropicRateLimitError
+
+    response = httpx.Response(
+        429,
+        request = httpx.Request("POST", "https://example.invalid"),
+    )
+    err = _AnthropicRateLimitError(
+        "429 Too Many Requests",
+        response = response,
+        body     = None,
+    )
+
+    assert _is_rate_limit(err) is True
+    assert _classify(err)      == "rate_limit"
+
+
+def test_is_rate_limit_recognises_generic_429_status() -> None:
+    """The provider-agnostic fallback catches any exception carrying a 429.
+
+    Covers a wrapper that exposes ``status_code == 429`` without being a
+    class we import — Layer 4 of ``_is_rate_limit``.
+    """
+
+    class _SomeApiError(Exception):
+        status_code = 429
+
+    err = _SomeApiError("rate limited")
+
+    assert _is_rate_limit(err) is True
+    assert _classify(err)      == "rate_limit"
+
+
 def test_is_rate_limit_walks_cause_chain() -> None:
     inner = ClientError(
         code            = 429,

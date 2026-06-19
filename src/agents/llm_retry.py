@@ -59,12 +59,21 @@ def _is_rate_limit(exc: BaseException) -> bool:
     is the same as the legacy ``_is_resource_exhausted`` — kept identical
     so existing behaviour is preserved verbatim.
 
-    Two detection layers (matching the legacy function):
+    Detection layers:
 
     * ADK's :class:`google.adk.models.google_llm._ResourceExhaustedError`
       — defensive import so a future rename does not silently break us.
     * The underlying :class:`google.genai.errors.ClientError` with
       ``status_code == 429`` — caught directly and via ``__cause__``.
+    * :class:`anthropic.RateLimitError` — the Claude-on-Vertex path dispatches
+      through ADK's native ``Claude`` model (see ``agents.model_resolver``),
+      which wraps the ``anthropic`` SDK and raises its ``RateLimitError`` (an
+      ``APIStatusError`` carrying ``status_code == 429``) on a Vertex 429
+      rather than a ``google.genai`` error.  Without this layer the wrapper
+      would re-raise Claude 429s immediately with no exp-jitter backoff.
+    * Provider-agnostic fallback — any exception exposing ``status_code ==
+      429``, so a future wrapper that carries the HTTP code without a class
+      we import is still classified correctly.
 
     Parameters
     ----------
@@ -105,6 +114,28 @@ def _is_rate_limit(exc: BaseException) -> bool:
 
     except ImportError:
         pass
+
+    # Layer 3 — the anthropic SDK's rate-limit error (the Claude-on-Vertex
+    # path).  ADK's native ``Claude`` model wraps ``anthropic`` and raises
+    # ``anthropic.RateLimitError`` (an ``APIStatusError`` carrying
+    # ``status_code == 429``) on a Vertex 429 — neither layer above matches
+    # it.  Defensive import so a pure-Gemini deployment without the optional
+    # ``anthropic`` SDK installed is unaffected.
+    try:
+        from anthropic import RateLimitError as _AnthropicRateLimitError
+
+        if isinstance(exc, _AnthropicRateLimitError):
+            return True
+
+    except ImportError:
+        pass
+
+    # Layer 4 — provider-agnostic fallback.  Any exception exposing an HTTP
+    # 429 status is, unambiguously, a rate-limit signal.  This catches
+    # anthropic error subclasses (and any future wrapper) that carry the code
+    # without us importing their class.
+    if getattr(exc, "status_code", None) == 429:
+        return True
 
     # Walk the __cause__ chain.  Stop on self-loops (defensive).
     cause = exc.__cause__

@@ -25,6 +25,7 @@ from agents.analysts.report_cache import (
 )
 from agents.isolated_failure import IsolatedFailureWrapper
 from agents.llm_retry import RetryingAgentWrapper, build_retry_policies
+from agents.model_resolver import resolve_model
 from config.analysts import get_analysts_config
 from config.models import get_models_config
 from contract.evidence import LlmTickerVerdict
@@ -157,7 +158,11 @@ def build_news_branch_for_ticker(
     # -----------------------------------------------------------------------
     llm = LlmAgent(
         name                    = f"NewsAnalyst_{ticker}",
-        model                   = model,
+        # ``model`` (the raw config string) is reused above for the trace /
+        # observability labels; only the ADK call site needs the resolved
+        # form, which is a bare string for Gemini or a native ADK ``Claude``
+        # instance for an ``anthropic_vertex/<region>/<model>`` ID.
+        model                   = resolve_model(model),
         instruction             = instruction,
         output_schema           = LlmTickerVerdict,
         output_key              = f"temp:news_verdict_{ticker}",

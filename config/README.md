@@ -419,17 +419,46 @@ pick a model directly.
 
 | Setting | Type | Meaning |
 |---|---|---|
-| `strategist` | string | Model ID for the Strategist `LlmAgent` (read by `src/agents/strategist/agent.py::build_strategist`). Currently `gemini-3.5-flash` — trialling next-gen Flash. |
-| `news_analyst` | string | Model ID for the News analyst `LlmAgent` (read by `src/agents/analysts/news/agent.py::build_news_analyst`). Currently `gemini-2.5-flash-lite`. |
-| `fundamental_analyst` | string | Model ID for the Fundamental analyst `LlmAgent` (read by `src/agents/analysts/fundamental/agent.py::build_fundamental_analyst`). Currently `gemini-2.5-flash-lite`. |
+| `strategist` | string | Model ID for the Strategist `LlmAgent` (read by `src/agents/strategist/agent.py::build_strategist`). Currently `gemini-2.5-pro`. |
+| `news_analyst` | string | Model ID for the News analyst `LlmAgent` (read by `src/agents/analysts/news/per_ticker.py::build_news_branch_for_ticker`). Currently `gemini-2.5-flash`. Swap to a `anthropic_vertex/<region>/<model>` ID (see below) to route via Claude. |
+| `fundamental_analyst` | string | Model ID for the Fundamental analyst `LlmAgent` (read by `src/agents/analysts/fundamental/per_ticker.py::build_fundamental_branch_for_ticker`). Currently `gemini-2.5-flash`. Swap to e.g. `anthropic_vertex/global/claude-haiku-4-5@20251001` (see below) if dense filings need more headroom. |
 | `memory_compressor` | string | Model ID for the day-digest LLM compressor fallback (read by `src/agents/memory/compress.py::_default_llm_compress`). Only invoked when the concatenated digest exceeds `DIGEST_BUDGET` (2000 chars). Currently `gemini-2.5-flash-lite`. |
 | `memory_embedding` | string | Embedding model ID for the memory-buffer dedup embedder (read by `src/agents/memory/embeddings.py::_default_embed`). Distinct family from Gemini chat models, but the same "where does this live" problem belongs in the same config. Currently `text-embedding-005`. |
 
+### Native Gemini vs ADK-native Claude (on Vertex)
+
+Each value above may be either a **native Gemini ID** (no `/`, e.g.
+`gemini-2.5-flash`) or a **Claude-on-Vertex ID** of the form
+`anthropic_vertex/<region>/<model>` (e.g.
+`anthropic_vertex/global/claude-haiku-4-5@20251001`). The agent construction
+sites do not branch on this themselves — they pass the raw string through
+`src/agents/model_resolver.py::resolve_model()`, which returns the bare
+string for Gemini (ADK's native `google-genai` path) or builds a native
+`google.adk.models.anthropic_llm.Claude` instance for a Claude ID. Swapping a
+slot between Gemini and Claude is therefore a one-line edit here; no source
+and no `.env` change is needed.
+
+**Why the region lives in the ID.** Claude is **not** served from every Vertex
+region — in particular not from `us-central1`, which the native-Gemini
+strategist uses via `GOOGLE_CLOUD_LOCATION`. So the Claude serving region
+travels *inside* the model ID (the `<region>` segment — `global`, `us-east5`,
+or `europe-west1`) rather than overloading `GOOGLE_CLOUD_LOCATION`. The
+resolver assembles a full `projects/<project>/locations/<region>/...` Vertex
+resource path from that region plus the **GCP project read from
+`GOOGLE_CLOUD_PROJECT`** (a deployment secret, kept out of this file). ADK's
+`Claude` client parses project and region from that path and uses them
+verbatim, overriding `GOOGLE_CLOUD_LOCATION` — so the Gemini strategist stays
+on `us-central1` untouched. This path bills to the GCP project and requires
+the `anthropic` SDK (declared in `requirements.txt`); no LiteLLM extra is
+involved.
+
 A contract test (`tests/contract/test_no_hardcoded_models.py`) AST-walks
 `src/` and fails CI if any string literal starting with `gemini-` or
-`text-embedding-` survives outside docstrings or comments. The escape hatch
-for legitimate documentation references is to put the literal in a
-docstring or behind a `# noqa: model-literal` comment.
+`text-embedding-` survives outside docstrings or comments. (Claude IDs such
+as `anthropic_vertex/global/claude-…` are not on the forbidden-prefix list,
+but they must still live only in `models.json`, never inlined in source.) The
+escape hatch for legitimate documentation references is to put the literal in
+a docstring or behind a `# noqa: model-literal` comment.
 
 A leading `_comment` field is permitted at the top of `models.json` for an
 operator-facing note; the loader strips it before validation.
