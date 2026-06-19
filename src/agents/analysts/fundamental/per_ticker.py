@@ -162,12 +162,32 @@ def build_fundamental_branch_for_ticker(
     llm_caps = get_analysts_config().fundamental.llm
 
     # -----------------------------------------------------------------------
+    # Build the GenerateContentConfig.
+    #
+    # ``max_output_tokens`` caps output so long-running generation cannot
+    # wedge the tick before the wall-clock timeout fires.
+    #
+    # ``thinking_budget`` is optional.  On Gemini 2.5 thinking models (e.g.
+    # ``gemini-2.5-flash``) the reasoning tokens are charged against the SAME
+    # ``max_output_tokens`` budget; left to its default *dynamic* setting,
+    # thinking can spike arbitrarily and starve the verdict JSON, truncating
+    # it mid-emit.  When the config pins a budget (the analysts set 2048) we
+    # bound thinking so the split with the visible output is deterministic.
+    # When it is ``None`` we pass ``thinking_config=None`` (identical to
+    # omitting it), leaving the model's native thinking behaviour untouched.
+    # The knob is Gemini-specific; a Claude-on-Vertex model would ignore it.
+    # -----------------------------------------------------------------------
+    thinking_config = (
+        genai_types.ThinkingConfig(thinking_budget = llm_caps.thinking_budget)
+        if llm_caps.thinking_budget is not None
+        else None
+    )
+
+    # -----------------------------------------------------------------------
     # Assemble the LlmAgent.
     # - before_agent_callback and after_agent_callback are intentionally
     #   omitted (left as None) — see docstring above.
     # - before_model_callback / after_model_callback carry cache + trace hooks.
-    # - generate_content_config caps output tokens so long-running generation
-    #   cannot wedge the tick before the wall-clock timeout fires.
     # -----------------------------------------------------------------------
     llm = LlmAgent(
         name                    = f"FundamentalAnalyst_{ticker}",
@@ -183,6 +203,7 @@ def build_fundamental_branch_for_ticker(
         after_model_callback    = after_cb,
         generate_content_config = genai_types.GenerateContentConfig(
             max_output_tokens = llm_caps.max_output_tokens,
+            thinking_config   = thinking_config,
         ),
     )
 

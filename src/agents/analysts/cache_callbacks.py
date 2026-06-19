@@ -336,16 +336,35 @@ def make_report_cache_callbacks(
 
         # Parse the single-verdict JSON directly from the response — NOT from
         # state.  See the lifecycle bug note in the module docstring (B22).
+        #
+        # Extract the text exactly as ADK's __maybe_save_output_to_state does
+        # — join EVERY non-thought text part — so the cache sees precisely what
+        # ADK validates and saves.  Reading only ``parts[0]`` is fragile: a
+        # thinking model (e.g. gemini-2.5-flash) can return a leading thought
+        # part, or chunk the JSON across multiple parts, either of which makes
+        # a bare ``parts[0].text`` mis-parse a response ADK handles fine.
         try:
-            text    = llm_response.content.parts[0].text
+            parts   = llm_response.content.parts or []
+            text    = "".join(
+                p.text for p in parts
+                if p.text and not getattr(p, "thought", False)
+            )
             payload = json.loads(text)
-        except (AttributeError, IndexError, TypeError, json.JSONDecodeError):
-            # LLM response shape is unexpected — skip cache write.  The verdict
-            # will still land in state via ADK's __maybe_save_output_to_state;
-            # this tick is just uncached, which is acceptable degradation.
+        except (AttributeError, IndexError, TypeError, json.JSONDecodeError) as exc:
+            # Almost always a TRUNCATED payload — the model hit
+            # max_output_tokens before closing the JSON (on a thinking model,
+            # dynamic reasoning tokens can eat the budget first).  Surface
+            # finish_reason so the cause is diagnosable rather than a silent
+            # "could not parse".  The verdict can still land in state via ADK's
+            # __maybe_save_output_to_state (and a schema retry); this tick is
+            # just uncached, which is acceptable degradation.
+            finish = getattr(llm_response, "finish_reason", None)
             _log.warning(
-                "%s cache: could not parse LLM response — cache write skipped for %s.",
-                analyst_name, ticker,
+                "%s cache: could not parse LLM response — cache write skipped "
+                "for %s (finish_reason=%s, %s). Likely a truncated payload; if "
+                "finish_reason=MAX_TOKENS, raise max_output_tokens or lower "
+                "thinking_budget.",
+                analyst_name, ticker, finish, type(exc).__name__,
             )
             return None
 

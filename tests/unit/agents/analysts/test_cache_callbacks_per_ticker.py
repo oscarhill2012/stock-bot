@@ -142,7 +142,10 @@ def test_after_writes_single_verdict_to_cache(tmp_path, monkeypatch):
         },
     })
     llm_response = MagicMock()
-    llm_response.content.parts = [MagicMock(text=fake_text)]
+    # ``thought=None`` mirrors a real google.genai Part — the cache hook (like
+    # ADK) joins only non-thought text parts, so a bare MagicMock's truthy
+    # auto-attribute would be wrongly treated as a thinking part and skipped.
+    llm_response.content.parts = [MagicMock(text=fake_text, thought=None)]
 
     # as_of omitted intentionally — write_cache expects a datetime object or None;
     # in production state["as_of"] is always a real datetime.  Omitting it here
@@ -211,7 +214,9 @@ def test_after_skips_cache_write_when_response_fails_schema_validation(
         # invariant: non-no-data verdicts must carry exactly one prose surface.
     })
     llm_response = MagicMock()
-    llm_response.content.parts = [MagicMock(text=broken_text)]
+    # ``thought=None`` mirrors a real google.genai Part (see the note in the
+    # fresh-verdict test above).
+    llm_response.content.parts = [MagicMock(text=broken_text, thought=None)]
 
     state = {"temp:news_data": {"AAPL": {"news": []}}}
     callback_context = MagicMock(state=state)

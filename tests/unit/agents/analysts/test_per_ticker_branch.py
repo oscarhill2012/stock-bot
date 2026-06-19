@@ -185,7 +185,12 @@ def test_news_branch_wires_llm_caps_from_config() -> None:
     cfg = llm.generate_content_config
 
     assert cfg is not None
-    assert cfg.max_output_tokens == 2000
+    assert cfg.max_output_tokens == 4000
+
+    # thinking_budget is bounded (2048) and wired into thinking_config so
+    # gemini-2.5-flash's dynamic reasoning cannot starve the verdict JSON.
+    assert cfg.thinking_config is not None
+    assert cfg.thinking_config.thinking_budget == 2048
 
 
 def test_fundamental_branch_wires_llm_caps_from_config() -> None:
@@ -220,4 +225,9 @@ def test_fundamental_branch_wires_llm_caps_from_config() -> None:
     cfg = llm.generate_content_config
 
     assert cfg is not None
-    assert cfg.max_output_tokens == 2000
+    assert cfg.max_output_tokens == 4000
+
+    # thinking_budget is bounded (2048) and wired into thinking_config so
+    # gemini-2.5-flash's dynamic reasoning cannot starve the verdict JSON.
+    assert cfg.thinking_config is not None
+    assert cfg.thinking_config.thinking_budget == 2048

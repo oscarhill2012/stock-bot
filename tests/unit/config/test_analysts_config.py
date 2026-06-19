@@ -155,6 +155,7 @@ def test_load_analysts_config_exposes_news_llm_caps(tmp_path) -> None:
             "llm": {
                 "timeout_seconds":   60,
                 "max_output_tokens": 2000,
+                "thinking_budget":   2048,
                 "timeout_retries":   3,
                 "schema_retries":    3,
             },
@@ -175,11 +176,16 @@ def test_load_analysts_config_exposes_news_llm_caps(tmp_path) -> None:
     assert cfg.news.llm.max_output_tokens == 2000
     assert cfg.news.llm.timeout_retries   == 3
     assert cfg.news.llm.schema_retries    == 3
+    # thinking_budget is optional — omitted on the News block, so it defaults
+    # to None (leave the model's native thinking behaviour untouched).
+    assert cfg.news.llm.thinking_budget is None
 
     assert cfg.fundamental.llm.timeout_seconds   == 60
     assert cfg.fundamental.llm.max_output_tokens == 2000
     assert cfg.fundamental.llm.timeout_retries   == 3
     assert cfg.fundamental.llm.schema_retries    == 3
+    # Set on the Fundamental block — parsed through as the bounded ceiling.
+    assert cfg.fundamental.llm.thinking_budget == 2048
 
 
 def test_load_analysts_config_rejects_zero_timeout_seconds(tmp_path) -> None:

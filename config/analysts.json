@@ -7,7 +7,8 @@
     "roundup_company_threshold":        3,
     "llm": {
       "timeout_seconds":   60,
-      "max_output_tokens": 2000,
+      "max_output_tokens": 4000,
+      "thinking_budget":   2048,
       "timeout_retries":   3,
       "schema_retries":    3
     }
@@ -21,7 +22,8 @@
     "mda_stub_char_threshold":    400,
     "llm": {
       "timeout_seconds":   60,
-      "max_output_tokens": 2000,
+      "max_output_tokens": 4000,
+      "thinking_budget":   2048,
       "timeout_retries":   3,
       "schema_retries":    3
     }

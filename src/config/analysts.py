@@ -57,6 +57,23 @@ class LlmCaps(BaseModel):
         Cap on the model's generated output tokens.  Set on every call
         (not just retries) so output loops cannot wedge the tick in the
         first place.  Range ``[256, 32768]``.
+
+        Note that on Gemini 2.5 *thinking* models (e.g. ``gemini-2.5-flash``)
+        this budget is shared between the model's internal reasoning tokens
+        and the visible output, so it must be sized to hold both — see
+        ``thinking_budget`` below.
+    thinking_budget:
+        Optional ceiling on the model's internal *thinking* tokens, passed
+        through to ``GenerateContentConfig.thinking_config`` on Gemini 2.5
+        thinking models.  ``None`` (the default) leaves the model's native
+        thinking behaviour untouched — for ``gemini-2.5-flash`` that means
+        *dynamic* (unbounded) thinking, which can spike arbitrarily and
+        starve the verdict JSON of output budget, truncating it.  A positive
+        value bounds thinking to that many tokens so the split with the
+        visible output is deterministic; ``0`` disables thinking entirely;
+        ``-1`` requests explicit dynamic thinking.  Only wired for the
+        per-ticker analyst LlmAgents (News, Fundamental); the strategist
+        leaves this ``None``.  Range ``[-1, 24576]`` when set.
     timeout_retries:
         Total attempts the wrapper makes when wall-clock timeouts fire.
         ``3`` means one initial try plus up to two retries.  Range
@@ -67,10 +84,11 @@ class LlmCaps(BaseModel):
         ``timeout_retries``.
     """
 
-    timeout_seconds:   float = Field(gt=0.0, le=600.0)
-    max_output_tokens: int   = Field(ge=256, le=32_768)
-    timeout_retries:   int   = Field(ge=1, le=10)
-    schema_retries:    int   = Field(ge=1, le=10)
+    timeout_seconds:   float     = Field(gt=0.0, le=600.0)
+    max_output_tokens: int       = Field(ge=256, le=32_768)
+    thinking_budget:   int | None = Field(default=None, ge=-1, le=24_576)
+    timeout_retries:   int       = Field(ge=1, le=10)
+    schema_retries:    int       = Field(ge=1, le=10)
 
 
 class NewsCaps(BaseModel):
