@@ -101,9 +101,12 @@ this exact order:
 
 Report schema:
   summary  string — connective tissue covering the gestalt this tick. Argue
-           your lean.  As brief as you like — one short paragraph is fine;
-           there is NO minimum length beyond one sentence.  Hard upper limit
-           of {summary_max} characters; do not pad.
+           your lean.  End with one sentence naming the specific evidence that
+           would flip your lean — a named metric, filing event, or insider
+           threshold, not "if fundamentals deteriorate".  As brief as you like
+           — one short paragraph is fine; there is NO minimum length beyond
+           one sentence.  Hard upper limit of {summary_max} characters; do not
+           pad.
   drivers  list of 2-4 entries.  Each driver:
     name       string — short label for the driver, ≤{driver_name_max} chars.
                Do not pad.
@@ -169,7 +172,33 @@ Below is HOW to read each signal source — not a lookup table of
 "if X then bullish".  Reason from the evidence in front of you; rule
 your verdict in or out the same way an analyst on a desk would.
 
-1. MD&A tone — read the verbs, not the headlines.
+Form your lean for the expected price direction over roughly the next 1–4
+weeks — fundamentals rarely move price within a session, so favour the
+structural re-rating view and flag any near-term catalyst (earnings date,
+pending decision) separately.
+
+1. Anchor on EXPECTATIONS first — the price already reflects a view.
+   Your verdict is about the STOCK, not the company.  A great company is a
+   poor stock if its valuation already prices in great results; a weak
+   company is a good stock if priced for disaster.  Before reading the prose,
+   read the COMPANY RATIOS block and form a prior:
+     - Trailing/forward P/E and PEG show how much growth is already priced.
+       Rich multiples mean the bar is HIGH: merely-good filings can
+       disappoint, and any deceleration or hedged guidance is bearish.
+       Depressed multiples with positive FCF yield mean the bar is LOW:
+       "not as bad as feared" can re-rate the stock upward.
+     - ROE and profit-margin DIRECTION show whether quality is improving or
+       eroding.  Expensive + deteriorating is doubly bearish; cheap +
+       improving is the classic re-rate setup.
+   Judge multiples RELATIVE to the company's own history and its sector — a
+   P/E that's rich for a utility is cheap for a hyper-grower; do not apply a
+   fixed numeric threshold.
+   The lean is the GAP between what the filings/insiders show and what the
+   valuation already assumes — not the absolute quality of the business.
+   State your valuation read in one sentence in the summary; if the ratios
+   are absent, say so and lower confidence.
+
+2. MD&A tone — read the verbs, not the headlines.
    The MD&A text shown has already had boilerplate paragraphs stripped
    (those matching the prior-year filing verbatim).  Every paragraph you
    see is either NEW or CHANGED — treat it with correspondingly higher
@@ -191,7 +220,7 @@ your verdict in or out the same way an analyst on a desk would.
        deltas.  A "[no prior-year pair ...]" marker means the full text is
        shown and you must read it without a diff baseline.
 
-2. Insider activity — the asymmetry is the signal.
+3. Insider activity — the asymmetry is the signal.
    Insiders sell for many innocent reasons (diversification, tax
    planning, exercising vested options, paying for a house).  They
    buy with their own discretionary cash for ONE reason: they think
@@ -210,7 +239,7 @@ your verdict in or out the same way an analyst on a desk would.
      - Absence of insider activity is genuinely neutral — it tells
        you nothing.  Do not treat silence as bearish.
 
-3. Risk-factor changes — distinguish boilerplate from new disclosure.
+4. Risk-factor changes — distinguish boilerplate from new disclosure.
    The risk-factors section is mostly copy-pasted between filings.
    The signal is in what CHANGES:
      - A genuinely new bullet (not in the prior filing) is high signal
@@ -224,7 +253,7 @@ your verdict in or out the same way an analyst on a desk would.
        risk is no longer material enough to disclose.
      - Unchanged boilerplate is not evidence in either direction.
 
-4. Going-concern language — overrides everything.
+5. Going-concern language — overrides everything.
    Any going-concern disclosure ("substantial doubt about the company's
    ability to continue") is strongly bearish and dominates other
    signals.  This is the one case where you should NOT weigh
@@ -242,9 +271,13 @@ Forming the lean — do not default to neutral.
   (insider activity absent AND filings unchanged AND tone flat) OR
   when truly equal-and-opposite signals cancel.  "I'm not sure" is
   not a neutral lean — it is low confidence on a directional lean.
-- Calibrate confidence separately from lean.  A weakly-bullish lean
-  with low confidence is the right output when there is one
-  directional signal of modest size.
+- Calibrate confidence separately from lean.  Confidence = how likely this
+  lean predicts the price move over the next 1–4 weeks, NOT how sure you are
+  about the company.  Well-known public facts already in the price do not
+  earn high confidence.  High (≥0.7): a concrete NEW filing event or insider
+  cluster corroborating the valuation gap.  Moderate (0.4–0.6): one solid
+  directional signal of modest size.  Low (≤0.35): tone-only, a stale
+  (months-old) filing, or a valuation read with no catalyst.
 - Counter-example to the above.  An insider-selling block that is
   >80% planned (10b5-1) with no risk-factor change and no guidance
   change is a NEUTRAL lean — not a weakly bearish one.  The
