@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import ValidationError
 
@@ -310,6 +310,43 @@ def _render_mda(
         return "[de-boilerplate error — full text]\n\n" + mda[:caps.max_filing_mda_chars]
 
 
+# Known on-disk formats for ``period_of_report``.  The live EDGAR provider
+# emits compact ``YYYYMMDD``; the golden cache that backs the backtest stores
+# ISO ``YYYY-MM-DD``.  Both must parse so de-boilerplate pairing behaves
+# identically live and in replay.  ISO is tried first because it is the shape
+# the backtest (the overwhelming caller) actually serves.
+_PERIOD_FORMATS = ("%Y-%m-%d", "%Y%m%d")
+
+
+def _parse_period_of_report(period: str) -> date | None:
+    """Parse a filing ``period_of_report`` into a date, tolerant of format.
+
+    Accepts both the ISO ``YYYY-MM-DD`` shape stored by the golden cache and
+    the compact ``YYYYMMDD`` shape emitted by the live EDGAR provider, so the
+    same pairing logic works on both data paths.
+
+    Parameters
+    ----------
+    period:
+        The ``period_of_report`` string from a filing dict.
+
+    Returns
+    -------
+    date | None
+        The parsed calendar date, or ``None`` if *period* is empty or matches
+        no known format.  Distinguishing "empty" from "malformed" is left to
+        the caller — a non-empty value that parses nowhere is a contract
+        violation worth logging, not a silent drop.
+    """
+    for fmt in _PERIOD_FORMATS:
+        try:
+            return datetime.strptime(period, fmt).date()
+        except (ValueError, TypeError):
+            continue
+
+    return None
+
+
 def _find_prior_year_baseline(
     current_period: str,
     current_form_type: str,
@@ -317,15 +354,17 @@ def _find_prior_year_baseline(
 ) -> dict | None:
     """Find the prior-year periodic filing that matches ``current_period``.
 
-    Pairs a current filing's ``period_of_report`` (e.g. ``"20240930"``) with a
-    baseline filing of the same form type whose period falls 335–395 days
-    earlier.  This window covers non-calendar fiscal years and late-filer
-    extensions (Form 12b-25).
+    Pairs a current filing's ``period_of_report`` (e.g. ``"2024-09-30"`` from
+    the cache or ``"20240930"`` from live EDGAR) with a baseline filing of the
+    same form type whose period falls 335–395 days earlier.  This window covers
+    non-calendar fiscal years and late-filer extensions (Form 12b-25).
 
     Parameters
     ----------
     current_period:
-        ``period_of_report`` string from the current filing (YYYYMMDD).
+        ``period_of_report`` string from the current filing.  Either the ISO
+        ``YYYY-MM-DD`` (golden cache) or compact ``YYYYMMDD`` (live EDGAR)
+        shape is accepted.
     current_form_type:
         Form type of the current filing (e.g. ``"10-K"`` or ``"10-Q"``).
     baseline_filings:
@@ -336,12 +375,22 @@ def _find_prior_year_baseline(
     dict | None
         The best-matching baseline filing dict, or ``None`` if no match found.
     """
-    try:
-        current_date = datetime.strptime(current_period, "%Y%m%d").date()
-    except (ValueError, TypeError):
+    current_date = _parse_period_of_report(current_period)
+
+    if current_date is None:
+        # A non-empty period that parses in no known format is a contract
+        # violation — historically this was silently swallowed, which disabled
+        # de-boilerplate for an entire run undetected.  Surface it loudly.
+        if current_period:
+            _logger.warning(
+                "_find_prior_year_baseline: unparseable current period_of_report "
+                "%r (form=%s) — no prior-year pairing attempted",
+                current_period, current_form_type,
+            )
         return None
 
     best: dict | None = None
+    best_date: date | None = None
 
     for baseline in baseline_filings:
         # Only consider the same form type — a 10-K must pair with a 10-K.
@@ -352,9 +401,8 @@ def _find_prior_year_baseline(
         if not prior_period:
             continue
 
-        try:
-            prior_date = datetime.strptime(str(prior_period), "%Y%m%d").date()
-        except (ValueError, TypeError):
+        prior_date = _parse_period_of_report(str(prior_period))
+        if prior_date is None:
             continue
 
         # Check that the prior period is between 335 and 395 days before
@@ -363,11 +411,11 @@ def _find_prior_year_baseline(
         # (shouldn't happen, but be defensive).
         delta = (current_date - prior_date).days
         in_window = _PAIRING_WINDOW_DAYS_MIN <= delta <= _PAIRING_WINDOW_DAYS_MAX
-        is_newer_match = best is None or prior_date > datetime.strptime(
-            str(best.get("period_of_report", "19000101")), "%Y%m%d"
-        ).date()
+        is_newer_match = best_date is None or prior_date > best_date
+
         if in_window and is_newer_match:
             best = baseline
+            best_date = prior_date
 
     return best
 
