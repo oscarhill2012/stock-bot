@@ -65,8 +65,12 @@ The data block for {ticker} contains:
     in place of MD&A/risk sections, which 8-Ks do not carry.
 
   -- INSIDER ACTIVITY (30d, structured) --
-    Net Form-4 dollars, buy/sell counts, cluster flags, planned-sale ratio
-    (10b5-1), top filer role, derivative counts.
+    Net Form-4 dollars (sign convention: + = net buy, − = net sell),
+    buy/sell counts, cluster flags (True when ≥ 3 distinct filers on one
+    side), conviction flags (True when a single filer's gross open-market
+    dollars exceed the conviction threshold — covers CEO-alone scenarios
+    that do not trigger the cluster flag), planned-sale ratio (10b5-1),
+    top filer role, derivative counts.
 
   -- INSIDER FOOTNOTES (≤5, prose) --
     Free-text footnotes attached to individual Form 4 rows.
@@ -187,6 +191,13 @@ pending decision) separately.
        disappoint, and any deceleration or hedged guidance is bearish.
        Depressed multiples with positive FCF yield mean the bar is LOW:
        "not as bad as feared" can re-rate the stock upward.
+     - IMPORTANT: A very high trailing P/E (e.g. above 200×) may be
+       distorted by a one-time EPS item (export-control charge, write-down,
+       litigation settlement) rather than reflecting the company's true
+       earning power.  The data block will flag such values as
+       "POSSIBLY DISTORTED BY ONE-TIME EPS ITEM".  When that flag appears,
+       anchor on forward P/E instead of trailing P/E and do NOT treat
+       the inflated trailing multiple as evidence that the stock is expensive.
      - ROE and profit-margin DIRECTION show whether quality is improving or
        eroding.  Expensive + deteriorating is doubly bearish; cheap +
        improving is the classic re-rate setup.
@@ -230,6 +241,15 @@ pending decision) separately.
        bullish signal even at small dollar size.  A cluster (multiple
        insiders within a short window) is a very high-quality bullish
        signal.  Do not dilute or hedge it.
+     - The net Form-4 dollars line uses a sign convention: positive
+       values (shown with +) mean net buying; negative values mean
+       net selling.  Read the direction label on the line.
+     - conviction_buy = True means a single filer has bought above the
+       dollar threshold in the window — treat it as a strong bullish
+       signal equivalent to a cluster buy.  A CEO buying hundreds of
+       millions of dollars is a higher-quality signal than a cluster
+       of small purchases.  Similarly, conviction_sell = True is a
+       strong bearish signal from a single large discretionary seller.
      - Routine 10b5-1 sales are pre-scheduled; treat them as neutral
        noise, not as bearish information.
      - Discretionary open-market SALES — especially clusters by senior

@@ -179,6 +179,15 @@ def _render_ratios_block(lines: list[str], ratios: dict) -> None:
         ("number_of_analyst_opinions",   "Analyst opinion count"),
     ]
 
+    # Bug 3: read the trailing P/E implausibility threshold from config so we
+    # can flag suspiciously high multiples caused by one-time EPS distortions.
+    pe_threshold = (
+        get_analysts_config().fundamental.trailing_pe_implausibility_threshold
+    )
+
+    trailing_pe = ratios.get("trailing_pe")
+    forward_pe  = ratios.get("forward_pe")
+
     rendered_rows: list[str] = []
 
     for key, label in _FIELD_ORDER:
@@ -197,6 +206,20 @@ def _render_ratios_block(lines: list[str], ratios: dict) -> None:
             formatted = str(value)
         else:
             formatted = f"{value:.2f}"
+
+        # Bug 3 fix: annotate an implausibly high trailing P/E inline so the
+        # LLM sees the warning on the very line it would anchor to.
+        if key == "trailing_pe" and trailing_pe is not None and trailing_pe > pe_threshold:
+            if forward_pe is not None:
+                formatted = (
+                    f"{value:.2f}  [POSSIBLY DISTORTED BY ONE-TIME EPS ITEM — "
+                    f"see Forward P/E {forward_pe:.2f} below]"
+                )
+            else:
+                formatted = (
+                    f"{value:.2f}  [SUSPECT — possibly distorted by a one-time EPS item; "
+                    f"forward P/E unavailable]"
+                )
 
         rendered_rows.append(f"  {label}: {formatted}")
 
@@ -598,11 +621,48 @@ def _build_ticker_context(
     exercise_count = sum(1 for d in derivatives if d.transaction_code == "M")
     grant_count    = sum(1 for d in derivatives if d.transaction_code == "A")
 
+    # --- Bug 2 fix: conviction signal (single dominant buyer/seller) ---
+    # Aggregate gross open-market dollars per distinct filer name, then
+    # compare the maximum single-filer total against the configurable
+    # conviction threshold.  This covers the CEO-alone scenario (e.g. Elon
+    # Musk buying $950 M) that the cluster flag misses because cluster
+    # requires ≥ 3 distinct names.
+    conviction_threshold = (
+        get_analysts_config().fundamental.insider_conviction_threshold_dollars
+    )
+
+    buy_by_filer: dict[str, float]  = {}
+    sell_by_filer: dict[str, float] = {}
+
+    for t in trades:
+        code    = t.transaction_code or ""
+        name    = t.insider_name or "__unknown__"
+        dollars = (t.shares or 0.0) * (t.price_per_share or 0.0)
+        if code == "P":
+            buy_by_filer[name]  = buy_by_filer.get(name, 0.0)  + dollars
+        elif code == "S":
+            sell_by_filer[name] = sell_by_filer.get(name, 0.0) + dollars
+
+    conviction_buy  = bool(
+        buy_by_filer and max(buy_by_filer.values()) >= conviction_threshold
+    )
+    conviction_sell = bool(
+        sell_by_filer and max(sell_by_filer.values()) >= conviction_threshold
+    )
+
+    # Bug 1 fix: render net dollars with an explicit sign and direction label.
+    # Previously ``{net_dollars:,.0f}`` emitted no sign on positive values,
+    # letting the LLM read +$949.7 M of buying as "selling $949.7 M".
+    net_sign  = "+" if net_dollars >= 0 else ""
+    direction = "net buy" if net_dollars > 0 else ("net sell" if net_dollars < 0 else "flat")
+
     lines.extend([
-        f"  net Form-4 dollars:           {net_dollars:,.0f}",
+        f"  net Form-4 dollars (+ = net buy / − = net sell):  {net_sign}{net_dollars:,.0f}  [{direction}]",
         f"  buys / sells (count):         {len(buys)} / {len(sells)}",
         f"  cluster_buying:               {cluster_buy}",
         f"  cluster_selling:              {cluster_sell}",
+        f"  conviction_buy:               {conviction_buy}",
+        f"  conviction_sell:              {conviction_sell}",
         f"  planned-sale ratio (10b5-1):  {planned_ratio:.2f}",
         f"  top filer role:               {top_role}",
         f"  derivative exercises:         {exercise_count}",

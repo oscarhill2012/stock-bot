@@ -20,6 +20,8 @@
     "max_insider_footnotes":      5,
     "max_insider_footnote_chars": 400,
     "mda_stub_char_threshold":    400,
+    "insider_conviction_threshold_dollars":  50000000,
+    "trailing_pe_implausibility_threshold":  200,
     "llm": {
       "timeout_seconds":   60,
       "max_output_tokens": 4000,

@@ -288,6 +288,49 @@ def _planned_sale_band(v: float) -> str:
     return ""
 
 
+def _conviction_buy_band(v: float) -> str:
+    """Return a flag annotation when the conviction_buy flag is set.
+
+    The conviction flag fires when a single filer's gross open-market buy
+    dollars in the window exceed the configurable threshold (default $50 M).
+    This covers CEO-alone scenarios that the cluster flag (≥ 3 distinct names)
+    cannot represent — a CEO buying hundreds of millions is the strongest
+    possible bullish insider signal and must not be diluted.
+
+    Parameters
+    ----------
+    v:
+        ``insider_conviction_buy_flag`` feature value (1.0 = flag set).
+
+    Returns
+    -------
+    str
+        ``"(conviction buy — single large buyer)"`` if flag is set, else ``""``.
+    """
+    return "(conviction buy — single large buyer)" if v >= 1.0 else ""
+
+
+def _conviction_sell_band(v: float) -> str:
+    """Return a flag annotation when the conviction_sell flag is set.
+
+    Symmetric counterpart to ``_conviction_buy_band``.  Fires when a single
+    filer's gross open-market sell dollars exceed the conviction threshold.
+    Signals a senior officer making a large discretionary exit, which is
+    meaningfully bearish even without a multi-filer cluster.
+
+    Parameters
+    ----------
+    v:
+        ``insider_conviction_sell_flag`` feature value (1.0 = flag set).
+
+    Returns
+    -------
+    str
+        ``"(conviction sell — single large seller)"`` if flag is set, else ``""``.
+    """
+    return "(conviction sell — single large seller)" if v >= 1.0 else ""
+
+
 # ---------------------------------------------------------------------------
 # Feature-bullet registries
 # ---------------------------------------------------------------------------
@@ -366,6 +409,10 @@ FUNDAMENTAL_BULLETS: list[_BulletEntry] = [
     ("insider_n_sells_30d",            "Insider sells 30d:",     _plain,        None),
     ("insider_cluster_sell_flag",      "Cluster sell flag:",     _plain,        _cluster_sell_band),
     ("insider_cluster_buy_flag",       "Cluster buy flag:",      _plain,        _cluster_buy_band),
+    # Conviction flags — single large buyer/seller (additive to cluster flags).
+    # Fire when one filer's gross open-market dollars exceed the threshold.
+    ("insider_conviction_buy_flag",    "Conviction buy flag:",   _plain,        _conviction_buy_band),
+    ("insider_conviction_sell_flag",   "Conviction sell flag:",  _plain,        _conviction_sell_band),
     ("insider_planned_sale_ratio",     "Planned sale ratio:",    _plain,        _planned_sale_band),
     ("insider_max_filer_role_rank",    "Top filer role rank:",   _plain,        None),
     # Derivative-security disclosures.

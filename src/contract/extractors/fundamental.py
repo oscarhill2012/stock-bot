@@ -32,6 +32,8 @@ from collections.abc import Mapping
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+from config.analysts import get_analysts_config
+
 # ---------------------------------------------------------------------------
 # Locked feature catalogue
 # ---------------------------------------------------------------------------
@@ -82,6 +84,13 @@ _KEYS = (
     # Legacy derivative counts (kept for back-compat).
     "insider_derivative_exercise_count",
     "insider_derivative_grant_count",
+    # High-conviction single-filer flags (Bug 2 fix).
+    # Set to 1.0 when a single filer's gross open-market buy/sell dollar
+    # value in the window exceeds the configurable conviction threshold.
+    # Additive: lives alongside the existing cluster_buy/sell flags —
+    # it covers the CEO-alone scenario that the cluster (≥3 names) misses.
+    "insider_conviction_buy_flag",
+    "insider_conviction_sell_flag",
 )
 
 # Number of distinct officer-level buyers/sellers required to trigger the
@@ -392,13 +401,49 @@ def _insider_aggregates_from_flat(
     # Per-code breakdown (Fix E) and senior-officer aggregate (Fix F).
     per_code = _insider_per_code_aggregates(window_trades)
 
+    # High-conviction single-filer flags (Bug 2 fix).
+    # Aggregate open-market dollars per distinct filer and compare against the
+    # configurable threshold.  This fills the gap where a single senior
+    # officer (e.g. CEO buying $950 M) does not trigger the cluster flag
+    # (which requires ≥ 3 distinct names) but is the *strongest possible*
+    # bullish insider signal.
+    conviction_threshold = (
+        get_analysts_config().fundamental.insider_conviction_threshold_dollars
+    )
+
+    # Per-filer gross dollar sums for open-market buys (code P) and sells (code S).
+    buy_by_filer: dict[str, float]  = {}
+    sell_by_filer: dict[str, float] = {}
+
+    for t in window_trades:
+        code    = t.get("transaction_code") or ""
+        name    = t.get("insider_name") or "__unknown__"
+        shares  = float(t.get("shares") or 0.0)
+        price   = float(t.get("price_per_share") or 0.0)
+        dollars = shares * price
+
+        if code == "P":
+            buy_by_filer[name] = buy_by_filer.get(name, 0.0) + dollars
+        elif code == "S":
+            sell_by_filer[name] = sell_by_filer.get(name, 0.0) + dollars
+
+    # Flag fires when ANY single filer's gross open-market total clears the threshold.
+    conviction_buy  = 1.0 if (
+        buy_by_filer and max(buy_by_filer.values()) >= conviction_threshold
+    ) else 0.0
+    conviction_sell = 1.0 if (
+        sell_by_filer and max(sell_by_filer.values()) >= conviction_threshold
+    ) else 0.0
+
     result = {
-        "insider_net_dollars_30d": buy_value - sell_value,
-        "insider_n_buys_30d":  float(len(buys)),
-        "insider_n_sells_30d": float(len(sells)),
-        "insider_cluster_buy_flag":  cluster_buy,
-        "insider_cluster_sell_flag": cluster_sell,
-        "insider_planned_sale_ratio": planned_ratio,
+        "insider_net_dollars_30d":      buy_value - sell_value,
+        "insider_n_buys_30d":           float(len(buys)),
+        "insider_n_sells_30d":          float(len(sells)),
+        "insider_cluster_buy_flag":     cluster_buy,
+        "insider_cluster_sell_flag":    cluster_sell,
+        "insider_planned_sale_ratio":   planned_ratio,
+        "insider_conviction_buy_flag":  conviction_buy,
+        "insider_conviction_sell_flag": conviction_sell,
     }
     result.update(per_code)
     return result

@@ -158,6 +158,24 @@ class FundamentalCaps(BaseModel):
     max_insider_footnotes:      int     = Field(ge=0, le=50)
     max_insider_footnote_chars: int     = Field(ge=1, le=5_000)
     mda_stub_char_threshold:    int     = Field(ge=1, le=2_000, default=400)
+
+    # Conviction-buy/sell threshold — minimum gross dollar value (USD) of
+    # open-market transactions by a *single* filer that triggers the
+    # ``insider_conviction_buy_flag`` / ``insider_conviction_sell_flag``
+    # features.  Designed to fire on a CEO buying tens of millions or more
+    # (the TSLA $950 M scenario) while staying silent on routine small trades.
+    # Default: $50 M — well above director-level routine purchases (~$100 K–
+    # $5 M) but well below major executive concentration events.
+    insider_conviction_threshold_dollars: int = Field(ge=1, default=50_000_000)
+
+    # Trailing P/E implausibility threshold — when trailing P/E exceeds this
+    # value the ratios render flags it as possibly distorted by a one-time
+    # EPS item and, if available, surfaces forward P/E prominently instead.
+    # Default: 200× — historically rare for non-distorted earnings; a one-time
+    # write-down or export charge easily pushes EPS to near-zero, sending P/E
+    # into the hundreds (AMD 676 in 2023).
+    trailing_pe_implausibility_threshold: int = Field(ge=10, default=200)
+
     llm:                        LlmCaps                        # per-call runtime caps
 
 
