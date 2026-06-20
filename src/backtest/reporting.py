@@ -260,6 +260,8 @@ def report_progress(run_dir: Path, settings: BacktestSettings, *, window: str) -
         run_dir=run_dir,
         cache=cache,
         horizons=settings.forward_return_horizons_days,
+        primary_horizon_by_analyst=settings.primary_horizon_by_analyst,
+        neutralise_by=settings.scoreboard_neutralise_by,
     )
 
 
@@ -306,6 +308,8 @@ def _append_scoreboard_section(
     run_dir: Path,
     cache: CachedDataStore,
     horizons: list[int],
+    primary_horizon_by_analyst: dict[str, int] | None = None,
+    neutralise_by: str = "sector",
 ) -> None:
     """Build the analyst scoreboard and append it to ``report/metrics.md``.
 
@@ -324,6 +328,13 @@ def _append_scoreboard_section(
         ``CachedDataStore`` backed by the per-window golden-cache SQLite.
     horizons:
         Forward horizons in calendar days (e.g. ``[1, 5, 20]``).
+    primary_horizon_by_analyst:
+        Per-analyst map of which horizon drives the headline metric (e.g.
+        ``{"news": 1, "fundamental": 20}``).  ``None`` lets the scoreboard
+        apply its own defaults.
+    neutralise_by:
+        Cross-sectional baseline for the excess-return metric — ``"sector"``
+        (sector-peer mean) or ``"universe"`` (whole-universe mean).
     """
     from backtest.scoreboard import build_analyst_scoreboard, render_scoreboard_md
 
@@ -335,7 +346,13 @@ def _append_scoreboard_section(
         return
 
     try:
-        result  = build_analyst_scoreboard(db_path=db_path, cache=cache, horizons=horizons)
+        result  = build_analyst_scoreboard(
+            db_path=db_path,
+            cache=cache,
+            horizons=horizons,
+            primary_horizon_by_analyst=primary_horizon_by_analyst,
+            neutralise_by=neutralise_by,
+        )
         section = render_scoreboard_md(result)
     except Exception:
         logger.exception("scoreboard: failed to build scoreboard for %s", run_dir)

@@ -67,6 +67,29 @@ class BacktestSettings(BaseModel):
     forward_return_horizons_days:  list[int]
     ohlcv_warmup_days:             int = 90
 
+    # ── Scoreboard evaluation settings ────────────────────────────────────────
+
+    # Per-analyst primary scoring horizon (calendar days).  The scoreboard
+    # reports ALL horizons but ranks analysts using this per-type horizon.
+    # News signals decay quickly (~1 day); fundamental signals persist (~20 days).
+    # Analysts NOT present in this map fall back to max(forward_return_horizons_days).
+    # Example: {"news": 1, "fundamental": 20, "technical": 5}
+    primary_horizon_by_analyst: dict[str, int] = Field(
+        default_factory=lambda: {"news": 1, "fundamental": 20},
+    )
+
+    # Cross-sectional neutralisation mode for the scoreboard excess metric.
+    # "sector"   → subtract the per-tick mean of the ticker's GICS sector peers
+    #              (uses CachedDataStore.read_company_ratios to look up sector).
+    #              Tickers whose sector is unavailable in the cache fall back to
+    #              "universe" mode for that ticker only, with a WARNING logged.
+    # "universe" → subtract the per-tick whole-universe cross-sectional mean
+    #              (original behaviour; no sector lookup required).
+    scoreboard_neutralise_by: str = Field(
+        default="sector",
+        pattern=r"^(sector|universe)$",
+    )
+
 
 _DEFAULT_PATH:                 Path = Path("config/backtest_settings.json")
 _cache: BacktestSettings | None      = None

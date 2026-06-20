@@ -637,25 +637,35 @@ class TestBuildAnalystScoreboard:
         yields non-zero excess.  AAPL consistently outperforms MSFT across all
         three ticks, so the analyst's bullish AAPL call yields a consistent
         positive excess → positive t-stat.
+
+        Phase 14 note: each (analyst, ticker) pair has a DIFFERENT confidence
+        value per tick (0.7, 0.8, 0.9) so the dedup proxy treats each tick as
+        a distinct fresh call (not a cache replay).  This gives n=6 as intended.
+        If confidence were identical across ticks, dedup would collapse to n=2
+        (one observation per ticker) — which is the correct behaviour for
+        replayed verdicts (see TestCacheReplayDedup).
         """
         build = self._import()
 
-        # Three ticks, each with AAPL (bullish, outperformer) and MSFT (neutral, flat).
+        # Three ticks — DELIBERATELY vary confidence so dedup does NOT collapse them
+        # (each tick represents a genuinely fresh verdict, not a cache replay).
         tick_data = [
-            ("tick-1", datetime(2025, 9, 5,  13, 30, tzinfo=UTC)),
-            ("tick-2", datetime(2025, 9, 8,  13, 30, tzinfo=UTC)),
-            ("tick-3", datetime(2025, 9, 9,  13, 30, tzinfo=UTC)),
+            ("tick-1", datetime(2025, 9, 5,  13, 30, tzinfo=UTC), 0.70),
+            ("tick-2", datetime(2025, 9, 8,  13, 30, tzinfo=UTC), 0.80),
+            ("tick-3", datetime(2025, 9, 9,  13, 30, tzinfo=UTC), 0.90),
         ]
 
         rows = []
-        for tid, ts in tick_data:
+        for tid, ts, conf in tick_data:
             rows.append(_make_evidence_row(
                 analyst="technical", ticker="AAPL",
                 tick_id=tid, recorded_at=ts, lean="bullish",
+                confidence=conf,  # varies → dedup treats each as a fresh call
             ))
             rows.append(_make_evidence_row(
                 analyst="technical", ticker="MSFT",
                 tick_id=tid, recorded_at=ts, lean="neutral",
+                confidence=conf,
             ))
 
         db_path = _build_fixture_db(tmp_path, rows)
@@ -684,8 +694,9 @@ class TestBuildAnalystScoreboard:
         result = build(db_path=db_path, cache=mock_cache, horizons=[1])
 
         cell = result.cell(analyst="technical", horizon=1, subset="all")
-        # AAPL (bullish) + MSFT (neutral) × 3 ticks = 6 total verdicts.
-        assert cell.n == 6, f"Expected n=6; got {cell.n}"
+        # Each tick has a distinct confidence → dedup keeps all 3 ticks per ticker.
+        # AAPL (bullish, 3 ticks) + MSFT (neutral, 3 ticks) = 6 verdicts.
+        assert cell.n == 6, f"Expected n=6 (3 ticks × 2 tickers, all distinct); got {cell.n}"
 
         # t-stat and p must be finite, non-NaN numbers.
         assert math.isfinite(cell.t_stat), f"t-stat must be finite; got {cell.t_stat}"
@@ -841,17 +852,24 @@ class TestBuildAnalystScoreboard:
 
         Subset 'bullish' only (AAPL verdicts):
           n = 2.  Positive = 1.  hit_rate = 0.5.
+
+        Phase 14 note: AAPL confidence differs per tick (0.7 vs 0.6) so the
+        dedup proxy treats each tick as a distinct fresh call, preserving n=2
+        for the bullish AAPL verdicts.  If they were identical, dedup would
+        collapse to n=1 (correct cache-replay handling — see TestCacheReplayDedup).
         """
         build = self._import()
 
         rows = [
             # Tick 1: AAPL outperforms — bullish call is a hit.
+            # confidence=0.7 here and 0.6 in tick-2 → different → fresh calls.
             _make_evidence_row(
                 analyst="technical",
                 ticker="AAPL",
                 tick_id="tick-1",
                 recorded_at=datetime(2025, 9, 5, 13, 30, tzinfo=UTC),
                 lean="bullish",
+                confidence=0.7,   # tick-1 confidence
             ),
             _make_evidence_row(
                 analyst="technical",
@@ -859,6 +877,7 @@ class TestBuildAnalystScoreboard:
                 tick_id="tick-1",
                 recorded_at=datetime(2025, 9, 5, 13, 30, tzinfo=UTC),
                 lean="neutral",
+                confidence=0.7,
             ),
             # Tick 2: AAPL underperforms — bullish call is a miss.
             _make_evidence_row(
@@ -867,6 +886,7 @@ class TestBuildAnalystScoreboard:
                 tick_id="tick-2",
                 recorded_at=datetime(2025, 9, 8, 13, 30, tzinfo=UTC),
                 lean="bullish",
+                confidence=0.6,   # different confidence → dedup treats as new fresh call
             ),
             _make_evidence_row(
                 analyst="technical",
@@ -874,6 +894,7 @@ class TestBuildAnalystScoreboard:
                 tick_id="tick-2",
                 recorded_at=datetime(2025, 9, 8, 13, 30, tzinfo=UTC),
                 lean="neutral",
+                confidence=0.6,
             ),
         ]
 
@@ -915,6 +936,7 @@ class TestBuildAnalystScoreboard:
 
         cell_bullish = result.cell(analyst="technical", horizon=1, subset="bullish")
         # Bullish subset: AAPL in tick-1 (hit) and AAPL in tick-2 (miss).
+        # Both are kept by dedup (different confidence values → distinct fresh calls).
         assert cell_bullish.n == 2, f"Expected n=2 for bullish subset; got {cell_bullish.n}"
         assert cell_bullish.hit_rate == pytest.approx(0.5, abs=1e-9), (
             f"Expected hit_rate=0.5 for bullish subset; got {cell_bullish.hit_rate}"
@@ -1086,6 +1108,650 @@ class TestRenderScoreboardMd:
 
 
 # ── Tests: _forward_close helper is extracted and shared ─────────────────────
+
+# ── Tests: defect fixes (TDD — written BEFORE implementation) ─────────────────
+
+
+class TestCacheReplayDedup:
+    """Defect 1: cache-replay amplification.
+
+    A single fresh verdict replayed across consecutive ticks (same analyst,
+    ticker, lean, magnitude, confidence) must count as EXACTLY ONE observation
+    in the scoreboard, anchored at the first tick.  The six replayed copies
+    must NOT each contribute an independent score.
+
+    Design note: the ``analyst_evidence`` table carries NO hash or identity
+    column that directly flags a cache replay.  We use a deterministic proxy:
+    a run of identical consecutive (lean, magnitude, confidence) values for the
+    same (analyst, ticker) sequence collapses to the first occurrence.  This is
+    documented in the scoreboard source and acknowledged here.
+    """
+
+    def _import(self):
+        from backtest.scoreboard import build_analyst_scoreboard
+        return build_analyst_scoreboard
+
+    def test_replayed_verdict_counts_once_not_six(
+        self, tmp_path: pytest.TempPathFactory,
+    ) -> None:
+        """One bullish verdict replayed across 6 consecutive ticks for the same
+        (analyst, ticker) must produce exactly ONE scored observation, not six.
+
+        The proxy: collapse consecutive identical (lean, magnitude, confidence)
+        tuples for the same (analyst, ticker) pair into a single observation
+        anchored at the first tick.  The anchor tick's forward return is used.
+
+        Setup:
+          - Analyst "fundamental" on AAPL, 6 ticks (2025-09-01 through 2025-09-08
+            on market days), all with lean="bullish", magnitude=0.5, confidence=0.7.
+          - One separate ticker MSFT also has 6 verdicts (lean="neutral"), so the
+            cross-sectional mean can be computed.
+          - AAPL rises 5 % from base on tick-1; MSFT flat.
+
+        Expected: n=1 in the "fundamental" analyst cell at any horizon
+        (the first occurrence only, not 6).
+        """
+        build = self._import()
+
+        # Six consecutive ticks on market days for fundamental analyst on AAPL.
+        # All are identical in lean/magnitude/confidence — simulating a cache replay.
+        tick_dates = [
+            ("tick-2025-09-01", datetime(2025, 9, 1, 13, 30, tzinfo=UTC)),
+            ("tick-2025-09-02", datetime(2025, 9, 2, 13, 30, tzinfo=UTC)),
+            ("tick-2025-09-03", datetime(2025, 9, 3, 13, 30, tzinfo=UTC)),
+            ("tick-2025-09-04", datetime(2025, 9, 4, 13, 30, tzinfo=UTC)),
+            ("tick-2025-09-05", datetime(2025, 9, 5, 13, 30, tzinfo=UTC)),
+            ("tick-2025-09-08", datetime(2025, 9, 8, 13, 30, tzinfo=UTC)),
+        ]
+
+        rows = []
+        for tid, ts in tick_dates:
+            # Identical verdict across all 6 ticks — this is the cache-replay pattern.
+            rows.append(_make_evidence_row(
+                analyst="fundamental",
+                ticker="AAPL",
+                tick_id=tid,
+                recorded_at=ts,
+                lean="bullish",
+                magnitude=0.5,
+                confidence=0.7,
+            ))
+            # MSFT is neutral on each tick — exists to make cs_mean non-trivial
+            # and to give the cross-sectional demean a second ticker.
+            rows.append(_make_evidence_row(
+                analyst="fundamental",
+                ticker="MSFT",
+                tick_id=tid,
+                recorded_at=ts,
+                lean="neutral",
+                magnitude=0.0,
+                confidence=0.5,
+            ))
+
+        db_path = _build_fixture_db(tmp_path, rows)
+
+        # Prices: each date's base bar returns AAPL=100, MSFT=100.
+        # Forward bars return AAPL=105, MSFT=100 (AAPL outperforms by 5 %).
+        _ANCHOR_DATE = date(2025, 9, 1)  # first tick date
+        _BASE_DATES = {
+            date(2025, 9, 1), date(2025, 9, 2), date(2025, 9, 3),
+            date(2025, 9, 4), date(2025, 9, 5), date(2025, 9, 8),
+        }
+
+        def _mock_read(ticker, start, end):
+            if start in _BASE_DATES:
+                # Base-price query — return base bar for either ticker.
+                ts_bar = datetime(start.year, start.month, start.day, 13, 30, tzinfo=UTC)
+                return [_make_ohlcbar(ticker=ticker, ts=ts_bar, open=100.0, close=100.0)]
+            # Forward-price query — AAPL outperforms, MSFT flat.
+            ts_bar = datetime(start.year, start.month, start.day, 13, 30, tzinfo=UTC)
+            if ticker == "AAPL":
+                return [_make_ohlcbar(ticker="AAPL", ts=ts_bar, open=105.0, close=105.0)]
+            return [_make_ohlcbar(ticker=ticker, ts=ts_bar, open=100.0, close=100.0)]
+
+        mock_cache = MagicMock()
+        mock_cache.read_ohlcv.side_effect = _mock_read
+
+        result = build(db_path=db_path, cache=mock_cache, horizons=[1])
+
+        cell = result.cell(analyst="fundamental", horizon=1, subset="all")
+
+        # KEY ASSERTION: without dedup the old code gives n=12 (6 ticks × 2 tickers).
+        # With dedup, the replayed AAPL verdict collapses to 1 observation;
+        # MSFT (neutral, different lean tuple) also collapses to 1 observation.
+        # n must be 2, not 12.
+        assert cell.n == 2, (
+            f"Cache-replay dedup failed: expected n=2 (1 AAPL + 1 MSFT after dedup); "
+            f"got n={cell.n}.  Without dedup this would be 12 (6 ticks × 2 tickers)."
+        )
+
+    def test_changed_verdict_breaks_dedup_run(
+        self, tmp_path: pytest.TempPathFactory,
+    ) -> None:
+        """A changed verdict (different lean) is treated as a NEW fresh call and
+        starts a new dedup run.  The transition verdict must also count.
+
+        Setup:
+          - Ticks 1–3: fundamental AAPL bullish (magnitude=0.5, confidence=0.7) — 1 obs.
+          - Tick 4:    fundamental AAPL bearish (magnitude=0.4, confidence=0.6) — new fresh call.
+          - Ticks 5–6: fundamental AAPL bearish (same as tick 4) — replays, collapse into tick 4.
+
+        Expected: n=2 (the first bullish observation + the first bearish observation).
+        We also need a second ticker to make the cross-sectional mean non-trivial.
+        """
+        build = self._import()
+
+        tick_dates = [
+            ("tick-1", datetime(2025, 9, 1, 13, 30, tzinfo=UTC)),
+            ("tick-2", datetime(2025, 9, 2, 13, 30, tzinfo=UTC)),
+            ("tick-3", datetime(2025, 9, 3, 13, 30, tzinfo=UTC)),
+            ("tick-4", datetime(2025, 9, 4, 13, 30, tzinfo=UTC)),
+            ("tick-5", datetime(2025, 9, 5, 13, 30, tzinfo=UTC)),
+            ("tick-6", datetime(2025, 9, 8, 13, 30, tzinfo=UTC)),
+        ]
+
+        rows = []
+        for i, (tid, ts) in enumerate(tick_dates):
+            lean       = "bullish" if i < 3 else "bearish"
+            magnitude  = 0.5       if i < 3 else 0.4
+            confidence = 0.7       if i < 3 else 0.6
+            rows.append(_make_evidence_row(
+                analyst="fundamental", ticker="AAPL",
+                tick_id=tid, recorded_at=ts,
+                lean=lean, magnitude=magnitude, confidence=confidence,
+            ))
+            # MSFT anchor — neutral throughout.
+            rows.append(_make_evidence_row(
+                analyst="fundamental", ticker="MSFT",
+                tick_id=tid, recorded_at=ts,
+                lean="neutral", magnitude=0.0, confidence=0.5,
+            ))
+
+        db_path = _build_fixture_db(tmp_path, rows)
+
+        _BASE_DATES = {
+            date(2025, 9, 1), date(2025, 9, 2), date(2025, 9, 3),
+            date(2025, 9, 4), date(2025, 9, 5), date(2025, 9, 8),
+        }
+
+        def _mock_read(ticker, start, end):
+            if start in _BASE_DATES:
+                ts_bar = datetime(start.year, start.month, start.day, 13, 30, tzinfo=UTC)
+                return [_make_ohlcbar(ticker=ticker, ts=ts_bar, open=100.0, close=100.0)]
+            ts_bar = datetime(start.year, start.month, start.day, 13, 30, tzinfo=UTC)
+            if ticker == "AAPL":
+                return [_make_ohlcbar(ticker="AAPL", ts=ts_bar, open=105.0, close=105.0)]
+            return [_make_ohlcbar(ticker=ticker, ts=ts_bar, open=100.0, close=100.0)]
+
+        mock_cache = MagicMock()
+        mock_cache.read_ohlcv.side_effect = _mock_read
+
+        result = build(db_path=db_path, cache=mock_cache, horizons=[1])
+
+        cell = result.cell(analyst="fundamental", horizon=1, subset="all")
+        # 1 bullish AAPL observation + 1 bearish AAPL observation + 1 neutral MSFT observation
+        # = 3 observations total (not 12).
+        assert cell.n == 3, (
+            f"Expected n=3 after verdict-change dedup; got n={cell.n}.  "
+            f"Should count: tick-1 bullish AAPL (anchor), tick-4 bearish AAPL (new fresh), "
+            f"tick-1 neutral MSFT (anchor)."
+        )
+
+
+class TestPerAnalystHorizon:
+    """Defect 2: per-analyst primary scoring horizon.
+
+    The scoreboard must use a per-analyst primary horizon for its headline metric
+    and ranking, driven by config.  News signals decay in ~1 day; fundamental
+    signals last ~20 days.  Both should still REPORT all horizons; the config
+    controls which horizon drives the 'primary' rank.
+
+    We test that:
+      - ``build_analyst_scoreboard`` accepts and uses a
+        ``primary_horizon_by_analyst`` mapping.
+      - The returned ``ScoreboardResult`` exposes ``primary_horizon(analyst)``
+        that returns the configured value per analyst.
+      - Cells exist at ALL horizons for EVERY analyst (reporting unchanged).
+      - The default fallback (analyst not in the map) uses the largest horizon.
+    """
+
+    def _import(self):
+        from backtest.scoreboard import build_analyst_scoreboard
+        return build_analyst_scoreboard
+
+    def _build_two_analyst_fixture(self, tmp_path):
+        """Return (db_path, mock_cache) for a two-analyst fixture.
+
+        Analysts: "news" (AAPL bullish) and "fundamental" (AAPL bullish).
+        Single tick, two tickers (AAPL + MSFT) so cross-sectional mean is defined.
+        AAPL: base=100, fwd_1d=103, fwd_20d=110.
+        MSFT: base=100, fwd_1d=100, fwd_20d=100.
+        """
+        rows = [
+            _make_evidence_row(
+                analyst="news", ticker="AAPL",
+                tick_id=TICK_A, recorded_at=OPEN_TICK, lean="bullish",
+            ),
+            _make_evidence_row(
+                analyst="news", ticker="MSFT",
+                tick_id=TICK_A, recorded_at=OPEN_TICK, lean="neutral",
+            ),
+            _make_evidence_row(
+                analyst="fundamental", ticker="AAPL",
+                tick_id=TICK_A, recorded_at=OPEN_TICK, lean="bullish",
+            ),
+            _make_evidence_row(
+                analyst="fundamental", ticker="MSFT",
+                tick_id=TICK_A, recorded_at=OPEN_TICK, lean="neutral",
+            ),
+        ]
+
+        db_path = _build_fixture_db(tmp_path, rows)
+
+        _BASE_DATE = date(2025, 9, 5)
+
+        def _mock_read(ticker, start, end):
+            ts_bar = datetime(start.year, start.month, start.day, 13, 30, tzinfo=UTC)
+            if start == _BASE_DATE:
+                return [_make_ohlcbar(ticker=ticker, ts=ts_bar, open=100.0, close=100.0)]
+            # Forward: AAPL outperforms at +1d and +20d; MSFT flat.
+            if ticker == "AAPL":
+                # +1d → +3 %; +20d → +10 %
+                close = 103.0 if (start - _BASE_DATE).days <= 5 else 110.0
+                return [_make_ohlcbar(ticker="AAPL", ts=ts_bar, open=close, close=close)]
+            return [_make_ohlcbar(ticker=ticker, ts=ts_bar, open=100.0, close=100.0)]
+
+        mock_cache = MagicMock()
+        mock_cache.read_ohlcv.side_effect = _mock_read
+        return db_path, mock_cache
+
+    def test_scoreboard_result_exposes_primary_horizon_per_analyst(
+        self, tmp_path: pytest.TempPathFactory,
+    ) -> None:
+        """``ScoreboardResult.primary_horizon(analyst)`` returns the configured
+        horizon for that analyst, or the default for unconfigured analysts.
+        """
+        build = self._import()
+        db_path, mock_cache = self._build_two_analyst_fixture(tmp_path)
+
+        result = build(
+            db_path=db_path,
+            cache=mock_cache,
+            horizons=[1, 5, 20],
+            primary_horizon_by_analyst={"news": 1, "fundamental": 20},
+        )
+
+        assert result.primary_horizon("news")        == 1,  \
+            "news analyst primary horizon should be 1d"
+        assert result.primary_horizon("fundamental") == 20, \
+            "fundamental analyst primary horizon should be 20d"
+
+    def test_news_analyst_primary_horizon_is_1d(
+        self, tmp_path: pytest.TempPathFactory,
+    ) -> None:
+        """The primary_horizon for the 'news' analyst must be 1 when configured.
+
+        Cells at ALL horizons must still exist (reporting is unaffected).
+        """
+        build = self._import()
+        db_path, mock_cache = self._build_two_analyst_fixture(tmp_path)
+
+        result = build(
+            db_path=db_path,
+            cache=mock_cache,
+            horizons=[1, 5, 20],
+            primary_horizon_by_analyst={"news": 1, "fundamental": 20},
+        )
+
+        # Primary horizon for news = 1.
+        assert result.primary_horizon("news") == 1
+
+        # All horizons must still have cells (reporting unchanged).
+        for h in [1, 5, 20]:
+            cell = result.cell(analyst="news", horizon=h, subset="all")
+            assert cell.n >= 0, f"Cell for news at {h}d must exist"
+
+    def test_fundamental_analyst_primary_horizon_is_20d(
+        self, tmp_path: pytest.TempPathFactory,
+    ) -> None:
+        """The primary_horizon for the 'fundamental' analyst must be 20 when configured."""
+        build = self._import()
+        db_path, mock_cache = self._build_two_analyst_fixture(tmp_path)
+
+        result = build(
+            db_path=db_path,
+            cache=mock_cache,
+            horizons=[1, 5, 20],
+            primary_horizon_by_analyst={"news": 1, "fundamental": 20},
+        )
+
+        assert result.primary_horizon("fundamental") == 20
+
+        # All horizons still have cells.
+        for h in [1, 5, 20]:
+            cell = result.cell(analyst="fundamental", horizon=h, subset="all")
+            assert cell.n >= 0
+
+    def test_primary_horizon_defaults_for_unconfigured_analyst(
+        self, tmp_path: pytest.TempPathFactory,
+    ) -> None:
+        """An analyst not in ``primary_horizon_by_analyst`` falls back to the largest
+        horizon in the ``horizons`` list (the most stable / long-term measure).
+        """
+        build = self._import()
+        db_path, mock_cache = self._build_two_analyst_fixture(tmp_path)
+
+        # "news" is in the map; "fundamental" is NOT — should default to 20.
+        result = build(
+            db_path=db_path,
+            cache=mock_cache,
+            horizons=[1, 5, 20],
+            primary_horizon_by_analyst={"news": 1},
+        )
+
+        # "fundamental" not in map → default = max(horizons) = 20.
+        assert result.primary_horizon("fundamental") == 20, (
+            "Unconfigured analyst should default to max(horizons)=20; "
+            f"got {result.primary_horizon('fundamental')}"
+        )
+
+    def test_config_driven_primary_horizons_loaded_from_settings(
+        self, tmp_path: pytest.TempPathFactory,
+    ) -> None:
+        """``primary_horizon_by_analyst`` must be loadable from backtest settings
+        so callers read it from config rather than hardcoding values.
+
+        We write a temporary settings JSON with the new key, load it, and assert
+        the mapping is present and correct.
+        """
+        import json
+        from backtest.settings import load_backtest_settings_from
+
+        # Write a minimal settings file that includes the new config key.
+        settings_path = tmp_path / "backtest_settings.json"
+        settings_data = {
+            "backtests_root": "backtests",
+            "ticks_per_day": ["open", "close"],
+            "failed_tick_abort_ratio": 0.10,
+            "fake_broker_starting_cash": 100000.0,
+            "forward_return_horizons_days": [1, 5, 20],
+            "ohlcv_warmup_days": 90,
+            "primary_horizon_by_analyst": {"news": 1, "fundamental": 20},
+        }
+        settings_path.write_text(json.dumps(settings_data), encoding="utf-8")
+
+        settings = load_backtest_settings_from(settings_path)
+
+        assert hasattr(settings, "primary_horizon_by_analyst"), \
+            "BacktestSettings must have 'primary_horizon_by_analyst' field"
+        assert settings.primary_horizon_by_analyst["news"] == 1
+        assert settings.primary_horizon_by_analyst["fundamental"] == 20
+
+
+class TestSectorNeutralisation:
+    """Defect 3: sector/beta neutralisation.
+
+    Excess must be computed against the ticker's SECTOR PEER GROUP when sector
+    data is available in the cache, rather than the whole-universe cross-sectional
+    mean.
+
+    Implementation: ``build_analyst_scoreboard`` accepts a ``neutralise_by``
+    parameter (``"sector"`` | ``"universe"``).  When ``"sector"``, it reads
+    ``cache.read_company_ratios(ticker, as_of)`` for each ticker to find its
+    sector, then computes the cross-sectional mean over that sector's tickers
+    in that tick.
+
+    Sector data comes from ``CachedDataStore.read_company_ratios``, which
+    returns a ``CompanyRatios`` model whose ``.sector`` field holds the GICS
+    sector string (e.g. ``"Technology"``, ``"Energy"``).
+
+    If sector data is unavailable for a ticker, it falls back to the whole
+    universe for that ticker's calculation and logs a WARNING.
+    """
+
+    def _import(self):
+        from backtest.scoreboard import build_analyst_scoreboard
+        return build_analyst_scoreboard
+
+    def test_sector_neutral_uses_sector_peers_not_whole_universe(
+        self, tmp_path: pytest.TempPathFactory,
+    ) -> None:
+        """Excess is computed against the sector peer mean, not the whole universe.
+
+        Synthetic two-sector setup where sector mean ≠ universe mean:
+
+          Tick T, four tickers:
+            Tech:    AAPL (+10 %), MSFT (+2 %)    → tech mean = +6 %
+            Energy:  XOM  (+0 %),  CVX  (−2 %)   → energy mean = −1 %
+
+          Analyst covers AAPL (bullish) and XOM (bullish) and neutral on MSFT and CVX.
+
+          Universe mean = (0.10 + 0.02 + 0.00 + (−0.02)) / 4 = 0.025 (2.5 %)
+
+          With sector-neutral excess:
+            AAPL excess = 0.10 − 0.06 = +0.04   (vs tech mean)
+            MSFT excess = 0.02 − 0.06 = −0.04   (vs tech mean, neutral → score = 0)
+            XOM  excess = 0.00 − (−0.01) = +0.01 (vs energy mean)
+            CVX  excess = (−0.02) − (−0.01) = −0.01 (vs energy mean, neutral → score = 0)
+
+            Bullish scores: AAPL = +1 × 0.04 = +0.04;  XOM = +1 × 0.01 = +0.01
+            Mean score (all, incl neutrals) = (+0.04 + 0 + 0.01 + 0) / 4 = 0.0125
+            In bps: +125
+
+          With universe-neutral excess:
+            AAPL excess = 0.10 − 0.025 = +0.075
+            XOM  excess = 0.00 − 0.025 = −0.025   ← negative! universe mean swamps it
+            Bullish scores: AAPL = +0.075, XOM = −0.025
+            Mean (all) = (0.075 + 0 − 0.025 + 0) / 4 = 0.0125 bps … wait
+
+        Revised: easier contrast — make the two sectors DIVERGE sharply so that
+        sector-neutral and universe-neutral give different signs for XOM:
+
+          Tick T:
+            Tech:    AAPL (+20 %), MSFT (+18 %)  → tech mean = +19 %
+            Energy:  XOM  (+1 %),  CVX  (−1 %)  → energy mean = 0 %
+
+          Universe mean = (0.20 + 0.18 + 0.01 + (−0.01)) / 4 = 0.095 (9.5 %)
+
+          Analyst: bullish AAPL, bullish XOM, neutral MSFT, neutral CVX.
+
+          Sector-neutral excess:
+            AAPL  = 0.20 − 0.19 = +0.01  (bullish → +0.01)
+            XOM   = 0.01 − 0.00 = +0.01  (bullish → +0.01)
+            Mean of all scores = (+0.01 + 0 + 0.01 + 0) / 4 = +0.005 → +50 bps
+
+          Universe-neutral excess:
+            AAPL  = 0.20 − 0.095 = +0.105 (bullish → +0.105)
+            XOM   = 0.01 − 0.095 = −0.085 (bullish → −0.085) ← NEGATIVE
+            Mean of all scores = (+0.105 + 0 − 0.085 + 0) / 4 = +0.005
+
+        Hmm, same mean in this case.  Need different number of tickers per sector
+        or skewed absolute values for the means to differ meaningfully.
+
+        FINAL SETUP — unequal sector sizes:
+          Tech (3 tickers): AAPL +15 %, MSFT +13 %, GOOG +14 %   → tech mean = +14 %
+          Energy (1 ticker): XOM −2 %                              → energy mean = −2 %
+
+          Universe mean = (0.15 + 0.13 + 0.14 + (−0.02)) / 4 = 0.40 / 4 = 0.10
+
+          Analyst: bullish AAPL, bullish XOM, neutral MSFT, neutral GOOG.
+
+          Sector-neutral:
+            AAPL excess = 0.15 − 0.14 = +0.01  (bullish → +0.01)
+            MSFT excess = 0.13 − 0.14 = −0.01  (neutral → 0)
+            GOOG excess = 0.14 − 0.14 =  0.00  (neutral → 0)
+            XOM  excess = −0.02 − (−0.02) = 0.00 (bullish → 0)
+            Mean all = (+0.01 + 0 + 0 + 0) / 4 = +0.0025 → +25 bps
+
+          Universe-neutral:
+            AAPL excess = 0.15 − 0.10 = +0.05  (bullish → +0.05)
+            MSFT excess = 0.13 − 0.10 = +0.03  (neutral → 0)
+            GOOG excess = 0.14 − 0.10 = +0.04  (neutral → 0)
+            XOM  excess = −0.02 − 0.10 = −0.12 (bullish → −0.12)
+            Mean all = (+0.05 + 0 + 0 − 0.12) / 4 = −0.07 / 4 = −0.0175 → −175 bps
+
+        Sector-neutral mean ≈ +25 bps (positive).
+        Universe-neutral mean ≈ −175 bps (negative).
+        The two neutralisation modes produce OPPOSITE SIGNS — ideal discriminator.
+        """
+        build = self._import()
+
+        rows = [
+            _make_evidence_row(
+                analyst="technical", ticker="AAPL",
+                tick_id=TICK_A, recorded_at=OPEN_TICK, lean="bullish",
+            ),
+            _make_evidence_row(
+                analyst="technical", ticker="MSFT",
+                tick_id=TICK_A, recorded_at=OPEN_TICK, lean="neutral",
+            ),
+            _make_evidence_row(
+                analyst="technical", ticker="GOOG",
+                tick_id=TICK_A, recorded_at=OPEN_TICK, lean="neutral",
+            ),
+            _make_evidence_row(
+                analyst="technical", ticker="XOM",
+                tick_id=TICK_A, recorded_at=OPEN_TICK, lean="bullish",
+            ),
+        ]
+
+        db_path = _build_fixture_db(tmp_path, rows)
+
+        _BASE_DATE = date(2025, 9, 5)
+        _FWD_RETURNS = {
+            "AAPL": 1.15, "MSFT": 1.13, "GOOG": 1.14, "XOM": 0.98,
+        }
+
+        def _mock_read_ohlcv(ticker, start, end):
+            ts_bar = datetime(start.year, start.month, start.day, 13, 30, tzinfo=UTC)
+            if start == _BASE_DATE:
+                return [_make_ohlcbar(ticker=ticker, ts=ts_bar, open=100.0, close=100.0)]
+            # Forward bar: multiply base 100 by the return multiplier.
+            fwd_close = _FWD_RETURNS.get(ticker, 1.0) * 100.0
+            return [_make_ohlcbar(ticker=ticker, ts=ts_bar, open=fwd_close, close=fwd_close)]
+
+        # Mock company ratios: AAPL/MSFT/GOOG → Technology, XOM → Energy.
+        def _make_mock_ratios(sector: str):
+            """Return a minimal mock CompanyRatios-like object with .sector set."""
+            mock_r = MagicMock()
+            mock_r.sector = sector
+            return mock_r
+
+        mock_cache = MagicMock()
+        mock_cache.read_ohlcv.side_effect = _mock_read_ohlcv
+        mock_cache.read_company_ratios.side_effect = lambda ticker, as_of: {
+            "AAPL": _make_mock_ratios("Technology"),
+            "MSFT": _make_mock_ratios("Technology"),
+            "GOOG": _make_mock_ratios("Technology"),
+            "XOM":  _make_mock_ratios("Energy"),
+        }.get(ticker)
+
+        # Sector-neutral mode: analyst's mean excess must be POSITIVE (≈ +25 bps).
+        result_sector = build(
+            db_path=db_path,
+            cache=mock_cache,
+            horizons=[1],
+            neutralise_by="sector",
+        )
+        cell_sector = result_sector.cell(analyst="technical", horizon=1, subset="all")
+        assert cell_sector.mean_excess_bps > 0, (
+            f"Sector-neutral excess should be positive (≈ +25 bps); "
+            f"got {cell_sector.mean_excess_bps:.2f} bps"
+        )
+
+        # Universe-neutral mode (the baseline fallback): mean excess must be NEGATIVE (≈ −175 bps).
+        result_universe = build(
+            db_path=db_path,
+            cache=mock_cache,
+            horizons=[1],
+            neutralise_by="universe",
+        )
+        cell_universe = result_universe.cell(analyst="technical", horizon=1, subset="all")
+        assert cell_universe.mean_excess_bps < 0, (
+            f"Universe-neutral excess should be negative (≈ −175 bps); "
+            f"got {cell_universe.mean_excess_bps:.2f} bps"
+        )
+
+    def test_sector_fallback_to_universe_when_ratios_unavailable(
+        self, tmp_path: pytest.TempPathFactory,
+    ) -> None:
+        """When sector data is unavailable for a ticker, the scoreboard falls
+        back to universe-mean neutralisation for that ticker and logs a WARNING.
+
+        This prevents a silent null result when the cache has no company_ratios
+        for a ticker — the scoreboard should remain functional, just less precise.
+        """
+        build = self._import()
+
+        rows = [
+            _make_evidence_row(
+                analyst="technical", ticker="AAPL",
+                tick_id=TICK_A, recorded_at=OPEN_TICK, lean="bullish",
+            ),
+            _make_evidence_row(
+                analyst="technical", ticker="MSFT",
+                tick_id=TICK_A, recorded_at=OPEN_TICK, lean="neutral",
+            ),
+        ]
+
+        db_path = _build_fixture_db(tmp_path, rows)
+
+        def _mock_read_ohlcv(ticker, start, end):
+            ts_bar = datetime(start.year, start.month, start.day, 13, 30, tzinfo=UTC)
+            if start == date(2025, 9, 5):
+                return [_make_ohlcbar(ticker=ticker, ts=ts_bar, open=100.0, close=100.0)]
+            close = 105.0 if ticker == "AAPL" else 100.0
+            return [_make_ohlcbar(ticker=ticker, ts=ts_bar, open=close, close=close)]
+
+        mock_cache = MagicMock()
+        mock_cache.read_ohlcv.side_effect = _mock_read_ohlcv
+        # Sector data unavailable for both tickers.
+        mock_cache.read_company_ratios.return_value = None
+
+        # Should not raise; should fall back gracefully to universe-mean.
+        result = build(
+            db_path=db_path,
+            cache=mock_cache,
+            horizons=[1],
+            neutralise_by="sector",
+        )
+
+        cell = result.cell(analyst="technical", horizon=1, subset="all")
+        # AAPL outperforms MSFT; bullish call is correct; positive excess.
+        assert cell.n > 0, "Should have scored at least one verdict"
+        assert cell.mean_excess_bps > 0, (
+            f"Fallback (universe) should still yield positive excess; "
+            f"got {cell.mean_excess_bps:.2f} bps"
+        )
+
+    def test_neutralise_by_config_key_loadable_from_settings(
+        self, tmp_path: pytest.TempPathFactory,
+    ) -> None:
+        """``neutralise_by`` must be loadable from ``config/backtest_settings.json``
+        via ``BacktestSettings``.
+        """
+        import json
+        from backtest.settings import load_backtest_settings_from
+
+        settings_path = tmp_path / "backtest_settings.json"
+        settings_data = {
+            "backtests_root": "backtests",
+            "ticks_per_day": ["open", "close"],
+            "failed_tick_abort_ratio": 0.10,
+            "fake_broker_starting_cash": 100000.0,
+            "forward_return_horizons_days": [1, 5, 20],
+            "ohlcv_warmup_days": 90,
+            "primary_horizon_by_analyst": {"news": 1, "fundamental": 20},
+            "scoreboard_neutralise_by": "sector",
+        }
+        settings_path.write_text(json.dumps(settings_data), encoding="utf-8")
+
+        settings = load_backtest_settings_from(settings_path)
+
+        assert hasattr(settings, "scoreboard_neutralise_by"), \
+            "BacktestSettings must have 'scoreboard_neutralise_by' field"
+        assert settings.scoreboard_neutralise_by == "sector"
+
 
 class TestForwardCloseHelper:
     """Verify that ``_forward_close`` is importable from ``backtest.reporting``

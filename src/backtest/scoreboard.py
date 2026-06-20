@@ -1,18 +1,24 @@
-"""Analyst predictive-power scoreboard (Phase 12).
+"""Analyst predictive-power scoreboard (Phase 12, revised Phase 14).
 
 Computes a baseline-corrected signal-quality metric for every analyst in a
 completed backtest run, comparing their directional lean (bullish / bearish /
 neutral) against realised forward returns from the per-window golden cache.
 
-The metric isolates SELECTION skill by removing the market-wide move via a
-per-tick cross-sectional demean:
+The metric isolates SELECTION skill by removing the market-wide (or sector-wide)
+move via a per-tick cross-sectional demean:
 
     base_price   = phase-matched ticker price at the verdict's tick
                    (bar.open for open-phase ticks, bar.close for close-phase)
     fwd_return_h = (forward_close_h − base_price) / base_price
-    excess_h     = fwd_return_h − mean(fwd_return_h over all tickers in that tick)
+    excess_h     = fwd_return_h − mean(fwd_return_h over peer group in that tick)
     position     = +1 / −1 / 0  for  bullish / bearish / neutral
     score_h      = position × excess_h
+
+Peer group depends on ``neutralise_by``:
+  ``"sector"``   — mean over tickers in the same GICS sector (from
+                   ``CachedDataStore.read_company_ratios``).  Falls back to
+                   universe when sector data is absent.
+  ``"universe"`` — mean over all tickers present in the tick (original behaviour).
 
 Aggregated per analyst × horizon × lean-subset {all, bullish, bearish}:
   - mean excess in basis points  (headline, cross-window comparable)
@@ -20,9 +26,40 @@ Aggregated per analyst × horizon × lean-subset {all, bullish, bearish}:
   - n                            (scored verdicts; window-edge excluded rows reduce n)
   - t-stat / p-value             (scipy.stats.ttest_1samp to separate signal from noise)
 
+Phase 14 defect fixes
+---------------------
+1. **Cache-replay dedup** — the report cache replays a cached LLM verdict
+   across many subsequent ticks (fundamental verdicts change slowly → ~83 %
+   cache-hit rate).  Counting each replayed tick as a separate observation
+   amplifies one confidently-wrong fresh call 6× into the score.
+
+   Fix: collapse consecutive identical (lean, magnitude, confidence) tuples for
+   the same (analyst, ticker) pair into a SINGLE observation anchored at the
+   FIRST tick in the run.  The forward return is measured from that anchor tick.
+
+   Caveat: the ``analyst_evidence`` table carries NO hash or identity column
+   that directly tags a cache replay (it records only lean/magnitude/confidence/
+   rationale).  The consecutive-identical proxy is a best-effort heuristic:
+   it correctly handles the common replay pattern (many ticks with the same
+   verdict) but would merge two genuinely independent verdicts that happen to
+   be numerically identical.  This limitation is documented here and in the
+   config README.
+
+2. **Per-analyst primary horizon** — news signals decay in ~1 day; scoring
+   them at +20d measures noise.  The ``primary_horizon_by_analyst`` config key
+   (``dict[str, int]``) sets per-analyst primary horizons.  All horizons are
+   still scored and reported; the primary horizon drives the headline rank
+   column.  Unconfigured analysts default to ``max(horizons)``.
+
+3. **Sector neutralisation** — the ``neutralise_by`` parameter (default
+   ``"sector"``) subtracts the sector-peer mean rather than the whole-universe
+   mean so that a correct single-name call is not swamped by a sector-wide move.
+   Falls back to universe when ``read_company_ratios`` returns ``None``.
+
 Public surface
 --------------
-``build_analyst_scoreboard(db_path, cache, horizons) → ScoreboardResult``
+``build_analyst_scoreboard(db_path, cache, horizons, *, primary_horizon_by_analyst,
+                           neutralise_by) → ScoreboardResult``
     Pure function.  Reads ``analyst_evidence`` from the run's ``db.sqlite``
     and prices from the passed ``CachedDataStore``; no LLM, no network.
 
@@ -38,7 +75,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC
 from pathlib import Path
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
 import numpy as np
 import scipy.stats
@@ -68,9 +105,11 @@ class ScoreboardCell:
         Lean subset — ``"all"``, ``"bullish"``, or ``"bearish"``.
     n:
         Number of verdicts actually scored (coverage; reduced at window edge).
+        After Phase 14 dedup, this counts UNIQUE fresh-verdict observations,
+        not total replayed rows.
     mean_excess_bps:
         Mean of ``score_h`` in basis points.  Positive means the analyst's
-        directional calls outperformed the tick's cross-sectional mean.
+        directional calls outperformed the tick's peer-group mean.
     hit_rate:
         Fraction of non-neutral verdicts with ``score_h > 0``.  ``math.nan``
         when n == 0 (no data to compute).
@@ -105,10 +144,14 @@ class ScoreboardResult:
         Ordered list of analyst names present in the data.
     horizons:
         Forward horizons (calendar days) that were scored.
+    _primary_horizons:
+        Internal mapping from analyst name to its primary scoring horizon.
+        Accessed via ``primary_horizon(analyst)``.
     """
-    cells:     dict[tuple[str, int, str], ScoreboardCell] = field(default_factory=dict)
-    analysts:  list[str]  = field(default_factory=list)
-    horizons:  list[int]  = field(default_factory=list)
+    cells:              dict[tuple[str, int, str], ScoreboardCell] = field(default_factory=dict)
+    analysts:           list[str]                                  = field(default_factory=list)
+    horizons:           list[int]                                  = field(default_factory=list)
+    _primary_horizons:  dict[str, int]                             = field(default_factory=dict)
 
     def cell(self, *, analyst: str, horizon: int, subset: str) -> ScoreboardCell:
         """Return the cell for ``(analyst, horizon, subset)``.
@@ -135,6 +178,37 @@ class ScoreboardResult:
             )
         return self.cells[key]
 
+    def primary_horizon(self, analyst: str) -> int:
+        """Return the primary scoring horizon for ``analyst``.
+
+        The primary horizon is the one used for headline ranking.  It comes
+        from ``primary_horizon_by_analyst`` config (set during
+        ``build_analyst_scoreboard``).  Analysts not in the config map default
+        to ``max(horizons)``.
+
+        Parameters
+        ----------
+        analyst:
+            Analyst name (e.g. ``"news"``, ``"fundamental"``).
+
+        Returns
+        -------
+        int
+            Primary horizon in calendar days.
+
+        Raises
+        ------
+        KeyError
+            If ``analyst`` is not present in this result at all
+            (i.e. not in ``self.analysts``).
+        """
+        if analyst not in self.analysts:
+            raise KeyError(
+                f"Analyst {analyst!r} not found in scoreboard result.  "
+                f"Available: {self.analysts}"
+            )
+        return self._primary_horizons.get(analyst, max(self.horizons))
+
 
 # ── Internal types ────────────────────────────────────────────────────────────
 
@@ -145,6 +219,12 @@ class _VerdictKey(NamedTuple):
     tick_id:  str
 
 
+# Proxy identity for a cached verdict: (lean, magnitude, confidence) tuple.
+# Two rows with the same identity are considered a cache-replay continuation;
+# only the first occurrence in tick order is used as the anchor observation.
+_VerdictIdentity = tuple[str, float, float]
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def build_analyst_scoreboard(
@@ -152,6 +232,8 @@ def build_analyst_scoreboard(
     db_path: Path,
     cache: CachedDataStore,
     horizons: list[int],
+    primary_horizon_by_analyst: dict[str, int] | None = None,
+    neutralise_by: Literal["sector", "universe"] = "sector",
 ) -> ScoreboardResult:
     """Build the analyst predictive-power scoreboard from a completed run.
 
@@ -159,17 +241,23 @@ def build_analyst_scoreboard(
     and prices from ``cache``; produces no side-effects.  Suitable for unit
     testing on a small fixture DB.
 
-    Algorithm
-    ---------
-    1. Load all ``AnalystEvidenceRow`` records.
-    2. For each record, look up the phase-matched ``base_price`` from the
-       cache (``bar.open`` for open-phase ticks, ``bar.close`` for close-phase;
-       the 17:00 UTC threshold matches ``_spy_benchmark_series`` in reporting.py).
-    3. For each horizon ``h``, look up ``forward_close_h`` via the shared
-       ``_forward_close`` helper (same first-available-bar logic as the
-       backfill).
-    4. Compute per-tick cross-sectional means and demean each verdict's
-       ``fwd_return_h`` within its ``(tick_id, h)`` group.
+    Algorithm (Phase 14 revised)
+    ----------------------------
+    1. Load all ``AnalystEvidenceRow`` records, ordered by (analyst, ticker,
+       recorded_at) so consecutive ticks are adjacent.
+    2. **Dedup** (cache-replay fix): for each (analyst, ticker) pair, collapse
+       consecutive identical (lean, magnitude, confidence) tuples into a single
+       observation anchored at the FIRST occurrence.  Subsequent ticks with an
+       identical tuple are discarded from the scoring universe.  A change in
+       the tuple marks a new fresh call and starts a new run.
+       Caveat: this is a proxy heuristic — there is no replay-identity column
+       in ``analyst_evidence``.  See module docstring for limitations.
+    3. For each deduplicated verdict, look up ``base_price`` (phase-matched)
+       and forward closes per horizon from ``cache``.
+    4. Compute per-tick cross-sectional means using the **peer group** for each
+       ticker.  Peer group = same GICS sector (``read_company_ratios().sector``)
+       when ``neutralise_by="sector"``; whole universe when ``"universe"`` or
+       when sector data is absent.
     5. Aggregate per ``(analyst, horizon, subset)`` with mean, hit-rate, n,
        t-stat and p-value.
 
@@ -181,6 +269,14 @@ def build_analyst_scoreboard(
         ``CachedDataStore`` backed by the per-window golden-cache SQLite.
     horizons:
         List of forward horizons in calendar days (e.g. ``[1, 5, 20]``).
+    primary_horizon_by_analyst:
+        Optional mapping from analyst name to its primary scoring horizon.
+        Analysts not in the map fall back to ``max(horizons)``.
+        If ``None``, all analysts default to ``max(horizons)``.
+    neutralise_by:
+        Cross-sectional neutralisation mode.
+        ``"sector"``   — subtract per-tick sector-peer mean (preferred).
+        ``"universe"`` — subtract per-tick whole-universe mean (fallback).
 
     Returns
     -------
@@ -188,7 +284,10 @@ def build_analyst_scoreboard(
         Fully populated result with one ``ScoreboardCell`` per
         ``(analyst, horizon, subset)`` combination.
     """
-    # ── 1. Load verdict rows ─────────────────────────────────────────────────
+    primary_map: dict[str, int] = primary_horizon_by_analyst or {}
+    default_horizon = max(horizons) if horizons else 1
+
+    # ── 1. Load verdict rows, sorted for dedup ───────────────────────────────
     engine = create_engine(f"sqlite:///{db_path}", future=True)
     with Session(engine) as s:
         rows: list[AnalystEvidenceRow] = (
@@ -199,24 +298,72 @@ def build_analyst_scoreboard(
         logger.warning("scoreboard: no analyst_evidence rows found in %s", db_path)
         return ScoreboardResult()
 
-    # ── 2. Resolve base prices and forward closes per verdict ────────────────
-    # Structure: row_index → {h: (base_price, fwd_close)}
-    # We store both so forward returns can be computed after cross-sectional
-    # grouping.  Rows missing a base price are excluded entirely (n=0 at all
-    # horizons — no sentinel values injected).
+    # Sort by (analyst, ticker, recorded_at) so consecutive ticks are adjacent
+    # and the dedup pass can work in a single linear scan per (analyst, ticker) group.
+    rows_sorted = sorted(
+        rows,
+        key=lambda r: (r.analyst, r.ticker, _ensure_aware(r.recorded_at)),
+    )
 
-    row_base:     dict[int, float]                    = {}   # row idx → base_price
-    row_fwd_close: dict[int, dict[int, float | None]] = {}  # row idx → {h: fwd_close|None}
+    # ── 2. Dedup: collapse consecutive identical verdicts ────────────────────
+    # For each (analyst, ticker) pair, the 'last seen' identity tuple is tracked.
+    # When the tuple changes, the new row is a fresh call (anchor).
+    # When the tuple matches the last anchor, the row is a cache replay (discarded).
+    #
+    # Proxy identity: (lean, magnitude, confidence).  Rationale/key_factors are
+    # excluded because they are narrative and may vary trivially even for a cached
+    # LLM output that was served from a content-addressed cache.
+    #
+    # LIMITATION: two genuinely independent identical verdicts on adjacent ticks
+    # would be incorrectly merged.  This is unlikely in practice (independent
+    # verdicts vary in confidence if not in lean), and the alternative (counting
+    # every row) is far more misleading.  See module docstring.
 
-    for idx, row in enumerate(rows):
+    # last_identity[(analyst, ticker)] = (lean, magnitude, confidence) of the
+    # last ANCHOR row for this pair.  Missing = no prior anchor.
+    last_identity: dict[tuple[str, str], _VerdictIdentity] = {}
+    deduplicated_rows: list[AnalystEvidenceRow] = []
+
+    for row in rows_sorted:
+        pair     = (row.analyst, row.ticker)
+        identity = (row.lean, float(row.magnitude), float(row.confidence))
+
+        if last_identity.get(pair) == identity:
+            # Same identity as prior anchor → cache replay; discard.
+            logger.debug(
+                "scoreboard: dedup — discarding replayed verdict "
+                "(analyst=%s, ticker=%s, lean=%s, mag=%.2f, conf=%.2f)",
+                row.analyst, row.ticker, row.lean, row.magnitude, row.confidence,
+            )
+            continue
+
+        # New identity or first occurrence → this is a fresh call (anchor).
+        last_identity[pair] = identity
+        deduplicated_rows.append(row)
+
+    logger.info(
+        "scoreboard: dedup reduced %d rows → %d unique fresh-call observations "
+        "(%.1f %% removed as cache replays)",
+        len(rows_sorted),
+        len(deduplicated_rows),
+        100.0 * (1 - len(deduplicated_rows) / len(rows_sorted)) if rows_sorted else 0.0,
+    )
+
+    # ── 3. Resolve base prices and forward closes per deduplicated verdict ───
+    # Structure: row_index → base_price  and  row_index → {h: fwd_close|None}
+    # Rows missing a base price are excluded entirely (no sentinel values).
+
+    row_base:      dict[int, float]                    = {}
+    row_fwd_close: dict[int, dict[int, float | None]]  = {}
+
+    for idx, row in enumerate(deduplicated_rows):
         recorded_at = _ensure_aware(row.recorded_at)
         as_of_date  = recorded_at.date()
 
-        # Phase-matched base price: bar.open for open-phase (hour < 17 UTC),
-        # bar.close for close-phase.  Matches the _spy_benchmark_series rule.
+        # Phase-matched base price: open for open-phase (hour < 17 UTC),
+        # close for close-phase.  Matches _spy_benchmark_series rule in reporting.py.
         base_bars = cache.read_ohlcv(row.ticker, as_of_date, as_of_date)
         if not base_bars:
-            # No bar for this ticker on this date → exclude verdict entirely.
             logger.debug(
                 "scoreboard: no base bar for %s on %s — verdict excluded",
                 row.ticker, as_of_date,
@@ -241,49 +388,94 @@ def build_analyst_scoreboard(
             fwd_by_h[h] = _forward_close(cache, row.ticker, as_of_date, h)
         row_fwd_close[idx] = fwd_by_h
 
-    # ── 3. Compute fwd_returns per DISTINCT (tick_id, ticker, h) ────────────────
-    # The cross-sectional mean is a market fact — one return per ticker per tick,
-    # regardless of how many analysts covered that ticker.  We record the
-    # canonical fwd_return for each (tick_id, ticker) pair (using the first
-    # analysed row's prices, which are deterministic from the cache).
+    # ── 4. Compute sector assignments and fwd returns for the cs-mean ────────
+    # ticker_sector[(tick_id, ticker)] = sector string or None.
+    # fwd return is a market fact; deduplicated so each (tick_id, ticker) pair
+    # contributes at most one return to the cross-sectional mean.
 
     # ticker_fwd_by_tick[(tick_id, ticker, h)] = fwd_return (a single market fact).
     ticker_fwd_by_tick: dict[tuple[str, str, int], float] = {}
 
-    for idx, row in enumerate(rows):
-        if idx not in row_base:
-            continue   # excluded above
+    # ticker_sector_by_tick[(tick_id, ticker)] = sector | None
+    ticker_sector_by_tick: dict[tuple[str, str], str | None] = {}
 
-        base_price = row_base[idx]
+    for idx, row in enumerate(deduplicated_rows):
+        if idx not in row_base:
+            continue
+
+        recorded_at = _ensure_aware(row.recorded_at)
+        base_price  = row_base[idx]
+
+        tick_ticker_key = (row.tick_id, row.ticker)
+
+        # Look up sector for this ticker at this tick's date (PIT-correct).
+        if tick_ticker_key not in ticker_sector_by_tick:
+            sector: str | None = None
+
+            if neutralise_by == "sector":
+                try:
+                    ratios = cache.read_company_ratios(row.ticker, recorded_at)
+                    sector = ratios.sector if ratios is not None else None
+                except Exception:
+                    logger.warning(
+                        "scoreboard: read_company_ratios failed for %s — "
+                        "falling back to universe neutralisation",
+                        row.ticker,
+                    )
+                    sector = None
+
+                if sector is None:
+                    logger.warning(
+                        "scoreboard: no sector data for %s at %s — "
+                        "falling back to universe mean for this ticker",
+                        row.ticker, recorded_at.date(),
+                    )
+
+            ticker_sector_by_tick[tick_ticker_key] = sector
+
         for h, fwd_close_val in row_fwd_close[idx].items():
             if fwd_close_val is None:
-                continue  # window edge — excluded from this horizon
+                continue
 
             key = (row.tick_id, row.ticker, h)
             if key not in ticker_fwd_by_tick:
-                # First row for this (tick, ticker, h) — record its fwd_return.
-                # Subsequent analyst rows for the same ticker in the same tick
-                # are skipped for the cross-sectional universe (they would
-                # double-count the same market event).
                 fwd_return = (fwd_close_val - base_price) / base_price
                 ticker_fwd_by_tick[key] = fwd_return
 
-    # Build per-(tick_id, h) cross-sectional means over distinct tickers.
-    # cs_mean_by_tick[(tick_id, h)] = mean(fwd_return) over distinct tickers
-    #   that have a forward return in this group.
-    cs_mean_by_tick: dict[tuple[str, int], float] = {}
-    # Collect the set of (tick_id, h) pairs from the distinct-ticker universe.
-    tick_h_tickers: dict[tuple[str, int], list[float]] = defaultdict(list)
-    for (tick_id, _ticker, h), fwd_return in ticker_fwd_by_tick.items():
-        tick_h_tickers[(tick_id, h)].append(fwd_return)
+    # ── 5. Build cross-sectional means ───────────────────────────────────────
+    # For "sector" mode: cs_mean[(tick_id, h, sector)] = mean fwd_return for that sector
+    # For "universe" mode: cs_mean[(tick_id, h, None)] = whole-universe mean
+    # Both cases are handled by keying on (tick_id, h, group_key) where
+    # group_key = sector string or None (universe).
 
-    for (tick_id, h), fwd_returns in tick_h_tickers.items():
-        cs_mean_by_tick[(tick_id, h)] = float(np.mean(fwd_returns))
+    # Accumulate fwd returns per group.
+    group_fwds: dict[tuple[str, int, str | None], list[float]] = defaultdict(list)
 
-    # ── 4. Compute per-verdict excess and accumulate scores ──────────────────
-    # For each analyst row, look up the cross-sectional mean for its (tick_id, h)
-    # and compute excess = ticker_fwd_return − cs_mean.  Multiply by the
-    # lean position to get the score.
+    for (tick_id, ticker, h), fwd_return in ticker_fwd_by_tick.items():
+        tick_ticker_key = (tick_id, ticker)
+        sector          = ticker_sector_by_tick.get(tick_ticker_key)
+
+        if neutralise_by == "sector" and sector is not None:
+            # Sector group — ticker belongs to its own sector bucket.
+            group_fwds[(tick_id, h, sector)].append(fwd_return)
+        else:
+            # Universe group — always accumulate into the None bucket.
+            group_fwds[(tick_id, h, None)].append(fwd_return)
+
+    # When using sector mode, also accumulate a full-universe bucket as the
+    # fallback for tickers whose sector is unknown.
+    if neutralise_by == "sector":
+        for (tick_id, _ticker, h), fwd_return in ticker_fwd_by_tick.items():
+            group_fwds[(tick_id, h, None)].append(fwd_return)
+
+    # cs_mean_by_group[(tick_id, h, group_key)] = mean fwd_return
+    cs_mean_by_group: dict[tuple[str, int, str | None], float] = {
+        key: float(np.mean(fwds))
+        for key, fwds in group_fwds.items()
+    }
+
+    # ── 6. Compute per-verdict excess and accumulate scores ──────────────────
+    # For each analyst row, find the appropriate cs mean and score the verdict.
 
     # Scores: (analyst, h) → subset → list[score]
     score_store: dict[
@@ -291,9 +483,12 @@ def build_analyst_scoreboard(
         dict[str, list[float]],
     ] = defaultdict(lambda: {"all": [], "bullish": [], "bearish": []})
 
-    for idx, row in enumerate(rows):
+    for idx, row in enumerate(deduplicated_rows):
         if idx not in row_base:
-            continue  # no base bar — excluded entirely
+            continue
+
+        tick_ticker_key = (row.tick_id, row.ticker)
+        sector          = ticker_sector_by_tick.get(tick_ticker_key)
 
         for h in horizons:
             fwd_close_val = row_fwd_close[idx].get(h)
@@ -305,10 +500,16 @@ def build_analyst_scoreboard(
                 continue  # should not happen given the earlier loop
 
             ticker_fwd = ticker_fwd_by_tick[ticker_key]
-            cs_mean    = cs_mean_by_tick.get((row.tick_id, h), 0.0)
-            excess     = ticker_fwd - cs_mean
-            position   = _lean_to_position(row.lean)
-            score      = float(position * excess)
+
+            # Determine which cs-mean group to use for this ticker.
+            # Sector mode with known sector → use sector bucket.
+            # Otherwise → use universe bucket (None key).
+            group_key = sector if neutralise_by == "sector" and sector is not None else None
+
+            cs_mean = cs_mean_by_group.get((row.tick_id, h, group_key), 0.0)
+            excess  = ticker_fwd - cs_mean
+            position = _lean_to_position(row.lean)
+            score    = float(position * excess)
 
             key = (row.analyst, h)
             score_store[key]["all"].append(score)
@@ -317,9 +518,19 @@ def build_analyst_scoreboard(
             elif row.lean == "bearish":
                 score_store[key]["bearish"].append(score)
 
-    # ── 5. Aggregate into ScoreboardResult ───────────────────────────────────
-    analysts_seen: list[str] = sorted({r.analyst for r in rows})
-    result = ScoreboardResult(analysts=analysts_seen, horizons=sorted(horizons))
+    # ── 7. Aggregate into ScoreboardResult ───────────────────────────────────
+    analysts_seen: list[str] = sorted({r.analyst for r in deduplicated_rows})
+    result = ScoreboardResult(
+        analysts=analysts_seen,
+        horizons=sorted(horizons),
+    )
+
+    # Populate the per-analyst primary horizon mapping.  Analysts not in the
+    # supplied primary_map default to max(horizons).
+    result._primary_horizons = {
+        analyst: primary_map.get(analyst, default_horizon)
+        for analyst in analysts_seen
+    }
 
     for analyst in analysts_seen:
         for h in sorted(horizons):
@@ -360,7 +571,8 @@ def render_scoreboard_md(result: ScoreboardResult) -> str:
 
     Produces a section suitable for appending to ``report/metrics.md``.
     Layout: one sub-table per analyst, with rows for each
-    (horizon × subset) combination.
+    (horizon × subset) combination.  The primary horizon for each analyst
+    is marked with a ``★`` in the horizon label.
 
     Parameters
     ----------
@@ -376,9 +588,10 @@ def render_scoreboard_md(result: ScoreboardResult) -> str:
         "\n## Analyst predictive-power scoreboard\n",
         (
             "Metric: mean excess return (bps) = analyst lean × "
-            "(ticker fwd-return − per-tick cross-sectional mean).  "
+            "(ticker fwd-return − per-tick peer-group mean).  "
             "Positive = lean predicted the relative outperformer.  "
-            "Coverage (n) excludes window-edge verdicts where no forward bar exists.\n"
+            "Coverage (n) excludes window-edge verdicts where no forward bar exists.  "
+            "★ marks each analyst's primary scoring horizon.\n"
         ),
     ]
 
@@ -387,6 +600,7 @@ def render_scoreboard_md(result: ScoreboardResult) -> str:
         return "\n".join(lines)
 
     for analyst in result.analysts:
+        ph = result.primary_horizon(analyst)
         lines.append(f"\n### {analyst}\n")
         lines.append(
             "| horizon | subset   | n | mean excess (bps) | hit rate | t-stat | p-value |"
@@ -407,8 +621,11 @@ def render_scoreboard_md(result: ScoreboardResult) -> str:
                 t_str        = f"{c.t_stat:+.2f}"   if math.isfinite(c.t_stat)   else "N/A"
                 p_str        = f"{c.p_value:.3f}"   if math.isfinite(c.p_value)  else "N/A"
 
+                # Mark the primary horizon with ★ for easy identification.
+                horizon_label = f"+{h}d★  " if h == ph else f"+{h}d   "
+
                 lines.append(
-                    f"| +{h}d     | {subset:<8} | {c.n} | {mean_bps_str:>17} | {hit_str:<8} | {t_str:>6} | {p_str:>7} |"
+                    f"| {horizon_label} | {subset:<8} | {c.n} | {mean_bps_str:>17} | {hit_str:<8} | {t_str:>6} | {p_str:>7} |"
                 )
 
     return "\n".join(lines) + "\n"
