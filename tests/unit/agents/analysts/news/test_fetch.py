@@ -54,6 +54,7 @@ def _make_fake_caps(
     max_generic: int = 5,
     max_summary_chars: int = 200,
     roundup_company_threshold: int = 3,
+    dedup_title_similarity_threshold: float = 0.85,
 ) -> MagicMock:
     """Return a MagicMock that mimics a ``NewsCaps`` object.
 
@@ -68,17 +69,22 @@ def _make_fake_caps(
     roundup_company_threshold:
         Minimum distinct watchlist companies in a headline to trigger roundup
         demotion.  Mirrors ``NewsCaps.roundup_company_threshold``.
+    dedup_title_similarity_threshold:
+        Similarity ratio above which two normalised titles are considered
+        near-duplicates and collapsed to one representative.  Mirrors
+        ``NewsCaps.dedup_title_similarity_threshold``.
 
     Returns
     -------
     MagicMock
-        A mock with the four fields set.
+        A mock with all five fields set.
     """
     caps = MagicMock()
-    caps.max_articles_per_ticker         = max_articles
-    caps.max_generic_articles_per_ticker = max_generic
-    caps.max_summary_chars               = max_summary_chars
-    caps.roundup_company_threshold       = roundup_company_threshold
+    caps.max_articles_per_ticker            = max_articles
+    caps.max_generic_articles_per_ticker    = max_generic
+    caps.max_summary_chars                  = max_summary_chars
+    caps.roundup_company_threshold          = roundup_company_threshold
+    caps.dedup_title_similarity_threshold   = dedup_title_similarity_threshold
     return caps
 
 

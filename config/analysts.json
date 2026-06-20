@@ -1,10 +1,11 @@
 {
   "slack_percent": 15,
   "news": {
-    "max_articles_per_ticker":         25,
-    "max_generic_articles_per_ticker": 10,
-    "max_summary_chars":               1500,
-    "roundup_company_threshold":        3,
+    "max_articles_per_ticker":            25,
+    "max_generic_articles_per_ticker":    10,
+    "max_summary_chars":                  1500,
+    "roundup_company_threshold":          3,
+    "dedup_title_similarity_threshold":   0.85,
     "llm": {
       "timeout_seconds":   60,
       "max_output_tokens": 4000,

@@ -111,15 +111,26 @@ class NewsCaps(BaseModel):
         Minimum number of distinct watchlist companies that must be named in
         a headline (or summary) for the article to be classified as a macro
         roundup and demoted to score 0 (generic).  Default 3.
+    dedup_title_similarity_threshold:
+        Minimum normalised title similarity ratio [0.0–1.0] required for
+        two articles to be treated as near-duplicates and collapsed into
+        one representative.  Uses ``difflib.SequenceMatcher`` on the
+        normalised (lower-case, punctuation-stripped) title strings.
+        ``1.0`` means exact normalised match only; ``0.85`` (default)
+        collapses syndication variants such as trailing "(Reuters)" suffixes
+        or minor punctuation differences while leaving genuinely distinct
+        stories untouched.  Setting this below ~0.7 risks collapsing
+        legitimately different stories that share a common sub-phrase.
     llm:
         Per-call LLM runtime caps (timeout, token limit, retry counts).
     """
 
-    max_articles_per_ticker:         int     = Field(ge=1,  le=200)
-    max_generic_articles_per_ticker: int     = Field(ge=0,  le=200)
-    max_summary_chars:               int     = Field(ge=1,  le=10_000)
-    roundup_company_threshold:       int     = Field(ge=2,  le=50,   default=3)
-    llm:                             LlmCaps                           # per-call runtime caps
+    max_articles_per_ticker:            int   = Field(ge=1,   le=200)
+    max_generic_articles_per_ticker:    int   = Field(ge=0,   le=200)
+    max_summary_chars:                  int   = Field(ge=1,   le=10_000)
+    roundup_company_threshold:          int   = Field(ge=2,   le=50,    default=3)
+    dedup_title_similarity_threshold:   float = Field(ge=0.0, le=1.0,   default=0.85)
+    llm:                                LlmCaps                           # per-call runtime caps
 
 
 class FundamentalCaps(BaseModel):

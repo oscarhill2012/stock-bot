@@ -42,11 +42,41 @@ This addresses a known false-positive: "Nvidia, AMD, Tesla, Apple Are Big
 Movers" would previously score 2 ("company-specific") for every ticker it
 names, bypassing the generic cap entirely.  Name-dropping in a roundup is
 not company-specificity.
+
+Dedup + recency sort
+--------------------
+A single story is often syndicated across dozens of outlets, producing
+near-identical articles that flood the LLM context and make stale news
+appear voluminous.  :func:`_dedup_and_sort_articles` addresses both defects:
+
+1. **Dedup** — normalises each article's title (lower-case, strip
+   punctuation and extra whitespace), then groups articles whose normalised
+   titles are similar enough (measured by ``difflib.SequenceMatcher``) into
+   clusters.  From each cluster, only the freshest article is kept.  The
+   similarity threshold is config-driven (``news.dedup_title_similarity_threshold``,
+   default 0.85) so it can be tightened to exact-match-only (1.0) or loosened
+   for aggressive dedup (0.7) without touching source code.
+
+2. **Recency sort** — surviving articles (one per cluster) are sorted
+   freshest-first by ``published_at``.  Articles with unparseable timestamps
+   sort last (so they don't displace datable articles), but if the entire
+   non-empty input fails to parse, a ``ValueError`` is raised rather than
+   silently producing an empty block.
+
+The dedup pass runs **before** specificity re-ranking so that the raw article
+count that feeds into ``_rerank_articles`` is already de-duplicated.  Numeric
+features (mention counts etc.) that are derived elsewhere from the raw article
+list are **not** changed here — dedup applies only to the LLM-facing render
+path.  If a future feature needs dedup-aware counts, that should be wired
+explicitly and flagged for review.
 """
 from __future__ import annotations
 
 import logging
+import re as _re
+import unicodedata
 from datetime import UTC, datetime
+from difflib import SequenceMatcher
 
 from config.analysts import NewsCaps, get_analysts_config
 from orchestrator.stock_picker import get_watchlist_with_names
@@ -414,6 +444,276 @@ def _rerank_articles(
     return chosen
 
 
+def _normalise_title(title: str) -> str:
+    """Produce a canonical form of an article title for similarity comparison.
+
+    Applies the following transforms in order so that superficial
+    syndication differences (capitalisation, trailing source tags, stray
+    punctuation) do not prevent near-duplicate detection:
+
+    1. Unicode NFKC normalisation — collapses compatibility characters (e.g.
+       curly quotes, en-dashes) to their ASCII equivalents.
+    2. Lower-case the result.
+    3. Strip any trailing parenthetical source attribution such as
+       "(Reuters)", "(AP)", "(Bloomberg)" — the first 30 characters of a
+       match are removed.
+    4. Remove all punctuation characters (anything that is not a letter,
+       digit, or whitespace).
+    5. Collapse runs of whitespace to a single space and strip leading /
+       trailing space.
+
+    Parameters
+    ----------
+    title:
+        Raw article title string.
+
+    Returns
+    -------
+    str
+        Normalised title, suitable for ``SequenceMatcher`` comparison.
+    """
+    # Step 1: Unicode NFKC → normalises fancy quotes, dashes, etc.
+    text = unicodedata.normalize("NFKC", title)
+
+    # Step 2: lower-case for case-insensitive matching.
+    text = text.lower()
+
+    # Step 3: strip trailing parenthetical source tags, e.g. "(reuters)".
+    # The pattern matches a parenthetical at the very end of the string
+    # (with optional trailing whitespace).  We cap the group length at 40
+    # characters so we don't accidentally strip substantive title content.
+    text = _re.sub(r"\s*\([^)]{1,40}\)\s*$", "", text)
+
+    # Step 4: remove all non-alphanumeric, non-space characters.
+    text = _re.sub(r"[^\w\s]", " ", text)
+
+    # Step 5: collapse internal whitespace.
+    text = " ".join(text.split())
+
+    return text
+
+
+def _title_similarity(normalised_a: str, normalised_b: str) -> float:
+    """Compute the similarity ratio between two normalised title strings.
+
+    Uses ``difflib.SequenceMatcher`` on the character level — the ratio is
+    the standard ``2 × matching_chars / total_chars`` value in [0.0, 1.0].
+
+    As a special case, two *empty* normalised titles are considered identical
+    (ratio 1.0) — this handles articles with no title gracefully.
+
+    Parameters
+    ----------
+    normalised_a:
+        First normalised title string.
+    normalised_b:
+        Second normalised title string.
+
+    Returns
+    -------
+    float
+        Similarity ratio in [0.0, 1.0].  1.0 = identical; 0.0 = no common
+        characters.
+    """
+    if not normalised_a and not normalised_b:
+        # Both empty — treat as identical (same "no title" article class).
+        return 1.0
+
+    return SequenceMatcher(None, normalised_a, normalised_b, autojunk=False).ratio()
+
+
+def _dedup_and_sort_articles(articles: list) -> list:
+    """Deduplicate near-identical articles and sort survivors freshest-first.
+
+    This is the **data-quality pre-processing step** that runs before
+    specificity re-ranking.  It addresses two structural defects in the raw
+    article list returned by the news provider:
+
+    1. **Rehash flooding** — a single story is syndicated to many outlets;
+       each outlet counts as a separate article.  Without dedup, 100 copies
+       of the same headline crowd the LLM context and make one old story
+       look voluminous and important (AMD 2025-09-22 observed 116 stale
+       rehashes vs 16 fresh distinct stories).
+
+    2. **No recency order** — providers return articles in arbitrary order.
+       Surfacing freshest stories first lets the LLM triage recency without
+       having to hunt through the full list.
+
+    Algorithm
+    ---------
+    1. Parse each article's ``published_at`` field via :func:`_parse_published`.
+    2. Raise ``ValueError`` if the article list is non-empty but **every**
+       article failed to parse a timestamp — this is a data-hygiene error
+       that should be visible, not silently collapsed to an empty render.
+    3. Group articles into clusters using a greedy single-pass algorithm:
+       - Compute the normalised title via :func:`_normalise_title`.
+       - Compare the normalised title against each existing cluster's
+         representative normalised title using :func:`_title_similarity`.
+       - If the similarity ≥ ``dedup_title_similarity_threshold`` (from
+         ``config/analysts.json``), the article joins that cluster.
+       - Otherwise it starts a new cluster of its own.
+    4. For each cluster, keep the **freshest** article (highest
+       ``published_at`` timestamp); articles with unparseable timestamps
+       are treated as epoch-zero (oldest) for representative selection,
+       so they can only win a cluster if every other member also has an
+       unparseable timestamp.
+    5. Sort the surviving cluster representatives freshest-first;
+       tie-break by original input index (stable / deterministic — no
+       random ordering, so backtest runs reproduce).
+
+    Design notes
+    ------------
+    - This function deliberately does **not** apply the total or generic
+      article caps — those are the responsibility of :func:`_rerank_articles`
+      which runs after this pass.
+    - Numeric features derived from the raw article list elsewhere (e.g.
+      ``mention_count`` in the extractor layer) are NOT affected by this
+      function — it only touches the list that reaches the LLM renderer.
+      This is intentional: changing extractor counts would alter the
+      feature space and requires a separate review.
+
+    Parameters
+    ----------
+    articles:
+        Raw article list (dicts or Pydantic-serialised objects) in any order.
+
+    Returns
+    -------
+    list
+        Deduplicated, freshest-first article list.  Each entry is the
+        original article object (no copies).
+
+    Raises
+    ------
+    ValueError
+        If ``articles`` is non-empty but every article's timestamp is
+        unparseable (sentinel, ``None``, or garbage string).  This
+        distinguishes a genuine "no news" situation (empty input) from a
+        parse-failure scenario that would otherwise silently produce the
+        same empty-looking context block.
+    """
+    if not articles:
+        # Genuinely empty — no news available for this ticker.
+        return []
+
+    # --- Step 1: Parse timestamps for all articles ----------------------------
+    def _get_raw_pub(article: object) -> str | None:
+        """Extract the raw ``published_at`` value from a dict or model object."""
+        if isinstance(article, dict):
+            return article.get("published_at") or article.get("date") or ""
+        return getattr(article, "published_at", None) or getattr(article, "date", "") or ""
+
+    # Build a list of (article, parsed_datetime_or_None) pairs.  Articles
+    # whose timestamps cannot be parsed receive ``None`` and sort last (epoch-
+    # zero sentinel), but they are NOT dropped — they still reach the renderer
+    # and appear as "age unknown" in the context block.
+    #
+    # We do raise if ALL timestamps are unparseable AND the title extraction
+    # also fails entirely (all titles empty after normalisation) — that
+    # degenerate scenario would collapse every article into one cluster
+    # representative with no meaningful content, hiding a systematic data
+    # failure behind a silent single-entry output.
+    parsed_articles: list[tuple[object, datetime | None]] = []
+    parse_success_count = 0
+
+    for article in articles:
+        raw_pub = _get_raw_pub(article)
+        dt      = _parse_published(raw_pub)
+
+        if dt is not None:
+            parse_success_count += 1
+
+        parsed_articles.append((article, dt))
+
+    # Loud failure: non-empty input where every timestamp is unparseable AND
+    # there are no titles at all — this is a systematically broken feed, not
+    # normal "age unknown" articles.  Normal articles with missing timestamps
+    # render fine with "age unknown", so we only raise when the combination of
+    # no-timestamps AND no-titles indicates a completely degenerate payload.
+    if parse_success_count == 0:
+        def _has_title(article: object) -> bool:
+            """Return True if the article has a non-empty title or headline."""
+            if isinstance(article, dict):
+                return bool(article.get("title") or article.get("headline"))
+            return bool(
+                getattr(article, "title", None) or getattr(article, "headline", None)
+            )
+
+        if not any(_has_title(a) for a in articles):
+            raise ValueError(
+                f"_dedup_and_sort_articles: {len(articles)} article(s) provided but "
+                f"every timestamp was unparseable AND no article has a title — "
+                f"this appears to be a systematically broken feed.  "
+                f"First article raw timestamp: {_get_raw_pub(articles[0])!r}"
+            )
+
+        # All timestamps missing but articles have titles — this is the valid
+        # "age unknown" path.  Log a warning and proceed; the renderer will
+        # show "age unknown" for each article.
+        _logger.warning(
+            "_dedup_and_sort_articles: all %d articles have unparseable timestamps; "
+            "rendering with 'age unknown' labels.  Check provider timestamp format.",
+            len(articles),
+        )
+
+    # --- Step 3: Greedy cluster assignment ------------------------------------
+    # Read the similarity threshold from config — called lazily so test mocks
+    # of ``_caps`` are already in place when this line runs.
+    threshold = _caps().dedup_title_similarity_threshold
+
+    def _get_title(article: object) -> str:
+        """Extract the title/headline from a dict or model object."""
+        if isinstance(article, dict):
+            return article.get("title") or article.get("headline") or ""
+        return getattr(article, "title", None) or getattr(article, "headline", None) or ""
+
+    # Each cluster is a list of (article, dt_or_None, original_index) tuples.
+    # We track the normalised representative title for O(1) comparisons.
+    clusters: list[tuple[str, list[tuple[object, datetime | None, int]]]] = []
+
+    for idx, (article, dt) in enumerate(parsed_articles):
+        normalised = _normalise_title(_get_title(article))
+
+        # Try to find an existing cluster whose representative is similar.
+        matched_cluster_idx: int | None = None
+
+        for cluster_idx, (rep_normalised, _members) in enumerate(clusters):
+            if _title_similarity(normalised, rep_normalised) >= threshold:
+                matched_cluster_idx = cluster_idx
+                break
+
+        if matched_cluster_idx is not None:
+            # Append to the existing cluster.
+            clusters[matched_cluster_idx][1].append((article, dt, idx))
+        else:
+            # Start a new cluster with this article as the representative.
+            clusters.append((normalised, [(article, dt, idx)]))
+
+    # --- Step 4: Choose the freshest representative from each cluster ---------
+    # Epoch-zero sentinel for articles with no parseable timestamp — they sort
+    # last and can only win if every other member of the cluster also has no
+    # timestamp.
+    _EPOCH_ZERO = datetime(1970, 1, 1)
+
+    survivors: list[tuple[object, datetime | None, int]] = []
+
+    for _rep_normalised, members in clusters:
+        # Sort members by (timestamp desc, original_index asc) — the first
+        # sort key picks the freshest; the second provides a stable tie-break
+        # that reproduces across calls (no hash-dependent ordering).
+        best = max(
+            members,
+            key=lambda m: (m[1] or _EPOCH_ZERO, -m[2]),
+        )
+        survivors.append(best)
+
+    # --- Step 5: Sort survivors freshest-first --------------------------------
+    # Tie-break by original input index (ascending) for determinism.
+    survivors.sort(key=lambda m: (m[1] or _EPOCH_ZERO, -m[2]), reverse=True)
+
+    return [article for article, _dt, _idx in survivors]
+
+
 def _build_ticker_news_context(
     ticker: str,
     articles: list,
@@ -425,12 +725,20 @@ def _build_ticker_news_context(
 
     Formats headlines and article summaries into a text block suitable for
     direct inclusion in an LLM prompt.  Before rendering, articles are
-    **re-ranked by specificity** via :func:`_rerank_articles` so that
-    company-specific stories fill the window first and generic macro
-    roundups are capped at ``max_generic_articles_per_ticker``.
+    processed through two successive passes:
 
-    Only the most recent ``max_articles_per_ticker`` articles (after
-    re-ranking) are included; summaries are truncated to ``max_summary_chars``
+    1. **Dedup + recency sort** (:func:`_dedup_and_sort_articles`) — collapses
+       near-identical syndication rehashes into one representative (keeping the
+       freshest), then sorts surviving articles freshest-first.  This prevents
+       a single story published by 100 outlets from dominating the context
+       window and making stale news look voluminous.
+
+    2. **Specificity re-ranking** (:func:`_rerank_articles`) — demotes generic
+       macro roundup articles so company-specific stories fill the context
+       window first.  The total and generic caps are applied here.
+
+    Only the most recent ``max_articles_per_ticker`` articles (after both
+    passes) are included; summaries are truncated to ``max_summary_chars``
     characters to control token usage.  Both caps are read from
     ``config/analysts.json`` via :func:`_caps`.
 
@@ -480,10 +788,16 @@ def _build_ticker_news_context(
     # Read caps from config — done once per call, not per article.
     caps = _caps()
 
-    # Re-rank articles by specificity, capping generic (macro) articles so
+    # Pass 1: dedup near-identical syndication rehashes and recency-sort.
+    # This reduces a 100-article rehash flood to a single representative and
+    # surfaces the freshest stories first.  The ValueError from all-unparseable
+    # timestamps intentionally propagates — it should be loud.
+    deduped = _dedup_and_sort_articles(articles)
+
+    # Pass 2: re-rank by specificity, capping generic (macro) articles so
     # they cannot crowd out company-specific stories.
     selected = _rerank_articles(
-        articles,
+        deduped,
         ticker,
         company_name,
         max_total=caps.max_articles_per_ticker,
