@@ -233,7 +233,11 @@ def build_analyst_scoreboard(
     cache: CachedDataStore,
     horizons: list[int],
     primary_horizon_by_analyst: dict[str, int] | None = None,
-    neutralise_by: Literal["sector", "universe"] = "sector",
+    # Default is "universe": the ``company_ratios`` cache does not currently
+    # populate ``sector`` (NULL for every row in every window), so "sector"
+    # mode degrades to universe for every ticker anyway while emitting a
+    # per-ticker warning.  Re-default to "sector" once sector data is filled.
+    neutralise_by: Literal["sector", "universe"] = "universe",
 ) -> ScoreboardResult:
     """Build the analyst predictive-power scoreboard from a completed run.
 

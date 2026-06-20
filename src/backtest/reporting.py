@@ -309,7 +309,7 @@ def _append_scoreboard_section(
     cache: CachedDataStore,
     horizons: list[int],
     primary_horizon_by_analyst: dict[str, int] | None = None,
-    neutralise_by: str = "sector",
+    neutralise_by: str = "universe",
 ) -> None:
     """Build the analyst scoreboard and append it to ``report/metrics.md``.
 
