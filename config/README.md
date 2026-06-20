@@ -369,7 +369,11 @@ mechanism that keeps data clean without losing meaning. See the docstring of
 | Setting | Type | Meaning |
 |---|---|---|
 | `llm.timeout_seconds` | float | Wall-clock timeout (seconds) for the strategist LLM call. Range `(0, 600]`. Default 180. |
-| `llm.max_output_tokens` | int | Cap on output tokens per strategist call. Range `[256, 32768]`. Default 16000 — sized for a 20-ticker watchlist with full open-thesis composites (weight + rationale + horizon + target_price + stop_price + catalyst per stance) plus decision-level reasoning + thesis. |
+| `llm.max_output_tokens` | int | Cap on output tokens per strategist call. Range `[256, 32768]`. Default 16000 — sized for a 20-ticker watchlist with full open-thesis composites (weight + rationale + horizon + target_price + stop_price + catalyst per stance) plus decision-level reasoning + thesis. On `gemini-2.5-pro` the `thinking_budget` tokens are charged against this same cap. |
+| `llm.thinking_budget` | int [-1–24576] or omitted | Ceiling on the model's internal *thinking* tokens (Gemini 2.5 thinking models). Currently **2048** (under evaluation). The floor `gemini-2.5-pro` allows is `128` — it cannot fully disable thinking. These tokens count against `max_output_tokens`. Omit the field for native dynamic thinking, `-1` for explicit dynamic. Gemini-specific; a Claude-on-Vertex model (see the analyst model-routing work) ignores it. |
+| `llm.temperature` | float [0.0–2.0] | Sampling temperature for the strategist call. Currently **1.0** (under evaluation). Lower values (e.g. 0.3) damp rambling / attractor states on the long full-watchlist prompt; higher values trade determinism for variety. |
+| `llm.frequency_penalty` | float [-2.0–2.0] | Penalises tokens in proportion to how often they have already appeared (positive = penalise repetition). Default **0.5** — damps verbatim token-level repetition. |
+| `llm.presence_penalty` | float [-2.0–2.0] | Penalises tokens that have appeared at all, nudging toward new content over re-using emitted tokens. Default **0.5**. |
 | `llm.timeout_retries` | int | Total attempts on timeout (1 initial try + retries). Range `[1, 10]`. Default 3. |
 | `llm.schema_retries` | int | Total attempts on `pydantic.ValidationError`. Range `[1, 10]`. Default 3. |
 

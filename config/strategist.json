@@ -14,6 +14,10 @@
   "llm": {
     "timeout_seconds":   180,
     "max_output_tokens": 16000,
+    "thinking_budget":   2048,
+    "temperature":       1,
+    "frequency_penalty": 0.5,
+    "presence_penalty":  0.5,
     "timeout_retries":   3,
     "schema_retries":    3
   }

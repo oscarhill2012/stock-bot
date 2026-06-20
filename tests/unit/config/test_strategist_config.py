@@ -43,6 +43,10 @@ def _valid_strategist_json() -> dict:
         "llm": {
             "timeout_seconds":   180,
             "max_output_tokens": 8000,
+            "thinking_budget":   128,
+            "temperature":       0.3,
+            "frequency_penalty": 0.5,
+            "presence_penalty":  0.5,
             "timeout_retries":   3,
             "schema_retries":    3,
         },
@@ -59,6 +63,10 @@ def test_load_strategist_config_exposes_llm_caps(tmp_path) -> None:
 
     assert cfg.llm.timeout_seconds   == 180
     assert cfg.llm.max_output_tokens == 8000
+    assert cfg.llm.thinking_budget   == 128
+    assert cfg.llm.temperature       == 0.3
+    assert cfg.llm.frequency_penalty == 0.5
+    assert cfg.llm.presence_penalty  == 0.5
     assert cfg.llm.timeout_retries   == 3
     assert cfg.llm.schema_retries    == 3
 
