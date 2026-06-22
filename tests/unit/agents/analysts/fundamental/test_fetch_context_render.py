@@ -174,6 +174,36 @@ class TestRatiosBlockRendering:
         # 107_000_000_000 → "107000.00 M"
         assert "107000.00 M" in result, "Free cash flow not rendered in millions"
 
+    def test_beta_in_ratios_block(self):
+        """Beta is rendered (risk/volatility lens the prompt now relies on)."""
+        with patch("agents.analysts.fundamental.fetch._caps", return_value=_minimal_caps()):
+            result = _build_ticker_context(
+                ticker="AAPL",
+                filings_payload=[],
+                insider_bundle=_empty_bundle(),
+                insider_lookback_days=30,
+                ratios=_make_ratios_dict(),
+            )
+
+        # 1.2 → "1.20", labelled "Beta".
+        assert "Beta" in result
+        assert "1.20" in result
+
+    def test_sector_in_ratios_block(self):
+        """Sector renders verbatim as a string so the model can judge the
+        trailing multiple sector-relative (Phase 14 — sector now populated)."""
+        with patch("agents.analysts.fundamental.fetch._caps", return_value=_minimal_caps()):
+            result = _build_ticker_context(
+                ticker="AAPL",
+                filings_payload=[],
+                insider_bundle=_empty_bundle(),
+                insider_lookback_days=30,
+                ratios=_make_ratios_dict(),
+            )
+
+        assert "Sector" in result
+        assert "Technology" in result
+
     def test_analyst_opinion_count_rendered_as_integer(self):
         """Integer fields (analyst count) appear without decimal places."""
         with patch("agents.analysts.fundamental.fetch._caps", return_value=_minimal_caps()):

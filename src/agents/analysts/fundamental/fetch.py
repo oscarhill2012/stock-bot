@@ -127,8 +127,13 @@ def _render_ratios_block(lines: list[str], ratios: dict) -> None:
 
     Iterates over the known ``CompanyRatios`` scalar fields and appends a
     labelled line for every non-null value.  Fields are grouped loosely:
-    valuation multiples, then growth/profitability, then price/market
-    reference data, then analyst consensus.
+    sector context, then valuation multiples, then growth/profitability, then
+    price/market reference data, then analyst consensus.  ``sector`` is a
+    string and renders verbatim; it leads the block so the model can judge the
+    trailing multiple relative to its sector (the prompt asks for exactly
+    this).  Note ``forward_pe``, ``peg``, ``analyst_rating_avg`` and
+    ``number_of_analyst_opinions`` remain in the field order but are absent
+    from the live data feed, so in practice they are never rendered.
 
     Fraction fields (dividend yield, revenue growth, profit margin, ROE) are
     multiplied by 100 and formatted as percentages so the LLM receives a
@@ -158,8 +163,13 @@ def _render_ratios_block(lines: list[str], ratios: dict) -> None:
     _MILLIONS_FIELDS = {"free_cash_flow"}
 
     # Ordered list of (dict_key, human_label) pairs to render.
-    # Grouped: valuation → growth/profitability → price reference → analyst.
+    # Grouped: sector context → valuation → growth/profitability → price
+    # reference → analyst.  ``sector`` leads the block because the prompt
+    # instructs the model to judge the trailing multiple sector-relative, so
+    # the sector label must sit alongside the multiples it qualifies.  It is a
+    # string field and therefore renders verbatim (no numeric formatting).
     _FIELD_ORDER: list[tuple[str, str]] = [
+        ("sector",                       "Sector"),
         ("market_cap",                   "Market cap (B USD)"),
         ("trailing_pe",                  "Trailing P/E"),
         ("forward_pe",                   "Forward P/E"),
@@ -195,7 +205,12 @@ def _render_ratios_block(lines: list[str], ratios: dict) -> None:
         if value is None:
             continue
 
-        if key == "market_cap":
+        if isinstance(value, str):
+            # String fields (e.g. sector) render verbatim — no numeric
+            # formatting applies.  Guarded first so the numeric branches below
+            # never attempt arithmetic on a string.
+            formatted = value
+        elif key == "market_cap":
             # Convert raw USD → billions for readability.
             formatted = f"{value / 1e9:.3f} B"
         elif key in _MILLIONS_FIELDS:
@@ -510,7 +525,9 @@ def _build_ticker_context(
     #     fifty_two_week_high, fifty_two_week_low: price (2 dp)
     #   - analyst_rating_avg: plain 2 dp (scale: 1.0 = Strong Buy, 5.0 = Sell)
     #   - number_of_analyst_opinions: integer
-    #   - long_name, sector: string — omitted; not decision-relevant scalars
+    #   - sector: string — rendered verbatim so the LLM can judge the trailing
+    #     multiple sector-relative (the prompt asks for this)
+    #   - long_name: string — still omitted; not a decision-relevant scalar
     if ratios:
         _render_ratios_block(lines, ratios)
 

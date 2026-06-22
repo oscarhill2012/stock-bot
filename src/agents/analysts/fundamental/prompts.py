@@ -47,10 +47,16 @@ a structured verdict for that single ticker.
 The data block for {ticker} contains:
 
   -- COMPANY RATIOS (SCALAR) --
-    Non-null scalar fundamentals: valuation multiples (trailing P/E, forward
-    P/E, PEG, beta), growth/profitability (revenue growth YoY, profit margin,
-    ROE, free cash flow), price reference (50/200-day average, 52-week
-    high/low), and analyst consensus rating.  Omitted when unavailable.
+    Non-null scalar fundamentals only.  In practice this block reliably
+    carries: trailing P/E, beta (trailing market beta — a risk/volatility
+    lens), sector (the company's canonical sector, for sector-relative
+    valuation), revenue growth YoY, profit margin, ROE, free cash flow,
+    debt/equity, and price reference (50/200-day average, 52-week high/low).
+    Forward-looking and consensus fields (forward P/E, PEG, analyst rating,
+    analyst-opinion count) are NOT available in this data feed and will be
+    absent — do NOT reason as if they were provided, and NEVER invent a
+    numeric forward estimate that is not in the block.  Any field is simply
+    omitted when its value is unavailable.
 
   -- COMPANY FILINGS (PROSE) --
     MD&A and risk-factor excerpts from recent 10-K / 10-Q filings.
@@ -186,24 +192,38 @@ pending decision) separately.
    poor stock if its valuation already prices in great results; a weak
    company is a good stock if priced for disaster.  Before reading the prose,
    read the COMPANY RATIOS block and form a prior:
-     - Trailing/forward P/E and PEG show how much growth is already priced.
-       Rich multiples mean the bar is HIGH: merely-good filings can
-       disappoint, and any deceleration or hedged guidance is bearish.
-       Depressed multiples with positive FCF yield mean the bar is LOW:
-       "not as bad as feared" can re-rate the stock upward.
+     - Trailing P/E shows how much growth is already priced.  Rich multiples
+       mean the bar is HIGH: merely-good filings can disappoint, and any
+       deceleration or hedged guidance is bearish.  Depressed multiples with
+       positive FCF yield mean the bar is LOW: "not as bad as feared" can
+       re-rate the stock upward.  (Forward P/E and PEG are NOT in this feed —
+       do not look for them and do not infer them.)
      - IMPORTANT: A very high trailing P/E (e.g. above 200×) may be
        distorted by a one-time EPS item (export-control charge, write-down,
        litigation settlement) rather than reflecting the company's true
        earning power.  The data block will flag such values as
        "POSSIBLY DISTORTED BY ONE-TIME EPS ITEM".  When that flag appears,
-       anchor on forward P/E instead of trailing P/E and do NOT treat
-       the inflated trailing multiple as evidence that the stock is expensive.
+       do NOT treat the inflated trailing multiple as evidence that the stock
+       is expensive — there is no forward multiple to fall back on, so judge
+       the valuation QUALITATIVELY from the filings (revenue growth, margin
+       trend, FCF) and the company's own multiple history instead, and lower
+       confidence on the valuation read accordingly.
      - ROE and profit-margin DIRECTION show whether quality is improving or
        eroding.  Expensive + deteriorating is doubly bearish; cheap +
        improving is the classic re-rate setup.
-   Judge multiples RELATIVE to the company's own history and its sector — a
-   P/E that's rich for a utility is cheap for a hyper-grower; do not apply a
-   fixed numeric threshold.
+     - Beta is a risk/volatility lens, not a directional signal.  A high-beta
+       name (beta > ~1.3) will amplify whatever the broad market does over
+       the next few weeks, so size your confidence accordingly: a directional
+       lean on a high-beta name is more exposed to being swamped by a
+       market-wide move than the same lean on a low-beta defensive name.
+   Judge the trailing multiple RELATIVE to the company's own history AND its
+   sector (the COMPANY RATIOS block names the sector) — a P/E that's rich for
+   a utility is cheap for a hyper-grower; do not apply a fixed numeric
+   threshold.
+   For a FORWARD view, lean on the QUALITATIVE outlook in the MD&A / filings
+   prose (guidance tone, demand commentary, segment trajectory) rather than a
+   numeric estimate — you have no forward multiple, so the prose is your
+   forward signal.
    The lean is the GAP between what the filings/insiders show and what the
    valuation already assumes — not the absolute quality of the business.
    State your valuation read in one sentence in the summary; if the ratios
@@ -298,6 +318,15 @@ Forming the lean — do not default to neutral.
   cluster corroborating the valuation gap.  Moderate (0.4–0.6): one solid
   directional signal of modest size.  Low (≤0.35): tone-only, a stale
   (months-old) filing, or a valuation read with no catalyst.
+- Sparse input → humility.  When the evidence base for this ticker is
+  genuinely thin — the filings prose is a short cross-reference stub or
+  carries little year-over-year change, AND the insider block is empty or
+  near-empty — you have little to stand on.  In that case lower your
+  confidence and lean toward NEUTRAL rather than manufacturing a confident
+  directional call from scant evidence.  A thin-evidence lean should rarely
+  exceed 0.5 confidence.  This is distinct from genuinely-silent input (which
+  is a clean neutral): thin input means "not enough to be sure", so it is a
+  low-confidence lean, not a strong one.
 - Counter-example to the above.  An insider-selling block that is
   >80% planned (10b5-1) with no risk-factor change and no guidance
   change is a NEUTRAL lean — not a weakly bearish one.  The
