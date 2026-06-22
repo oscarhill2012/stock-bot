@@ -18,6 +18,12 @@ from contract.extractors.technical import derive_technical_verdict
 def _h(
     momentum_neutral_band_pct: float = 0.02,
     rsi_mean_reversion: float = 35.0,
+    *,
+    vol_ratio_breakout: float = 1.3,
+    suppress_bearish_under_golden_cross: bool = True,
+    suppress_bullish_under_death_cross: bool = True,
+    directional_52w_confidence: bool = True,
+    momentum_band_confidence_floor: float = 0.5,
 ) -> TechnicalHeuristics:
     """Canonical fixture heuristics — matches the shapes used by the spec examples.
 
@@ -30,12 +36,31 @@ def _h(
     rsi_mean_reversion:
         RSI level below which a bearish 20d-trend call is downgraded to neutral.
         Defaults to the config default of 35.  Pass ``0.0`` to disable the rule.
+    vol_ratio_breakout:
+        Volume-ratio threshold above which the ``vol_breakout`` magnitude boost
+        fires.  Defaults to the recalibrated config value (1.3 ≈ p94 of the
+        realised 20/50-bar ratio distribution); the old 1.5 was unreachable.
+    suppress_bearish_under_golden_cross:
+        Phase-13 regime gate — downgrade a bearish lean to neutral while a
+        golden cross holds.  Defaults to ``True`` (the config default).
+        Pass ``False`` to test the legacy regime-blind behaviour.
+    suppress_bullish_under_death_cross:
+        Symmetric regime gate — downgrade a bullish lean to neutral while a
+        death cross holds.  Defaults to ``True``.
+    directional_52w_confidence:
+        Phase-13 fix — only let 52-week proximity boost confidence when it
+        corroborates a bullish lean (never on a bearish lean).  Defaults to
+        ``True``; pass ``False`` for the legacy unconditional boost.
+    momentum_band_confidence_floor:
+        Phase-13 fix — confidence multiplier at the neutral-band edge for
+        borderline directional calls (ramps to 1.0 at twice the band width).
+        Defaults to 0.5; pass ``1.0`` to disable the damping.
     """
     return TechnicalHeuristics(
         rsi_overbought=75,
         rsi_oversold=25,
         pct_change_momentum_scale=4.0,
-        vol_ratio_breakout=1.5,
+        vol_ratio_breakout=vol_ratio_breakout,
         vol_ratio_dry_up=0.7,
         atr_high_volatility_pct=5.0,
         near_52w_extreme_pct=5.0,
@@ -45,6 +70,10 @@ def _h(
         magnitude_cap=1.0,
         momentum_neutral_band_pct=momentum_neutral_band_pct,
         rsi_mean_reversion=rsi_mean_reversion,
+        suppress_bearish_under_golden_cross=suppress_bearish_under_golden_cross,
+        suppress_bullish_under_death_cross=suppress_bullish_under_death_cross,
+        directional_52w_confidence=directional_52w_confidence,
+        momentum_band_confidence_floor=momentum_band_confidence_floor,
     )
 
 
@@ -334,19 +363,36 @@ def test_missing_cross_keys_do_not_blow_up():
     assert "death_cross" not in v.key_factors
 
 
-def test_golden_cross_does_not_flip_bearish_lean():
-    """A bullish ``golden_cross`` factor must NOT override a bearish trend lean.
+def test_golden_cross_does_not_flip_bearish_lean_to_bullish():
+    """A bearish-under-golden-cross lean is neutralised, never flipped to bullish.
 
-    The cross flag is corroborating context only — lean is owned by the 20d
-    momentum + RSI capitulation logic.
+    Phase-13 regime gate: a confirmed up-trend (``golden_cross``) downgrades a
+    bearish 20d-momentum call to *neutral* (it does not invert it to bullish).
+    The golden_cross context factor is still emitted.
     """
     v = derive_technical_verdict(
         _features(pct_change_20d=-0.05, pct_change_5d=-0.01, golden_cross=1.0),
         _h(),
     )
-    # 20d momentum is negative ⇒ lean stays bearish despite the golden_cross tag.
+    assert v.lean == "neutral"
+    assert "golden_cross" in v.key_factors
+    assert "bearish_suppressed_golden_cross" in v.key_factors
+
+
+def test_golden_cross_suppression_can_be_disabled():
+    """With the gate off, a bearish lean propagates unchanged under a golden cross.
+
+    Regression guard for the legacy regime-blind behaviour — toggling
+    ``suppress_bearish_under_golden_cross=False`` restores the old path where the
+    cross flag is corroborating context only.
+    """
+    v = derive_technical_verdict(
+        _features(pct_change_20d=-0.05, pct_change_5d=-0.01, golden_cross=1.0),
+        _h(suppress_bearish_under_golden_cross=False),
+    )
     assert v.lean == "bearish"
     assert "golden_cross" in v.key_factors
+    assert "bearish_suppressed_golden_cross" not in v.key_factors
 
 
 # ---------------------------------------------------------------------------
@@ -364,6 +410,9 @@ def test_closed_vocabulary():
         "vol_breakout", "vol_dry_up",
         "high_volatility",
         "golden_cross", "death_cross",
+        # Phase-13 regime-suppression factors.
+        "bearish_suppressed_golden_cross",
+        "bullish_suppressed_death_cross",
     }
     v = derive_technical_verdict(
         _features(
@@ -613,3 +662,221 @@ def test_rsi_mean_reversion_disabled_bearish_unaffected():
         f"Expected bearish when rule disabled (rsi_mean_reversion=0), got {v.lean!r}"
     )
     assert "rsi_moderate_oversold" not in v.key_factors
+
+
+# ---------------------------------------------------------------------------
+# Phase-13: regime-aware lean suppression (golden / death cross)
+# ---------------------------------------------------------------------------
+#
+# The audit found the bearish lean anti-predictive in this large-cap universe
+# and worst of all under a confirmed up-trend regime.  A bearish lean is now
+# downgraded to neutral while ``golden_cross`` holds, and the symmetric bullish
+# lean is downgraded under ``death_cross`` (a fading bounce).  Both gates are
+# config-toggled and compose AFTER the RSI capitulation flip.
+# ---------------------------------------------------------------------------
+
+def test_bearish_suppressed_under_golden_cross_uses_high_rsi():
+    """Bearish lean + golden cross + RSI clear of the mean-reversion band → neutral.
+
+    RSI 50 sidesteps the moderate-oversold neutralisation so we isolate the
+    regime gate as the cause of the downgrade.
+    """
+    v = derive_technical_verdict(
+        _features(pct_change_20d=-0.06, pct_change_5d=-0.02, rsi_14=50.0, golden_cross=1.0),
+        _h(),
+    )
+    assert v.lean == "neutral"
+    assert "bearish_suppressed_golden_cross" in v.key_factors
+
+
+def test_bearish_not_suppressed_without_golden_cross():
+    """A bearish lean with no golden cross is unaffected by the regime gate."""
+    v = derive_technical_verdict(
+        _features(pct_change_20d=-0.06, pct_change_5d=-0.02, rsi_14=50.0, golden_cross=0.0),
+        _h(),
+    )
+    assert v.lean == "bearish"
+    assert "bearish_suppressed_golden_cross" not in v.key_factors
+
+
+def test_capitulation_flip_survives_golden_cross_gate():
+    """A genuine capitulation flip to bullish is not clobbered by the golden-cross gate.
+
+    The gate only fires when the lean is *still* bearish — an RSI<oversold
+    capitulation name (already flipped to bullish) passes through untouched.
+    """
+    v = derive_technical_verdict(
+        _features(pct_change_20d=-0.06, pct_change_5d=-0.04, rsi_14=20.0, golden_cross=1.0),
+        _h(),
+    )
+    assert v.lean == "bullish"
+    assert "bearish_suppressed_golden_cross" not in v.key_factors
+
+
+def test_bullish_suppressed_under_death_cross():
+    """Bullish lean + death cross → downgraded to neutral (symmetric gate).
+
+    Replay evidence: ``bullish + death_cross`` faded (46 % up-rate, −0.71 %
+    mean +20d), so a bullish blip against a confirmed down-trend is neutralised.
+    """
+    v = derive_technical_verdict(
+        _features(pct_change_20d=0.05, pct_change_5d=0.02, rsi_14=55.0, death_cross=1.0),
+        _h(),
+    )
+    assert v.lean == "neutral"
+    assert "bullish_suppressed_death_cross" in v.key_factors
+
+
+def test_bullish_suppression_can_be_disabled():
+    """With the symmetric gate off, a bullish lean propagates under a death cross."""
+    v = derive_technical_verdict(
+        _features(pct_change_20d=0.05, pct_change_5d=0.02, rsi_14=55.0, death_cross=1.0),
+        _h(suppress_bullish_under_death_cross=False),
+    )
+    assert v.lean == "bullish"
+    assert "bullish_suppressed_death_cross" not in v.key_factors
+
+
+# ---------------------------------------------------------------------------
+# Phase-13: directional 52-week confidence boost
+# ---------------------------------------------------------------------------
+#
+# The unconditional ``near_52w_low`` boost was harmful on bearish names (it
+# raised confidence to 0.90 on the very names most likely to mean-revert up).
+# The boost is now gated to only corroborate a bullish lean.
+# ---------------------------------------------------------------------------
+
+def test_near_52w_low_does_not_boost_bearish_confidence():
+    """A bearish lean near the 52-week low gets NO confidence boost (Phase-13 fix).
+
+    Compares against the legacy (``directional_52w_confidence=False``) path,
+    which would have lifted confidence by ``confidence_boost_step``.  pct20 is
+    well beyond twice the band so the separate band-damping ramp is inert here.
+    """
+    # dist_from_low 3.0 % → within the 5 % near-low band.
+    feats = lambda: _features(
+        pct_change_20d=-0.08, pct_change_5d=-0.03, rsi_14=50.0, dist_from_low_52w_pct=3.0
+    )
+    directional = derive_technical_verdict(feats(), _h())
+    legacy      = derive_technical_verdict(feats(), _h(directional_52w_confidence=False))
+
+    assert directional.lean == "bearish"
+    assert "near_52w_low" in directional.key_factors  # context factor still emitted
+    # The directional gate withholds the boost; the legacy path applies it.
+    assert directional.confidence < legacy.confidence
+
+
+def test_near_52w_low_boosts_bullish_confidence():
+    """A bullish lean near the 52-week low (a bounce) still gets the boost."""
+    near = derive_technical_verdict(
+        _features(pct_change_20d=0.08, pct_change_5d=0.03, dist_from_low_52w_pct=3.0),
+        _h(),
+    )
+    far = derive_technical_verdict(
+        _features(pct_change_20d=0.08, pct_change_5d=0.03, dist_from_low_52w_pct=30.0),
+        _h(),
+    )
+    assert near.lean == "bullish"
+    assert near.confidence > far.confidence
+
+
+# ---------------------------------------------------------------------------
+# Phase-13: neutral-band confidence damping (stateless churn fix)
+# ---------------------------------------------------------------------------
+#
+# A directional call that only just cleared the ±band is a likely whipsaw and
+# should carry low confidence; a call well beyond the band keeps full
+# confidence.  Confidence is scaled by a linear ramp from the floor (at the
+# band edge) to 1.0 (at twice the band width).  Neutral leans are unaffected.
+# ---------------------------------------------------------------------------
+
+def test_band_damping_borderline_call_is_lower_confidence():
+    """A call just outside the band is less confident than one well beyond it.
+
+    Both share the same factors (momentum_agree), so the only difference is the
+    distance-from-band ramp.
+    """
+    borderline = derive_technical_verdict(
+        # pct20 0.021 is barely outside the 0.02 band → ramp near the floor.
+        _features(pct_change_20d=0.021, pct_change_5d=0.021),
+        _h(),
+    )
+    strong = derive_technical_verdict(
+        # pct20 0.08 is beyond twice the band → ramp == 1.0 (no damping).
+        _features(pct_change_20d=0.08, pct_change_5d=0.08),
+        _h(),
+    )
+    assert borderline.lean == "bullish"
+    assert strong.lean == "bullish"
+    assert borderline.confidence < strong.confidence
+
+
+def test_band_damping_at_floor_for_just_outside_band():
+    """At the band edge the ramp equals the floor, so confidence ≈ base × floor.
+
+    pct20 = band exactly → excess 0 → ramp == momentum_band_confidence_floor.
+    With base 0.5, momentum_agree +0.2 = 0.7 pre-ramp, then × 0.5 floor = 0.35.
+    """
+    v = derive_technical_verdict(
+        _features(pct_change_20d=0.02, pct_change_5d=0.02),
+        _h(momentum_neutral_band_pct=0.02, momentum_band_confidence_floor=0.5),
+    )
+    assert v.lean == "bullish"
+    assert v.confidence == pytest.approx(0.35, abs=1e-6)
+
+
+def test_band_damping_full_confidence_beyond_twice_band():
+    """At twice the band width the ramp reaches 1.0 — no damping applied.
+
+    pct20 = 0.04 = 2 × band → excess clamps to 1.0 → ramp 1.0.  Confidence is
+    the undamped 0.7 (base 0.5 + momentum_agree 0.2).
+    """
+    v = derive_technical_verdict(
+        _features(pct_change_20d=0.04, pct_change_5d=0.04),
+        _h(momentum_neutral_band_pct=0.02, momentum_band_confidence_floor=0.5),
+    )
+    assert v.confidence == pytest.approx(0.7, abs=1e-6)
+
+
+def test_band_damping_disabled_with_floor_one():
+    """Floor 1.0 disables the ramp — confidence matches the undamped value."""
+    v = derive_technical_verdict(
+        _features(pct_change_20d=0.021, pct_change_5d=0.021),
+        _h(momentum_band_confidence_floor=1.0),
+    )
+    # base 0.5 + momentum_agree 0.2 = 0.7, no ramp.
+    assert v.confidence == pytest.approx(0.7, abs=1e-6)
+
+
+def test_band_damping_does_not_touch_neutral_lean():
+    """A neutral lean (inside the band) carries no directional confidence to damp."""
+    v = derive_technical_verdict(
+        _features(pct_change_20d=0.01, pct_change_5d=0.01),
+        _h(),
+    )
+    assert v.lean == "neutral"
+    # base 0.5 + momentum_agree 0.2 = 0.7, untouched by the ramp.
+    assert v.confidence == pytest.approx(0.7, abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Phase-13: recalibrated volume-breakout threshold
+# ---------------------------------------------------------------------------
+
+def test_vol_breakout_fires_at_recalibrated_threshold():
+    """A vol_ratio of 1.35 now triggers ``vol_breakout`` at the recalibrated 1.3.
+
+    The old 1.5 threshold was mathematically unreachable for the 20/50-bar ratio
+    (max observed 1.545, p95 1.316); 1.3 ≈ p94 makes the rule live again.
+    """
+    boom = derive_technical_verdict(
+        _features(pct_change_20d=0.08, pct_change_5d=0.03, vol_ratio_20d=1.35),
+        _h(vol_ratio_breakout=1.3),
+    )
+    quiet = derive_technical_verdict(
+        _features(pct_change_20d=0.08, pct_change_5d=0.03, vol_ratio_20d=1.0),
+        _h(vol_ratio_breakout=1.3),
+    )
+    assert "vol_breakout" in boom.key_factors
+    assert "vol_breakout" not in quiet.key_factors
+    assert boom.magnitude > quiet.magnitude
