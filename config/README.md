@@ -14,6 +14,7 @@ and reference these files by relative path (resolved from the project root).
 | `risk_gate.json` | Five position-sizing constraints for the risk gate | `src/config/risk_gate.py` (`get_risk_gate_config()`) |
 | `models.json` | LLM + embedding model IDs for every model-using component | `src/config/models.py` (`get_models_config()`) |
 | `retry_429.json` | Backoff + retry policy for Vertex AI HTTP 429 (RESOURCE_EXHAUSTED) responses. Per-agent timeout/schema retry counts live in `analysts.json` / `strategist.json`. | `src/config/retry_429.py` (`get_retry_429_policy()`) |
+| `retry_transport.json` | Backoff + retry policy for transient network transport / DNS failures on the path to Vertex AI (`socket.gaierror`, `ConnectionError`, transport errors). | `src/config/retry_transport.py` (`get_retry_transport_policy()`) |
 | `backtest_windows.json` | Era-keyed historical date windows for the backtest harness | `src/backtest/windows.py` (`load_windows()`) |
 | `backtest_settings.json` | Backtests root (cache + runs nest per-window underneath), tick schedule, and lookback defaults for backtesting | `src/backtest/settings.py` (`get_backtest_settings()`) |
 
@@ -509,6 +510,45 @@ malformed request that retrying cannot fix.
 
 A leading `_comment` field is permitted at the top of `retry_429.json`; the
 loader strips it before validation.
+
+---
+
+## `retry_transport.json` — network transport / DNS backoff + retry policy
+
+Retry policy for transient network-transport failures on the path to Vertex AI,
+applied to every LLM-bearing agent in the pipeline (Fundamental, News,
+Strategist). Same wrapper as the 429 policy
+(`src/agents/llm_retry.py::RetryingAgentWrapper`); the `transport` retry class
+catches the connectivity blip and re-runs the inner agent with
+exponential-with-jitter backoff before failing the tick.
+
+Loaded once at boot via
+`src/config/retry_transport.py::get_retry_transport_policy()`
+(`lru_cache(maxsize=1)`); a process restart is required after edits.
+
+**Why this is needed.** Reaching Vertex requires an OAuth token refresh against
+`oauth2.googleapis.com` followed by the model call. A momentary *local*
+connectivity loss — a Wi-Fi reconnect, a VPN drop, or a DNS-resolver hiccup —
+makes the token refresh fail with `socket.gaierror` ("Temporary failure in name
+resolution"), which previously aborted the entire backtest tick (the driver
+treats a failed pipeline as fatal). These blips clear on their own within
+seconds, so a short backoff-and-retry recovers the tick instead of losing the
+whole run.
+
+**Scope of retry.** Only transient transport failures trigger this class:
+builtin `ConnectionError`, `socket.gaierror` (DNS), and the
+google-auth / `requests` / `httpx` transport-error types. Server-side HTTP 429s
+are handled separately by `retry_429.json`; HTTP 5xx and other application
+errors propagate immediately.
+
+| Setting | Type | Meaning |
+|---|---|---|
+| `max_attempts` | int ≥1 | Total number of attempts (not retries after the first failure). `1` disables retries entirely. Default 4. |
+| `base_delay_seconds` | float >0 | Initial wait before the first retry, in seconds. Subsequent retries grow exponentially with jitter, capped at `max_delay_seconds`. Default 2.0. |
+| `max_delay_seconds` | float ≥ `base_delay_seconds` | Upper bound on any single inter-retry wait, in seconds. Default 30.0. |
+
+A leading `_comment` field is permitted at the top of `retry_transport.json`;
+the loader strips it before validation.
 
 ---
 

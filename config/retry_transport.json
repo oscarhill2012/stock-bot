@@ -1,0 +1,6 @@
+{
+  "_comment": "Network transport / DNS retry policy for LLM calls. See src/config/retry_transport.py for the loader. Covers transient connection failures (DNS resolution, connection refused/reset, socket and HTTP-client transport errors) raised on the path to Vertex AI — distinct from server-side HTTP 429s, which live in retry_429.json. Exponential-with-jitter backoff because a local network/DNS blip needs a moment to clear, not an immediate retry.",
+  "max_attempts": 4,
+  "base_delay_seconds": 2.0,
+  "max_delay_seconds": 30.0
+}

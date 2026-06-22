@@ -535,7 +535,7 @@ def emit_analyst_summary(
         session-state key.  When non-empty, a ``· retries
         <class>×<n>`` suffix is appended to the summary row for each
         non-zero class.  Class order in the suffix is fixed:
-        ``rate_limit``, ``timeout``, ``schema``.
+        ``rate_limit``, ``transport``, ``timeout``, ``schema``.
 
     Returns
     -------
@@ -639,11 +639,11 @@ def emit_analyst_summary(
             )
 
     # Per-tick retry-counter suffix.  Only non-zero classes render; the
-    # fixed order (rate_limit, timeout, schema) matches the
+    # fixed order (rate_limit, transport, timeout, schema) matches the
     # _classify dispatcher's priority order and keeps row layout stable.
     if retries:
 
-        retry_order = ("rate_limit", "timeout", "schema")
+        retry_order = ("rate_limit", "transport", "timeout", "schema")
         parts       = [
             f"{cls}×{retries[cls]}"
             for cls in retry_order
