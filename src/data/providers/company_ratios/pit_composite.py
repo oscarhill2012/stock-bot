@@ -41,10 +41,22 @@ from edgar import Company, set_identity
 from data.registry import register
 from data.retry import with_retry
 from data.secrets import require_key
+from data.sector_map import sector_for
 
 from ...models import CompanyRatios, OHLCBar, PriceHistory
 
 logger = logging.getLogger(__name__)
+
+# --- Beta configuration -----------------------------------------------------
+# Trailing-beta window and minimum-observation floor.  Beta is the ordinary
+# market-model slope: cov(stock_returns, SPY_returns) / var(SPY_returns),
+# computed over the OVERLAPPING trailing daily returns of the stock and SPY,
+# using at most the last ``_BETA_WINDOW`` trading days.  Below
+# ``_BETA_MIN_OBS`` overlapping return observations (or when SPY variance is
+# ~0, or any non-finite intermediate) beta is returned as ``None`` rather than
+# a garbage value.
+_BETA_WINDOW:  int = 252   # ~1 trading year of daily bars
+_BETA_MIN_OBS: int = 60    # minimum overlapping daily-return observations
 
 
 @dataclass(frozen=True)
@@ -496,12 +508,129 @@ def _moving_average(closes: list[float], window: int) -> float | None:
     return statistics.fmean(closes[-window:])
 
 
+def _daily_returns(closes: list[float]) -> list[float]:
+    """Simple daily returns from an oldest-first list of close prices.
+
+    Each return is ``close[i] / close[i-1] - 1.0``.  A bar whose prior close is
+    zero or non-finite (or yields a non-finite return) is dropped so a single
+    bad bar cannot poison the covariance.  The result is therefore one element
+    shorter than ``closes`` minus any dropped points.
+
+    Parameters
+    ----------
+    closes:
+        Ordered list of close prices (oldest first).
+
+    Returns
+    -------
+    list[float]
+        Finite simple daily returns, oldest first.
+    """
+    returns: list[float] = []
+
+    # ``closes[1:]`` is deliberately one shorter than ``closes`` — pairing each
+    # close with its predecessor — so strict=False (uneven lengths expected).
+    for prev, cur in zip(closes, closes[1:], strict=False):
+        if prev in (None, 0) or not math.isfinite(prev) or cur is None:
+            continue
+        r = cur / prev - 1.0
+        if math.isfinite(r):
+            returns.append(r)
+
+    return returns
+
+
+def _compute_beta(
+    stock_history: PriceHistory,
+    spy_history:   PriceHistory,
+) -> float | None:
+    """Trailing market-model beta of ``stock_history`` against ``spy_history``.
+
+    Beta is the ordinary least-squares slope of stock returns regressed on SPY
+    returns: ``cov(stock, spy) / var(spy)``.  Both return series are aligned by
+    *date* (overlapping trading days only), then truncated to at most the last
+    ``_BETA_WINDOW`` aligned observations.
+
+    Point-in-time safety is the caller's responsibility — both ``PriceHistory``
+    objects must already be sliced to bars at or before ``as_of`` (the provider
+    obtains them via ``_fetch_price_series``, whose docstring guarantees no bar
+    after ``as_of.date()`` can leak).  This function performs no fetching.
+
+    Returns ``None`` (never a garbage value) when:
+      - fewer than ``_BETA_MIN_OBS`` overlapping return observations exist,
+      - the variance of SPY returns is ~0 (a flat benchmark — slope undefined),
+      - any intermediate or the final slope is non-finite.
+
+    Parameters
+    ----------
+    stock_history:
+        PIT-sliced OHLCV bars for the stock.
+    spy_history:
+        PIT-sliced OHLCV bars for SPY (the market proxy), sliced to the SAME
+        ``as_of`` as ``stock_history``.
+
+    Returns
+    -------
+    float | None
+        The trailing beta, or ``None`` when it cannot be computed safely.
+    """
+    # Index each series' close by calendar date so we can intersect on the
+    # exact trading days both instruments traded — guards against holiday /
+    # halt mismatches between the stock and the benchmark.
+    stock_by_date = {b.timestamp.date(): b.close for b in stock_history.bars}
+    spy_by_date   = {b.timestamp.date(): b.close for b in spy_history.bars}
+
+    common_dates = sorted(stock_by_date.keys() & spy_by_date.keys())
+
+    # Take at most the last ``_BETA_WINDOW`` overlapping CLOSES; daily returns
+    # then number one fewer than the closes used.
+    common_dates = common_dates[-(_BETA_WINDOW + 1):]
+
+    stock_closes = [stock_by_date[d] for d in common_dates]
+    spy_closes   = [spy_by_date[d]   for d in common_dates]
+
+    stock_returns = _daily_returns(stock_closes)
+    spy_returns   = _daily_returns(spy_closes)
+
+    # ``_daily_returns`` may drop a bad bar from one series but not the other,
+    # which would desynchronise the pair.  Re-align by truncating both to the
+    # shorter common length from the most-recent end.
+    n = min(len(stock_returns), len(spy_returns))
+    if n < _BETA_MIN_OBS:
+        return None
+
+    stock_returns = stock_returns[-n:]
+    spy_returns   = spy_returns[-n:]
+
+    # Sample covariance / variance — BOTH must use the same (n-1) normalisation
+    # so the 1/(n-1) factor cancels in the ratio.  ``statistics.covariance`` is
+    # the sample covariance, so we pair it with ``statistics.variance`` (also
+    # sample); mixing it with ``pvariance`` (population, 1/n) would leave a
+    # spurious n/(n-1) factor in the slope.
+    try:
+        var_spy = statistics.variance(spy_returns)
+        cov     = statistics.covariance(stock_returns, spy_returns)
+    except statistics.StatisticsError:
+        # Raised when n < 2 — defensive; the _BETA_MIN_OBS floor already covers it.
+        return None
+
+    # A flat benchmark gives an undefined slope.  Use an absolute floor rather
+    # than ``== 0`` so floating-point dust near zero does not blow up the ratio.
+    if not math.isfinite(var_spy) or var_spy < 1e-12:
+        return None
+
+    beta = cov / var_spy
+
+    return _safe_float(beta)
+
+
 def _ratios_from_components(
     symbol:      str,
     facts:       _Facts,
     history:     PriceHistory,
     xbrl_ratios: dict[str, float | None],
     as_of:       date,
+    beta:        float | None = None,
 ) -> CompanyRatios:
     """Combine XBRL ``_Facts`` + sliced ``PriceHistory`` + derived ratios into a ``CompanyRatios``.
 
@@ -525,6 +654,11 @@ def _ratios_from_components(
     as_of:
         The point-in-time date for this snapshot; stored on the model so
         the backtest cache can key lookups correctly.
+    beta:
+        Pre-computed trailing market-model beta (from ``_compute_beta``), or
+        ``None`` when it could not be computed safely.  Passed in rather than
+        computed here because it needs the PIT-sliced SPY series, which is
+        fetched alongside the stock series in ``fetch``.
 
     Returns
     -------
@@ -555,15 +689,22 @@ def _ratios_from_components(
     fifty_day   = _moving_average(closes,  50)
     two_hundred = _moving_average(closes, 200)
 
+    # Sector: prefer the static watchlist classification (GICS-style strings
+    # matching ``SECTOR_TO_ETF`` keys, required by the technical extractor's
+    # sector-ETF lookup) and fall back to the XBRL ``sic_description`` only when
+    # the ticker is off-watchlist.  The static map is PIT-invariant — a
+    # company's sector does not change over our windows — so this is leak-free.
+    sector = sector_for(symbol) or facts.sector
+
     return CompanyRatios(
         ticker                  = symbol,
         as_of                   = as_of,
         long_name               = facts.long_name,
-        sector                  = facts.sector,
+        sector                  = sector,
         market_cap              = market_cap,
         trailing_pe             = trailing_pe,
         forward_pe              = None,   # Requires analyst estimates — not in XBRL.
-        beta                    = None,   # Deferred: 1-year SPY correlation (future work).
+        beta                    = beta,   # Trailing SPY market-model beta (PIT-sliced).
         dividend_yield          = dividend_yield,
         fifty_day_average       = fifty_day,
         two_hundred_day_average = two_hundred,
@@ -627,12 +768,26 @@ async def fetch(
     symbol   = ticker.upper()
     as_of_d  = as_of.date() if isinstance(as_of, datetime) else as_of
 
-    # Run all three IO-bound fetches concurrently.  ``_load_xbrl_summary`` makes
+    # Run all four IO-bound fetches concurrently.  ``_load_xbrl_summary`` makes
     # its own edgartools + yfinance calls internally; keep it on a thread too.
-    facts, history, xbrl_ratios = await asyncio.gather(
+    #
+    # The SPY series is the market proxy for the trailing-beta calculation.  It
+    # is sliced to the SAME ``as_of`` as the stock series so beta is PIT-correct.
+    # NB: the SPY slice is identical for every ticker at a given ``as_of`` — a
+    # small per-``as_of`` memo would avoid the redundant refetch across the 20
+    # watchlist tickers, but the provider is invoked per (ticker, as_of) with no
+    # shared scope to hang a cache on, and the live pipeline already routes SPY
+    # through the cache-backed providers.  TODO: hoist beta to a batch step that
+    # fetches SPY once per tick if the redundant fetch ever shows up in fill
+    # timings.
+    facts, history, xbrl_ratios, spy_history = await asyncio.gather(
         asyncio.to_thread(_fetch_xbrl_facts,    symbol, as_of_d),
         asyncio.to_thread(_fetch_price_series,  symbol, as_of),
         asyncio.to_thread(_load_xbrl_summary,   symbol, as_of_d),
+        asyncio.to_thread(_fetch_price_series,  "SPY",  as_of),
     )
 
-    return _ratios_from_components(symbol, facts, history, xbrl_ratios, as_of_d)
+    # Trailing market-model beta from the PIT-sliced stock and SPY series.
+    beta = _compute_beta(history, spy_history)
+
+    return _ratios_from_components(symbol, facts, history, xbrl_ratios, as_of_d, beta)

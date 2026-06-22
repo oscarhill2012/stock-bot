@@ -290,7 +290,17 @@ def _emit_ratios_features(raw: dict) -> dict[str, float]:
         # Death cross: 50-day below 200-day AND price below 50-day MA.
         out["death_cross"]  = 1.0 if ma50 < ma200 and last < ma50 else 0.0
 
-    if beta is not None:
+    # The beta-aware confidence-damping feature is gated INDEPENDENTLY of beta
+    # presence by ``technical.beta_confidence_damping_enabled``.  This decouples
+    # two concerns that used to be conflated: now that ``pit_composite``
+    # populates a PIT-correct beta for the Fundamental analyst, the damping
+    # feature would auto-activate and silently alter the strategist's technical
+    # digest.  The offline validation (Phase-14 beta commit) found the feature
+    # does not move the technical *verdict* (``derive_technical_verdict`` never
+    # consumes it — it is a strategist-facing context line only), so the gate
+    # ships DISABLED by default; flip it in ``config/analyst_heuristics.json``
+    # if a future strategist tuning wants the signal back.
+    if beta is not None and _beta_damping_enabled():
         # Bug #23b: only emit this key when beta is actually known.  When beta
         # is absent the feature stays at the _zero_features default of None,
         # which the renderer maps to "(no data)".  The old 0.0 default was a
@@ -303,6 +313,28 @@ def _emit_ratios_features(raw: dict) -> dict[str, float]:
         out["beta_confidence_damping"] = 1.0 / (1.0 + abs(beta - 1.0))
 
     return out
+
+
+def _beta_damping_enabled() -> bool:
+    """Whether the ``beta_confidence_damping`` feature should be emitted.
+
+    Reads the ``technical.beta_confidence_damping_enabled`` flag from the
+    validated heuristics config.  Imported lazily (mirroring
+    ``derive_technical_verdict``) to dodge the import cycle between this module
+    and ``agents.analysts.heuristics``.  Defaults to disabled if the config
+    cannot be loaded — fail safe, since the feature is non-essential context.
+
+    Returns
+    -------
+    bool
+        ``True`` when the feature is enabled in config, else ``False``.
+    """
+    try:
+        from agents.analysts.heuristics import load_heuristics  # noqa: PLC0415
+
+        return load_heuristics().technical.beta_confidence_damping_enabled
+    except Exception:  # noqa: BLE001 — config load is best-effort; degrade to OFF
+        return False
 
 
 def _resolve_bars(raw: Mapping[str, Any]) -> list:

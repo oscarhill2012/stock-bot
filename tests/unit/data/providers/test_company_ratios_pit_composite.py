@@ -1,7 +1,7 @@
 """PIT-composite ratios provider — XBRL fundamentals + sliced OHLCV technicals."""
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -849,3 +849,211 @@ def test_ttm_at_annual_constraint_rejects_quarterly_value(
         "profit_margin must be None when no annual revenue row is available "
         "(without a revenue denominator the ratio is undefined)"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase-14 — PIT-correct trailing beta + static sector fill.
+# ---------------------------------------------------------------------------
+
+
+def _series(start: date, returns: list[float], base: float = 100.0) -> PriceHistory:
+    """Build a ``PriceHistory`` of consecutive daily closes from a return series.
+
+    The first bar is ``base``; each subsequent bar applies the next simple
+    return.  One calendar day per bar (weekends ignored — beta aligns by the
+    exact dates present in both series, so consecutive calendar days are fine
+    for a unit test).
+
+    Parameters
+    ----------
+    start:
+        Date of the first (oldest) bar.
+    returns:
+        Simple daily returns to compound forward from ``base``.
+    base:
+        Opening close price.
+
+    Returns
+    -------
+    PriceHistory
+        ``len(returns) + 1`` bars, oldest first.
+    """
+    bars: list[OHLCBar] = []
+    close = base
+    d = start
+    bars.append(OHLCBar(timestamp=datetime(d.year, d.month, d.day, tzinfo=UTC),
+                        open=close, high=close, low=close, close=close, volume=1.0))
+    for r in returns:
+        close = close * (1.0 + r)
+        d = d + timedelta(days=1)
+        bars.append(OHLCBar(timestamp=datetime(d.year, d.month, d.day, tzinfo=UTC),
+                            open=close, high=close, low=close, close=close, volume=1.0))
+    return PriceHistory(ticker="X", bars=bars)
+
+
+def test_compute_beta_known_inputs() -> None:
+    """Beta of a stock whose returns are exactly 2x SPY's must be ~2.0."""
+    import data.providers.company_ratios.pit_composite as mod
+
+    # 80 SPY daily returns alternating to give a non-zero variance; stock = 2x.
+    spy_returns   = [0.01 if i % 2 == 0 else -0.008 for i in range(80)]
+    stock_returns = [2.0 * r for r in spy_returns]
+
+    spy   = _series(date(2024, 1, 1), spy_returns)
+    stock = _series(date(2024, 1, 1), stock_returns)
+
+    beta = mod._compute_beta(stock, spy)
+
+    assert beta == pytest.approx(2.0, abs=1e-9)
+
+
+def test_compute_beta_below_min_obs_returns_none() -> None:
+    """Fewer than 60 overlapping return observations → None (never a guess)."""
+    import data.providers.company_ratios.pit_composite as mod
+
+    # 59 returns → 59 observations, one short of the _BETA_MIN_OBS=60 floor.
+    spy_returns   = [0.01 if i % 2 == 0 else -0.008 for i in range(59)]
+    stock_returns = [2.0 * r for r in spy_returns]
+
+    spy   = _series(date(2024, 1, 1), spy_returns)
+    stock = _series(date(2024, 1, 1), stock_returns)
+
+    assert mod._compute_beta(stock, spy) is None
+
+
+def test_compute_beta_flat_benchmark_returns_none() -> None:
+    """A flat SPY (var ≈ 0) gives an undefined slope → None, not inf/NaN."""
+    import data.providers.company_ratios.pit_composite as mod
+
+    spy_returns   = [0.0] * 80          # var(SPY) == 0
+    stock_returns = [0.01 if i % 2 == 0 else -0.01 for i in range(80)]
+
+    spy   = _series(date(2024, 1, 1), spy_returns)
+    stock = _series(date(2024, 1, 1), stock_returns)
+
+    assert mod._compute_beta(stock, spy) is None
+
+
+def test_compute_beta_caps_at_window() -> None:
+    """Only the last _BETA_WINDOW observations contribute (older bars ignored).
+
+    Construct a series whose OLD returns have a different stock/SPY slope (3x)
+    from the recent _BETA_WINDOW returns (1x).  The computed beta must reflect
+    only the recent window (≈1.0), proving the cap drops the stale tail.
+    """
+    import data.providers.company_ratios.pit_composite as mod
+
+    window = mod._BETA_WINDOW
+
+    old_spy    = [0.01 if i % 2 == 0 else -0.01 for i in range(100)]
+    old_stock  = [3.0 * r for r in old_spy]                 # 3x slope (should be dropped)
+    recent_spy = [0.01 if i % 2 == 0 else -0.01 for i in range(window)]
+    recent_stk = [1.0 * r for r in recent_spy]              # 1x slope (should win)
+
+    spy_returns   = old_spy + recent_spy
+    stock_returns = old_stock + recent_stk
+
+    spy   = _series(date(2022, 1, 1), spy_returns)
+    stock = _series(date(2022, 1, 1), stock_returns)
+
+    beta = mod._compute_beta(stock, spy)
+
+    assert beta == pytest.approx(1.0, abs=1e-6)
+
+
+def test_compute_beta_pit_slicing_excludes_future_bars() -> None:
+    """No bar dated after the (caller-sliced) cutoff contributes to beta.
+
+    The provider slices both series via ``_fetch_price_series`` (≤ as_of), so
+    here we assert the alignment-by-date logic: a future-dated tail appended to
+    only ONE series is silently ignored (no overlap), and a future tail with a
+    radically different slope on BOTH series does change the answer — i.e. beta
+    is computed strictly from the dates present in both inputs.  We verify the
+    former (the leak-relevant case): future stock bars with no SPY partner
+    cannot leak into the slope.
+    """
+    import data.providers.company_ratios.pit_composite as mod
+
+    spy_returns   = [0.01 if i % 2 == 0 else -0.008 for i in range(80)]
+    stock_returns = [2.0 * r for r in spy_returns]
+
+    spy   = _series(date(2024, 1, 1), spy_returns)
+    stock = _series(date(2024, 1, 1), stock_returns)
+
+    baseline = mod._compute_beta(stock, spy)
+
+    # Append future-dated stock bars with a wildly different (10x) slope — but
+    # no matching SPY dates, so they have no return partner and must be ignored.
+    future_start = stock.bars[-1].timestamp.date() + timedelta(days=1)
+    future = _series(future_start, [0.10] * 30, base=stock.bars[-1].close)
+    stock_with_future = PriceHistory(ticker="X", bars=stock.bars + future.bars[1:])
+
+    leaked = mod._compute_beta(stock_with_future, spy)
+
+    # Beta is unchanged: the unpaired future stock bars do not enter the slope.
+    assert leaked == pytest.approx(baseline, abs=1e-9)
+
+
+@pytest.mark.asyncio
+async def test_pit_composite_populates_beta_and_sector(monkeypatch: pytest.MonkeyPatch) -> None:
+    """fetch() wires PIT-sliced beta and the static watchlist sector onto the model."""
+    import data.providers.company_ratios.pit_composite as mod
+
+    monkeypatch.setattr(mod, "_fetch_xbrl_facts", lambda s, d: SimpleNamespace(
+        long_name="Apple Inc.", sector=" should be overridden by static map ",
+        shares_out=1.0, eps_ttm=1.0, dps_ttm=None,
+    ))
+
+    spy_returns   = [0.01 if i % 2 == 0 else -0.008 for i in range(80)]
+    stock_returns = [2.0 * r for r in spy_returns]
+    stock_hist = _series(date(2024, 1, 1), stock_returns)
+    spy_hist   = _series(date(2024, 1, 1), spy_returns)
+
+    def _fake_price(symbol: str, as_of):
+        return spy_hist if symbol == "SPY" else stock_hist
+
+    monkeypatch.setattr(mod, "_fetch_price_series", _fake_price)
+    monkeypatch.setattr(mod, "_load_xbrl_summary", lambda *a, **k: {
+        "profit_margin": None, "debt_to_equity": None, "roe": None,
+        "revenue_growth_yoy": None, "free_cash_flow": None, "peg": None,
+    })
+
+    out = await mod.fetch("AAPL", as_of=datetime(2024, 5, 1, tzinfo=UTC))
+
+    # Static watchlist sector wins over the XBRL sic_description.
+    assert out.sector == "Technology"
+    # Beta from the PIT-sliced stock/SPY series (stock = 2x SPY).
+    assert out.beta == pytest.approx(2.0, abs=1e-6)
+
+
+@pytest.mark.asyncio
+async def test_pit_composite_offwatchlist_sector_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An off-watchlist ticker keeps the XBRL sector and tolerates no SPY overlap."""
+    import data.providers.company_ratios.pit_composite as mod
+
+    monkeypatch.setattr(mod, "_fetch_xbrl_facts", lambda s, d: SimpleNamespace(
+        long_name="Random Co", sector="Real Estate",
+        shares_out=1.0, eps_ttm=1.0, dps_ttm=None,
+    ))
+    # Too few bars to clear the beta floor → beta None; off-watchlist → sector
+    # falls back to the XBRL value.
+    monkeypatch.setattr(mod, "_fetch_price_series",
+                        lambda s, a: PriceHistory(ticker=s, bars=_make_bars(10, last_close=50.0)))
+    monkeypatch.setattr(mod, "_load_xbrl_summary", lambda *a, **k: {
+        "profit_margin": None, "debt_to_equity": None, "roe": None,
+        "revenue_growth_yoy": None, "free_cash_flow": None, "peg": None,
+    })
+
+    out = await mod.fetch("ZZZZ", as_of=datetime(2023, 3, 14, tzinfo=UTC))
+
+    assert out.sector == "Real Estate"   # XBRL fallback (not in static map)
+    assert out.beta is None              # below the 60-observation floor
+
+
+def test_watchlist_sector_strings_match_sector_to_etf() -> None:
+    """Every static sector string must be a key of SECTOR_TO_ETF (downstream lookup)."""
+    from contract.extractors._sector_map import SECTOR_TO_ETF
+    from data.sector_map import WATCHLIST_SECTORS
+
+    for ticker, sector in WATCHLIST_SECTORS.items():
+        assert sector in SECTOR_TO_ETF, f"{ticker}: {sector!r} is not a SECTOR_TO_ETF key"

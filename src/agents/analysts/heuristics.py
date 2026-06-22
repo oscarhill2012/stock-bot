@@ -139,6 +139,30 @@ class TechnicalHeuristics(_Frozen):
     on either proximity.  Tune via ``config/analyst_heuristics.json``.
     """
 
+    beta_confidence_damping_enabled: bool = Field(default=False)
+    """Gate the ``beta_confidence_damping`` technical feature, independent of beta.
+
+    The ``pit_composite`` provider now populates a PIT-correct trailing
+    market-model beta on ``CompanyRatios`` (for the Fundamental analyst).  The
+    technical extractor would otherwise auto-emit a ``beta_confidence_damping``
+    feature (``1 / (1 + |beta - 1|)``) whenever beta is present, silently adding
+    a context line to the strategist's technical digest.
+
+    This flag decouples the two: beta can be populated for the Fundamental
+    analyst while the technical damping feature stays off.  Crucially, the
+    feature is **strategist-facing context only** — ``derive_technical_verdict``
+    never reads it, so toggling it does not change the technical verdict's lean,
+    magnitude, or confidence (and therefore cannot change directional hit-rate).
+
+    Phase-14 offline validation over the four audited runs (baseline-2025-09
+    iter-9/iter-10, iran-conflict-2026-02 iter-9/iter-10) confirmed the feature
+    is verdict-neutral: ON and OFF produce byte-identical technical verdicts and
+    identical +5d/+20d hit-rates.  As the gain is unproven and it only adds noise
+    to the strategist prompt, it ships ``False`` (disabled) by default.  Set to
+    ``True`` in ``config/analyst_heuristics.json`` to surface the feature if a
+    future strategist tuning wants it.
+    """
+
     momentum_band_confidence_floor: float = Field(default=0.5, ge=0.0, le=1.0)
     """Confidence damping for directional calls just outside the neutral band.
 

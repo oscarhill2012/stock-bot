@@ -16,7 +16,8 @@
     "suppress_bearish_under_golden_cross": true,
     "suppress_bullish_under_death_cross": true,
     "directional_52w_confidence": true,
-    "momentum_band_confidence_floor": 0.5
+    "momentum_band_confidence_floor": 0.5,
+    "beta_confidence_damping_enabled": false
   },
   "social": {
     "score_neutral_band": 0.05,
