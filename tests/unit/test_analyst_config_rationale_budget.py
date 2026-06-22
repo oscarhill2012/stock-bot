@@ -30,6 +30,7 @@ def _write_config(tmp_path: Path, *, cap: int, headroom: int) -> Path:
             "llm": {
                 "timeout_seconds":   60,
                 "max_output_tokens": 2048,
+                "temperature":       0.3,
                 "timeout_retries":   3,
                 "schema_retries":    3,
             },
@@ -43,6 +44,7 @@ def _write_config(tmp_path: Path, *, cap: int, headroom: int) -> Path:
             "llm": {
                 "timeout_seconds":   60,
                 "max_output_tokens": 2048,
+                "temperature":       0.3,
                 "timeout_retries":   3,
                 "schema_retries":    3,
             },

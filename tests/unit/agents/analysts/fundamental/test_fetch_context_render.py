@@ -37,6 +37,7 @@ def _minimal_caps() -> FundamentalCaps:
     llm = LlmCaps(
         timeout_seconds=30,
         max_output_tokens=512,
+        temperature=0.3,
         timeout_retries=1,
         schema_retries=1,
     )
@@ -444,6 +445,7 @@ def _deboilerplate_caps() -> FundamentalCaps:
     llm = LlmCaps(
         timeout_seconds=30,
         max_output_tokens=512,
+        temperature=0.3,
         timeout_retries=1,
         schema_retries=1,
     )

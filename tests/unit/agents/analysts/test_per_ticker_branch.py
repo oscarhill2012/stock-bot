@@ -187,10 +187,16 @@ def test_news_branch_wires_llm_caps_from_config() -> None:
     assert cfg is not None
     assert cfg.max_output_tokens == 4000
 
-    # thinking_budget is bounded (2048) and wired into thinking_config so
-    # gemini-2.5-flash's dynamic reasoning cannot starve the verdict JSON.
+    # thinking_budget is bounded (512 for the News analyst — a lighter
+    # reasoning task than the Fundamental analyst's 2048) and wired into
+    # thinking_config so gemini-2.5-flash's dynamic reasoning cannot starve
+    # the verdict JSON.
     assert cfg.thinking_config is not None
-    assert cfg.thinking_config.thinking_budget == 2048
+    assert cfg.thinking_config.thinking_budget == 512
+
+    # Low sampling temperature flows into generate_content_config for
+    # consistent run-to-run structured verdicts.
+    assert cfg.temperature == 0.3
 
 
 def test_fundamental_branch_wires_llm_caps_from_config() -> None:
@@ -231,3 +237,7 @@ def test_fundamental_branch_wires_llm_caps_from_config() -> None:
     # gemini-2.5-flash's dynamic reasoning cannot starve the verdict JSON.
     assert cfg.thinking_config is not None
     assert cfg.thinking_config.thinking_budget == 2048
+
+    # Low sampling temperature flows into generate_content_config for
+    # consistent run-to-run structured verdicts.
+    assert cfg.temperature == 0.3

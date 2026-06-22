@@ -62,6 +62,17 @@ class LlmCaps(BaseModel):
         this budget is shared between the model's internal reasoning tokens
         and the visible output, so it must be sized to hold both — see
         ``thinking_budget`` below.
+    temperature:
+        Sampling temperature passed through to ``GenerateContentConfig``.
+        Lower values make the output more deterministic / less varied.  The
+        analysts emit *structured* JSON verdicts (a classification-like
+        task), for which a low temperature is recommended for run-to-run
+        consistency — at the default ``temperature = 1`` the iter-to-iter
+        backtest swings were dominated by sampling variance rather than by
+        genuine signal changes.  Mirrors the strategist's ``temperature``
+        knob (see :class:`config.strategist.StrategistLlmCaps`) but lives on
+        the shared base because both analyst tiers now tune it.  Range
+        ``[0.0, 2.0]``.
     thinking_budget:
         Optional ceiling on the model's internal *thinking* tokens, passed
         through to ``GenerateContentConfig.thinking_config`` on Gemini 2.5
@@ -87,6 +98,7 @@ class LlmCaps(BaseModel):
     timeout_seconds:   float     = Field(gt=0.0, le=600.0)
     max_output_tokens: int       = Field(ge=256, le=32_768)
     thinking_budget:   int | None = Field(default=None, ge=-1, le=24_576)
+    temperature:       float     = Field(ge=0.0, le=2.0)        # low → consistent structured verdicts
     timeout_retries:   int       = Field(ge=1, le=10)
     schema_retries:    int       = Field(ge=1, le=10)
 

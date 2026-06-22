@@ -191,6 +191,11 @@ def build_news_branch_for_ticker(
         generate_content_config = genai_types.GenerateContentConfig(
             max_output_tokens = llm_caps.max_output_tokens,
             thinking_config   = thinking_config,
+            # Low sampling temperature → consistent structured verdicts.  The
+            # verdict is classification-like JSON, so a low temperature reduces
+            # run-to-run sampling variance (the dominant source of iter-to-iter
+            # backtest swings at the default temperature = 1).
+            temperature       = llm_caps.temperature,
         ),
     )
 

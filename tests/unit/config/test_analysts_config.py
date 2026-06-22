@@ -20,6 +20,7 @@ from config.analysts import AnalystsConfig, load_analysts_config
 _MINIMAL_LLM_CAPS: dict = {
     "timeout_seconds":   60,
     "max_output_tokens": 2000,
+    "temperature":       0.3,
     "timeout_retries":   3,
     "schema_retries":    3,
 }
@@ -142,6 +143,7 @@ def test_load_analysts_config_exposes_news_llm_caps(tmp_path) -> None:
             "llm": {
                 "timeout_seconds":   60,
                 "max_output_tokens": 2000,
+                "temperature":       0.3,
                 "timeout_retries":   3,
                 "schema_retries":    3,
             },
@@ -156,6 +158,7 @@ def test_load_analysts_config_exposes_news_llm_caps(tmp_path) -> None:
                 "timeout_seconds":   60,
                 "max_output_tokens": 2000,
                 "thinking_budget":   2048,
+                "temperature":       0.3,
                 "timeout_retries":   3,
                 "schema_retries":    3,
             },
