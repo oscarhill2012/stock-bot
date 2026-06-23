@@ -238,6 +238,12 @@ def build_analyst_scoreboard(
     # mode degrades to universe for every ticker anyway while emitting a
     # per-ticker warning.  Re-default to "sector" once sector data is filled.
     neutralise_by: Literal["sector", "universe"] = "universe",
+    # Inference mode for the t-stat / p-value.  "cluster_ticker" uses a
+    # cluster-robust SE clustered by ticker (corrects for the strong
+    # within-ticker autocorrelation induced by verdict persistence + overlapping
+    # forward windows); "naive" restores the original independence-assuming
+    # ``ttest_1samp``.  See ``_aggregate`` / ``_cluster_robust_ttest``.
+    inference: Literal["cluster_ticker", "naive"] = "cluster_ticker",
 ) -> ScoreboardResult:
     """Build the analyst predictive-power scoreboard from a completed run.
 
@@ -281,6 +287,15 @@ def build_analyst_scoreboard(
         Cross-sectional neutralisation mode.
         ``"sector"``   — subtract per-tick sector-peer mean (preferred).
         ``"universe"`` — subtract per-tick whole-universe mean (fallback).
+    inference:
+        Inference mode for the per-cell ``t_stat`` / ``p_value``.
+        ``"cluster_ticker"`` — cluster-robust standard error clustered by
+                               ticker (corrects for autocorrelated, non-independent
+                               observations; degrees of freedom = #tickers − 1).
+        ``"naive"``          — original ``scipy.stats.ttest_1samp`` assuming
+                               independent observations (over-confident; opt-in).
+        Only the SE / t-stat / p-value depend on this — ``n`` and
+        ``mean_excess_bps`` are identical across modes.
 
     Returns
     -------
@@ -487,6 +502,16 @@ def build_analyst_scoreboard(
         dict[str, list[float]],
     ] = defaultdict(lambda: {"all": [], "bullish": [], "bearish": []})
 
+    # Cluster labels (ticker) aligned element-for-element with ``score_store``.
+    # Used by the cluster-robust inference to group autocorrelated observations
+    # for a single ticker into one cluster.  Kept as a parallel store (rather
+    # than zipping into tuples) so the existing score-only code paths and tests
+    # are untouched.
+    cluster_store: dict[
+        tuple[str, int],
+        dict[str, list[str]],
+    ] = defaultdict(lambda: {"all": [], "bullish": [], "bearish": []})
+
     for idx, row in enumerate(deduplicated_rows):
         if idx not in row_base:
             continue
@@ -517,10 +542,13 @@ def build_analyst_scoreboard(
 
             key = (row.analyst, h)
             score_store[key]["all"].append(score)
+            cluster_store[key]["all"].append(row.ticker)
             if row.lean == "bullish":
                 score_store[key]["bullish"].append(score)
+                cluster_store[key]["bullish"].append(row.ticker)
             elif row.lean == "bearish":
                 score_store[key]["bearish"].append(score)
+                cluster_store[key]["bearish"].append(row.ticker)
 
     # ── 7. Aggregate into ScoreboardResult ───────────────────────────────────
     analysts_seen: list[str] = sorted({r.analyst for r in deduplicated_rows})
@@ -542,8 +570,13 @@ def build_analyst_scoreboard(
                 (analyst, h),
                 {"all": [], "bullish": [], "bearish": []},
             )
+            clusters = cluster_store.get(
+                (analyst, h),
+                {"all": [], "bullish": [], "bearish": []},
+            )
             for subset in ("all", "bullish", "bearish"):
-                scores = store.get(subset, [])
+                scores         = store.get(subset, [])
+                cluster_labels = clusters.get(subset, [])
 
                 # Hit-rate is defined over NON-NEUTRAL verdicts only (spec).  For
                 # the ``all`` subset the directional calls are exactly
@@ -562,6 +595,8 @@ def build_analyst_scoreboard(
                     subset=subset,
                     scores=scores,
                     directional_scores=directional,
+                    cluster_labels=cluster_labels,
+                    inference=inference,
                 )
                 result.cells[(analyst, h, subset)] = cell
 
@@ -664,6 +699,8 @@ def _aggregate(
     subset: str,
     scores: list[float],
     directional_scores: list[float],
+    cluster_labels: list[str],
+    inference: str = "cluster_ticker",
 ) -> ScoreboardCell:
     """Aggregate a list of scores into a ``ScoreboardCell``.
 
@@ -684,6 +721,14 @@ def _aggregate(
         verdicts.  Drives the hit-rate denominator so a mostly-neutral analyst
         is not scored as "almost always wrong" merely for declining to bet.
         For the single-lean subsets this is identical to ``scores``.
+    cluster_labels:
+        Ticker label for each element of ``scores`` (aligned element-for-element).
+        Used by the ``"cluster_ticker"`` inference mode to group autocorrelated
+        observations on the same ticker into one cluster.  Must be the same
+        length as ``scores``.
+    inference:
+        ``"cluster_ticker"`` (default) → cluster-robust SE clustered by ticker.
+        ``"naive"`` → original independence-assuming ``ttest_1samp``.
 
     Returns
     -------
@@ -704,6 +749,16 @@ def _aggregate(
             p_value=math.nan,
         )
 
+    # Defensive: clusters must align with scores.  A mismatch is a programming
+    # error in the caller, not a data condition — raise loudly rather than
+    # silently dropping or padding (silent-failure is the recurring bug class).
+    if len(cluster_labels) != n:
+        raise ValueError(
+            f"_aggregate: cluster_labels length {len(cluster_labels)} does not "
+            f"match scores length {n} for (analyst={analyst!r}, horizon={horizon}, "
+            f"subset={subset!r})."
+        )
+
     arr             = np.array(scores, dtype=float)
     mean_excess     = float(np.mean(arr))
     mean_excess_bps = mean_excess * 10_000
@@ -718,14 +773,19 @@ def _aggregate(
         d_arr    = np.array(directional_scores, dtype=float)
         hit_rate = float(np.sum(d_arr > 0) / n_directional)
 
-    # t-stat / p-value via scipy.  Requires at least 2 observations.
+    # t-stat / p-value.  Requires at least 2 observations.  ``n`` and the mean
+    # are IDENTICAL regardless of inference mode — only the SE changes.
     if n < 2:
         t_stat  = math.nan
         p_value = math.nan
-    else:
+    elif inference == "naive":
+        # Original behaviour: assumes independent observations (over-confident).
         t_result = scipy.stats.ttest_1samp(arr, 0.0)
         t_stat   = float(t_result.statistic)
         p_value  = float(t_result.pvalue)
+    else:
+        # Cluster-robust SE clustered by ticker — the honest inference.
+        t_stat, p_value, _df = _cluster_robust_ttest(scores, cluster_labels)
 
     return ScoreboardCell(
         analyst=analyst, horizon=horizon, subset=subset,
@@ -735,6 +795,124 @@ def _aggregate(
         t_stat=t_stat,
         p_value=p_value,
     )
+
+
+def _cluster_robust_ttest(
+    scores: list[float],
+    cluster_labels: list[str],
+) -> tuple[float, float, int]:
+    """One-sample test of H0: mean(scores) = 0 with a cluster-robust SE.
+
+    Why
+    ---
+    The scored observations are NOT independent.  For a given ticker the
+    analyst's verdict persists across ticks and the +5d / +20d forward-return
+    windows heavily overlap, so observations on the same ticker are strongly
+    serially autocorrelated.  A naive one-sample t-test assumes independence and
+    therefore understates the standard error, inflating ``|t|`` and shrinking
+    the p-value (the audit estimated ~4.5× inflation).
+
+    Method
+    ------
+    We treat the sample mean as the OLS estimator from regressing ``scores`` on
+    a constant, then apply the standard cluster-robust ("sandwich" / CR1)
+    variance estimator clustering by ticker:
+
+        beta_hat = mean(x)
+        u_i      = x_i − beta_hat                          (residuals)
+        meat     = Σ_g ( Σ_{i∈g} u_i )²                    (sum over clusters g)
+        bread    = 1 / N                                   (since X'X = N)
+        Var(beta_hat) = c · bread² · meat
+                      = c · meat / N²
+
+    with the CR1 finite-sample correction ``c = G / (G − 1)``, where ``G`` is the
+    number of clusters.  The test statistic is ``beta_hat / sqrt(Var(beta_hat))``
+    referred to a Student-t distribution with ``G − 1`` degrees of freedom.
+
+    Consistency with the naive test on i.i.d. data
+    ----------------------------------------------
+    When every observation is its own singleton cluster (genuine independence),
+    there are no within-cluster cross terms, so ``meat = Σ_i u_i²`` and
+    ``G = N``.  Then ``Var = (N/(N−1)) · Σ u_i² / N² = Σ u_i² / (N(N−1))``, which
+    is exactly the variance of the sample mean used by ``ttest_1samp`` — so the
+    t-stat, p-value and df all coincide.  This guarantees the correction never
+    spuriously moves a result that had no autocorrelation to correct.
+
+    Parameters
+    ----------
+    scores:
+        Per-verdict scores.  Must contain at least 2 elements.
+    cluster_labels:
+        Ticker label for each score (aligned element-for-element).  Must be the
+        same length as ``scores``.
+
+    Returns
+    -------
+    tuple[float, float, int]
+        ``(t_stat, p_value, degrees_of_freedom)``.  ``degrees_of_freedom`` is
+        ``G − 1`` (number of clusters minus one).
+
+    Raises
+    ------
+    ValueError
+        If ``scores`` and ``cluster_labels`` differ in length, or if there are
+        fewer than 2 scores (the caller is responsible for the n < 2 guard, but
+        we re-check to avoid a silent divide-by-zero).
+    """
+    n = len(scores)
+
+    if len(cluster_labels) != n:
+        raise ValueError(
+            f"_cluster_robust_ttest: scores ({n}) and cluster_labels "
+            f"({len(cluster_labels)}) must be the same length."
+        )
+
+    if n < 2:
+        raise ValueError(
+            f"_cluster_robust_ttest: need at least 2 observations; got {n}."
+        )
+
+    arr  = np.array(scores, dtype=float)
+    mean = float(np.mean(arr))
+
+    # Residuals from the constant-only regression.
+    residuals = arr - mean
+
+    # Sum residuals WITHIN each cluster, then sum the squared cluster totals
+    # (the "meat" of the sandwich).  ``defaultdict`` keeps this O(N).
+    cluster_sums: dict[str, float] = defaultdict(float)
+    for label, u in zip(cluster_labels, residuals, strict=True):
+        cluster_sums[label] += float(u)
+
+    n_clusters = len(cluster_sums)
+
+    # A single cluster gives 0 degrees of freedom — inference is undefined.
+    # Surface this as NaN rather than crashing, mirroring the n < 2 sentinel.
+    if n_clusters < 2:
+        return math.nan, math.nan, n_clusters - 1
+
+    meat = float(sum(s * s for s in cluster_sums.values()))
+
+    # CR1 finite-sample correction.
+    correction = n_clusters / (n_clusters - 1)
+
+    # Var(mean) = correction · meat / N².
+    var_mean = correction * meat / (n * n)
+
+    # Degenerate zero-variance case (e.g. every score identical): the mean is
+    # either exactly 0 (no signal) or a perfectly-estimated non-zero constant.
+    # Return NaN to avoid a divide-by-zero rather than an infinite t-stat.
+    if var_mean <= 0.0:
+        return math.nan, math.nan, n_clusters - 1
+
+    se     = math.sqrt(var_mean)
+    t_stat = mean / se
+    df     = n_clusters - 1
+
+    # Two-sided p-value from the Student-t with (#clusters − 1) df.
+    p_value = float(2.0 * scipy.stats.t.sf(abs(t_stat), df))
+
+    return float(t_stat), p_value, df
 
 
 def _ensure_aware(dt: object) -> object:

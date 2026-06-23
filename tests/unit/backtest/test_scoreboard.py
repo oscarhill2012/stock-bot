@@ -17,6 +17,7 @@ import math
 from datetime import UTC, date, datetime
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -1801,3 +1802,262 @@ class TestForwardCloseHelper:
         result = _forward_close(mock_cache, "AAPL", date(2025, 9, 5), h=1)
         # Should take bar1's close, not bar2's.
         assert result == pytest.approx(101.0), f"Expected 101.0 (first bar); got {result}"
+
+
+# ── Tests: autocorrelation-robust inference (TDD — written BEFORE implementation) ─
+
+class TestClusterRobustInference:
+    """Measurement-layer fix: the scoreboard's ``t-stat`` / ``p-value`` must not
+    treat autocorrelated observations as independent.
+
+    Background
+    ----------
+    For a given ticker the verdict persists across ticks and the +5d / +20d
+    forward-return windows heavily overlap, so the scored observations are
+    strongly serially autocorrelated within a ticker.  ``ttest_1samp`` assumes
+    independence and therefore UNDERSTATES the standard error — it rejects a
+    true null far too often.
+
+    The fix is a cluster-robust ("sandwich") standard error clustered by ticker
+    with degrees of freedom = (#clusters − 1).  These tests demonstrate, by
+    Monte-Carlo simulation under a TRUE null (population mean = 0), that:
+
+      (a) the naive ``ttest_1samp`` over-rejects (empirical false-positive rate
+          far above the nominal 5 %), and
+      (b) the cluster-robust estimator restores roughly nominal coverage; and
+      (c) on genuinely i.i.d. data (every cluster a singleton) the cluster-robust
+          estimator AGREES with the naive one (no spurious change).
+    """
+
+    def _import(self):
+        """Lazy import of the cluster-robust inference helper under test."""
+        from backtest.scoreboard import _cluster_robust_ttest
+        return _cluster_robust_ttest
+
+    @staticmethod
+    def _make_autocorrelated_panel(rng, *, n_tickers, n_per_ticker):
+        """Generate a true-null panel with strong within-ticker autocorrelation.
+
+        Each ticker contributes a block of ``n_per_ticker`` observations sharing
+        a single random per-ticker level (mean 0) plus small idiosyncratic noise.
+        The shared level makes observations within a ticker highly correlated
+        while the population mean remains exactly 0 — the textbook setup that
+        breaks the independence assumption of ``ttest_1samp``.
+
+        Parameters
+        ----------
+        rng:
+            A ``numpy.random.Generator`` for reproducibility.
+        n_tickers:
+            Number of distinct clusters (tickers).
+        n_per_ticker:
+            Observations per ticker (the overlapping/replayed window).
+
+        Returns
+        -------
+        tuple[list[float], list[str]]
+            ``(scores, cluster_labels)`` aligned element-for-element.
+        """
+        scores: list[float]   = []
+        labels: list[str]     = []
+
+        for t in range(n_tickers):
+            # Per-ticker shared level — this is the autocorrelation source.
+            level = rng.normal(0.0, 1.0)
+            for _ in range(n_per_ticker):
+                scores.append(level + rng.normal(0.0, 0.1))
+                labels.append(f"T{t}")
+
+        return scores, labels
+
+    def test_naive_over_rejects_but_cluster_robust_restores_coverage(self) -> None:
+        """Headline demonstration: under a true null with autocorrelated panels,
+        the naive t-test's false-positive rate is badly inflated, and the
+        cluster-robust t-test restores roughly nominal (~5 %) coverage.
+
+        We run many independent trials.  In each trial the data has population
+        mean 0, so a correctly-sized 5 %-level test should reject ~5 % of the
+        time.  We assert the naive test rejects far more often (broken) and the
+        cluster-robust test rejects roughly the nominal rate (fixed).
+        """
+        import scipy.stats
+
+        cluster_robust = self._import()
+
+        rng       = np.random.default_rng(20260623)
+        n_trials  = 600
+        alpha     = 0.05
+
+        naive_rejections   = 0
+        cluster_rejections = 0
+
+        for _ in range(n_trials):
+            scores, labels = self._make_autocorrelated_panel(
+                rng, n_tickers=12, n_per_ticker=10,
+            )
+            arr = np.array(scores, dtype=float)
+
+            # Naive one-sample t-test (the broken estimator).
+            naive = scipy.stats.ttest_1samp(arr, 0.0)
+            if naive.pvalue < alpha:
+                naive_rejections += 1
+
+            # Cluster-robust t-test (the fix).
+            _t, p, _df = cluster_robust(scores, labels)
+            if p < alpha:
+                cluster_rejections += 1
+
+        naive_rate   = naive_rejections   / n_trials
+        cluster_rate = cluster_rejections / n_trials
+
+        # (a) The naive test must be badly over-sized — empirically it rejects a
+        #     true null far more than the nominal 5 %.
+        assert naive_rate > 0.25, (
+            f"Expected the naive t-test to over-reject the true null "
+            f"(false-positive rate well above 0.05); got {naive_rate:.3f}."
+        )
+
+        # (b) The cluster-robust test must restore roughly nominal coverage.
+        assert cluster_rate < 0.12, (
+            f"Cluster-robust test should restore ~nominal 5 % coverage; "
+            f"got false-positive rate {cluster_rate:.3f}."
+        )
+
+        # (c) And it must be a strict, large improvement over naive.
+        assert cluster_rate < naive_rate / 2, (
+            f"Cluster-robust ({cluster_rate:.3f}) should be far below "
+            f"naive ({naive_rate:.3f})."
+        )
+
+    def test_cluster_robust_agrees_with_naive_on_iid_data(self) -> None:
+        """On i.i.d. data (every observation its own singleton cluster) the
+        cluster-robust estimator must reduce to the naive ``ttest_1samp``.
+
+        This guards against the fix spuriously moving a result that had no
+        autocorrelation to correct.  With singleton clusters there are no
+        within-cluster cross terms, so the sandwich variance equals the naive
+        variance (the small-sample factor G/(G−1) → N/(N−1) matches the t-test's
+        own (n−1) divisor).
+        """
+        import scipy.stats
+
+        cluster_robust = self._import()
+
+        rng    = np.random.default_rng(42)
+        scores = list(rng.normal(0.3, 1.0, size=200))
+        # Every observation is its own cluster → i.i.d. case.
+        labels = [f"obs{i}" for i in range(len(scores))]
+
+        naive = scipy.stats.ttest_1samp(np.array(scores), 0.0)
+        t_cluster, p_cluster, df_cluster = cluster_robust(scores, labels)
+
+        assert t_cluster == pytest.approx(float(naive.statistic), rel=1e-6), (
+            f"Cluster-robust t ({t_cluster:.6f}) must match naive "
+            f"({float(naive.statistic):.6f}) on i.i.d. data."
+        )
+        assert p_cluster == pytest.approx(float(naive.pvalue), rel=1e-6), (
+            f"Cluster-robust p ({p_cluster:.6f}) must match naive "
+            f"({float(naive.pvalue):.6f}) on i.i.d. data."
+        )
+        assert df_cluster == len(scores) - 1, (
+            f"i.i.d. degrees of freedom should be N−1={len(scores) - 1}; "
+            f"got {df_cluster}."
+        )
+
+    def test_cluster_robust_inflates_se_relative_to_naive_when_autocorrelated(
+        self,
+    ) -> None:
+        """For a single autocorrelated sample, the cluster-robust |t| must be
+        SMALLER than the naive |t| (the honest SE is larger).
+
+        Same mean-excess, same n — only the SE / t-stat changes, which is the
+        whole point of the fix.
+        """
+        import scipy.stats
+
+        cluster_robust = self._import()
+
+        rng = np.random.default_rng(7)
+        # Strong within-ticker autocorrelation, small non-zero mean.
+        scores, labels = self._make_autocorrelated_panel(
+            rng, n_tickers=8, n_per_ticker=12,
+        )
+        # Nudge the mean slightly positive so |t| is well-defined and non-trivial.
+        scores = [s + 0.2 for s in scores]
+
+        naive = scipy.stats.ttest_1samp(np.array(scores), 0.0)
+        t_cluster, _p, _df = cluster_robust(scores, labels)
+
+        assert abs(t_cluster) < abs(float(naive.statistic)), (
+            f"Cluster-robust |t| ({abs(t_cluster):.3f}) should be smaller than "
+            f"naive |t| ({abs(float(naive.statistic)):.3f}) under autocorrelation."
+        )
+
+    def test_pipeline_threads_ticker_clusters_through_to_cell(
+        self, tmp_path: pytest.TempPathFactory,
+    ) -> None:
+        """End-to-end: ``build_analyst_scoreboard`` with ``inference='cluster_ticker'``
+        must produce a cluster-robust t-stat that differs from the naive one when
+        the same ticker contributes many serially-correlated observations, while
+        leaving ``n`` and ``mean_excess_bps`` unchanged.
+
+        Setup: one analyst (technical), bullish on AAPL across many ticks (each a
+        DISTINCT confidence so dedup keeps them — simulating overlapping windows),
+        plus a neutral MSFT anchor.  AAPL outperforms every tick by the same
+        margin, so naive inference sees many "independent" wins and reports a
+        large |t|; the cluster-robust estimator (one ticker cluster for the
+        directional calls) deflates it sharply.
+        """
+        from backtest.scoreboard import build_analyst_scoreboard
+
+        # Twelve ticks, each a distinct confidence so dedup treats them as fresh.
+        rows = []
+        for i in range(12):
+            ts = datetime(2025, 9, 1 + i, 13, 30, tzinfo=UTC)
+            rows.append(_make_evidence_row(
+                analyst="technical", ticker="AAPL",
+                tick_id=f"tick-{i}", recorded_at=ts, lean="bullish",
+                confidence=0.50 + 0.01 * i,
+            ))
+            rows.append(_make_evidence_row(
+                analyst="technical", ticker="MSFT",
+                tick_id=f"tick-{i}", recorded_at=ts, lean="neutral",
+                confidence=0.50 + 0.01 * i,
+            ))
+
+        db_path = _build_fixture_db(tmp_path, rows)
+
+        def _mock_read(ticker, start, end):
+            ts_bar = datetime(start.year, start.month, start.day, 13, 30, tzinfo=UTC)
+            base_dates = {date(2025, 9, 1 + i) for i in range(12)}
+            if start in base_dates:
+                return [_make_ohlcbar(ticker=ticker, ts=ts_bar, open=100.0, close=100.0)]
+            # AAPL forward +5 %, MSFT flat.
+            close = 105.0 if ticker == "AAPL" else 100.0
+            return [_make_ohlcbar(ticker=ticker, ts=ts_bar, open=close, close=close)]
+
+        mock_cache = MagicMock()
+        mock_cache.read_ohlcv.side_effect = _mock_read
+
+        result_naive = build_analyst_scoreboard(
+            db_path=db_path, cache=mock_cache, horizons=[1], inference="naive",
+        )
+        result_cluster = build_analyst_scoreboard(
+            db_path=db_path, cache=mock_cache, horizons=[1], inference="cluster_ticker",
+        )
+
+        cell_naive   = result_naive.cell(analyst="technical", horizon=1, subset="all")
+        cell_cluster = result_cluster.cell(analyst="technical", horizon=1, subset="all")
+
+        # n and mean-excess must be IDENTICAL across inference modes.
+        assert cell_cluster.n == cell_naive.n, "n must not change with inference mode"
+        assert cell_cluster.mean_excess_bps == pytest.approx(
+            cell_naive.mean_excess_bps, rel=1e-9,
+        ), "mean excess must not change with inference mode"
+
+        # The cluster-robust |t| must be strictly smaller (honest SE is larger).
+        assert math.isfinite(cell_cluster.t_stat)
+        assert abs(cell_cluster.t_stat) < abs(cell_naive.t_stat), (
+            f"Cluster-robust |t| ({abs(cell_cluster.t_stat):.3f}) should be below "
+            f"naive |t| ({abs(cell_naive.t_stat):.3f}) for a repeated single-ticker call."
+        )

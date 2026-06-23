@@ -90,6 +90,31 @@ class BacktestSettings(BaseModel):
         pattern=r"^(sector|universe)$",
     )
 
+    # Inference mode for the scoreboard t-stat / p-value.
+    #
+    # The scored observations are NOT independent: for a given ticker the
+    # verdict persists across ticks and the overlapping forward-return windows
+    # (+5d / +20d) induce strong serial autocorrelation, plus some
+    # cross-sectional correlation within a tick.  A naive one-sample t-test
+    # (``scipy.stats.ttest_1samp``) treats every observation as independent and
+    # therefore UNDERSTATES the standard error — inflating |t| and shrinking p,
+    # so genuinely-noisy analysts read as "significant".
+    #
+    # "cluster_ticker" → cluster-robust (sandwich) standard error clustered by
+    #                    ticker.  Captures the dominant within-ticker temporal
+    #                    autocorrelation while remaining deterministic and cheap.
+    #                    Degrees of freedom = (#clusters − 1).  On genuinely
+    #                    i.i.d. data (every ticker a singleton cluster) it
+    #                    reduces to the naive estimator, so it never spuriously
+    #                    moves a result that had no autocorrelation to correct.
+    # "naive"          → the original ``ttest_1samp`` (over-confident; retained
+    #                    only as an explicit, opt-in escape hatch and for A/B
+    #                    comparison in the audit).
+    scoreboard_inference: str = Field(
+        default="cluster_ticker",
+        pattern=r"^(cluster_ticker|naive)$",
+    )
+
 
 _DEFAULT_PATH:                 Path = Path("config/backtest_settings.json")
 _cache: BacktestSettings | None      = None

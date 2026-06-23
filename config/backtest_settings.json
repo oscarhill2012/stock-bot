@@ -14,5 +14,7 @@
     "smart_money": 20
   },
 
-  "scoreboard_neutralise_by": "universe"
+  "scoreboard_neutralise_by": "universe",
+
+  "scoreboard_inference": "cluster_ticker"
 }

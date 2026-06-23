@@ -64,6 +64,16 @@ def main() -> None:
             "store.sqlite at <backtests_root>/<window>/store.sqlite."
         ),
     )
+    parser.add_argument(
+        "--neutralise-by",
+        choices=["sector", "universe"],
+        default=None,
+        help=(
+            "Override the cross-sectional neutralisation mode for this re-score "
+            "only.  Defaults to config's scoreboard_neutralise_by.  Useful for "
+            "an A/B comparison (universe vs sector) without editing config."
+        ),
+    )
     args = parser.parse_args()
 
     run_dir = Path(args.run_dir)
@@ -92,9 +102,18 @@ def main() -> None:
 
     horizons = settings.forward_return_horizons_days
 
-    # Open the cache and build the scoreboard.
+    # Open the cache and build the scoreboard.  Inference mode, neutralisation
+    # mode and per-analyst primary horizons all come from config — never
+    # hardcoded here (config convention).
     cache  = CachedDataStore(cache_path)
-    result = build_analyst_scoreboard(db_path=db_path, cache=cache, horizons=horizons)
+    result = build_analyst_scoreboard(
+        db_path=db_path,
+        cache=cache,
+        horizons=horizons,
+        primary_horizon_by_analyst=settings.primary_horizon_by_analyst,
+        neutralise_by=args.neutralise_by or settings.scoreboard_neutralise_by,
+        inference=settings.scoreboard_inference,
+    )
     section = render_scoreboard_md(result)
 
     # Print to stdout — caller can pipe to a file if persistence is wanted.
