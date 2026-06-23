@@ -63,9 +63,45 @@ Public surface
     Pure function.  Reads ``analyst_evidence`` from the run's ``db.sqlite``
     and prices from the passed ``CachedDataStore``; no LLM, no network.
 
+``build_pooled_analyst_scoreboard(runs, horizons, *, primary_horizon_by_analyst,
+                                  neutralise_by, inference) → ScoreboardResult``
+    Pools observations from MULTIPLE ``(db_path, cache, window_id)`` triples
+    into a single aggregated scoreboard.  Each window's own dedup and peer-mean
+    computation runs in isolation (see ``_score_window_observations``); only the
+    final aggregation step combines the windows.  Calling this with exactly one
+    run is byte-identical to ``build_analyst_scoreboard`` on that run.
+
 ``render_scoreboard_md(result) → str``
     Formats a ``ScoreboardResult`` as a Markdown section, suitable for
     appending to ``report/metrics.md``.
+
+Phase 14 (iter-2) — multi-window pooling
+-----------------------------------------
+``build_analyst_scoreboard`` measures one run against one window's cache.
+To get a more reliable read on analyst skill we often want to pool several
+backtest windows (different market regimes) together.  Three correctness
+traps had to be designed around explicitly:
+
+1. **Peer groups must stay strictly within-window.**  The per-tick
+   cross-sectional mean is keyed on ``tick_id``, which is already unique per
+   window (window run-ids are baked into tick generation) — so a correct
+   implementation that keys cs-means on ``tick_id`` cannot blend two windows'
+   peer groups by construction.  ``_score_window_observations`` computes
+   every peer mean using ONLY that window's own cache and ticks, before any
+   pooling step sees the data.
+2. **Dedup must run per-window, before pooling.**  If the consecutive-
+   identical-verdict dedup ran on the concatenated multi-window record list,
+   a ticker's last verdict in window A could be wrongly collapsed with its
+   first verdict in window B if they happened to share a (lean, magnitude,
+   confidence) tuple.  ``_score_window_observations`` runs dedup internally,
+   scoped to its own window's rows only.
+3. **Cluster-robust SE clusters by ``(ticker, window_id)`` when pooling.**
+   Two windows months apart are not autocorrelated with each other, so
+   clustering pooled data by bare ticker would over-cluster (collapse two
+   independent regimes into one cluster, inflating the SE and shrinking
+   apparent significance).  The cluster label threaded into ``_aggregate`` /
+   ``_cluster_robust_ttest`` is ``ticker`` for the single-window path
+   (unchanged behaviour) and ``(ticker, window_id)`` for the pooled path.
 """
 from __future__ import annotations
 
@@ -225,6 +261,70 @@ class _VerdictKey(NamedTuple):
 _VerdictIdentity = tuple[str, float, float]
 
 
+@dataclass(frozen=True)
+class _ObservationRecord:
+    """One scored verdict, ready for aggregation.
+
+    This is the unit of output from ``_score_window_observations`` — the
+    per-window load → dedup → excess-return computation.  A pooling caller
+    concatenates these across windows before calling ``_aggregate`` ONCE over
+    the union, so the cluster label (``window_id`` baked into ``ticker``-pair
+    grouping at the aggregation step) is the only thing that differs between
+    the single-window and pooled code paths.
+
+    Attributes
+    ----------
+    analyst:
+        Analyst name (e.g. ``"technical"``).
+    ticker:
+        Ticker symbol this observation scores.
+    window_id:
+        Identifier for the window this observation was scored against (e.g.
+        a window key such as ``"baseline-2025-09"``).  Used ONLY as a cluster-
+        label component when pooling; never affects the score itself, which is
+        already fully determined by the within-window peer mean.
+    horizon:
+        Forward horizon in calendar days.
+    lean:
+        Verdict lean (``"bullish"`` / ``"bearish"`` / ``"neutral"``) — drives
+        subset membership at aggregation time.
+    score:
+        ``position × excess`` — the signed contribution to the mean-excess
+        metric.  Exactly ``0.0`` for neutral verdicts.
+    """
+    analyst:    str
+    ticker:     str
+    window_id:  str
+    horizon:    int
+    lean:       str
+    score:      float
+
+
+@dataclass(frozen=True)
+class _WindowScoringResult:
+    """Output of ``_score_window_observations`` for one window.
+
+    Carries the analyst roster SEPARATELY from ``records`` because an analyst
+    can have rows in ``analyst_evidence`` that are entirely excluded from
+    scoring (e.g. every verdict missing a base price — see
+    ``test_verdict_excluded_when_no_base_bar``).  Such an analyst must still
+    get n=0 cells rather than vanishing from the report, so the aggregation
+    step needs the roster even when ``records`` contributed nothing for them.
+
+    Attributes
+    ----------
+    records:
+        Flat list of scored observations (see ``_ObservationRecord``).  May be
+        empty even when ``analysts_seen`` is non-empty.
+    analysts_seen:
+        Every analyst name present in ``analyst_evidence`` for this window,
+        AFTER dedup, regardless of whether any of their verdicts survived
+        the base-price / forward-close exclusion.
+    """
+    records:        list[_ObservationRecord]
+    analysts_seen:  set[str]
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def build_analyst_scoreboard(
@@ -251,25 +351,10 @@ def build_analyst_scoreboard(
     and prices from ``cache``; produces no side-effects.  Suitable for unit
     testing on a small fixture DB.
 
-    Algorithm (Phase 14 revised)
-    ----------------------------
-    1. Load all ``AnalystEvidenceRow`` records, ordered by (analyst, ticker,
-       recorded_at) so consecutive ticks are adjacent.
-    2. **Dedup** (cache-replay fix): for each (analyst, ticker) pair, collapse
-       consecutive identical (lean, magnitude, confidence) tuples into a single
-       observation anchored at the FIRST occurrence.  Subsequent ticks with an
-       identical tuple are discarded from the scoring universe.  A change in
-       the tuple marks a new fresh call and starts a new run.
-       Caveat: this is a proxy heuristic — there is no replay-identity column
-       in ``analyst_evidence``.  See module docstring for limitations.
-    3. For each deduplicated verdict, look up ``base_price`` (phase-matched)
-       and forward closes per horizon from ``cache``.
-    4. Compute per-tick cross-sectional means using the **peer group** for each
-       ticker.  Peer group = same GICS sector (``read_company_ratios().sector``)
-       when ``neutralise_by="sector"``; whole universe when ``"universe"`` or
-       when sector data is absent.
-    5. Aggregate per ``(analyst, horizon, subset)`` with mean, hit-rate, n,
-       t-stat and p-value.
+    Thin wrapper around ``_score_window_observations`` (load → dedup →
+    excess-return computation for ONE window) followed by ``_aggregate_records``
+    (group into cells, cluster-robust inference).  The single-window cluster
+    label is the bare ticker — unchanged from the pre-pooling behaviour.
 
     Parameters
     ----------
@@ -303,9 +388,193 @@ def build_analyst_scoreboard(
         Fully populated result with one ``ScoreboardCell`` per
         ``(analyst, horizon, subset)`` combination.
     """
-    primary_map: dict[str, int] = primary_horizon_by_analyst or {}
-    default_horizon = max(horizons) if horizons else 1
+    # A single-window call has no real window identity to thread through — the
+    # sentinel value below is only ever consumed by the cluster-key function,
+    # and the single-window cluster key (bare ticker) ignores it entirely.
+    window_result = _score_window_observations(
+        db_path=db_path,
+        cache=cache,
+        horizons=horizons,
+        neutralise_by=neutralise_by,
+        window_id="_single_window",
+    )
 
+    if not window_result.analysts_seen:
+        return ScoreboardResult()
+
+    return _aggregate_records(
+        window_result.records,
+        analysts_seen=window_result.analysts_seen,
+        horizons=horizons,
+        primary_horizon_by_analyst=primary_horizon_by_analyst,
+        inference=inference,
+        # Single-window cluster key = bare ticker (pre-pooling behaviour).
+        cluster_key_fn=lambda rec: rec.ticker,
+    )
+
+
+def build_pooled_analyst_scoreboard(
+    *,
+    runs: list[tuple[Path, CachedDataStore, str]],
+    horizons: list[int],
+    primary_horizon_by_analyst: dict[str, int] | None = None,
+    neutralise_by: Literal["sector", "universe"] = "universe",
+    inference: Literal["cluster_ticker", "naive"] = "cluster_ticker",
+) -> ScoreboardResult:
+    """Build a scoreboard pooling observations from MULTIPLE windows.
+
+    Each ``(db_path, cache, window_id)`` triple is scored independently by
+    ``_score_window_observations`` — its own dedup pass, its own per-tick
+    peer means computed solely from its own cache — and the resulting
+    per-observation records are concatenated before a SINGLE aggregation
+    pass.  This guarantees:
+
+      - peer means never blend across windows (each window's cs-means are
+        already final by the time pooling sees the records);
+      - dedup never collapses a verdict in window A with a verdict in
+        window B (dedup is internal to ``_score_window_observations``);
+      - the cluster-robust SE clusters by ``(ticker, window_id)``, NOT bare
+        ticker, since windows months apart are not autocorrelated with each
+        other and bare-ticker clustering would over-cluster the pooled set.
+
+    Calling this with exactly one run reduces to ``build_analyst_scoreboard``
+    on that run (the (ticker, window_id) cluster key partitions identically
+    to the bare-ticker key when there is only one window).
+
+    Parameters
+    ----------
+    runs:
+        List of ``(db_path, cache, window_id)`` triples.  ``window_id`` is an
+        arbitrary, caller-chosen label used only for cluster-key disambiguation
+        (e.g. the window key from ``config/backtest_windows.json``).  Must be
+        unique per element — reusing a ``window_id`` for two different runs
+        would silently merge their clusters.
+    horizons:
+        List of forward horizons in calendar days (e.g. ``[1, 5, 20]``).
+    primary_horizon_by_analyst:
+        See ``build_analyst_scoreboard``.
+    neutralise_by:
+        See ``build_analyst_scoreboard``.  Applied identically and
+        independently within every window.
+    inference:
+        See ``build_analyst_scoreboard``.
+
+    Returns
+    -------
+    ScoreboardResult
+        Fully populated POOLED result with one ``ScoreboardCell`` per
+        ``(analyst, horizon, subset)`` combination, aggregated across every
+        supplied window.
+
+    Raises
+    ------
+    ValueError
+        If ``runs`` is empty (pooling zero windows is a caller error, not a
+        valid "empty" result) or if any ``window_id`` is duplicated.
+    """
+    if not runs:
+        raise ValueError(
+            "build_pooled_analyst_scoreboard: 'runs' must contain at least "
+            "one (db_path, cache, window_id) triple."
+        )
+
+    window_ids = [window_id for _db, _cache, window_id in runs]
+    if len(window_ids) != len(set(window_ids)):
+        raise ValueError(
+            f"build_pooled_analyst_scoreboard: duplicate window_id in "
+            f"'runs' — every window must have a unique id. Got: {window_ids}"
+        )
+
+    # Score every window in isolation and concatenate the resulting records.
+    # Each call to _score_window_observations sees ONLY its own db_path/cache,
+    # so dedup and peer means cannot leak across the window boundary.
+    pooled_records:      list[_ObservationRecord] = []
+    pooled_analysts_seen: set[str]                 = set()
+
+    for db_path, cache, window_id in runs:
+        window_result = _score_window_observations(
+            db_path=db_path,
+            cache=cache,
+            horizons=horizons,
+            neutralise_by=neutralise_by,
+            window_id=window_id,
+        )
+        pooled_records.extend(window_result.records)
+        pooled_analysts_seen |= window_result.analysts_seen
+
+    if not pooled_analysts_seen:
+        return ScoreboardResult()
+
+    return _aggregate_records(
+        pooled_records,
+        analysts_seen=pooled_analysts_seen,
+        horizons=horizons,
+        primary_horizon_by_analyst=primary_horizon_by_analyst,
+        inference=inference,
+        # Pooled cluster key = (ticker, window_id) — see module docstring
+        # decision 3.  Two windows months apart are not autocorrelated, so
+        # clustering by bare ticker would over-cluster the pooled set.
+        cluster_key_fn=lambda rec: (rec.ticker, rec.window_id),
+    )
+
+
+def _score_window_observations(
+    *,
+    db_path: Path,
+    cache: CachedDataStore,
+    horizons: list[int],
+    neutralise_by: Literal["sector", "universe"],
+    window_id: str,
+) -> _WindowScoringResult:
+    """Score ONE window's ``analyst_evidence`` into a flat observation list.
+
+    This is steps 1–6 of the original ``build_analyst_scoreboard`` algorithm,
+    extracted so a pooling caller can run it independently per window before
+    a single combined aggregation pass.  Running dedup and peer-mean
+    computation HERE (scoped to one ``db_path``/``cache`` pair) is what
+    guarantees pooling cannot contaminate either step across windows.
+
+    Algorithm
+    ---------
+    1. Load all ``AnalystEvidenceRow`` records, ordered by (analyst, ticker,
+       recorded_at) so consecutive ticks are adjacent.
+    2. **Dedup** (cache-replay fix): for each (analyst, ticker) pair, collapse
+       consecutive identical (lean, magnitude, confidence) tuples into a single
+       observation anchored at the FIRST occurrence.  Subsequent ticks with an
+       identical tuple are discarded.  Scoped to THIS window's rows only.
+    3. For each deduplicated verdict, look up ``base_price`` (phase-matched)
+       and forward closes per horizon from ``cache``.
+    4. Compute per-tick cross-sectional means using the **peer group** for each
+       ticker, where the peer group is keyed on ``tick_id`` — which is unique
+       to this window — so the mean can never include another window's tickers.
+    5. Compute each verdict's signed score (``position × excess``).
+    6. Emit one ``_ObservationRecord`` per scored (verdict, horizon) pair.
+
+    Parameters
+    ----------
+    db_path:
+        Path to this window's run's ``db.sqlite``.
+    cache:
+        ``CachedDataStore`` backed by THIS window's golden-cache SQLite.
+    horizons:
+        Forward horizons in calendar days.
+    neutralise_by:
+        Cross-sectional neutralisation mode (``"sector"`` | ``"universe"``).
+    window_id:
+        Caller-chosen label stamped onto every emitted record's
+        ``window_id`` field.  Used only as a cluster-key component by the
+        pooled aggregation path — never affects the score itself.
+
+    Returns
+    -------
+    _WindowScoringResult
+        ``records`` — one entry per (deduplicated verdict, horizon) pair that
+        had both a base price and a forward close.
+        ``analysts_seen`` — every analyst present after dedup, even those
+        whose verdicts were entirely excluded (so they still get n=0 cells
+        rather than vanishing from the report).  Both empty if no rows exist
+        in ``db_path``.
+    """
     # ── 1. Load verdict rows, sorted for dedup ───────────────────────────────
     engine = create_engine(f"sqlite:///{db_path}", future=True)
     with Session(engine) as s:
@@ -315,7 +584,7 @@ def build_analyst_scoreboard(
 
     if not rows:
         logger.warning("scoreboard: no analyst_evidence rows found in %s", db_path)
-        return ScoreboardResult()
+        return _WindowScoringResult(records=[], analysts_seen=set())
 
     # Sort by (analyst, ticker, recorded_at) so consecutive ticks are adjacent
     # and the dedup pass can work in a single linear scan per (analyst, ticker) group.
@@ -337,6 +606,9 @@ def build_analyst_scoreboard(
     # would be incorrectly merged.  This is unlikely in practice (independent
     # verdicts vary in confidence if not in lean), and the alternative (counting
     # every row) is far more misleading.  See module docstring.
+    #
+    # Scoped to THIS window's rows: dedup never sees another window's data,
+    # which is the property that makes per-window scoring safe to pool later.
 
     # last_identity[(analyst, ticker)] = (lean, magnitude, confidence) of the
     # last ANCHOR row for this pair.  Missing = no prior anchor.
@@ -351,8 +623,9 @@ def build_analyst_scoreboard(
             # Same identity as prior anchor → cache replay; discard.
             logger.debug(
                 "scoreboard: dedup — discarding replayed verdict "
-                "(analyst=%s, ticker=%s, lean=%s, mag=%.2f, conf=%.2f)",
+                "(analyst=%s, ticker=%s, lean=%s, mag=%.2f, conf=%.2f, window=%s)",
                 row.analyst, row.ticker, row.lean, row.magnitude, row.confidence,
+                window_id,
             )
             continue
 
@@ -361,8 +634,9 @@ def build_analyst_scoreboard(
         deduplicated_rows.append(row)
 
     logger.info(
-        "scoreboard: dedup reduced %d rows → %d unique fresh-call observations "
-        "(%.1f %% removed as cache replays)",
+        "scoreboard: window=%s dedup reduced %d rows → %d unique fresh-call "
+        "observations (%.1f %% removed as cache replays)",
+        window_id,
         len(rows_sorted),
         len(deduplicated_rows),
         100.0 * (1 - len(deduplicated_rows) / len(rows_sorted)) if rows_sorted else 0.0,
@@ -411,6 +685,11 @@ def build_analyst_scoreboard(
     # ticker_sector[(tick_id, ticker)] = sector string or None.
     # fwd return is a market fact; deduplicated so each (tick_id, ticker) pair
     # contributes at most one return to the cross-sectional mean.
+    #
+    # tick_id is unique to THIS window (window run-ids are baked into tick
+    # generation upstream), so keying on it is what makes the peer group
+    # provably within-window even after records from many windows are later
+    # concatenated for pooled aggregation.
 
     # ticker_fwd_by_tick[(tick_id, ticker, h)] = fwd_return (a single market fact).
     ticker_fwd_by_tick: dict[tuple[str, str, int], float] = {}
@@ -465,7 +744,9 @@ def build_analyst_scoreboard(
     # For "sector" mode: cs_mean[(tick_id, h, sector)] = mean fwd_return for that sector
     # For "universe" mode: cs_mean[(tick_id, h, None)] = whole-universe mean
     # Both cases are handled by keying on (tick_id, h, group_key) where
-    # group_key = sector string or None (universe).
+    # group_key = sector string or None (universe).  Because tick_id is unique
+    # to this window, every group computed here is, by construction, a
+    # within-window peer group.
 
     # Accumulate fwd returns per group.
     group_fwds: dict[tuple[str, int, str | None], list[float]] = defaultdict(list)
@@ -493,24 +774,8 @@ def build_analyst_scoreboard(
         for key, fwds in group_fwds.items()
     }
 
-    # ── 6. Compute per-verdict excess and accumulate scores ──────────────────
-    # For each analyst row, find the appropriate cs mean and score the verdict.
-
-    # Scores: (analyst, h) → subset → list[score]
-    score_store: dict[
-        tuple[str, int],
-        dict[str, list[float]],
-    ] = defaultdict(lambda: {"all": [], "bullish": [], "bearish": []})
-
-    # Cluster labels (ticker) aligned element-for-element with ``score_store``.
-    # Used by the cluster-robust inference to group autocorrelated observations
-    # for a single ticker into one cluster.  Kept as a parallel store (rather
-    # than zipping into tuples) so the existing score-only code paths and tests
-    # are untouched.
-    cluster_store: dict[
-        tuple[str, int],
-        dict[str, list[str]],
-    ] = defaultdict(lambda: {"all": [], "bullish": [], "bearish": []})
+    # ── 6. Compute per-verdict excess and emit observation records ───────────
+    records: list[_ObservationRecord] = []
 
     for idx, row in enumerate(deduplicated_rows):
         if idx not in row_base:
@@ -540,20 +805,101 @@ def build_analyst_scoreboard(
             position = _lean_to_position(row.lean)
             score    = float(position * excess)
 
-            key = (row.analyst, h)
-            score_store[key]["all"].append(score)
-            cluster_store[key]["all"].append(row.ticker)
-            if row.lean == "bullish":
-                score_store[key]["bullish"].append(score)
-                cluster_store[key]["bullish"].append(row.ticker)
-            elif row.lean == "bearish":
-                score_store[key]["bearish"].append(score)
-                cluster_store[key]["bearish"].append(row.ticker)
+            records.append(_ObservationRecord(
+                analyst=row.analyst,
+                ticker=row.ticker,
+                window_id=window_id,
+                horizon=h,
+                lean=row.lean,
+                score=score,
+            ))
 
-    # ── 7. Aggregate into ScoreboardResult ───────────────────────────────────
-    analysts_seen: list[str] = sorted({r.analyst for r in deduplicated_rows})
+    # analysts_seen tracks the FULL post-dedup roster, independent of whether
+    # any of an analyst's verdicts survived the base-price/forward-close
+    # exclusion — an analyst with zero scored records must still get n=0
+    # cells rather than vanishing from the report.
+    analysts_seen = {row.analyst for row in deduplicated_rows}
+
+    return _WindowScoringResult(records=records, analysts_seen=analysts_seen)
+
+
+def _aggregate_records(
+    records: list[_ObservationRecord],
+    *,
+    analysts_seen: set[str],
+    horizons: list[int],
+    primary_horizon_by_analyst: dict[str, int] | None,
+    inference: Literal["cluster_ticker", "naive"],
+    cluster_key_fn,
+) -> ScoreboardResult:
+    """Group a flat observation list into a populated ``ScoreboardResult``.
+
+    Shared aggregation step (formerly step 7 of ``build_analyst_scoreboard``)
+    used by BOTH the single-window and pooled entrypoints.  The only thing
+    that differs between them is ``cluster_key_fn`` — the function used to
+    derive each record's cluster-robust-inference label.
+
+    Parameters
+    ----------
+    records:
+        Flat list of ``_ObservationRecord``, possibly drawn from multiple
+        windows (already deduplicated and peer-mean-corrected upstream).
+    analysts_seen:
+        The FULL analyst roster (union across all source windows), supplied
+        explicitly rather than re-derived from ``records`` — an analyst whose
+        every verdict was excluded (e.g. no base price anywhere) still has
+        zero records but must still get n=0 cells rather than vanishing.
+    horizons:
+        Forward horizons to report (drives ``ScoreboardResult.horizons``).
+    primary_horizon_by_analyst:
+        Optional per-analyst primary horizon mapping; unconfigured analysts
+        default to ``max(horizons)``.
+    inference:
+        ``"cluster_ticker"`` or ``"naive"`` — see ``_aggregate``.
+    cluster_key_fn:
+        Callable ``(_ObservationRecord) -> Hashable`` returning the cluster
+        label for that record.  Single-window callers pass ``rec.ticker``;
+        the pooled caller passes ``(rec.ticker, rec.window_id)``.
+
+    Returns
+    -------
+    ScoreboardResult
+        Fully populated result with one ``ScoreboardCell`` per
+        ``(analyst, horizon, subset)`` combination.
+    """
+    primary_map: dict[str, int] = primary_horizon_by_analyst or {}
+    default_horizon = max(horizons) if horizons else 1
+
+    # Scores: (analyst, h) → subset → list[score]
+    score_store: dict[
+        tuple[str, int],
+        dict[str, list[float]],
+    ] = defaultdict(lambda: {"all": [], "bullish": [], "bearish": []})
+
+    # Cluster labels aligned element-for-element with ``score_store``.  Kept
+    # as a parallel store (rather than zipping into tuples) so the existing
+    # score-only code paths are untouched.
+    cluster_store: dict[
+        tuple[str, int],
+        dict[str, list],
+    ] = defaultdict(lambda: {"all": [], "bullish": [], "bearish": []})
+
+    for rec in records:
+        key          = (rec.analyst, rec.horizon)
+        cluster_label = cluster_key_fn(rec)
+
+        score_store[key]["all"].append(rec.score)
+        cluster_store[key]["all"].append(cluster_label)
+        if rec.lean == "bullish":
+            score_store[key]["bullish"].append(rec.score)
+            cluster_store[key]["bullish"].append(cluster_label)
+        elif rec.lean == "bearish":
+            score_store[key]["bearish"].append(rec.score)
+            cluster_store[key]["bearish"].append(cluster_label)
+
+    analysts_sorted: list[str] = sorted(analysts_seen)
     result = ScoreboardResult(
-        analysts=analysts_seen,
+        analysts=analysts_sorted,
         horizons=sorted(horizons),
     )
 
@@ -699,7 +1045,7 @@ def _aggregate(
     subset: str,
     scores: list[float],
     directional_scores: list[float],
-    cluster_labels: list[str],
+    cluster_labels: list,
     inference: str = "cluster_ticker",
 ) -> ScoreboardCell:
     """Aggregate a list of scores into a ``ScoreboardCell``.
@@ -722,12 +1068,15 @@ def _aggregate(
         is not scored as "almost always wrong" merely for declining to bet.
         For the single-lean subsets this is identical to ``scores``.
     cluster_labels:
-        Ticker label for each element of ``scores`` (aligned element-for-element).
-        Used by the ``"cluster_ticker"`` inference mode to group autocorrelated
-        observations on the same ticker into one cluster.  Must be the same
-        length as ``scores``.
+        Cluster label for each element of ``scores`` (aligned element-for-
+        element).  Used by the ``"cluster_ticker"`` inference mode to group
+        autocorrelated observations into one cluster.  For a single-window
+        scoreboard this is the bare ticker (``str``); for a pooled scoreboard
+        it is ``(ticker, window_id)`` so windows months apart are never
+        merged into one cluster.  Must be the same length as ``scores``.
     inference:
-        ``"cluster_ticker"`` (default) → cluster-robust SE clustered by ticker.
+        ``"cluster_ticker"`` (default) → cluster-robust SE clustered by
+        ``cluster_labels``.
         ``"naive"`` → original independence-assuming ``ttest_1samp``.
 
     Returns
@@ -799,7 +1148,7 @@ def _aggregate(
 
 def _cluster_robust_ttest(
     scores: list[float],
-    cluster_labels: list[str],
+    cluster_labels: list,
 ) -> tuple[float, float, int]:
     """One-sample test of H0: mean(scores) = 0 with a cluster-robust SE.
 
@@ -843,8 +1192,10 @@ def _cluster_robust_ttest(
     scores:
         Per-verdict scores.  Must contain at least 2 elements.
     cluster_labels:
-        Ticker label for each score (aligned element-for-element).  Must be the
-        same length as ``scores``.
+        Cluster label for each score (aligned element-for-element).  Any
+        hashable value — a bare ticker ``str`` for single-window callers, or
+        a ``(ticker, window_id)`` tuple for pooled callers.  Must be the same
+        length as ``scores``.
 
     Returns
     -------
@@ -879,8 +1230,9 @@ def _cluster_robust_ttest(
     residuals = arr - mean
 
     # Sum residuals WITHIN each cluster, then sum the squared cluster totals
-    # (the "meat" of the sandwich).  ``defaultdict`` keeps this O(N).
-    cluster_sums: dict[str, float] = defaultdict(float)
+    # (the "meat" of the sandwich).  ``defaultdict`` keeps this O(N).  Keys
+    # are any hashable cluster label (bare ticker, or (ticker, window_id)).
+    cluster_sums: dict = defaultdict(float)
     for label, u in zip(cluster_labels, residuals, strict=True):
         cluster_sums[label] += float(u)
 

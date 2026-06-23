@@ -2061,3 +2061,459 @@ class TestClusterRobustInference:
             f"Cluster-robust |t| ({abs(cell_cluster.t_stat):.3f}) should be below "
             f"naive |t| ({abs(cell_naive.t_stat):.3f}) for a repeated single-ticker call."
         )
+
+
+# ── Tests: multi-window pooling (Phase 14 — TDD, written BEFORE implementation) ──
+
+class TestMultiWindowPooling:
+    """Pooling observations from N ``(db_path, cache, window_id)`` triples into
+    one aggregated scoreboard, while keeping each window's own scoreboard intact.
+
+    Locked design decisions under test:
+      1. Peer groups stay strictly within-window (cs-mean keyed on tick_id,
+         which is already unique per window — pooling must not contaminate it).
+      2. Dedup runs per-window, BEFORE pooling (never across the pooled set).
+      3. Cluster-robust SE clusters by (ticker, window) when pooling, not bare
+         ticker — single-window behaviour (cluster by ticker) is unchanged.
+      4. Pooled n = sum of per-window n's; backwards-compat with the existing
+         single-window ``build_analyst_scoreboard`` is preserved exactly.
+    """
+
+    def _import(self):
+        """Lazy import of the pooling entrypoint under test."""
+        from backtest.scoreboard import build_pooled_analyst_scoreboard
+        return build_pooled_analyst_scoreboard
+
+    # ── Case 1: pooled n = sum of per-window n's ──────────────────────────────
+
+    def test_pooled_n_equals_sum_of_per_window_n(
+        self, tmp_path: pytest.TempPathFactory,
+    ) -> None:
+        """Pooling two windows, each with 2 scored verdicts (AAPL + MSFT, one
+        tick), must yield n=4 in the pooled cell — the simple sum.
+        """
+        from backtest.scoreboard import build_analyst_scoreboard
+
+        build_pooled = self._import()
+
+        def _make_window(tmp_dir, ticker_fwd):
+            """Build a one-tick, two-ticker fixture window and return (db_path, cache)."""
+            rows = [
+                _make_evidence_row(
+                    analyst="technical", ticker="AAPL",
+                    tick_id=TICK_A, recorded_at=OPEN_TICK, lean="bullish",
+                ),
+                _make_evidence_row(
+                    analyst="technical", ticker="MSFT",
+                    tick_id=TICK_A, recorded_at=OPEN_TICK, lean="neutral",
+                ),
+            ]
+            db_path = _build_fixture_db(tmp_dir, rows)
+
+            def _mock_read(ticker, start, end):
+                if start == date(2025, 9, 5):
+                    return [_make_ohlcbar(ticker=ticker, ts=OPEN_TICK, open=100.0, close=100.0)]
+                close = ticker_fwd.get(ticker, 100.0)
+                return [_make_ohlcbar(ticker=ticker, ts=OPEN_TICK, open=close, close=close)]
+
+            mock_cache = MagicMock()
+            mock_cache.read_ohlcv.side_effect = _mock_read
+            return db_path, mock_cache
+
+        win_a_dir = tmp_path / "win_a"
+        win_b_dir = tmp_path / "win_b"
+        win_a_dir.mkdir()
+        win_b_dir.mkdir()
+
+        db_a, cache_a = _make_window(win_a_dir, {"AAPL": 105.0, "MSFT": 101.0})
+        db_b, cache_b = _make_window(win_b_dir, {"AAPL": 103.0, "MSFT": 100.0})
+
+        # Sanity: each window alone scores n=2.
+        result_a_alone = build_analyst_scoreboard(db_path=db_a, cache=cache_a, horizons=[1])
+        result_b_alone = build_analyst_scoreboard(db_path=db_b, cache=cache_b, horizons=[1])
+        assert result_a_alone.cell(analyst="technical", horizon=1, subset="all").n == 2
+        assert result_b_alone.cell(analyst="technical", horizon=1, subset="all").n == 2
+
+        pooled = build_pooled(
+            runs=[
+                (db_a, cache_a, "window-a"),
+                (db_b, cache_b, "window-b"),
+            ],
+            horizons=[1],
+        )
+
+        cell = pooled.cell(analyst="technical", horizon=1, subset="all")
+        assert cell.n == 4, f"Expected pooled n=4 (2+2); got {cell.n}"
+
+    # ── Case 2: peer-group isolation — pooling must not change a window's
+    #             excess returns relative to scoring it alone ─────────────────
+
+    def test_peer_groups_stay_within_window_not_contaminated_by_pooling(
+        self, tmp_path: pytest.TempPathFactory,
+    ) -> None:
+        """If peer means were (incorrectly) computed over the pooled set, the
+        mean used to compute AAPL's excess in window A would shift because
+        window B's tickers have a wildly different cross-sectional mean.
+
+        Window A: AAPL +5 %, MSFT +1 % → peer mean (universe) = 3 %.
+        Window B: AAPL +5 %, MSFT +50 % → peer mean (universe) = 27.5 %.
+
+        If pooled incorrectly (means computed over the union), AAPL's excess in
+        EITHER window would be computed against a blended mean across BOTH
+        windows' tickers — which is wrong, because tick_ids are window-local and
+        a peer group must never cross a tick/window boundary.
+
+        We assert that the per-window excess scores recovered from the pooled
+        per-observation records are IDENTICAL to scoring each window alone —
+        proving the peer mean was never blended across windows.
+        """
+        build_pooled       = self._import()
+        from backtest.scoreboard import build_analyst_scoreboard
+
+        def _make_window(tmp_dir, ticker_fwd):
+            rows = [
+                _make_evidence_row(
+                    analyst="technical", ticker="AAPL",
+                    tick_id=TICK_A, recorded_at=OPEN_TICK, lean="bullish",
+                ),
+                _make_evidence_row(
+                    analyst="technical", ticker="MSFT",
+                    tick_id=TICK_A, recorded_at=OPEN_TICK, lean="neutral",
+                ),
+            ]
+            db_path = _build_fixture_db(tmp_dir, rows)
+
+            def _mock_read(ticker, start, end):
+                if start == date(2025, 9, 5):
+                    return [_make_ohlcbar(ticker=ticker, ts=OPEN_TICK, open=100.0, close=100.0)]
+                close = ticker_fwd.get(ticker, 100.0)
+                return [_make_ohlcbar(ticker=ticker, ts=OPEN_TICK, open=close, close=close)]
+
+            mock_cache = MagicMock()
+            mock_cache.read_ohlcv.side_effect = _mock_read
+            return db_path, mock_cache
+
+        win_a_dir = tmp_path / "win_a"
+        win_b_dir = tmp_path / "win_b"
+        win_a_dir.mkdir()
+        win_b_dir.mkdir()
+
+        # Window A: AAPL +5 %, MSFT +1 % → universe mean = 3 %. AAPL excess = +2 %.
+        db_a, cache_a = _make_window(win_a_dir, {"AAPL": 105.0, "MSFT": 101.0})
+        # Window B: AAPL +5 %, MSFT +50 % → universe mean = 27.5 %. AAPL excess = -22.5 %.
+        db_b, cache_b = _make_window(win_b_dir, {"AAPL": 105.0, "MSFT": 150.0})
+
+        result_a_alone = build_analyst_scoreboard(
+            db_path=db_a, cache=cache_a, horizons=[1], neutralise_by="universe",
+        )
+        result_b_alone = build_analyst_scoreboard(
+            db_path=db_b, cache=cache_b, horizons=[1], neutralise_by="universe",
+        )
+        alone_a_bps = result_a_alone.cell(analyst="technical", horizon=1, subset="all").mean_excess_bps
+        alone_b_bps = result_b_alone.cell(analyst="technical", horizon=1, subset="all").mean_excess_bps
+
+        # Sanity: the two windows' peer means genuinely differ — otherwise this
+        # test would not be able to detect cross-window contamination.
+        assert alone_a_bps != pytest.approx(alone_b_bps, rel=1e-3), (
+            "Fixture windows must have meaningfully different peer means for "
+            "this isolation test to be discriminating."
+        )
+
+        pooled = build_pooled(
+            runs=[
+                (db_a, cache_a, "window-a"),
+                (db_b, cache_b, "window-b"),
+            ],
+            horizons=[1],
+            neutralise_by="universe",
+        )
+        pooled_bps = pooled.cell(analyst="technical", horizon=1, subset="all").mean_excess_bps
+
+        # Pooled mean must be the SIMPLE AVERAGE of the two windows' per-
+        # observation scores (each window has 2 verdicts: AAPL hit, MSFT
+        # neutral-zero) — i.e. exactly the mean of the two alone-runs' means,
+        # since both windows contribute the same n and the AAPL score is the
+        # only non-zero contributor in each.
+        expected_pooled_bps = (alone_a_bps + alone_b_bps) / 2.0
+        assert pooled_bps == pytest.approx(expected_pooled_bps, rel=1e-6), (
+            f"Pooled mean excess ({pooled_bps:.4f} bps) must equal the average "
+            f"of the two windows scored alone ({expected_pooled_bps:.4f} bps) — "
+            f"any deviation implies the peer mean leaked across windows."
+        )
+
+    # ── Case 3: dedup runs per-window, never across the pooled set ────────────
+
+    def test_dedup_is_per_window_not_across_pooled_set(
+        self, tmp_path: pytest.TempPathFactory,
+    ) -> None:
+        """A ticker whose verdict tuple is identical at the boundary across two
+        windows must still yield ONE observation PER WINDOW (n=2 total), not
+        collapsed into a single observation across the pooled set.
+
+        If dedup ran AFTER pooling (on the concatenated, ordered-by-window
+        record list), the last call in window A and the first call in window B
+        — both bullish/0.5/0.7 — would look like a "replay" and collapse to
+        n=1.  Dedup must run inside each window's own helper, before pooling.
+        """
+        build_pooled = self._import()
+
+        def _make_window(tmp_dir):
+            """One bullish AAPL verdict + one neutral MSFT anchor, identical
+            (lean, magnitude, confidence) tuple in both windows."""
+            rows = [
+                _make_evidence_row(
+                    analyst="technical", ticker="AAPL",
+                    tick_id=TICK_A, recorded_at=OPEN_TICK, lean="bullish",
+                    magnitude=0.5, confidence=0.7,
+                ),
+                _make_evidence_row(
+                    analyst="technical", ticker="MSFT",
+                    tick_id=TICK_A, recorded_at=OPEN_TICK, lean="neutral",
+                    magnitude=0.0, confidence=0.5,
+                ),
+            ]
+            db_path = _build_fixture_db(tmp_dir, rows)
+
+            def _mock_read(ticker, start, end):
+                if start == date(2025, 9, 5):
+                    return [_make_ohlcbar(ticker=ticker, ts=OPEN_TICK, open=100.0, close=100.0)]
+                close = 105.0 if ticker == "AAPL" else 100.0
+                return [_make_ohlcbar(ticker=ticker, ts=OPEN_TICK, open=close, close=close)]
+
+            mock_cache = MagicMock()
+            mock_cache.read_ohlcv.side_effect = _mock_read
+            return db_path, mock_cache
+
+        win_a_dir = tmp_path / "win_a"
+        win_b_dir = tmp_path / "win_b"
+        win_a_dir.mkdir()
+        win_b_dir.mkdir()
+
+        db_a, cache_a = _make_window(win_a_dir)
+        db_b, cache_b = _make_window(win_b_dir)
+
+        pooled = build_pooled(
+            runs=[
+                (db_a, cache_a, "window-a"),
+                (db_b, cache_b, "window-b"),
+            ],
+            horizons=[1],
+        )
+
+        cell = pooled.cell(analyst="technical", horizon=1, subset="all")
+        # Identical tuples ACROSS windows must NOT collapse: 2 obs per window
+        # (AAPL anchor + MSFT anchor) × 2 windows = 4.
+        assert cell.n == 4, (
+            f"Expected n=4 (2 obs per window × 2 windows, dedup not crossing "
+            f"the window boundary); got {cell.n}.  If dedup incorrectly ran "
+            f"across the pooled set, identical boundary tuples would collapse."
+        )
+
+    # ── Case 4: cluster key is (ticker, window) — produces a different SE/t
+    #             than clustering by bare ticker ─────────────────────────────
+
+    def test_cluster_key_is_ticker_and_window_not_bare_ticker(
+        self, tmp_path: pytest.TempPathFactory,
+    ) -> None:
+        """Pooling the SAME ticker's observations from two unrelated windows
+        must cluster them as TWO separate clusters (ticker, window-a) and
+        (ticker, window-b) — not collapsed into one bare-ticker cluster.
+
+        We construct a pooled case where clustering by bare ticker vs by
+        (ticker, window) produces a DIFFERENT t-stat, and assert the actual
+        result matches the (ticker, window) clustering, not bare-ticker.
+
+        Setup: AAPL appears many times in window A (strong shared level, autocorrelated)
+        and many times in window B (a different shared level). If clustered by
+        bare ticker, all of AAPL's observations across both windows collapse into
+        ONE cluster — drastically inflating the SE (only 1 cluster total once MSFT's
+        anchor clusters are factored in, the d.o.f. shrinks). Clustering by
+        (ticker, window) correctly treats them as 2 distinct clusters.
+        """
+        from backtest.scoreboard import _cluster_robust_ttest
+
+        build_pooled = self._import()
+
+        def _make_window(tmp_dir, window_tag, fwd_aapl_pct):
+            """Many ticks of a bullish AAPL call (distinct confidence so dedup
+            keeps every tick) plus a neutral MSFT anchor, in one window."""
+            rows = []
+            for i in range(8):
+                ts = datetime(2025, 9, 1 + i, 13, 30, tzinfo=UTC)
+                rows.append(_make_evidence_row(
+                    analyst="technical", ticker="AAPL",
+                    tick_id=f"{window_tag}-tick-{i}", recorded_at=ts, lean="bullish",
+                    confidence=0.50 + 0.01 * i,
+                ))
+                rows.append(_make_evidence_row(
+                    analyst="technical", ticker="MSFT",
+                    tick_id=f"{window_tag}-tick-{i}", recorded_at=ts, lean="neutral",
+                    confidence=0.50 + 0.01 * i,
+                ))
+            db_path = _build_fixture_db(tmp_dir, rows)
+
+            base_dates = {date(2025, 9, 1 + i) for i in range(8)}
+
+            def _mock_read(ticker, start, end):
+                if start in base_dates:
+                    return [_make_ohlcbar(ticker=ticker, ts=OPEN_TICK, open=100.0, close=100.0)]
+                close = (100.0 * (1 + fwd_aapl_pct)) if ticker == "AAPL" else 100.0
+                return [_make_ohlcbar(ticker=ticker, ts=OPEN_TICK, open=close, close=close)]
+
+            mock_cache = MagicMock()
+            mock_cache.read_ohlcv.side_effect = _mock_read
+            return db_path, mock_cache
+
+        win_a_dir = tmp_path / "win_a"
+        win_b_dir = tmp_path / "win_b"
+        win_a_dir.mkdir()
+        win_b_dir.mkdir()
+
+        # Window A: AAPL beats peers by +5 % every tick.  Window B: by +9 %.
+        db_a, cache_a = _make_window(win_a_dir, "win-a", 0.05)
+        db_b, cache_b = _make_window(win_b_dir, "win-b", 0.09)
+
+        pooled = build_pooled(
+            runs=[
+                (db_a, cache_a, "window-a"),
+                (db_b, cache_b, "window-b"),
+            ],
+            horizons=[1],
+            inference="cluster_ticker",
+        )
+        cell = pooled.cell(analyst="technical", horizon=1, subset="all")
+
+        # Reconstruct what bare-ticker clustering would have produced, using
+        # the SAME scores but labelling every AAPL observation (regardless of
+        # window) with the bare ticker "AAPL", and every MSFT observation
+        # "MSFT" — exactly the buggy behaviour decision 3 forbids.
+        #
+        # We can't reach into the pooled internals directly, so we rebuild the
+        # equivalent scores/labels under both candidate cluster-label schemes.
+        # Every score within a window/ticker pair is identical (deterministic
+        # fixture: n=8 AAPL + 8 MSFT per window), so reconstruct the raw
+        # per-observation scores directly rather than relying on cells.
+        aapl_score_a = 0.05 - (0.05 / 2)   # AAPL excess vs cs-mean of (AAPL, MSFT) in window A
+        aapl_score_b = 0.09 - (0.09 / 2)   # ditto for window B
+        # (MSFT neutral verdicts contribute exactly 0 regardless of clustering.)
+
+        scores_pooled = (
+            [aapl_score_a] * 8 + [0.0] * 8 +     # window A: 8 AAPL + 8 MSFT(=0)
+            [aapl_score_b] * 8 + [0.0] * 8        # window B: 8 AAPL + 8 MSFT(=0)
+        )
+        labels_bare_ticker = (
+            ["AAPL"] * 8 + ["MSFT"] * 8 +
+            ["AAPL"] * 8 + ["MSFT"] * 8
+        )
+        labels_ticker_window = (
+            [("AAPL", "window-a")] * 8 + [("MSFT", "window-a")] * 8 +
+            [("AAPL", "window-b")] * 8 + [("MSFT", "window-b")] * 8
+        )
+
+        t_bare, _p_bare, _df_bare = _cluster_robust_ttest(scores_pooled, labels_bare_ticker)
+        t_correct, _p_correct, _df_correct = _cluster_robust_ttest(scores_pooled, labels_ticker_window)
+
+        # The two clustering schemes must disagree (otherwise this fixture
+        # fails to discriminate the bug from the fix).
+        assert t_bare != pytest.approx(t_correct, rel=1e-9), (
+            "Fixture must produce a different t-stat under bare-ticker vs "
+            "(ticker, window) clustering for this test to be meaningful."
+        )
+
+        # The pooled scoreboard's actual t-stat must match the (ticker, window)
+        # clustering, NOT the bare-ticker clustering.
+        assert cell.t_stat == pytest.approx(t_correct, rel=1e-6), (
+            f"Pooled t-stat ({cell.t_stat:.4f}) must match (ticker, window) "
+            f"clustering ({t_correct:.4f}), not bare-ticker clustering "
+            f"({t_bare:.4f})."
+        )
+
+    # ── Case 5: backwards compat — pooling a single window equals the
+    #             existing build_analyst_scoreboard output for that window ────
+
+    def test_pooling_single_window_matches_build_analyst_scoreboard(
+        self, tmp_path: pytest.TempPathFactory,
+    ) -> None:
+        """Pooling exactly ONE ``(db_path, cache, window_id)`` triple must
+        produce byte-identical cells (n, mean, hit-rate, t-stat, p-value) to
+        calling ``build_analyst_scoreboard`` directly on that window.
+
+        Single-window cluster key reduces to the bare ticker either way (one
+        window means (ticker, window) and ticker are in 1:1 correspondence), so
+        this also proves decision 3 doesn't change single-window behaviour.
+        """
+        from backtest.scoreboard import build_analyst_scoreboard
+
+        build_pooled = self._import()
+
+        rows = [
+            _make_evidence_row(
+                analyst="technical", ticker="AAPL",
+                tick_id=TICK_A, recorded_at=OPEN_TICK, lean="bullish",
+            ),
+            _make_evidence_row(
+                analyst="technical", ticker="MSFT",
+                tick_id=TICK_A, recorded_at=OPEN_TICK, lean="bearish",
+            ),
+            _make_evidence_row(
+                analyst="fundamental", ticker="AAPL",
+                tick_id=TICK_A, recorded_at=OPEN_TICK, lean="bearish",
+            ),
+        ]
+        db_path = _build_fixture_db(tmp_path, rows)
+
+        def _mock_read(ticker, start, end):
+            prices = {"AAPL": (100.0, 105.0), "MSFT": (100.0, 101.0)}
+            base, fwd = prices.get(ticker, (100.0, 100.0))
+            if start == date(2025, 9, 5):
+                return [_make_ohlcbar(ticker=ticker, ts=OPEN_TICK, open=base, close=base)]
+            return [_make_ohlcbar(ticker=ticker, ts=OPEN_TICK, open=fwd, close=fwd)]
+
+        mock_cache = MagicMock()
+        mock_cache.read_ohlcv.side_effect = _mock_read
+
+        direct = build_analyst_scoreboard(
+            db_path=db_path, cache=mock_cache, horizons=[1, 5],
+            primary_horizon_by_analyst={"fundamental": 5},
+            neutralise_by="universe",
+            inference="cluster_ticker",
+        )
+        pooled = build_pooled(
+            runs=[(db_path, mock_cache, "only-window")],
+            horizons=[1, 5],
+            primary_horizon_by_analyst={"fundamental": 5},
+            neutralise_by="universe",
+            inference="cluster_ticker",
+        )
+
+        assert pooled.analysts == direct.analysts
+        assert pooled.horizons == direct.horizons
+
+        for analyst in direct.analysts:
+            for h in direct.horizons:
+                for subset in ("all", "bullish", "bearish"):
+                    d_cell = direct.cell(analyst=analyst, horizon=h, subset=subset)
+                    p_cell = pooled.cell(analyst=analyst, horizon=h, subset=subset)
+
+                    assert p_cell.n == d_cell.n, (
+                        f"n mismatch for {analyst}/{h}/{subset}: "
+                        f"{p_cell.n} vs {d_cell.n}"
+                    )
+                    if math.isfinite(d_cell.mean_excess_bps):
+                        assert p_cell.mean_excess_bps == pytest.approx(
+                            d_cell.mean_excess_bps, rel=1e-9, abs=1e-9,
+                        )
+                    else:
+                        assert math.isnan(p_cell.mean_excess_bps)
+                    if math.isfinite(d_cell.hit_rate):
+                        assert p_cell.hit_rate == pytest.approx(d_cell.hit_rate, rel=1e-9)
+                    else:
+                        assert math.isnan(p_cell.hit_rate)
+                    if math.isfinite(d_cell.t_stat):
+                        assert p_cell.t_stat == pytest.approx(d_cell.t_stat, rel=1e-9)
+                    else:
+                        assert math.isnan(p_cell.t_stat)
+                    if math.isfinite(d_cell.p_value):
+                        assert p_cell.p_value == pytest.approx(d_cell.p_value, rel=1e-9)
+                    else:
+                        assert math.isnan(p_cell.p_value)
