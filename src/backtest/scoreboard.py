@@ -20,11 +20,29 @@ Peer group depends on ``neutralise_by``:
                    universe when sector data is absent.
   ``"universe"`` — mean over all tickers present in the tick (original behaviour).
 
-Aggregated per analyst × horizon × lean-subset {all, bullish, bearish}:
+Aggregated per analyst × horizon × lean-subset {directional, bullish, bearish}:
   - mean excess in basis points  (headline, cross-window comparable)
   - hit rate                     (fraction of non-neutral verdicts with score > 0)
   - n                            (scored verdicts; window-edge excluded rows reduce n)
   - t-stat / p-value             (scipy.stats.ttest_1samp to separate signal from noise)
+
+Phase 14 (iter-11) — directional-only scoring + confidence gradient
+---------------------------------------------------------------------
+1. **Neutral verdicts excluded from "directional"** — previously the "all"
+   subset included EVERY verdict, with neutral contributing an exact score
+   of 0.  This diluted the mean excess and inflated n for analysts that
+   abstain often (e.g. fundamental).  "directional" is now redefined as
+   bullish ∪ bearish ONLY; neutral verdicts contribute nothing to mean, n,
+   t-stat, or hit rate.  Their abstention rate is reported separately via
+   ``ScoreboardResult.coverage()`` (see ``CoverageDiagnostic``).
+2. **Confidence-gradient view** — ``ScoreboardResult.confidence_gradient()``
+   buckets an analyst's directional calls by recorded confidence (terciles
+   by default, data-derived per analyst — see ``ConfidenceBucket``) and
+   reports mean excess / n / hit rate / t-stat per bucket.  This is the
+   decision-relevant output: if high-confidence calls outperform
+   low-confidence calls, the analyst has extractable edge but is
+   miscalibrated (fix: calibration / abstain-when-unsure); if not, it is a
+   capability problem.
 
 Phase 14 defect fixes
 ---------------------
@@ -138,14 +156,19 @@ class ScoreboardCell:
     horizon:
         Forward horizon in calendar days (e.g. 1, 5, 20).
     subset:
-        Lean subset — ``"all"``, ``"bullish"``, or ``"bearish"``.
+        Lean subset — ``"directional"`` (bullish ∪ bearish; neutral
+        EXCLUDED entirely — see module docstring "Phase 14 (iter-11)"),
+        ``"bullish"``, or ``"bearish"``.
     n:
         Number of verdicts actually scored (coverage; reduced at window edge).
         After Phase 14 dedup, this counts UNIQUE fresh-verdict observations,
-        not total replayed rows.
+        not total replayed rows.  Neutral verdicts contribute 0 to this count
+        for the ``"directional"`` subset (they are excluded, not zero-scored).
     mean_excess_bps:
         Mean of ``score_h`` in basis points.  Positive means the analyst's
-        directional calls outperformed the tick's peer-group mean.
+        directional calls outperformed the tick's peer-group mean.  ``nan``
+        when n == 0 (no directional data to score — e.g. an all-neutral
+        analyst at this horizon).
     hit_rate:
         Fraction of non-neutral verdicts with ``score_h > 0``.  ``math.nan``
         when n == 0 (no data to compute).
@@ -163,6 +186,74 @@ class ScoreboardCell:
     hit_rate:        float
     t_stat:          float
     p_value:         float
+
+
+@dataclass(frozen=True)
+class CoverageDiagnostic:
+    """Per-analyst neutral/abstention coverage diagnostic (Phase 14, iter-11).
+
+    Reported ALONGSIDE the scoreboard cells, never folded into them — this is
+    a coverage/abstention measure, not a predictive-power measure.  Computing
+    it as a defined ratio requires a denominator decision; see the docstring
+    on ``ScoreboardResult.coverage`` for the chosen convention.
+
+    Attributes
+    ----------
+    analyst:
+        Analyst name.
+    horizon:
+        Forward horizon in calendar days this diagnostic was computed for.
+    n_neutral:
+        Count of deduplicated, forward-bar-scoreable verdicts with lean
+        ``"neutral"`` at this horizon.
+    n_scoreable:
+        Total deduplicated, forward-bar-scoreable verdicts at this horizon
+        (neutral + bullish + bearish).  Verdicts excluded for missing price
+        data (window edge / no base bar) are excluded from this denominator
+        too — they are a data-availability gap, not an abstention.
+    neutral_rate:
+        ``n_neutral / n_scoreable``.  ``math.nan`` when ``n_scoreable == 0``.
+    """
+    analyst:      str
+    horizon:      int
+    n_neutral:    int
+    n_scoreable:  int
+    neutral_rate: float
+
+
+@dataclass(frozen=True)
+class ConfidenceBucket:
+    """One bucket of the confidence-gradient view (Phase 14, iter-11).
+
+    Attributes
+    ----------
+    bucket_index:
+        0-based index of this bucket, ordered from LOWEST to HIGHEST
+        confidence (bucket 0 = lowest tercile, last = highest).
+    confidence_range:
+        ``(low, high)`` bounds of the confidence values that fell into this
+        bucket (inclusive), purely for display/diagnostic purposes.
+    n:
+        Number of directional (non-neutral) observations in this bucket.
+    mean_excess_bps:
+        Mean ``score_h`` in basis points for this bucket.  ``nan`` if n == 0.
+    hit_rate:
+        Fraction of this bucket's observations with ``score_h > 0``.
+        ``nan`` if n == 0.
+    t_stat:
+        t-statistic for this bucket (cluster-robust or naive, matching
+        whatever inference mode produced the underlying scoreboard).
+        ``nan`` if n < 2.
+    p_value:
+        Two-sided p-value paired with ``t_stat``.  ``nan`` if n < 2.
+    """
+    bucket_index:     int
+    confidence_range: tuple[float, float]
+    n:                int
+    mean_excess_bps:  float
+    hit_rate:         float
+    t_stat:           float
+    p_value:          float
 
 
 @dataclass
@@ -189,6 +280,15 @@ class ScoreboardResult:
     horizons:           list[int]                                  = field(default_factory=list)
     _primary_horizons:  dict[str, int]                             = field(default_factory=dict)
 
+    # Internal: the flat observation list feeding this result, retained so
+    # ``coverage()`` and ``confidence_gradient()`` can recompute their own
+    # bespoke aggregations (different subsetting / bucketing rules from the
+    # main cells) without re-reading the database.  Never part of the public
+    # contract — callers use the methods below, not this field directly.
+    _records:           list[_ObservationRecord]                   = field(default_factory=list, repr=False)
+    _inference:         str                                        = field(default="cluster_ticker", repr=False)
+    _cluster_key_fn:    object                                      = field(default=None, repr=False)
+
     def cell(self, *, analyst: str, horizon: int, subset: str) -> ScoreboardCell:
         """Return the cell for ``(analyst, horizon, subset)``.
 
@@ -202,7 +302,7 @@ class ScoreboardResult:
         horizon:
             Horizon in calendar days.
         subset:
-            One of ``"all"``, ``"bullish"``, ``"bearish"``.
+            One of ``"directional"``, ``"bullish"``, ``"bearish"``.
         """
         key = (analyst, horizon, subset)
         if key not in self.cells:
@@ -244,6 +344,192 @@ class ScoreboardResult:
                 f"Available: {self.analysts}"
             )
         return self._primary_horizons.get(analyst, max(self.horizons))
+
+    def coverage(self, *, analyst: str, horizon: int) -> CoverageDiagnostic:
+        """Return the neutral/abstention coverage diagnostic for ``analyst``.
+
+        Denominator decision (Phase 14, iter-11): ``n_scoreable`` is the
+        FORWARD-BAR-SCOREABLE set at this horizon — every deduplicated
+        verdict that had both a base price and a forward close — NOT the raw
+        ``analyst_evidence`` row count.  Verdicts excluded for missing price
+        data (window edge) are excluded from this denominator too, since
+        that absence reflects data availability, not the analyst abstaining.
+        This makes ``neutral_rate`` directly comparable to the
+        ``"directional"`` cell's ``n`` at the same horizon:
+        ``n_neutral + directional.n == n_scoreable``.
+
+        Parameters
+        ----------
+        analyst:
+            Analyst name.
+        horizon:
+            Forward horizon in calendar days.
+
+        Returns
+        -------
+        CoverageDiagnostic
+            ``n_neutral`` / ``n_scoreable`` / ``neutral_rate`` for this
+            (analyst, horizon).  ``neutral_rate`` is ``math.nan`` when
+            ``n_scoreable == 0``.
+
+        Raises
+        ------
+        KeyError
+            If ``analyst`` is not present in this result.
+        """
+        if analyst not in self.analysts:
+            raise KeyError(
+                f"Analyst {analyst!r} not found in scoreboard result.  "
+                f"Available: {self.analysts}"
+            )
+
+        relevant = [
+            rec for rec in self._records
+            if rec.analyst == analyst and rec.horizon == horizon
+        ]
+        n_scoreable = len(relevant)
+        n_neutral   = sum(1 for rec in relevant if rec.lean == "neutral")
+        neutral_rate = (n_neutral / n_scoreable) if n_scoreable > 0 else math.nan
+
+        return CoverageDiagnostic(
+            analyst=analyst,
+            horizon=horizon,
+            n_neutral=n_neutral,
+            n_scoreable=n_scoreable,
+            neutral_rate=neutral_rate,
+        )
+
+    def confidence_gradient(
+        self,
+        *,
+        analyst: str,
+        horizon: int,
+        n_buckets: int = 3,
+    ) -> list[ConfidenceBucket]:
+        """Bucket ``analyst``'s directional calls by confidence and report
+        mean excess / n / hit rate / t-stat per bucket.
+
+        Bucketing scheme (Phase 14, iter-11): confidence is a CONTINUOUS
+        float in ``[0, 1]`` whose real-world range varies sharply per
+        analyst, so buckets are TERCILES (or ``n_buckets`` quantile cuts)
+        computed from THIS analyst's own directional-confidence distribution
+        at this horizon — never a hardcoded global threshold.  Neutral
+        verdicts are excluded entirely before bucketing (this view operates
+        strictly on the ``"directional"`` subset).
+
+        Parameters
+        ----------
+        analyst:
+            Analyst name.
+        horizon:
+            Forward horizon in calendar days (typically the analyst's
+            primary horizon — see ``primary_horizon``).
+        n_buckets:
+            Number of quantile buckets to cut into.  Defaults to 3
+            (terciles).  Comes from ``scoreboard_confidence_buckets`` config
+            at the call site — never hardcoded by a caller.
+
+        Returns
+        -------
+        list[ConfidenceBucket]
+            ``n_buckets`` buckets ordered from lowest to highest confidence.
+            A bucket may have ``n == 0`` if too few directional observations
+            exist to fill every quantile slice (e.g. fewer observations than
+            buckets) — reported as such rather than silently dropped.
+
+        Raises
+        ------
+        KeyError
+            If ``analyst`` is not present in this result.
+        """
+        if analyst not in self.analysts:
+            raise KeyError(
+                f"Analyst {analyst!r} not found in scoreboard result.  "
+                f"Available: {self.analysts}"
+            )
+
+        directional = [
+            rec for rec in self._records
+            if rec.analyst == analyst
+            and rec.horizon == horizon
+            and rec.lean in ("bullish", "bearish")
+        ]
+
+        if not directional:
+            # No directional data at all — return n_buckets empty buckets so
+            # the caller gets a consistently-shaped (if empty) gradient.
+            return [
+                ConfidenceBucket(
+                    bucket_index=i,
+                    confidence_range=(math.nan, math.nan),
+                    n=0,
+                    mean_excess_bps=math.nan,
+                    hit_rate=math.nan,
+                    t_stat=math.nan,
+                    p_value=math.nan,
+                )
+                for i in range(n_buckets)
+            ]
+
+        # Sort by confidence, then cut into n_buckets CONTIGUOUS, near-equal-
+        # size chunks (np.array_split) — i.e. quantile buckets derived
+        # directly from this analyst's own directional-confidence
+        # distribution, never a hardcoded numeric threshold.  Using
+        # array_split on the sorted, ranked sequence (rather than cutting on
+        # the raw confidence VALUES via np.quantile edges) avoids uneven
+        # bucket sizes when the distribution has ties or is lumpy — every
+        # bucket gets floor(n/n_buckets) or ceil(n/n_buckets) members.
+        directional_sorted = sorted(directional, key=lambda rec: rec.confidence)
+        chunks = np.array_split(np.arange(len(directional_sorted)), n_buckets)
+
+        buckets: list[ConfidenceBucket] = []
+
+        for i, chunk_indices in enumerate(chunks):
+            members = [directional_sorted[idx] for idx in chunk_indices]
+            bucket_n = len(members)
+
+            if bucket_n == 0:
+                # Only possible when there are fewer directional observations
+                # than requested buckets — no confidence data fell in this slot.
+                buckets.append(ConfidenceBucket(
+                    bucket_index=i,
+                    confidence_range=(math.nan, math.nan),
+                    n=0,
+                    mean_excess_bps=math.nan,
+                    hit_rate=math.nan,
+                    t_stat=math.nan,
+                    p_value=math.nan,
+                ))
+                continue
+
+            scores = [rec.score for rec in members]
+            cluster_labels = [
+                self._cluster_key_fn(rec) if self._cluster_key_fn is not None else rec.ticker
+                for rec in members
+            ]
+
+            cell = _aggregate(
+                analyst=analyst,
+                horizon=horizon,
+                subset="confidence_bucket",
+                scores=scores,
+                directional_scores=scores,
+                cluster_labels=cluster_labels,
+                inference=self._inference,
+            )
+
+            confs = [rec.confidence for rec in members]
+            buckets.append(ConfidenceBucket(
+                bucket_index=i,
+                confidence_range=(min(confs), max(confs)),
+                n=cell.n,
+                mean_excess_bps=cell.mean_excess_bps,
+                hit_rate=cell.hit_rate,
+                t_stat=cell.t_stat,
+                p_value=cell.p_value,
+            ))
+
+        return buckets
 
 
 # ── Internal types ────────────────────────────────────────────────────────────
@@ -291,6 +577,10 @@ class _ObservationRecord:
     score:
         ``position × excess`` — the signed contribution to the mean-excess
         metric.  Exactly ``0.0`` for neutral verdicts.
+    confidence:
+        Recorded confidence (``[0, 1]``) for this verdict.  Carried through
+        purely for the confidence-gradient view (Phase 14, iter-11); never
+        affects the score itself.
     """
     analyst:    str
     ticker:     str
@@ -298,6 +588,7 @@ class _ObservationRecord:
     horizon:    int
     lean:       str
     score:      float
+    confidence: float
 
 
 @dataclass(frozen=True)
@@ -812,6 +1103,7 @@ def _score_window_observations(
                 horizon=h,
                 lean=row.lean,
                 score=score,
+                confidence=float(row.confidence),
             ))
 
     # analysts_seen tracks the FULL post-dedup roster, independent of whether
@@ -871,10 +1163,16 @@ def _aggregate_records(
     default_horizon = max(horizons) if horizons else 1
 
     # Scores: (analyst, h) → subset → list[score]
+    #
+    # Phase 14 (iter-11): "directional" = bullish ∪ bearish ONLY.  Neutral
+    # verdicts are EXCLUDED entirely from this subset — they no longer
+    # contribute a score of 0 (which previously diluted the mean and
+    # inflated n).  Neutral verdicts are tracked separately via
+    # ScoreboardResult.coverage(), never folded into "directional".
     score_store: dict[
         tuple[str, int],
         dict[str, list[float]],
-    ] = defaultdict(lambda: {"all": [], "bullish": [], "bearish": []})
+    ] = defaultdict(lambda: {"directional": [], "bullish": [], "bearish": []})
 
     # Cluster labels aligned element-for-element with ``score_store``.  Kept
     # as a parallel store (rather than zipping into tuples) so the existing
@@ -882,25 +1180,34 @@ def _aggregate_records(
     cluster_store: dict[
         tuple[str, int],
         dict[str, list],
-    ] = defaultdict(lambda: {"all": [], "bullish": [], "bearish": []})
+    ] = defaultdict(lambda: {"directional": [], "bullish": [], "bearish": []})
 
     for rec in records:
         key          = (rec.analyst, rec.horizon)
         cluster_label = cluster_key_fn(rec)
 
-        score_store[key]["all"].append(rec.score)
-        cluster_store[key]["all"].append(cluster_label)
+        # Neutral verdicts are excluded from "directional" (and never
+        # contribute to "bullish" / "bearish" either) — they carry no
+        # directional score to measure selection skill against.
         if rec.lean == "bullish":
+            score_store[key]["directional"].append(rec.score)
+            cluster_store[key]["directional"].append(cluster_label)
             score_store[key]["bullish"].append(rec.score)
             cluster_store[key]["bullish"].append(cluster_label)
         elif rec.lean == "bearish":
+            score_store[key]["directional"].append(rec.score)
+            cluster_store[key]["directional"].append(cluster_label)
             score_store[key]["bearish"].append(rec.score)
             cluster_store[key]["bearish"].append(cluster_label)
+        # lean == "neutral": deliberately not appended anywhere here.
 
     analysts_sorted: list[str] = sorted(analysts_seen)
     result = ScoreboardResult(
         analysts=analysts_sorted,
         horizons=sorted(horizons),
+        _records=records,
+        _inference=inference,
+        _cluster_key_fn=cluster_key_fn,
     )
 
     # Populate the per-analyst primary horizon mapping.  Analysts not in the
@@ -914,26 +1221,22 @@ def _aggregate_records(
         for h in sorted(horizons):
             store = score_store.get(
                 (analyst, h),
-                {"all": [], "bullish": [], "bearish": []},
+                {"directional": [], "bullish": [], "bearish": []},
             )
             clusters = cluster_store.get(
                 (analyst, h),
-                {"all": [], "bullish": [], "bearish": []},
+                {"directional": [], "bullish": [], "bearish": []},
             )
-            for subset in ("all", "bullish", "bearish"):
+            for subset in ("directional", "bullish", "bearish"):
                 scores         = store.get(subset, [])
                 cluster_labels = clusters.get(subset, [])
 
-                # Hit-rate is defined over NON-NEUTRAL verdicts only (spec).  For
-                # the ``all`` subset the directional calls are exactly
-                # bullish ∪ bearish; for the single-lean subsets every score is
-                # already directional.  This keeps a mostly-neutral analyst
-                # (e.g. fundamental, bug #21) from reading as "almost always
-                # wrong" when it has simply declined to bet.
-                if subset == "all":
-                    directional = store.get("bullish", []) + store.get("bearish", [])
-                else:
-                    directional = scores
+                # Hit-rate is defined over NON-NEUTRAL verdicts only (spec).
+                # Since neutral verdicts are now excluded from "directional"
+                # entirely (Phase 14, iter-11), every subset here is already
+                # fully directional — the hit-rate denominator and the n/mean
+                # denominator are now the SAME set for every subset.
+                directional = scores
 
                 cell = _aggregate(
                     analyst=analyst,
@@ -995,7 +1298,7 @@ def render_scoreboard_md(result: ScoreboardResult) -> str:
         )
 
         for h in result.horizons:
-            for subset in ("all", "bullish", "bearish"):
+            for subset in ("directional", "bullish", "bearish"):
                 try:
                     c = result.cell(analyst=analyst, horizon=h, subset=subset)
                 except KeyError:
@@ -1057,7 +1360,7 @@ def _aggregate(
     horizon:
         Forward horizon in calendar days.
     subset:
-        Lean subset (``"all"``, ``"bullish"``, ``"bearish"``).
+        Lean subset (``"directional"``, ``"bullish"``, ``"bearish"``).
     scores:
         List of ``score_h = position × excess`` values for the whole subset,
         including neutral verdicts (which contribute an exact ``0``).  Drives

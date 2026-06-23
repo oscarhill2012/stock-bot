@@ -14,7 +14,9 @@
     "smart_money": 20
   },
 
-  "scoreboard_neutralise_by": "universe",
+  "scoreboard_neutralise_by": "sector",
 
-  "scoreboard_inference": "cluster_ticker"
+  "scoreboard_inference": "cluster_ticker",
+
+  "scoreboard_confidence_buckets": 3
 }

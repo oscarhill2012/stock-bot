@@ -168,8 +168,8 @@ class TestBuildAnalystScoreboard:
 
         result = build(db_path=db_path, cache=mock_cache, horizons=[1])
 
-        # Locate the technical analyst's "all" row for horizon 1d.
-        cell = result.cell(analyst="technical", horizon=1, subset="all")
+        # Locate the technical analyst's "directional" row for horizon 1d.
+        cell = result.cell(analyst="technical", horizon=1, subset="directional")
         assert cell.n > 0, "Expected at least one scored verdict"
         # Bullish AAPL beats peers → score is positive (in bps).
         assert cell.mean_excess_bps > 0, (
@@ -229,7 +229,7 @@ class TestBuildAnalystScoreboard:
 
         result = build(db_path=db_path, cache=mock_cache, horizons=[1])
 
-        cell = result.cell(analyst="technical", horizon=1, subset="all")
+        cell = result.cell(analyst="technical", horizon=1, subset="directional")
         assert cell.n > 0
         # AAPL lagged peers — score must be NEGATIVE despite +1 % absolute return.
         assert cell.mean_excess_bps < 0, (
@@ -237,15 +237,20 @@ class TestBuildAnalystScoreboard:
             f"got {cell.mean_excess_bps:.4f} bps"
         )
 
-    # ── Case 3: neutral lean → score exactly 0 ────────────────────────────────
+    # ── Case 3: neutral lean → excluded entirely from 'directional' ───────────
 
-    def test_neutral_lean_score_is_exactly_zero(
+    def test_neutral_lean_excluded_entirely_from_directional_subset(
         self, tmp_path: pytest.TempPathFactory,
     ) -> None:
-        """A neutral lean produces score = position × excess = 0 × anything = 0.
+        """A neutral lean is an ABSTENTION, not a bet that the stock is flat.
 
-        The analyst has no directional call so regardless of whether the ticker
-        rose or fell, its contribution to the mean-excess must be exactly 0.
+        Phase 14 (iter-11) change: neutral verdicts no longer contribute a
+        score of exactly 0 to the 'directional' subset — they are EXCLUDED
+        from it entirely (no contribution to mean, n, or t-stat).  A lone
+        neutral verdict with no directional counterpart must leave the
+        'directional' cell with n=0 and a NaN mean (no data to score), while
+        still being visible in the analyst's coverage/abstention diagnostic
+        (n_neutral=1).
         """
         build = self._import()
 
@@ -274,10 +279,22 @@ class TestBuildAnalystScoreboard:
 
         result = build(db_path=db_path, cache=mock_cache, horizons=[1])
 
-        cell = result.cell(analyst="fundamental", horizon=1, subset="all")
-        # score = 0 × excess = 0 for every neutral verdict → mean must be 0.
-        assert cell.mean_excess_bps == pytest.approx(0.0, abs=1e-9), (
-            f"Neutral lean should score exactly 0; got {cell.mean_excess_bps}"
+        cell = result.cell(analyst="fundamental", horizon=1, subset="directional")
+        # No directional (bullish/bearish) verdicts exist at all → n=0, NaN mean.
+        assert cell.n == 0, f"Expected n=0 (neutral excluded entirely); got {cell.n}"
+        assert math.isnan(cell.mean_excess_bps), (
+            f"Expected NaN mean excess with zero directional observations; "
+            f"got {cell.mean_excess_bps}"
+        )
+
+        # The neutral verdict must still show up in the coverage diagnostic.
+        coverage = result.coverage(analyst="fundamental", horizon=1)
+        assert coverage.n_neutral == 1, (
+            f"Expected n_neutral=1 for the lone neutral verdict; got {coverage.n_neutral}"
+        )
+        assert coverage.neutral_rate == pytest.approx(1.0, abs=1e-9), (
+            f"Expected neutral_rate=1.0 (1/1 scoreable verdicts neutral); "
+            f"got {coverage.neutral_rate}"
         )
 
     # ── Case 4: window-edge verdict — no +20d bar ─────────────────────────────
@@ -330,9 +347,9 @@ class TestBuildAnalystScoreboard:
 
         result = build(db_path=db_path, cache=mock_cache, horizons=[1, 5, 20])
 
-        cell_1d  = result.cell(analyst="technical", horizon=1,  subset="all")
-        cell_5d  = result.cell(analyst="technical", horizon=5,  subset="all")
-        cell_20d = result.cell(analyst="technical", horizon=20, subset="all")
+        cell_1d  = result.cell(analyst="technical", horizon=1,  subset="directional")
+        cell_5d  = result.cell(analyst="technical", horizon=5,  subset="directional")
+        cell_20d = result.cell(analyst="technical", horizon=20, subset="directional")
 
         assert cell_1d.n  == 1, f"Expected n=1 at 1d; got {cell_1d.n}"
         assert cell_5d.n  == 1, f"Expected n=1 at 5d; got {cell_5d.n}"
@@ -353,10 +370,12 @@ class TestBuildAnalystScoreboard:
 
           AAPL excess = 0.03 − 0.006667 ≈ +0.023333   score = +1 × +0.023333 = +0.023333
           MSFT excess = 0.01 − 0.006667 ≈ +0.003333   score = −1 × +0.003333 = −0.003333
-          GOOG excess = (−0.02) − 0.006667 = −0.026667 score = 0 × ... = 0
+          GOOG excess = (−0.02) − 0.006667 = −0.026667 — neutral, EXCLUDED from
+            the 'directional' subset entirely (not scored as 0).
 
-        Mean score = mean(+0.023333, −0.003333, 0) = +0.02 / 3 ≈ +0.006667
-        In bps: 0.006667 × 10_000 ≈ 66.67 bps.
+        'directional' subset = bullish ∪ bearish only (GOOG's neutral excluded):
+        Mean score = mean(+0.023333, −0.003333) = +0.02 / 2 = +0.01
+        In bps: 0.01 × 10_000 = 100.0 bps.
         """
         build = self._import()
 
@@ -407,14 +426,17 @@ class TestBuildAnalystScoreboard:
 
         result = build(db_path=db_path, cache=mock_cache, horizons=[1])
 
-        cell_all = result.cell(analyst="technical", horizon=1, subset="all")
-        assert cell_all.n == 3, f"Expected 3 verdicts scored; got {cell_all.n}"
+        cell_all = result.cell(analyst="technical", horizon=1, subset="directional")
+        assert cell_all.n == 2, (
+            f"Expected 2 directional verdicts scored (GOOG neutral excluded); "
+            f"got {cell_all.n}"
+        )
 
-        # Hand-computed expected mean excess:
-        # scores = [+0.023333, −0.003333, 0]
-        # mean   = +0.02 / 3 ≈ +0.006667
-        # bps    = 0.006667 × 10_000 ≈ +66.67
-        expected_bps = (0.02 / 3) * 10_000
+        # Hand-computed expected mean excess (directional only):
+        # scores = [+0.023333, −0.003333]
+        # mean   = +0.02 / 2 = +0.01
+        # bps    = 0.01 × 10_000 = +100.0
+        expected_bps = (0.02 / 2) * 10_000
         assert cell_all.mean_excess_bps == pytest.approx(expected_bps, rel=1e-3), (
             f"Expected mean excess ≈ {expected_bps:.2f} bps; "
             f"got {cell_all.mean_excess_bps:.4f} bps"
@@ -466,7 +488,7 @@ class TestBuildAnalystScoreboard:
 
         result = build(db_path=db_path, cache=mock_cache, horizons=[1])
 
-        cell_all      = result.cell(analyst="technical", horizon=1, subset="all")
+        cell_all      = result.cell(analyst="technical", horizon=1, subset="directional")
         cell_bullish  = result.cell(analyst="technical", horizon=1, subset="bullish")
         cell_bearish  = result.cell(analyst="technical", horizon=1, subset="bearish")
 
@@ -539,7 +561,7 @@ class TestBuildAnalystScoreboard:
 
         result = build(db_path=db_path, cache=mock_cache, horizons=[1])
 
-        cell = result.cell(analyst="technical", horizon=1, subset="all")
+        cell = result.cell(analyst="technical", horizon=1, subset="directional")
         assert cell.n > 0
 
         # With correct open-phase bases:
@@ -616,7 +638,7 @@ class TestBuildAnalystScoreboard:
 
         result = build(db_path=db_path, cache=mock_cache, horizons=[1])
 
-        cell = result.cell(analyst="technical", horizon=1, subset="all")
+        cell = result.cell(analyst="technical", horizon=1, subset="directional")
         assert cell.n > 0
 
         # Correct close base → mean_excess_bps ≈ 225 (see docstring for derivation).
@@ -638,6 +660,13 @@ class TestBuildAnalystScoreboard:
         yields non-zero excess.  AAPL consistently outperforms MSFT across all
         three ticks, so the analyst's bullish AAPL call yields a consistent
         positive excess → positive t-stat.
+
+        MSFT is given a BEARISH lean (not neutral): MSFT lags AAPL every
+        tick, so a bearish MSFT call also yields a positive score, and —
+        crucially — MSFT's directional cluster keeps the cluster-robust
+        estimator from degenerating to a single ticker cluster (which would
+        be the case if MSFT's calls were excluded as neutral, since the
+        'directional' subset would then contain ONLY AAPL).
 
         Phase 14 note: each (analyst, ticker) pair has a DIFFERENT confidence
         value per tick (0.7, 0.8, 0.9) so the dedup proxy treats each tick as
@@ -665,7 +694,7 @@ class TestBuildAnalystScoreboard:
             ))
             rows.append(_make_evidence_row(
                 analyst="technical", ticker="MSFT",
-                tick_id=tid, recorded_at=ts, lean="neutral",
+                tick_id=tid, recorded_at=ts, lean="bearish",
                 confidence=conf,
             ))
 
@@ -673,6 +702,7 @@ class TestBuildAnalystScoreboard:
 
         # AAPL: base=100, fwd=105 (+5 %).  MSFT: base=100, fwd=101 (+1 %).
         # cs_mean = (0.05 + 0.01) / 2 = 0.03.  AAPL excess = +0.02 every tick.
+        # MSFT excess = 0.01 − 0.03 = −0.02; bearish MSFT → score = +0.02.
         _BASES = {"AAPL": 100.0, "MSFT": 100.0}
         _FWDS  = {"AAPL": 105.0, "MSFT": 101.0}
         _BASE_DATES = {date(2025, 9, 5), date(2025, 9, 8), date(2025, 9, 9)}
@@ -694,10 +724,10 @@ class TestBuildAnalystScoreboard:
 
         result = build(db_path=db_path, cache=mock_cache, horizons=[1])
 
-        cell = result.cell(analyst="technical", horizon=1, subset="all")
+        cell = result.cell(analyst="technical", horizon=1, subset="directional")
         # Each tick has a distinct confidence → dedup keeps all 3 ticks per ticker.
-        # AAPL (bullish, 3 ticks) + MSFT (neutral, 3 ticks) = 6 verdicts.
-        assert cell.n == 6, f"Expected n=6 (3 ticks × 2 tickers, all distinct); got {cell.n}"
+        # AAPL (bullish, 3 ticks) + MSFT (bearish, 3 ticks) = 6 directional verdicts.
+        assert cell.n == 6, f"Expected n=6 (3 AAPL + 3 MSFT, both directional); got {cell.n}"
 
         # t-stat and p must be finite, non-NaN numbers.
         assert math.isfinite(cell.t_stat), f"t-stat must be finite; got {cell.t_stat}"
@@ -737,7 +767,7 @@ class TestBuildAnalystScoreboard:
         result = build(db_path=db_path, cache=mock_cache, horizons=[1, 5, 20])
 
         for h in [1, 5, 20]:
-            cell = result.cell(analyst="technical", horizon=h, subset="all")
+            cell = result.cell(analyst="technical", horizon=h, subset="directional")
             assert cell.n == 0, (
                 f"Expected n=0 at {h}d when base bar is missing; got {cell.n}"
             )
@@ -813,12 +843,13 @@ class TestBuildAnalystScoreboard:
 
         result = build(db_path=db_path, cache=mock_cache, horizons=[1])
 
-        tech_cell = result.cell(analyst="technical",   horizon=1, subset="all")
-        fund_cell = result.cell(analyst="fundamental", horizon=1, subset="all")
+        tech_cell = result.cell(analyst="technical",   horizon=1, subset="directional")
+        fund_cell = result.cell(analyst="fundamental", horizon=1, subset="directional")
 
-        # Both analysts have coverage (AAPL + MSFT = 2 verdicts each).
-        assert tech_cell.n == 2, f"Expected n=2 for technical; got {tech_cell.n}"
-        assert fund_cell.n == 2, f"Expected n=2 for fundamental; got {fund_cell.n}"
+        # Each analyst has 1 directional verdict (AAPL); MSFT's neutral is
+        # excluded entirely from the 'directional' subset.
+        assert tech_cell.n == 1, f"Expected n=1 for technical; got {tech_cell.n}"
+        assert fund_cell.n == 1, f"Expected n=1 for fundamental; got {fund_cell.n}"
 
         # Technical is bullish on outperforming AAPL → positive mean excess.
         assert tech_cell.mean_excess_bps > 0, (
@@ -842,14 +873,11 @@ class TestBuildAnalystScoreboard:
         Tick 1: AAPL outperforms MSFT → AAPL excess > 0 → score > 0 (hit).
         Tick 2: AAPL underperforms MSFT → AAPL excess < 0 → score < 0 (miss).
 
-        Hit rate for analyst 'technical', subset 'all':
-          Scored verdicts: [AAPL tick-1 (hit), MSFT tick-1 (0, neutral),
-                            AAPL tick-2 (miss), MSFT tick-2 (0, neutral)]
-          n = 4 (coverage counts every scored verdict, neutrals included).
-          The hit-rate denominator, however, is the NON-NEUTRAL verdicts only:
-          the two AAPL calls, of which one is a hit → hit_rate = 1/2 = 0.5.
-          The two neutral MSFT verdicts are excluded so abstention is not
-          punished as failure.
+        Hit rate for analyst 'technical', subset 'directional':
+          Scored verdicts: [AAPL tick-1 (hit), AAPL tick-2 (miss)] — the two
+          neutral MSFT verdicts are excluded ENTIRELY from 'directional' (not
+          just from the hit-rate denominator), so n = 2, not 4.
+          hit_rate = 1/2 = 0.5 (one AAPL hit out of two AAPL directional calls).
 
         Subset 'bullish' only (AAPL verdicts):
           n = 2.  Positive = 1.  hit_rate = 0.5.
@@ -943,11 +971,11 @@ class TestBuildAnalystScoreboard:
             f"Expected hit_rate=0.5 for bullish subset; got {cell_bullish.hit_rate}"
         )
 
-        # 'all' subset: coverage n counts the two neutral MSFT verdicts too, but
-        # the hit-rate denominator excludes them — so it equals the bullish
-        # hit-rate (1 AAPL hit / 2 AAPL directional calls), NOT 1/4.
-        cell_all = result.cell(analyst="technical", horizon=1, subset="all")
-        assert cell_all.n == 4, f"Expected n=4 for 'all' subset; got {cell_all.n}"
+        # 'directional' subset: neutral MSFT verdicts are excluded entirely
+        # (not merely from the hit-rate denominator), so n equals the bullish
+        # subset's n exactly (here there are no bearish verdicts at all).
+        cell_all = result.cell(analyst="technical", horizon=1, subset="directional")
+        assert cell_all.n == 2, f"Expected n=2 for 'directional' subset; got {cell_all.n}"
         assert cell_all.hit_rate == pytest.approx(0.5, abs=1e-9), (
             "Hit-rate denominator must exclude neutral verdicts; "
             f"expected 0.5, got {cell_all.hit_rate}"
@@ -1102,7 +1130,7 @@ class TestRenderScoreboardMd:
         md = render_scoreboard_md(result)
 
         # All three subsets must be labelled.
-        for subset_label in ("all", "bullish", "bearish"):
+        for subset_label in ("directional", "bullish", "bearish"):
             assert subset_label in md.lower(), (
                 f"Expected subset label '{subset_label}' in rendered markdown"
             )
@@ -1215,15 +1243,17 @@ class TestCacheReplayDedup:
 
         result = build(db_path=db_path, cache=mock_cache, horizons=[1])
 
-        cell = result.cell(analyst="fundamental", horizon=1, subset="all")
+        cell = result.cell(analyst="fundamental", horizon=1, subset="directional")
 
         # KEY ASSERTION: without dedup the old code gives n=12 (6 ticks × 2 tickers).
-        # With dedup, the replayed AAPL verdict collapses to 1 observation;
-        # MSFT (neutral, different lean tuple) also collapses to 1 observation.
-        # n must be 2, not 12.
-        assert cell.n == 2, (
-            f"Cache-replay dedup failed: expected n=2 (1 AAPL + 1 MSFT after dedup); "
-            f"got n={cell.n}.  Without dedup this would be 12 (6 ticks × 2 tickers)."
+        # With dedup, the replayed AAPL verdict collapses to 1 observation.
+        # MSFT is neutral throughout, so it is excluded entirely from the
+        # 'directional' subset (dedup also collapses its 6 replays to 1, but
+        # that 1 observation never enters 'directional').  n must be 1, not 12.
+        assert cell.n == 1, (
+            f"Cache-replay dedup failed: expected n=1 (1 AAPL after dedup; "
+            f"MSFT neutral excluded from 'directional'); got n={cell.n}.  "
+            f"Without dedup this would be 6 (6 ticks of AAPL)."
         )
 
     def test_changed_verdict_breaks_dedup_run(
@@ -1289,13 +1319,14 @@ class TestCacheReplayDedup:
 
         result = build(db_path=db_path, cache=mock_cache, horizons=[1])
 
-        cell = result.cell(analyst="fundamental", horizon=1, subset="all")
-        # 1 bullish AAPL observation + 1 bearish AAPL observation + 1 neutral MSFT observation
-        # = 3 observations total (not 12).
-        assert cell.n == 3, (
-            f"Expected n=3 after verdict-change dedup; got n={cell.n}.  "
-            f"Should count: tick-1 bullish AAPL (anchor), tick-4 bearish AAPL (new fresh), "
-            f"tick-1 neutral MSFT (anchor)."
+        cell = result.cell(analyst="fundamental", horizon=1, subset="directional")
+        # 1 bullish AAPL observation + 1 bearish AAPL observation = 2 directional
+        # observations.  MSFT is neutral throughout, so its (deduplicated) single
+        # observation is excluded entirely from 'directional'.
+        assert cell.n == 2, (
+            f"Expected n=2 after verdict-change dedup; got n={cell.n}.  "
+            f"Should count: tick-1 bullish AAPL (anchor), tick-4 bearish AAPL "
+            f"(new fresh).  MSFT's neutral anchor is excluded from 'directional'."
         )
 
 
@@ -1409,7 +1440,7 @@ class TestPerAnalystHorizon:
 
         # All horizons must still have cells (reporting unchanged).
         for h in [1, 5, 20]:
-            cell = result.cell(analyst="news", horizon=h, subset="all")
+            cell = result.cell(analyst="news", horizon=h, subset="directional")
             assert cell.n >= 0, f"Cell for news at {h}d must exist"
 
     def test_fundamental_analyst_primary_horizon_is_20d(
@@ -1430,7 +1461,7 @@ class TestPerAnalystHorizon:
 
         # All horizons still have cells.
         for h in [1, 5, 20]:
-            cell = result.cell(analyst="fundamental", horizon=h, subset="all")
+            cell = result.cell(analyst="fundamental", horizon=h, subset="directional")
             assert cell.n >= 0
 
     def test_primary_horizon_defaults_for_unconfigured_analyst(
@@ -1654,7 +1685,7 @@ class TestSectorNeutralisation:
             horizons=[1],
             neutralise_by="sector",
         )
-        cell_sector = result_sector.cell(analyst="technical", horizon=1, subset="all")
+        cell_sector = result_sector.cell(analyst="technical", horizon=1, subset="directional")
         assert cell_sector.mean_excess_bps > 0, (
             f"Sector-neutral excess should be positive (≈ +25 bps); "
             f"got {cell_sector.mean_excess_bps:.2f} bps"
@@ -1667,7 +1698,7 @@ class TestSectorNeutralisation:
             horizons=[1],
             neutralise_by="universe",
         )
-        cell_universe = result_universe.cell(analyst="technical", horizon=1, subset="all")
+        cell_universe = result_universe.cell(analyst="technical", horizon=1, subset="directional")
         assert cell_universe.mean_excess_bps < 0, (
             f"Universe-neutral excess should be negative (≈ −175 bps); "
             f"got {cell_universe.mean_excess_bps:.2f} bps"
@@ -1717,7 +1748,7 @@ class TestSectorNeutralisation:
             neutralise_by="sector",
         )
 
-        cell = result.cell(analyst="technical", horizon=1, subset="all")
+        cell = result.cell(analyst="technical", horizon=1, subset="directional")
         # AAPL outperforms MSFT; bullish call is correct; positive excess.
         assert cell.n > 0, "Should have scored at least one verdict"
         assert cell.mean_excess_bps > 0, (
@@ -2003,14 +2034,29 @@ class TestClusterRobustInference:
 
         Setup: one analyst (technical), bullish on AAPL across many ticks (each a
         DISTINCT confidence so dedup keeps them — simulating overlapping windows),
-        plus a neutral MSFT anchor.  AAPL outperforms every tick by the same
-        margin, so naive inference sees many "independent" wins and reports a
-        large |t|; the cluster-robust estimator (one ticker cluster for the
-        directional calls) deflates it sharply.
+        plus a BEARISH MSFT call (also a winning call, since MSFT lags AAPL every
+        tick).  MSFT is deliberately directional (not neutral) here — under
+        directional-only scoring, a neutral MSFT would be excluded entirely from
+        'directional', leaving ONLY the AAPL ticker cluster and degenerating the
+        cluster-robust estimator (a single cluster has no defined variance).  AAPL
+        outperforms every tick by the same margin, so naive inference sees many
+        "independent" wins and reports a large |t|; the cluster-robust estimator
+        (two ticker clusters) deflates it.
         """
         from backtest.scoreboard import build_analyst_scoreboard
 
         # Twelve ticks, each a distinct confidence so dedup treats them as fresh.
+        # A THIRD ticker (GOOG, neutral) is included purely to break the
+        # AAPL/MSFT mirror symmetry: with only two tickers in the peer group,
+        # AAPL's bullish score and MSFT's bearish score are mathematically
+        # IDENTICAL at every tick (both equal (aapl_fwd − msft_fwd) / 2),
+        # which makes their two "clusters" perfectly correlated — a
+        # degenerate input for the cluster-robust sandwich estimator
+        # (G=2 with perfectly-correlated cluster sums) regardless of any
+        # per-tick wobble.  GOOG gives each ticker its own independent peer
+        # mean and a third (here unscored) cluster slot is irrelevant since
+        # GOOG is neutral — the key fix is simply that AAPL's and MSFT's
+        # excess no longer have to be exact mirror images of one another.
         rows = []
         for i in range(12):
             ts = datetime(2025, 9, 1 + i, 13, 30, tzinfo=UTC)
@@ -2021,19 +2067,69 @@ class TestClusterRobustInference:
             ))
             rows.append(_make_evidence_row(
                 analyst="technical", ticker="MSFT",
+                tick_id=f"tick-{i}", recorded_at=ts, lean="bearish",
+                confidence=0.50 + 0.01 * i,
+            ))
+            rows.append(_make_evidence_row(
+                analyst="technical", ticker="GOOG",
                 tick_id=f"tick-{i}", recorded_at=ts, lean="neutral",
                 confidence=0.50 + 0.01 * i,
             ))
 
         db_path = _build_fixture_db(tmp_path, rows)
 
+        # Forward returns vary slightly tick-to-tick (rather than being a
+        # perfectly constant +5 % / 0 %) so that within-cluster residuals are
+        # not EXACTLY zero-variance.  A perfectly-constant-per-cluster score
+        # is a genuine edge case for the sandwich estimator (the cluster sums
+        # become deterministic multiples of each other, and finite-precision
+        # cancellation can blow the SE up or down to a degenerate near-zero
+        # value) — this is a property of the estimator's degenerate input,
+        # not a bug in it, but it makes a poor fixture for asserting "the
+        # honest SE is larger".  A small per-tick wobble keeps the comparison
+        # well-conditioned while preserving "AAPL consistently outperforms".
+        # Index by the VERDICT tick (0..11), not the forward-bar calendar
+        # date — the forward bar for tick i lands one day later (Sep 2+i),
+        # so the lookup below converts back to the tick index explicitly.
+        # A genuinely irregular (non-arithmetic-progression) per-tick wobble.
+        # A perfectly linear progression leaves residuals perfectly linear
+        # too, which is itself a degenerate input to the sandwich estimator
+        # (the cluster sums become exact rational multiples of each other,
+        # and the resulting variance can collapse to numerical noise).  An
+        # irregular sequence avoids this without weakening the "AAPL
+        # consistently outperforms" narrative (every wobble stays small
+        # relative to the +5 pp / 0 pp gap between the two tickers).
+        _rng = np.random.default_rng(seed=42)
+        aapl_fwd_pcts = [0.05 + 0.002 * w for w in _rng.standard_normal(12)]
+        msft_fwd_pcts = [0.00 + 0.001 * w for w in _rng.standard_normal(12)]
+        goog_fwd_pcts = [0.02 + 0.001 * w for w in _rng.standard_normal(12)]
+
+        # NOTE: base-price queries use exactly the tick's own date (Sep 1..12);
+        # forward queries (target = tick_date + 1 day) ask for Sep 2..13 — an
+        # OVERLAPPING range with the base dates.  Distinguish them by exact
+        # (ticker, start) -> tick-index mapping built up-front instead of a
+        # set-membership test, so a forward query for tick i is never
+        # mistaken for a base-price query belonging to tick i+1.
+        from datetime import timedelta as _timedelta
+        base_date_to_tick_idx = {date(2025, 9, 1 + i): i for i in range(12)}
+
         def _mock_read(ticker, start, end):
             ts_bar = datetime(start.year, start.month, start.day, 13, 30, tzinfo=UTC)
-            base_dates = {date(2025, 9, 1 + i) for i in range(12)}
-            if start in base_dates:
+            # `end` distinguishes the two call shapes: the base-price lookup
+            # passes start == end (single-day query); the forward-close
+            # lookup passes a multi-day window (start, start + 4 days).
+            is_base_price_query = (end == start)
+            if is_base_price_query:
                 return [_make_ohlcbar(ticker=ticker, ts=ts_bar, open=100.0, close=100.0)]
-            # AAPL forward +5 %, MSFT flat.
-            close = 105.0 if ticker == "AAPL" else 100.0
+            # Forward bar query: start == tick_date + 1 day → recover tick index.
+            tick_idx = base_date_to_tick_idx[start - _timedelta(days=1)]
+            if ticker == "AAPL":
+                pct = aapl_fwd_pcts[tick_idx]
+            elif ticker == "MSFT":
+                pct = msft_fwd_pcts[tick_idx]
+            else:
+                pct = goog_fwd_pcts[tick_idx]
+            close = 100.0 * (1 + pct)
             return [_make_ohlcbar(ticker=ticker, ts=ts_bar, open=close, close=close)]
 
         mock_cache = MagicMock()
@@ -2046,8 +2142,8 @@ class TestClusterRobustInference:
             db_path=db_path, cache=mock_cache, horizons=[1], inference="cluster_ticker",
         )
 
-        cell_naive   = result_naive.cell(analyst="technical", horizon=1, subset="all")
-        cell_cluster = result_cluster.cell(analyst="technical", horizon=1, subset="all")
+        cell_naive   = result_naive.cell(analyst="technical", horizon=1, subset="directional")
+        cell_cluster = result_cluster.cell(analyst="technical", horizon=1, subset="directional")
 
         # n and mean-excess must be IDENTICAL across inference modes.
         assert cell_cluster.n == cell_naive.n, "n must not change with inference mode"
@@ -2089,8 +2185,9 @@ class TestMultiWindowPooling:
     def test_pooled_n_equals_sum_of_per_window_n(
         self, tmp_path: pytest.TempPathFactory,
     ) -> None:
-        """Pooling two windows, each with 2 scored verdicts (AAPL + MSFT, one
-        tick), must yield n=4 in the pooled cell — the simple sum.
+        """Pooling two windows, each with 1 directional verdict (AAPL bullish;
+        MSFT is neutral and excluded entirely), must yield n=2 in the pooled
+        'directional' cell — the simple sum of each window's directional n.
         """
         from backtest.scoreboard import build_analyst_scoreboard
 
@@ -2128,11 +2225,11 @@ class TestMultiWindowPooling:
         db_a, cache_a = _make_window(win_a_dir, {"AAPL": 105.0, "MSFT": 101.0})
         db_b, cache_b = _make_window(win_b_dir, {"AAPL": 103.0, "MSFT": 100.0})
 
-        # Sanity: each window alone scores n=2.
+        # Sanity: each window alone scores n=1 directional (MSFT neutral excluded).
         result_a_alone = build_analyst_scoreboard(db_path=db_a, cache=cache_a, horizons=[1])
         result_b_alone = build_analyst_scoreboard(db_path=db_b, cache=cache_b, horizons=[1])
-        assert result_a_alone.cell(analyst="technical", horizon=1, subset="all").n == 2
-        assert result_b_alone.cell(analyst="technical", horizon=1, subset="all").n == 2
+        assert result_a_alone.cell(analyst="technical", horizon=1, subset="directional").n == 1
+        assert result_b_alone.cell(analyst="technical", horizon=1, subset="directional").n == 1
 
         pooled = build_pooled(
             runs=[
@@ -2142,8 +2239,8 @@ class TestMultiWindowPooling:
             horizons=[1],
         )
 
-        cell = pooled.cell(analyst="technical", horizon=1, subset="all")
-        assert cell.n == 4, f"Expected pooled n=4 (2+2); got {cell.n}"
+        cell = pooled.cell(analyst="technical", horizon=1, subset="directional")
+        assert cell.n == 2, f"Expected pooled n=2 (1+1); got {cell.n}"
 
     # ── Case 2: peer-group isolation — pooling must not change a window's
     #             excess returns relative to scoring it alone ─────────────────
@@ -2209,8 +2306,8 @@ class TestMultiWindowPooling:
         result_b_alone = build_analyst_scoreboard(
             db_path=db_b, cache=cache_b, horizons=[1], neutralise_by="universe",
         )
-        alone_a_bps = result_a_alone.cell(analyst="technical", horizon=1, subset="all").mean_excess_bps
-        alone_b_bps = result_b_alone.cell(analyst="technical", horizon=1, subset="all").mean_excess_bps
+        alone_a_bps = result_a_alone.cell(analyst="technical", horizon=1, subset="directional").mean_excess_bps
+        alone_b_bps = result_b_alone.cell(analyst="technical", horizon=1, subset="directional").mean_excess_bps
 
         # Sanity: the two windows' peer means genuinely differ — otherwise this
         # test would not be able to detect cross-window contamination.
@@ -2227,7 +2324,7 @@ class TestMultiWindowPooling:
             horizons=[1],
             neutralise_by="universe",
         )
-        pooled_bps = pooled.cell(analyst="technical", horizon=1, subset="all").mean_excess_bps
+        pooled_bps = pooled.cell(analyst="technical", horizon=1, subset="directional").mean_excess_bps
 
         # Pooled mean must be the SIMPLE AVERAGE of the two windows' per-
         # observation scores (each window has 2 verdicts: AAPL hit, MSFT
@@ -2300,13 +2397,14 @@ class TestMultiWindowPooling:
             horizons=[1],
         )
 
-        cell = pooled.cell(analyst="technical", horizon=1, subset="all")
-        # Identical tuples ACROSS windows must NOT collapse: 2 obs per window
-        # (AAPL anchor + MSFT anchor) × 2 windows = 4.
-        assert cell.n == 4, (
-            f"Expected n=4 (2 obs per window × 2 windows, dedup not crossing "
-            f"the window boundary); got {cell.n}.  If dedup incorrectly ran "
-            f"across the pooled set, identical boundary tuples would collapse."
+        cell = pooled.cell(analyst="technical", horizon=1, subset="directional")
+        # Identical tuples ACROSS windows must NOT collapse: 1 directional obs
+        # per window (AAPL anchor; MSFT's neutral anchor is excluded from
+        # 'directional') × 2 windows = 2.
+        assert cell.n == 2, (
+            f"Expected n=2 (1 directional obs per window × 2 windows, dedup not "
+            f"crossing the window boundary); got {cell.n}.  If dedup incorrectly "
+            f"ran across the pooled set, identical boundary tuples would collapse."
         )
 
     # ── Case 4: cluster key is (ticker, window) — produces a different SE/t
@@ -2326,9 +2424,18 @@ class TestMultiWindowPooling:
         Setup: AAPL appears many times in window A (strong shared level, autocorrelated)
         and many times in window B (a different shared level). If clustered by
         bare ticker, all of AAPL's observations across both windows collapse into
-        ONE cluster — drastically inflating the SE (only 1 cluster total once MSFT's
-        anchor clusters are factored in, the d.o.f. shrinks). Clustering by
+        ONE cluster — drastically inflating the SE (only 1 AAPL cluster total once
+        MSFT's clusters are factored in, the d.o.f. shrinks). Clustering by
         (ticker, window) correctly treats them as 2 distinct clusters.
+
+        MSFT is given a BEARISH (not neutral) lean here — under the
+        directional-only scoring change, a neutral MSFT anchor would be
+        excluded entirely from the 'directional' subset, collapsing the
+        bare-ticker scheme to a single degenerate AAPL-only cluster (G=1,
+        undefined SE) and making the two clustering schemes impossible to
+        compare meaningfully.  A bearish MSFT keeps it IN the directional
+        subset (contributing a genuine non-zero score) so the bare-ticker
+        vs (ticker, window) contrast remains well-defined.
         """
         from backtest.scoreboard import _cluster_robust_ttest
 
@@ -2336,7 +2443,7 @@ class TestMultiWindowPooling:
 
         def _make_window(tmp_dir, window_tag, fwd_aapl_pct):
             """Many ticks of a bullish AAPL call (distinct confidence so dedup
-            keeps every tick) plus a neutral MSFT anchor, in one window."""
+            keeps every tick) plus a bearish MSFT call, in one window."""
             rows = []
             for i in range(8):
                 ts = datetime(2025, 9, 1 + i, 13, 30, tzinfo=UTC)
@@ -2347,7 +2454,7 @@ class TestMultiWindowPooling:
                 ))
                 rows.append(_make_evidence_row(
                     analyst="technical", ticker="MSFT",
-                    tick_id=f"{window_tag}-tick-{i}", recorded_at=ts, lean="neutral",
+                    tick_id=f"{window_tag}-tick-{i}", recorded_at=ts, lean="bearish",
                     confidence=0.50 + 0.01 * i,
                 ))
             db_path = _build_fixture_db(tmp_dir, rows)
@@ -2381,7 +2488,7 @@ class TestMultiWindowPooling:
             horizons=[1],
             inference="cluster_ticker",
         )
-        cell = pooled.cell(analyst="technical", horizon=1, subset="all")
+        cell = pooled.cell(analyst="technical", horizon=1, subset="directional")
 
         # Reconstruct what bare-ticker clustering would have produced, using
         # the SAME scores but labelling every AAPL observation (regardless of
@@ -2393,13 +2500,18 @@ class TestMultiWindowPooling:
         # Every score within a window/ticker pair is identical (deterministic
         # fixture: n=8 AAPL + 8 MSFT per window), so reconstruct the raw
         # per-observation scores directly rather than relying on cells.
+        #
+        # cs_mean per window = (fwd_aapl_pct + 0.0) / 2 (MSFT is flat).
+        # AAPL (bullish): score = +1 × (fwd_aapl_pct − cs_mean) = fwd_aapl_pct / 2.
+        # MSFT (bearish, flat): score = −1 × (0.0 − cs_mean) = cs_mean = fwd_aapl_pct / 2.
         aapl_score_a = 0.05 - (0.05 / 2)   # AAPL excess vs cs-mean of (AAPL, MSFT) in window A
+        msft_score_a = -1 * (0.0 - (0.05 / 2))  # MSFT bearish, flat, vs the same cs-mean
         aapl_score_b = 0.09 - (0.09 / 2)   # ditto for window B
-        # (MSFT neutral verdicts contribute exactly 0 regardless of clustering.)
+        msft_score_b = -1 * (0.0 - (0.09 / 2))
 
         scores_pooled = (
-            [aapl_score_a] * 8 + [0.0] * 8 +     # window A: 8 AAPL + 8 MSFT(=0)
-            [aapl_score_b] * 8 + [0.0] * 8        # window B: 8 AAPL + 8 MSFT(=0)
+            [aapl_score_a] * 8 + [msft_score_a] * 8 +    # window A: 8 AAPL + 8 MSFT
+            [aapl_score_b] * 8 + [msft_score_b] * 8       # window B: 8 AAPL + 8 MSFT
         )
         labels_bare_ticker = (
             ["AAPL"] * 8 + ["MSFT"] * 8 +
@@ -2491,7 +2603,7 @@ class TestMultiWindowPooling:
 
         for analyst in direct.analysts:
             for h in direct.horizons:
-                for subset in ("all", "bullish", "bearish"):
+                for subset in ("directional", "bullish", "bearish"):
                     d_cell = direct.cell(analyst=analyst, horizon=h, subset=subset)
                     p_cell = pooled.cell(analyst=analyst, horizon=h, subset=subset)
 
@@ -2517,3 +2629,325 @@ class TestMultiWindowPooling:
                         assert p_cell.p_value == pytest.approx(d_cell.p_value, rel=1e-9)
                     else:
                         assert math.isnan(p_cell.p_value)
+
+
+# ── Tests: neutral-coverage / abstention diagnostic (Phase 14, iter-11) ──────
+
+class TestCoverageDiagnostic:
+    """Unit tests for ``ScoreboardResult.coverage`` — the per-analyst
+    neutral/abstention diagnostic introduced alongside the directional-only
+    scoring change.
+
+    Decision (documented here and in the production docstring): the
+    denominator for ``neutral_rate`` is the FORWARD-BAR-SCOREABLE set — i.e.
+    every deduplicated verdict that had both a base price and a forward
+    close at this horizon (the same set that feeds 'directional' + neutral
+    scoring), NOT the raw ``analyst_evidence`` row count.  This makes
+    ``neutral_rate`` directly comparable to the 'directional' cell's n at the
+    same horizon: ``n_neutral + directional.n == coverage.n_scoreable``.
+    Verdicts excluded for missing price data (window edge, no base bar) are
+    excluded from BOTH the directional cell and the coverage denominator —
+    counting them as "neutral" would conflate two different reasons for
+    absence (the analyst abstained vs. the data was unavailable).
+    """
+
+    def _import(self):
+        """Lazy import of the single-window scoring entrypoint under test."""
+        from backtest.scoreboard import build_analyst_scoreboard
+        return build_analyst_scoreboard
+
+    def test_coverage_counts_neutral_and_directional_correctly(
+        self, tmp_path: pytest.TempPathFactory,
+    ) -> None:
+        """Two directional verdicts (AAPL bullish, MSFT bearish) and one
+        neutral verdict (GOOG) at the same tick/horizon must report
+        n_neutral=1 and neutral_rate = 1/3.
+        """
+        build = self._import()
+
+        rows = [
+            _make_evidence_row(
+                analyst="fundamental", ticker="AAPL",
+                tick_id=TICK_A, recorded_at=OPEN_TICK, lean="bullish",
+            ),
+            _make_evidence_row(
+                analyst="fundamental", ticker="MSFT",
+                tick_id=TICK_A, recorded_at=OPEN_TICK, lean="bearish",
+            ),
+            _make_evidence_row(
+                analyst="fundamental", ticker="GOOG",
+                tick_id=TICK_A, recorded_at=OPEN_TICK, lean="neutral",
+            ),
+        ]
+        db_path = _build_fixture_db(tmp_path, rows)
+
+        def _mock_read(ticker, start, end):
+            if start == date(2025, 9, 5):
+                return [_make_ohlcbar(ticker=ticker, ts=OPEN_TICK, open=100.0, close=100.0)]
+            return [_make_ohlcbar(ticker=ticker, ts=OPEN_TICK, open=101.0, close=101.0)]
+
+        mock_cache = MagicMock()
+        mock_cache.read_ohlcv.side_effect = _mock_read
+
+        result = build(db_path=db_path, cache=mock_cache, horizons=[1])
+
+        coverage = result.coverage(analyst="fundamental", horizon=1)
+        assert coverage.n_neutral == 1, f"Expected n_neutral=1; got {coverage.n_neutral}"
+        assert coverage.n_scoreable == 3, f"Expected n_scoreable=3; got {coverage.n_scoreable}"
+        assert coverage.neutral_rate == pytest.approx(1 / 3, abs=1e-9), (
+            f"Expected neutral_rate≈0.3333; got {coverage.neutral_rate}"
+        )
+
+    def test_coverage_excludes_window_edge_verdicts_from_denominator(
+        self, tmp_path: pytest.TempPathFactory,
+    ) -> None:
+        """A verdict with no forward bar at this horizon (window edge) must be
+        excluded from BOTH the directional cell and the coverage denominator
+        — it is a data-availability gap, not an abstention.
+        """
+        build = self._import()
+
+        # AAPL has a forward bar; MSFT (neutral) does not (simulated window edge).
+        rows = [
+            _make_evidence_row(
+                analyst="fundamental", ticker="AAPL",
+                tick_id=TICK_A, recorded_at=OPEN_TICK, lean="bullish",
+            ),
+            _make_evidence_row(
+                analyst="fundamental", ticker="MSFT",
+                tick_id=TICK_A, recorded_at=OPEN_TICK, lean="neutral",
+            ),
+        ]
+        db_path = _build_fixture_db(tmp_path, rows)
+
+        def _mock_read(ticker, start, end):
+            if ticker == "AAPL":
+                if start == date(2025, 9, 5):
+                    return [_make_ohlcbar(ticker="AAPL", ts=OPEN_TICK, open=100.0, close=100.0)]
+                return [_make_ohlcbar(ticker="AAPL", ts=OPEN_TICK, open=101.0, close=101.0)]
+            if ticker == "MSFT":
+                if start == date(2025, 9, 5):
+                    return [_make_ohlcbar(ticker="MSFT", ts=OPEN_TICK, open=100.0, close=100.0)]
+                return []  # no forward bar — window edge
+            return []
+
+        mock_cache = MagicMock()
+        mock_cache.read_ohlcv.side_effect = _mock_read
+
+        result = build(db_path=db_path, cache=mock_cache, horizons=[1])
+
+        coverage = result.coverage(analyst="fundamental", horizon=1)
+        assert coverage.n_neutral == 0, (
+            f"MSFT's neutral verdict has no forward bar — must be excluded "
+            f"from n_neutral entirely; got {coverage.n_neutral}"
+        )
+        assert coverage.n_scoreable == 1, (
+            f"Only AAPL's bullish verdict is scoreable; got {coverage.n_scoreable}"
+        )
+        assert coverage.neutral_rate == pytest.approx(0.0, abs=1e-9)
+
+    def test_coverage_raises_keyerror_for_unknown_analyst(
+        self, tmp_path: pytest.TempPathFactory,
+    ) -> None:
+        """``coverage()`` must raise (not return a default/empty value) when
+        the analyst is not present in the result — per the project's
+        raise-don't-return-None policy.
+        """
+        build = self._import()
+
+        rows = [
+            _make_evidence_row(
+                analyst="fundamental", ticker="AAPL",
+                tick_id=TICK_A, recorded_at=OPEN_TICK, lean="bullish",
+            ),
+        ]
+        db_path = _build_fixture_db(tmp_path, rows)
+
+        def _mock_read(ticker, start, end):
+            return [_make_ohlcbar(ticker=ticker, ts=OPEN_TICK, open=100.0, close=100.0)]
+
+        mock_cache = MagicMock()
+        mock_cache.read_ohlcv.side_effect = _mock_read
+
+        result = build(db_path=db_path, cache=mock_cache, horizons=[1])
+
+        with pytest.raises(KeyError):
+            result.coverage(analyst="nonexistent_analyst", horizon=1)
+
+
+# ── Tests: confidence-gradient view (Phase 14, iter-11) ──────────────────────
+
+class TestConfidenceGradient:
+    """Unit tests for the confidence-gradient view — buckets directional
+    (non-neutral) calls by recorded ``confidence`` and reports mean excess,
+    n, hit rate and t-stat per bucket, per analyst, at the analyst's primary
+    horizon.
+
+    Bucketing decision (documented here and in the production docstring):
+    confidence is a CONTINUOUS float in [0, 1] whose real-world range varies
+    sharply per analyst (e.g. technical ~0.14-0.9 vs fundamental ~0.6-0.85
+    in production data), so a single global numeric threshold would not be
+    meaningful across analysts.  Buckets are therefore TERCILES (default 3,
+    configurable via ``scoreboard_confidence_buckets``) computed from that
+    analyst's OWN directional-confidence distribution at its primary
+    horizon — i.e. ``np.quantile`` cut points derived from the data itself,
+    never a hardcoded number.
+    """
+
+    def _import(self):
+        """Lazy import of the confidence-gradient entrypoint under test."""
+        from backtest.scoreboard import build_analyst_scoreboard
+        return build_analyst_scoreboard
+
+    def test_high_confidence_bucket_outperforms_low_confidence_bucket(
+        self, tmp_path: pytest.TempPathFactory,
+    ) -> None:
+        """Six bullish AAPL-style verdicts (deduplicated via distinct
+        confidence) split into two natural groups: three low-confidence calls
+        that LOSE to peers, three high-confidence calls that BEAT peers.
+        With 3 buckets requested over 6 points, ``np.array_split`` cuts the
+        sorted-by-confidence sequence into three EQUAL-SIZE (n=2) contiguous
+        chunks: the lowest two confidences land in the lowest bucket, and the
+        highest two in the highest bucket — both losing/winning calls
+        respectively — so the high bucket's mean excess must exceed the low
+        bucket's.
+        """
+        build = self._import()
+
+        # Six ticks, one ticker each isolated from peers, low conf → bad call,
+        # high conf → good call.  Using six distinct tickers (one per tick)
+        # keeps the per-tick cross-sectional mean at the single ticker's own
+        # return — i.e. one ticker is its own peer group, so we engineer the
+        # PEER via a second ticker per tick that is flat, making excess equal
+        # to the analyst's ticker's own fwd return.
+        confidences = [0.1, 0.2, 0.3, 0.7, 0.8, 0.9]
+        fwd_pcts    = [-0.05, -0.04, -0.03, 0.05, 0.06, 0.07]  # low conf → losses, high conf → wins
+        rows = []
+        tick_dates = []
+        for i, (conf, _pct) in enumerate(zip(confidences, fwd_pcts, strict=True)):
+            ts = datetime(2025, 9, 1 + i, 13, 30, tzinfo=UTC)
+            tick_dates.append(ts.date())
+            rows.append(_make_evidence_row(
+                analyst="technical", ticker=f"T{i}",
+                tick_id=f"tick-{i}", recorded_at=ts, lean="bullish",
+                confidence=conf,
+            ))
+            # Flat peer ticker at the same tick, so the cross-sectional mean
+            # is exactly half of T{i}'s fwd return, giving T{i} a non-zero
+            # excess equal to half its own fwd return (same sign).
+            rows.append(_make_evidence_row(
+                analyst="technical", ticker=f"P{i}",
+                tick_id=f"tick-{i}", recorded_at=ts, lean="neutral",
+                confidence=conf,
+            ))
+        db_path = _build_fixture_db(tmp_path, rows)
+
+        def _mock_read(ticker, start, end):
+            if ticker.startswith("P"):
+                # Peer ticker: flat throughout.
+                return [_make_ohlcbar(ticker=ticker, ts=OPEN_TICK, open=100.0, close=100.0)]
+            idx = int(ticker[1:])
+            if start == tick_dates[idx]:
+                return [_make_ohlcbar(ticker=ticker, ts=OPEN_TICK, open=100.0, close=100.0)]
+            close = 100.0 * (1 + fwd_pcts[idx])
+            return [_make_ohlcbar(ticker=ticker, ts=OPEN_TICK, open=close, close=close)]
+
+        mock_cache = MagicMock()
+        mock_cache.read_ohlcv.side_effect = _mock_read
+
+        result = build(
+            db_path=db_path, cache=mock_cache, horizons=[1],
+            primary_horizon_by_analyst={"technical": 1},
+        )
+
+        gradient = result.confidence_gradient(analyst="technical", horizon=1, n_buckets=3)
+
+        assert len(gradient) == 3, f"Expected 3 buckets; got {len(gradient)}"
+
+        low_bucket  = gradient[0]
+        high_bucket = gradient[-1]
+
+        assert low_bucket.n == 2, f"Expected 2 low-confidence calls; got {low_bucket.n}"
+        assert high_bucket.n == 2, f"Expected 2 high-confidence calls; got {high_bucket.n}"
+
+        assert low_bucket.mean_excess_bps < 0, (
+            f"Expected the low-confidence bucket to have negative mean excess; "
+            f"got {low_bucket.mean_excess_bps:.4f} bps"
+        )
+        assert high_bucket.mean_excess_bps > 0, (
+            f"Expected the high-confidence bucket to have positive mean excess; "
+            f"got {high_bucket.mean_excess_bps:.4f} bps"
+        )
+        assert high_bucket.mean_excess_bps > low_bucket.mean_excess_bps, (
+            f"Expected high-confidence calls to outperform low-confidence "
+            f"calls: high={high_bucket.mean_excess_bps:.4f} bps, "
+            f"low={low_bucket.mean_excess_bps:.4f} bps"
+        )
+
+    def test_confidence_gradient_excludes_neutral_verdicts(
+        self, tmp_path: pytest.TempPathFactory,
+    ) -> None:
+        """A neutral verdict must not appear in any confidence bucket — the
+        gradient view operates strictly on the 'directional' subset.
+        """
+        build = self._import()
+
+        rows = [
+            _make_evidence_row(
+                analyst="fundamental", ticker="AAPL",
+                tick_id=TICK_A, recorded_at=OPEN_TICK, lean="bullish",
+                confidence=0.9,
+            ),
+            _make_evidence_row(
+                analyst="fundamental", ticker="MSFT",
+                tick_id=TICK_A, recorded_at=OPEN_TICK, lean="neutral",
+                confidence=0.95,
+            ),
+        ]
+        db_path = _build_fixture_db(tmp_path, rows)
+
+        def _mock_read(ticker, start, end):
+            if start == date(2025, 9, 5):
+                return [_make_ohlcbar(ticker=ticker, ts=OPEN_TICK, open=100.0, close=100.0)]
+            return [_make_ohlcbar(ticker=ticker, ts=OPEN_TICK, open=105.0, close=105.0)]
+
+        mock_cache = MagicMock()
+        mock_cache.read_ohlcv.side_effect = _mock_read
+
+        result = build(db_path=db_path, cache=mock_cache, horizons=[1])
+
+        gradient = result.confidence_gradient(analyst="fundamental", horizon=1, n_buckets=3)
+        total_n  = sum(bucket.n for bucket in gradient)
+
+        assert total_n == 1, (
+            f"Expected exactly 1 directional observation (AAPL bullish) across "
+            f"all buckets; MSFT's neutral verdict must be excluded.  Got "
+            f"total_n={total_n}"
+        )
+
+    def test_confidence_gradient_raises_keyerror_for_unknown_analyst(
+        self, tmp_path: pytest.TempPathFactory,
+    ) -> None:
+        """``confidence_gradient()`` must raise (not silently return an empty
+        list) when the analyst is not present in the result.
+        """
+        build = self._import()
+
+        rows = [
+            _make_evidence_row(
+                analyst="fundamental", ticker="AAPL",
+                tick_id=TICK_A, recorded_at=OPEN_TICK, lean="bullish",
+            ),
+        ]
+        db_path = _build_fixture_db(tmp_path, rows)
+
+        def _mock_read(ticker, start, end):
+            return [_make_ohlcbar(ticker=ticker, ts=OPEN_TICK, open=100.0, close=100.0)]
+
+        mock_cache = MagicMock()
+        mock_cache.read_ohlcv.side_effect = _mock_read
+
+        result = build(db_path=db_path, cache=mock_cache, horizons=[1])
+
+        with pytest.raises(KeyError):
+            result.confidence_gradient(analyst="nonexistent_analyst", horizon=1, n_buckets=3)

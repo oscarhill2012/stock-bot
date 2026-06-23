@@ -115,6 +115,17 @@ class BacktestSettings(BaseModel):
         pattern=r"^(cluster_ticker|naive)$",
     )
 
+    # Number of confidence buckets for the scoreboard's confidence-gradient
+    # view (Phase 14, iter-11).  Confidence is a continuous float in [0, 1]
+    # (not categorical), and its real-world range varies sharply per analyst
+    # (e.g. technical spans ~0.14-0.9, fundamental ~0.6-0.85), so a single
+    # global numeric cutoff would be meaningless across analysts.  Buckets are
+    # therefore DATA-DRIVEN: computed per (analyst, horizon) as quantile cuts
+    # over that analyst's own directional (non-neutral) confidence values at
+    # its primary horizon, rather than a hardcoded threshold.  This setting
+    # only controls how many quantile buckets to cut into (3 = terciles).
+    scoreboard_confidence_buckets: int = Field(default=3, ge=2)
+
 
 _DEFAULT_PATH:                 Path = Path("config/backtest_settings.json")
 _cache: BacktestSettings | None      = None
