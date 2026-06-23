@@ -9,7 +9,7 @@
     "llm": {
       "timeout_seconds":   60,
       "max_output_tokens": 4000,
-      "thinking_budget":   512,
+      "thinking_level":    "medium",
       "temperature":       0.3,
       "timeout_retries":   3,
       "schema_retries":    3
@@ -27,7 +27,7 @@
     "llm": {
       "timeout_seconds":   60,
       "max_output_tokens": 4000,
-      "thinking_budget":   2048,
+      "thinking_level":    "medium",
       "temperature":       0.3,
       "timeout_retries":   3,
       "schema_retries":    3

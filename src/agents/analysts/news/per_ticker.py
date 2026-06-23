@@ -26,6 +26,7 @@ from agents.analysts.report_cache import (
 from agents.isolated_failure import IsolatedFailureWrapper
 from agents.llm_retry import RetryingAgentWrapper, build_retry_policies
 from agents.model_resolver import resolve_model
+from agents.thinking_config import build_thinking_config
 from config.analysts import get_analysts_config
 from config.models import get_models_config
 from contract.evidence import LlmTickerVerdict
@@ -154,20 +155,17 @@ def build_news_branch_for_ticker(
     # ``max_output_tokens`` caps output so long-running generation cannot
     # wedge the tick before the wall-clock timeout fires.
     #
-    # ``thinking_budget`` is optional.  On Gemini 2.5 thinking models (e.g.
-    # ``gemini-2.5-flash``) the reasoning tokens are charged against the SAME
-    # ``max_output_tokens`` budget; left to its default *dynamic* setting,
-    # thinking can spike arbitrarily and starve the verdict JSON, truncating
-    # it mid-emit.  When the config pins a budget (the analysts set 2048) we
-    # bound thinking so the split with the visible output is deterministic.
-    # When it is ``None`` we pass ``thinking_config=None`` (identical to
-    # omitting it), leaving the model's native thinking behaviour untouched.
-    # The knob is Gemini-specific; a Claude-on-Vertex model would ignore it.
+    # Thinking control is config-driven and model-family-agnostic: the config
+    # block sets exactly one of ``thinking_budget`` (Gemini 2.5 integer
+    # ceiling) or ``thinking_level`` (Gemini 3 effort enum).  ``build_thinking_
+    # config`` selects the right ``ThinkingConfig`` shape, returns ``None`` when
+    # neither is set (native thinking), and refuses both-at-once — which is the
+    # exact request Gemini 3 rejects with an HTTP 400.  The knob is
+    # Gemini-specific; a Claude-on-Vertex model ignores it.
     # -----------------------------------------------------------------------
-    thinking_config = (
-        genai_types.ThinkingConfig(thinking_budget = llm_caps.thinking_budget)
-        if llm_caps.thinking_budget is not None
-        else None
+    thinking_config = build_thinking_config(
+        thinking_budget = llm_caps.thinking_budget,
+        thinking_level  = llm_caps.thinking_level,
     )
 
     # -----------------------------------------------------------------------

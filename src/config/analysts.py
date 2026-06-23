@@ -24,7 +24,7 @@ import json
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from config._slack import apply_slack
 
@@ -85,6 +85,20 @@ class LlmCaps(BaseModel):
         ``-1`` requests explicit dynamic thinking.  Only wired for the
         per-ticker analyst LlmAgents (News, Fundamental); the strategist
         leaves this ``None``.  Range ``[-1, 24576]`` when set.
+
+        Mutually exclusive with ``thinking_level`` — set at most one (see
+        :meth:`_reject_both_thinking_knobs`).
+    thinking_level:
+        Optional Gemini 3 *thinking effort* level — one of ``"minimal"``,
+        ``"low"``, ``"medium"`` or ``"high"`` — passed through to
+        ``GenerateContentConfig.thinking_config`` on Gemini 3 models (e.g.
+        ``gemini-3.5-flash``).  Gemini 3 replaced the integer
+        ``thinking_budget`` with this coarse enum and rejects a request that
+        carries *both* knobs with an HTTP 400; the two are therefore mutually
+        exclusive here.  ``None`` (the default) leaves native thinking
+        untouched.  ``gemini-3.5-flash`` itself defaults to ``"medium"`` when
+        the level is omitted, but we set it explicitly so the request shape is
+        deterministic across SDK/endpoint versions.
     timeout_retries:
         Total attempts the wrapper makes when wall-clock timeouts fire.
         ``3`` means one initial try plus up to two retries.  Range
@@ -95,12 +109,32 @@ class LlmCaps(BaseModel):
         ``timeout_retries``.
     """
 
-    timeout_seconds:   float     = Field(gt=0.0, le=600.0)
-    max_output_tokens: int       = Field(ge=256, le=32_768)
+    timeout_seconds:   float      = Field(gt=0.0, le=600.0)
+    max_output_tokens: int        = Field(ge=256, le=32_768)
     thinking_budget:   int | None = Field(default=None, ge=-1, le=24_576)
-    temperature:       float     = Field(ge=0.0, le=2.0)        # low → consistent structured verdicts
-    timeout_retries:   int       = Field(ge=1, le=10)
-    schema_retries:    int       = Field(ge=1, le=10)
+    thinking_level:    str | None = Field(default=None, pattern=r"^(minimal|low|medium|high)$")
+    temperature:       float      = Field(ge=0.0, le=2.0)       # low → consistent structured verdicts
+    timeout_retries:   int        = Field(ge=1, le=10)
+    schema_retries:    int        = Field(ge=1, le=10)
+
+    @model_validator(mode="after")
+    def _reject_both_thinking_knobs(self) -> LlmCaps:
+        """Forbid setting ``thinking_budget`` and ``thinking_level`` together.
+
+        The two are the Gemini 2.5 and Gemini 3 forms of the same control and
+        are mutually exclusive — Gemini 3 rejects a request carrying both with
+        an HTTP 400.  Catching it at config-load time turns a per-call runtime
+        400 into an early, explicit failure naming the offending block.
+        """
+
+        if self.thinking_budget is not None and self.thinking_level is not None:
+            raise ValueError(
+                "thinking_budget and thinking_level are mutually exclusive — "
+                "set at most one (thinking_level for Gemini 3, thinking_budget "
+                "for Gemini 2.5); got both."
+            )
+
+        return self
 
 
 class NewsCaps(BaseModel):

@@ -41,7 +41,7 @@ def test_build_strategist_wires_llm_caps_from_config() -> None:
 
     assert retrying.timeout_seconds == 180
     assert retrying.retry_state_key == "temp:_obs_strategist_retries"
-    assert set(retrying.policies.keys()) == {"rate_limit", "timeout", "schema"}
+    assert set(retrying.policies.keys()) == {"rate_limit", "transport", "timeout", "schema"}
     assert retrying.policies["timeout"].max_attempts == 3
     assert retrying.policies["schema"].max_attempts  == 3
 
