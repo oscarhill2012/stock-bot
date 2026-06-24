@@ -185,7 +185,7 @@ def test_news_branch_wires_llm_caps_from_config() -> None:
     cfg = llm.generate_content_config
 
     assert cfg is not None
-    assert cfg.max_output_tokens == 4000
+    assert cfg.max_output_tokens == 8000
 
     # The News analyst runs on the Gemini 3 family (gemini-3.5-flash), which
     # uses the coarse ``thinking_level`` effort enum rather than the Gemini 2.5
@@ -236,7 +236,7 @@ def test_fundamental_branch_wires_llm_caps_from_config() -> None:
     cfg = llm.generate_content_config
 
     assert cfg is not None
-    assert cfg.max_output_tokens == 4000
+    assert cfg.max_output_tokens == 8000
 
     # The Fundamental analyst runs on the Gemini 3 family (gemini-3.5-flash),
     # which uses the coarse ``thinking_level`` effort enum rather than the

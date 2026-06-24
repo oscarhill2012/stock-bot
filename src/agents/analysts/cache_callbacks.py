@@ -362,8 +362,9 @@ def make_report_cache_callbacks(
             _log.warning(
                 "%s cache: could not parse LLM response — cache write skipped "
                 "for %s (finish_reason=%s, %s). Likely a truncated payload; if "
-                "finish_reason=MAX_TOKENS, raise max_output_tokens or lower "
-                "thinking_budget.",
+                "finish_reason=MAX_TOKENS, raise max_output_tokens or lower the "
+                "thinking effort (thinking_level on Gemini 3, thinking_budget on "
+                "Gemini 2.5).",
                 analyst_name, ticker, finish, type(exc).__name__,
             )
             return None
