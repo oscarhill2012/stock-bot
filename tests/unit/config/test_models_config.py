@@ -23,11 +23,12 @@ from config.models import ModelsConfig, _reset_cache, load_models_config
 # ---------------------------------------------------------------------------
 
 _MINIMAL_CFG: dict = {
-    "strategist":          "gemini-2.5-pro",
-    "news_analyst":        "gemini-2.5-flash-lite",
-    "fundamental_analyst": "gemini-2.5-flash-lite",
-    "memory_compressor":   "gemini-2.5-flash-lite",
-    "memory_embedding":    "text-embedding-005",
+    "strategist":                 "gemini-2.5-pro",
+    "news_analyst":               "gemini-2.5-flash-lite",
+    "fundamental_analyst":        "gemini-2.5-flash-lite",
+    "memory_compressor":          "gemini-2.5-flash-lite",
+    "memory_embedding":           "text-embedding-005",
+    "memory_embedding_location":  "europe-west2",
 }
 
 
@@ -46,11 +47,12 @@ def test_load_models_config_valid_payload(tmp_path) -> None:
     cfg = load_models_config(path=cfg_file)
 
     assert isinstance(cfg, ModelsConfig)
-    assert cfg.strategist          == "gemini-2.5-pro"
-    assert cfg.news_analyst        == "gemini-2.5-flash-lite"
-    assert cfg.fundamental_analyst == "gemini-2.5-flash-lite"
-    assert cfg.memory_compressor   == "gemini-2.5-flash-lite"
-    assert cfg.memory_embedding    == "text-embedding-005"
+    assert cfg.strategist                 == "gemini-2.5-pro"
+    assert cfg.news_analyst               == "gemini-2.5-flash-lite"
+    assert cfg.fundamental_analyst        == "gemini-2.5-flash-lite"
+    assert cfg.memory_compressor          == "gemini-2.5-flash-lite"
+    assert cfg.memory_embedding           == "text-embedding-005"
+    assert cfg.memory_embedding_location  == "europe-west2"
 
 
 def test_load_models_config_rejects_missing_required_key(tmp_path) -> None:
@@ -63,6 +65,24 @@ def test_load_models_config_rejects_missing_required_key(tmp_path) -> None:
 
     # Drop one required field — ``memory_embedding`` — to trigger the error.
     payload = {k: v for k, v in _MINIMAL_CFG.items() if k != "memory_embedding"}
+    cfg_file = tmp_path / "models.json"
+    cfg_file.write_text(json.dumps(payload))
+
+    with pytest.raises(ValidationError):
+        load_models_config(path=cfg_file)
+
+
+def test_load_models_config_rejects_missing_embedding_location(tmp_path) -> None:
+    """A payload missing ``memory_embedding_location`` must raise ``ValidationError``.
+
+    This field is the Vertex region pin for the embedding endpoint, kept
+    separate from the rest of the (env/``global``-driven) generative models —
+    see ``src/config/models.py::ModelsConfig`` for the rationale. It carries
+    no default, so omitting it is a hard import-time error like every other
+    required field in this config.
+    """
+
+    payload = {k: v for k, v in _MINIMAL_CFG.items() if k != "memory_embedding_location"}
     cfg_file = tmp_path / "models.json"
     cfg_file.write_text(json.dumps(payload))
 
