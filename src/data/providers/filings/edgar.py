@@ -60,9 +60,26 @@ from data.secrets import require_key
 
 from ...models import Filing
 
-_EXCERPT_CHARS = 2000
 # Maximum chars captured for the 8-K body excerpt (Phase 7 — audit 2.7).
+# NOTE: the old _EXCERPT_CHARS = 2000 cap on MD&A/risk-factor sections was
+# removed in Phase 13.  MD&A is now fetched unbounded and de-boilerplated
+# at assembly time.  The assembly layer applies max_filing_mda_chars after
+# paragraph diffing, so there is no point truncating here.
 _BODY_EXCERPT_CHARS = 1500
+
+# How far back (in calendar days) to reach for prior-year periodic-form
+# baselines in backfill mode — the de-boilerplate diff pairs each current
+# filing with the same-fiscal-period filing one year earlier.
+#
+# 800 days (not 365) because the *current* periodic filing can itself already
+# be up to ~1 year old at the window start: a 10-K is annual, so at an
+# arbitrary tick the latest 10-K may have been filed ~360 days ago, which
+# puts its prior-year counterpart's FILING date ~2 years (≈730 days) back.
+# 800 = ~730 worst case + a guard band for non-calendar fiscal years and
+# late-filing extensions (Form 12b-25).  The pairing itself still matches on
+# fiscal *period* (~365-day delta) — this constant only governs how far back
+# the cache is populated so the right prior-year filing is present to pair.
+_PERIODIC_BASELINE_REACH_DAYS = 800
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +160,25 @@ def _coerce_date(v: Any) -> date | None:
 
 
 def _section_text(obj: Any, key: str) -> str | None:
+    """Extract the full text for a named section from an edgartools filing object.
+
+    Returns the stripped section text with NO truncation — the assembly layer
+    is responsible for de-boilerplating and capping the rendered output.
+    (Phase 13 removed the old _EXCERPT_CHARS = 2000 truncation that was
+    discarding most of the MD&A before the LLM ever saw it.)
+
+    Parameters
+    ----------
+    obj:
+        Parsed edgartools filing object (result of ``filing.obj()``).
+    key:
+        Section key as expected by edgartools, e.g. ``"part_ii_item_7"``.
+
+    Returns
+    -------
+    str | None
+        Stripped section text, or ``None`` if the section is absent or empty.
+    """
     sections = getattr(obj, "sections", None)
     if sections is None:
         return None
@@ -155,8 +191,7 @@ def _section_text(obj: Any, key: str) -> str | None:
     text = section.text() if hasattr(section, "text") else str(section)
     if not text:
         return None
-    text = text.strip()
-    return text[:_EXCERPT_CHARS] if text else None
+    return text.strip() or None
 
 
 def _build_filing(filing: Any, symbol: str, include_excerpts: bool) -> Filing:
@@ -225,6 +260,13 @@ def _build_filing(filing: Any, symbol: str, include_excerpts: bool) -> Filing:
             if part.strip()
         ]
 
+    # Extract the conformed period of report from SGML header metadata.
+    # edgartools exposes this as a string attribute (e.g. "20240930") at no
+    # extra network cost — it is already in the filing index entry.
+    # Returns None when the attribute is absent or empty (e.g. some older 8-Ks).
+    raw_period = getattr(filing, "period_of_report", None)
+    period_of_report: str | None = str(raw_period).strip() if raw_period else None
+
     return Filing(
         ticker=symbol,
         form_type=form_type,
@@ -236,6 +278,7 @@ def _build_filing(filing: Any, symbol: str, include_excerpts: bool) -> Filing:
         mda_excerpt=mda,
         body_excerpt=body_excerpt,
         items_8k=items_8k,
+        period_of_report=period_of_report,
     )
 
 
@@ -529,6 +572,23 @@ async def fetch(
             (_EVENT_FORM,),
             window_lower - timedelta(days=staleness_days),
             window_lower,
+        ))
+
+        # Prior-year periodic POOL — supply the N-1 filing prose the
+        # de-boilerplate pairing needs at context-assembly.  A single "latest
+        # as of window_start - N" anchor is NOT enough: the pairing must locate
+        # the filing whose fiscal *period* is one year before the current
+        # filing's period, and which specific filing that is depends on the
+        # company's fiscal calendar and on how recently it last filed.  So we
+        # cache the FULL range of periodic filings from the baseline floor up
+        # to the window start, giving the read-side pairing a complete pool to
+        # choose from.  ``select_current_filings`` will not surface these as
+        # "current" (they are superseded); they only reach the analyst when the
+        # assembly layer explicitly requests baseline filings via a range-mode
+        # provider call (``from_date`` given) — see filings_cache.fetch.
+        baseline_lower = window_lower - timedelta(days=_PERIODIC_BASELINE_REACH_DAYS)
+        _add(await asyncio.to_thread(
+            _iter_filings_range, symbol, _PERIODIC_FORMS, baseline_lower, window_lower,
         ))
 
     # Convert raw edgartools objects into Filing models.  The registry's

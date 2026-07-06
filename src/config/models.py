@@ -45,7 +45,8 @@ _DEFAULT_PATH = Path("config/models.json")
 class ModelsConfig(BaseModel):
     """Top-level shape of ``config/models.json``.
 
-    Every field is a model identifier string.  Adding a new LLM call site means
+    Every field is either a model identifier string or (for
+    ``memory_embedding_location``) a Vertex region string.  Adding a new LLM call site means
     adding a new field here, populating ``config/models.json``, and updating
     ``config/README.md``.  The Pydantic validation step refuses any payload
     missing one of these keys, so a new field becomes a hard import-time error
@@ -71,13 +72,24 @@ class ModelsConfig(BaseModel):
         ``src/agents/memory/embeddings.py::_default_embed``).  Distinct family
         (text-embedding-005, not Gemini chat), but shares the same
         "where does this live" problem so it belongs in the same config.
+    memory_embedding_location:
+        Vertex AI region the embedding client is pinned to (consumed by
+        ``src/agents/memory/embeddings.py::_default_embed``).  Kept separate
+        from every generative model above because the ``global`` Vertex
+        endpoint — which the rest of the pipeline's generative agents run on
+        via the ambient ``GOOGLE_CLOUD_LOCATION`` env var — serves **no**
+        embedding models whatsoever.  Embedding models are region-pinned, so
+        this field lets the embedding client target a real regional endpoint
+        (e.g. ``europe-west2``) independently of wherever the generative
+        models happen to run.
     """
 
-    strategist:          str = Field(min_length=1)
-    news_analyst:        str = Field(min_length=1)
-    fundamental_analyst: str = Field(min_length=1)
-    memory_compressor:   str = Field(min_length=1)
-    memory_embedding:    str = Field(min_length=1)
+    strategist:                str = Field(min_length=1)
+    news_analyst:              str = Field(min_length=1)
+    fundamental_analyst:       str = Field(min_length=1)
+    memory_compressor:         str = Field(min_length=1)
+    memory_embedding:          str = Field(min_length=1)
+    memory_embedding_location: str = Field(min_length=1)
 
 
 def load_models_config(*, path: Path | None = None) -> ModelsConfig:

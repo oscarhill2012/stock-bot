@@ -37,6 +37,7 @@ def _minimal_caps() -> FundamentalCaps:
     llm = LlmCaps(
         timeout_seconds=30,
         max_output_tokens=512,
+        temperature=0.3,
         timeout_retries=1,
         schema_retries=1,
     )
@@ -172,6 +173,36 @@ class TestRatiosBlockRendering:
 
         # 107_000_000_000 → "107000.00 M"
         assert "107000.00 M" in result, "Free cash flow not rendered in millions"
+
+    def test_beta_in_ratios_block(self):
+        """Beta is rendered (risk/volatility lens the prompt now relies on)."""
+        with patch("agents.analysts.fundamental.fetch._caps", return_value=_minimal_caps()):
+            result = _build_ticker_context(
+                ticker="AAPL",
+                filings_payload=[],
+                insider_bundle=_empty_bundle(),
+                insider_lookback_days=30,
+                ratios=_make_ratios_dict(),
+            )
+
+        # 1.2 → "1.20", labelled "Beta".
+        assert "Beta" in result
+        assert "1.20" in result
+
+    def test_sector_in_ratios_block(self):
+        """Sector renders verbatim as a string so the model can judge the
+        trailing multiple sector-relative (Phase 14 — sector now populated)."""
+        with patch("agents.analysts.fundamental.fetch._caps", return_value=_minimal_caps()):
+            result = _build_ticker_context(
+                ticker="AAPL",
+                filings_payload=[],
+                insider_bundle=_empty_bundle(),
+                insider_lookback_days=30,
+                ratios=_make_ratios_dict(),
+            )
+
+        assert "Sector" in result
+        assert "Technology" in result
 
     def test_analyst_opinion_count_rendered_as_integer(self):
         """Integer fields (analyst count) appear without decimal places."""
@@ -431,3 +462,146 @@ class TestAdapterShimForwardsRatios:
             result = _build_ticker_fundamental_context("MSFT", data)
 
         assert "-- COMPANY RATIOS (SCALAR) --" not in result
+
+
+# ---------------------------------------------------------------------------
+# Tests — MD&A de-boilerplate firing from a prior-year pool (Phase 13)
+# ---------------------------------------------------------------------------
+
+# Caps with a generous MD&A char budget so the de-boilerplate header and the
+# surviving paragraph both fit (the class-default _minimal_caps clips at 500).
+def _deboilerplate_caps() -> FundamentalCaps:
+    """Return caps with a 12k MD&A budget and a 50-char stub threshold."""
+    llm = LlmCaps(
+        timeout_seconds=30,
+        max_output_tokens=512,
+        temperature=0.3,
+        timeout_retries=1,
+        schema_retries=1,
+    )
+    return FundamentalCaps(
+        max_filing_mda_chars=12000,
+        max_filing_risk_chars=12000,
+        max_filing_8k_body_chars=200,
+        max_insider_footnotes=2,
+        max_insider_footnote_chars=100,
+        mda_stub_char_threshold=50,
+        llm=llm,
+    )
+
+
+# A boilerplate preamble repeated verbatim across both filings, plus a unique
+# closing paragraph that differs year-over-year.  Each paragraph clears the
+# 50-char stub threshold so diffing is actually attempted.
+_BOILERPLATE_PARA = (
+    "This discussion contains forward-looking statements within the meaning of "
+    "the Private Securities Litigation Reform Act of 1995 and should be read "
+    "alongside the audited consolidated financial statements."
+)
+
+_CURRENT_UNIQUE_PARA = (
+    "Revenue rose 11 percent in the quarter driven by Services and a record "
+    "March quarter for iPhone, with gross margin expanding to 46.6 percent."
+)
+
+_PRIOR_UNIQUE_PARA = (
+    "Revenue declined 3 percent in the prior-year quarter as foreign exchange "
+    "headwinds weighed on results, with gross margin of 44.3 percent."
+)
+
+
+class TestMdaDeboilerplateFiresFromPool:
+    """An AAPL-shaped 10-Q de-boilerplates against the correct prior-year 10-Q."""
+
+    def _current_filing(self) -> dict:
+        """Return the current Q2 10-Q dict (period 20260328)."""
+        return {
+            "ticker": "AAPL",
+            "form_type": "10-Q",
+            "filed_at": "2026-05-01",
+            "period_of_report": "20260328",
+            "mda_excerpt": _BOILERPLATE_PARA + "\n\n" + _CURRENT_UNIQUE_PARA,
+            "risk_factors_excerpt": None,
+            "body_excerpt": None,
+        }
+
+    def _baseline_pool(self) -> list[dict]:
+        """Return an AAPL-shaped prior-year pool with intervening quarters.
+
+        Only the Q2-prior-year filing (period 20250329, ~364 days before the
+        current period) sits inside the 335–395 pairing window.  The adjacent
+        quarters (Q1 FY26 and Q3 FY25) are deliberately included to prove the
+        pairing layer selects by fiscal period, not by recency.
+        """
+        return [
+            {   # Q1 FY26 — only ~90 days before current period (out of window).
+                "ticker": "AAPL", "form_type": "10-Q", "filed_at": "2026-02-01",
+                "period_of_report": "20251228",
+                "mda_excerpt": _BOILERPLATE_PARA + "\n\nUnrelated Q1 narrative.",
+                "risk_factors_excerpt": None, "body_excerpt": None,
+            },
+            {   # Q3 FY25 — ~273 days before current period (out of window).
+                "ticker": "AAPL", "form_type": "10-Q", "filed_at": "2025-08-01",
+                "period_of_report": "20250628",
+                "mda_excerpt": _BOILERPLATE_PARA + "\n\nUnrelated Q3 narrative.",
+                "risk_factors_excerpt": None, "body_excerpt": None,
+            },
+            {   # Q2 FY25 — ~364 days before current period: the true baseline.
+                "ticker": "AAPL", "form_type": "10-Q", "filed_at": "2025-05-02",
+                "period_of_report": "20250329",
+                "mda_excerpt": _BOILERPLATE_PARA + "\n\n" + _PRIOR_UNIQUE_PARA,
+                "risk_factors_excerpt": None, "body_excerpt": None,
+            },
+        ]
+
+    def test_deboilerplate_header_and_survivors(self):
+        """The diff fires: boilerplate is dropped, the unique current para kept."""
+        with patch(
+            "agents.analysts.fundamental.fetch._caps",
+            return_value=_deboilerplate_caps(),
+        ):
+            result = _build_ticker_context(
+                ticker="AAPL",
+                filings_payload=[self._current_filing()],
+                insider_bundle=_empty_bundle(),
+                insider_lookback_days=30,
+                ratios=None,
+                baseline_filings_payload=self._baseline_pool(),
+            )
+
+        # De-boilerplate header names the matched prior period (20250329).
+        assert "[de-boilerplate vs 20250329:" in result
+
+        # The shared boilerplate preamble was dropped...
+        assert "forward-looking statements within the meaning" not in result
+        # ...while the unique current-quarter narrative survived (a paragraph
+        # is emitted contiguously, so the phrase appears verbatim).
+        assert "record March quarter for iPhone" in result
+
+        # No fallback marker — pairing succeeded.
+        assert "no prior-year pair" not in result
+        assert "too short to diff" not in result
+
+    def test_adjacent_quarter_not_selected_as_baseline(self):
+        """Pairing must NOT pick an out-of-window adjacent quarter's prose.
+
+        If the pairing wrongly matched Q1 FY26 or Q3 FY25, the unrelated
+        narrative from those filings would not de-boilerplate the current
+        unique paragraph — but more tellingly, the header would name the wrong
+        period.  Pin the period to guard against a recency-based mismatch.
+        """
+        with patch(
+            "agents.analysts.fundamental.fetch._caps",
+            return_value=_deboilerplate_caps(),
+        ):
+            result = _build_ticker_context(
+                ticker="AAPL",
+                filings_payload=[self._current_filing()],
+                insider_bundle=_empty_bundle(),
+                insider_lookback_days=30,
+                ratios=None,
+                baseline_filings_payload=self._baseline_pool(),
+            )
+
+        assert "20251228" not in result, "adjacent Q1 wrongly chosen as baseline"
+        assert "20250628" not in result, "adjacent Q3 wrongly chosen as baseline"

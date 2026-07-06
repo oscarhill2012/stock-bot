@@ -5,7 +5,8 @@ edgartools>=3.0                 # get_insider_trades, get_company_filings — fr
 requests>=2.31.0                # Quiver Quant API + general HTTP
 
 # === Agent orchestration ===
-google-adk>=1.34.0              # multi-agent buy/sell decision pipeline
+google-adk>=1.34.0              # multi-agent pipeline runner
+anthropic>=0.111.0             # ADK-native Claude-on-Vertex path (google.adk.models.anthropic_llm.Claude); declared explicitly because ADK treats it as optional and does not pin it
 
 # === Data handling ===
 pandas>=2.2.0

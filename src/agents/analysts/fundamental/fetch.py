@@ -8,13 +8,16 @@ The per-ticker triad payload layout is::
     {
         "ratios":                    <dict from CompanyRatios.model_dump() | None on failure>,
         "filings":                   [<Filing.model_dump()>, ...],
+        "baseline_filings":          [<Filing.model_dump()>, ...],  # prior-year periodic filings
         "insider_trades":            [<InsiderTrade.model_dump()>, ...],
         "insider_derivative_trades": [<InsiderDerivativeTrade.model_dump()>, ...],
     }
 
 The context block written into state combines:
 
-- Filing excerpts (MD&A + risk factors) for each ticker.
+- Filing excerpts (MD&A + risk factors) for each ticker, with MD&A paragraphs
+  de-boilerplated against the prior-year filing where a fiscal-period pair
+  can be established (Phase 13).
 - A structured insider activity section (numeric flows + footnote prose).
 
 Separating the LLM-readable context from the machine-readable data dict
@@ -31,15 +34,33 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from datetime import date, datetime
 
 from pydantic import ValidationError
 
+from agents.analysts.fundamental.deboilerplate import (
+    MDA_DEBOILERPLATE_ALGO_VERSION,
+    deboilerplate_mda,
+)
 from config.analysts import FundamentalCaps, get_analysts_config
 from data.config import get_config
 from data.models import Form4Bundle, InsiderTrade
 from data.models.trades import InsiderDerivativeTrade
 
 _logger = logging.getLogger(__name__)
+
+# Minimum number of characters an MD&A excerpt must have before we attempt
+# de-boilerplate diffing.  Stubs shorter than this (e.g. a single placeholder
+# sentence) are rendered verbatim with a marker — no pairing attempted.
+# Configurable via ``config/analysts.json`` → ``fundamental.mda_stub_char_threshold``.
+_DEFAULT_MDA_STUB_THRESHOLD = 400
+
+# Acceptable delta (in calendar days) between a current filing's period_of_report
+# and the prior-year baseline.  A 10-Q with period "20240930" pairs with a
+# baseline period between 335 and 395 days earlier — this range covers late
+# fiscal-quarter filers and non-calendar fiscal years.
+_PAIRING_WINDOW_DAYS_MIN = 335
+_PAIRING_WINDOW_DAYS_MAX = 395
 
 
 # ---------------------------------------------------------------------------
@@ -106,8 +127,13 @@ def _render_ratios_block(lines: list[str], ratios: dict) -> None:
 
     Iterates over the known ``CompanyRatios`` scalar fields and appends a
     labelled line for every non-null value.  Fields are grouped loosely:
-    valuation multiples, then growth/profitability, then price/market
-    reference data, then analyst consensus.
+    sector context, then valuation multiples, then growth/profitability, then
+    price/market reference data, then analyst consensus.  ``sector`` is a
+    string and renders verbatim; it leads the block so the model can judge the
+    trailing multiple relative to its sector (the prompt asks for exactly
+    this).  Note ``forward_pe``, ``peg``, ``analyst_rating_avg`` and
+    ``number_of_analyst_opinions`` remain in the field order but are absent
+    from the live data feed, so in practice they are never rendered.
 
     Fraction fields (dividend yield, revenue growth, profit margin, ROE) are
     multiplied by 100 and formatted as percentages so the LLM receives a
@@ -137,8 +163,13 @@ def _render_ratios_block(lines: list[str], ratios: dict) -> None:
     _MILLIONS_FIELDS = {"free_cash_flow"}
 
     # Ordered list of (dict_key, human_label) pairs to render.
-    # Grouped: valuation → growth/profitability → price reference → analyst.
+    # Grouped: sector context → valuation → growth/profitability → price
+    # reference → analyst.  ``sector`` leads the block because the prompt
+    # instructs the model to judge the trailing multiple sector-relative, so
+    # the sector label must sit alongside the multiples it qualifies.  It is a
+    # string field and therefore renders verbatim (no numeric formatting).
     _FIELD_ORDER: list[tuple[str, str]] = [
+        ("sector",                       "Sector"),
         ("market_cap",                   "Market cap (B USD)"),
         ("trailing_pe",                  "Trailing P/E"),
         ("forward_pe",                   "Forward P/E"),
@@ -158,6 +189,15 @@ def _render_ratios_block(lines: list[str], ratios: dict) -> None:
         ("number_of_analyst_opinions",   "Analyst opinion count"),
     ]
 
+    # Bug 3: read the trailing P/E implausibility threshold from config so we
+    # can flag suspiciously high multiples caused by one-time EPS distortions.
+    pe_threshold = (
+        get_analysts_config().fundamental.trailing_pe_implausibility_threshold
+    )
+
+    trailing_pe = ratios.get("trailing_pe")
+    forward_pe  = ratios.get("forward_pe")
+
     rendered_rows: list[str] = []
 
     for key, label in _FIELD_ORDER:
@@ -165,7 +205,12 @@ def _render_ratios_block(lines: list[str], ratios: dict) -> None:
         if value is None:
             continue
 
-        if key == "market_cap":
+        if isinstance(value, str):
+            # String fields (e.g. sector) render verbatim — no numeric
+            # formatting applies.  Guarded first so the numeric branches below
+            # never attempt arithmetic on a string.
+            formatted = value
+        elif key == "market_cap":
             # Convert raw USD → billions for readability.
             formatted = f"{value / 1e9:.3f} B"
         elif key in _MILLIONS_FIELDS:
@@ -177,11 +222,240 @@ def _render_ratios_block(lines: list[str], ratios: dict) -> None:
         else:
             formatted = f"{value:.2f}"
 
+        # Bug 3 fix: annotate an implausibly high trailing P/E inline so the
+        # LLM sees the warning on the very line it would anchor to.
+        if key == "trailing_pe" and trailing_pe is not None and trailing_pe > pe_threshold:
+            if forward_pe is not None:
+                formatted = (
+                    f"{value:.2f}  [POSSIBLY DISTORTED BY ONE-TIME EPS ITEM — "
+                    f"see Forward P/E {forward_pe:.2f} below]"
+                )
+            else:
+                formatted = (
+                    f"{value:.2f}  [SUSPECT — possibly distorted by a one-time EPS item; "
+                    f"forward P/E unavailable]"
+                )
+
         rendered_rows.append(f"  {label}: {formatted}")
 
     if rendered_rows:
         lines.append("-- COMPANY RATIOS (SCALAR) --")
         lines.extend(rendered_rows)
+
+
+def _render_mda(
+    filing: dict,
+    mda: str,
+    baselines: list[dict],
+    caps: FundamentalCaps,
+    mda_stub_threshold: int,
+) -> str:
+    """Return the MD&A text to include in the LLM context for one filing.
+
+    Attempts de-boilerplate diffing against the prior-year baseline filing when:
+    - The current filing has a ``period_of_report`` field (Phase 13 cache).
+    - A matching baseline filing can be found (same form type, ~365 days earlier).
+    - Both the current and prior MD&A texts exceed ``mda_stub_threshold`` chars
+      (stubs are too short to diff meaningfully).
+
+    Falls back to full text (capped at ``max_filing_mda_chars``) with a
+    descriptive marker in these cases:
+    - No ``period_of_report`` on the current filing (pre-Phase 13 cache row).
+    - No matching baseline found.
+    - Either text is shorter than ``mda_stub_threshold``.
+    - An unexpected exception inside the diff call.
+
+    Parameters
+    ----------
+    filing:
+        Current filing dict (``Filing.model_dump()`` shape).
+    mda:
+        Stripped MD&A text from the current filing.
+    baselines:
+        Prior-year baseline filing dicts from the provider call.
+    caps:
+        ``FundamentalCaps`` for this tick (read from config).
+    mda_stub_threshold:
+        Minimum character count for both current and prior MD&A before
+        de-boilerplate diffing is attempted.
+
+    Returns
+    -------
+    str
+        Either the de-boilerplated (diffed) MD&A text or the full text with a
+        fallback marker, capped at ``caps.max_filing_mda_chars``.
+    """
+    form_type = filing.get("form_type", "?")
+    current_period = filing.get("period_of_report") or ""
+
+    # --- Attempt pairing only when period_of_report is available ---
+    if not current_period:
+        _logger.debug(
+            "_render_mda: no period_of_report for %s %s — rendering full text",
+            form_type, filing.get("accession_no", "?"),
+        )
+        return "[no prior-year pair: period_of_report absent — full text]\n\n" + mda[:caps.max_filing_mda_chars]
+
+    # --- Find prior-year baseline ---
+    baseline = _find_prior_year_baseline(current_period, form_type, baselines)
+
+    if baseline is None:
+        _logger.debug(
+            "_render_mda: no baseline found for %s period=%s — rendering full text",
+            form_type, current_period,
+        )
+        return "[no prior-year pair: baseline not in cache — full text]\n\n" + mda[:caps.max_filing_mda_chars]
+
+    prior_mda = (baseline.get("mda_excerpt") or "").strip()
+    prior_period = baseline.get("period_of_report") or "prior year"
+
+    # --- Stub guard: skip diffing if either text is too short ---
+    if len(mda) < mda_stub_threshold or len(prior_mda) < mda_stub_threshold:
+        _logger.debug(
+            "_render_mda: stub text for %s (current=%d, prior=%d chars, threshold=%d) "
+            "— rendering full text",
+            form_type, len(mda), len(prior_mda), mda_stub_threshold,
+        )
+        return "[prior-year pair found but text too short to diff — full text]\n\n" + mda[:caps.max_filing_mda_chars]
+
+    # --- De-boilerplate diff ---
+    try:
+        filtered_text, stats = deboilerplate_mda(
+            current_text=mda,
+            prior_text=prior_mda,
+            algo_version=MDA_DEBOILERPLATE_ALGO_VERSION,
+            prior_period_label=prior_period,
+        )
+        _logger.info(
+            "_render_mda: %s pair=%s→%s dropped=%d/%d (%.1f%% retained) "
+            "chars %d→%d",
+            form_type,
+            prior_period,
+            current_period,
+            stats["paragraphs_dropped"],
+            stats["paragraphs_total"],
+            stats["coverage_pct"],
+            stats["chars_in"],
+            stats["chars_out"],
+        )
+        return filtered_text[:caps.max_filing_mda_chars]
+
+    except Exception as exc:
+        _logger.warning(
+            "_render_mda: deboilerplate_mda failed for %s %s: %s — rendering full text",
+            form_type, current_period, exc,
+        )
+        return "[de-boilerplate error — full text]\n\n" + mda[:caps.max_filing_mda_chars]
+
+
+# Known on-disk formats for ``period_of_report``.  The live EDGAR provider
+# emits compact ``YYYYMMDD``; the golden cache that backs the backtest stores
+# ISO ``YYYY-MM-DD``.  Both must parse so de-boilerplate pairing behaves
+# identically live and in replay.  ISO is tried first because it is the shape
+# the backtest (the overwhelming caller) actually serves.
+_PERIOD_FORMATS = ("%Y-%m-%d", "%Y%m%d")
+
+
+def _parse_period_of_report(period: str) -> date | None:
+    """Parse a filing ``period_of_report`` into a date, tolerant of format.
+
+    Accepts both the ISO ``YYYY-MM-DD`` shape stored by the golden cache and
+    the compact ``YYYYMMDD`` shape emitted by the live EDGAR provider, so the
+    same pairing logic works on both data paths.
+
+    Parameters
+    ----------
+    period:
+        The ``period_of_report`` string from a filing dict.
+
+    Returns
+    -------
+    date | None
+        The parsed calendar date, or ``None`` if *period* is empty or matches
+        no known format.  Distinguishing "empty" from "malformed" is left to
+        the caller — a non-empty value that parses nowhere is a contract
+        violation worth logging, not a silent drop.
+    """
+    for fmt in _PERIOD_FORMATS:
+        try:
+            return datetime.strptime(period, fmt).date()
+        except (ValueError, TypeError):
+            continue
+
+    return None
+
+
+def _find_prior_year_baseline(
+    current_period: str,
+    current_form_type: str,
+    baseline_filings: list[dict],
+) -> dict | None:
+    """Find the prior-year periodic filing that matches ``current_period``.
+
+    Pairs a current filing's ``period_of_report`` (e.g. ``"2024-09-30"`` from
+    the cache or ``"20240930"`` from live EDGAR) with a baseline filing of the
+    same form type whose period falls 335–395 days earlier.  This window covers
+    non-calendar fiscal years and late-filer extensions (Form 12b-25).
+
+    Parameters
+    ----------
+    current_period:
+        ``period_of_report`` string from the current filing.  Either the ISO
+        ``YYYY-MM-DD`` (golden cache) or compact ``YYYYMMDD`` (live EDGAR)
+        shape is accepted.
+    current_form_type:
+        Form type of the current filing (e.g. ``"10-K"`` or ``"10-Q"``).
+    baseline_filings:
+        List of ``Filing.model_dump()`` dicts from the prior-year provider call.
+
+    Returns
+    -------
+    dict | None
+        The best-matching baseline filing dict, or ``None`` if no match found.
+    """
+    current_date = _parse_period_of_report(current_period)
+
+    if current_date is None:
+        # A non-empty period that parses in no known format is a contract
+        # violation — historically this was silently swallowed, which disabled
+        # de-boilerplate for an entire run undetected.  Surface it loudly.
+        if current_period:
+            _logger.warning(
+                "_find_prior_year_baseline: unparseable current period_of_report "
+                "%r (form=%s) — no prior-year pairing attempted",
+                current_period, current_form_type,
+            )
+        return None
+
+    best: dict | None = None
+    best_date: date | None = None
+
+    for baseline in baseline_filings:
+        # Only consider the same form type — a 10-K must pair with a 10-K.
+        if baseline.get("form_type") != current_form_type:
+            continue
+
+        prior_period = baseline.get("period_of_report")
+        if not prior_period:
+            continue
+
+        prior_date = _parse_period_of_report(str(prior_period))
+        if prior_date is None:
+            continue
+
+        # Check that the prior period is between 335 and 395 days before
+        # the current period — this is the "one year earlier" window.
+        # Also take the most-recent match if multiple baselines qualify
+        # (shouldn't happen, but be defensive).
+        delta = (current_date - prior_date).days
+        in_window = _PAIRING_WINDOW_DAYS_MIN <= delta <= _PAIRING_WINDOW_DAYS_MAX
+        is_newer_match = best_date is None or prior_date > best_date
+
+        if in_window and is_newer_match:
+            best = baseline
+            best_date = prior_date
+
+    return best
 
 
 def _build_ticker_context(
@@ -190,6 +464,7 @@ def _build_ticker_context(
     insider_bundle: Form4Bundle,
     insider_lookback_days: int,
     ratios: dict | None = None,
+    baseline_filings_payload: list[dict] | None = None,
 ) -> str:
     """Build the LLM-readable context block for a single ticker.
 
@@ -198,6 +473,12 @@ def _build_ticker_context(
     structured insider activity section (numeric metrics + footnote prose) into
     one formatted text block.  This text is concatenated across all tickers and
     written to ``state["fundamental_context"]`` by the fetch callback.
+
+    For periodic filings (10-K, 10-Q) with available MD&A text, this function
+    attempts to de-boilerplate the MD&A by diffing it against the prior-year
+    filing's MD&A from ``baseline_filings_payload`` (Phase 13).  If a prior-year
+    baseline is found and both texts are long enough, unchanged paragraphs are
+    filtered out so the LLM sees only what actually changed.
 
     Parameters
     ----------
@@ -213,6 +494,12 @@ def _build_ticker_context(
     ratios:
         ``CompanyRatios.model_dump()`` dict for the ticker, or ``None`` / an
         empty dict if unavailable.  Only non-null scalar fields are rendered.
+    baseline_filings_payload:
+        List of ``Filing.model_dump()`` dicts from the prior-year periodic
+        *pool* provider call (range mode, reaching ~800 days back).  The pairing
+        layer picks the same-period-prior-year filing out of this pool by
+        ``period_of_report``.  Used for MD&A de-boilerplate pairing.  ``None``
+        or an empty list disables pairing for all filings in this call.
 
     Returns
     -------
@@ -238,15 +525,28 @@ def _build_ticker_context(
     #     fifty_two_week_high, fifty_two_week_low: price (2 dp)
     #   - analyst_rating_avg: plain 2 dp (scale: 1.0 = Strong Buy, 5.0 = Sell)
     #   - number_of_analyst_opinions: integer
-    #   - long_name, sector: string — omitted; not decision-relevant scalars
+    #   - sector: string — rendered verbatim so the LLM can judge the trailing
+    #     multiple sector-relative (the prompt asks for this)
+    #   - long_name: string — still omitted; not a decision-relevant scalar
     if ratios:
         _render_ratios_block(lines, ratios)
 
+    # Read the stub threshold from config (falls back to module default if
+    # the config object pre-dates the Phase 13 field addition).
+    mda_stub_threshold: int = getattr(
+        caps, "mda_stub_char_threshold", _DEFAULT_MDA_STUB_THRESHOLD,
+    )
+
+    # Normalise baseline list once — empty list is fine (disables pairing).
+    baselines: list[dict] = baseline_filings_payload or []
+
     # --- Filing excerpts ---
     # For annual / quarterly filings (10-K, 10-Q) we render MD&A and risk
-    # factors.  For event-driven filings (8-K) those sections are absent;
-    # instead we render the body_excerpt which captures the catalyst, guidance
-    # update, or earnings announcement (Phase 7 audit 2.7 addition).
+    # factors.  MD&A is de-boilerplated against the prior-year filing when a
+    # fiscal-period pair can be established (Phase 13).
+    # For event-driven filings (8-K) those sections are absent; instead we
+    # render the body_excerpt which captures the catalyst, guidance update, or
+    # earnings announcement (Phase 7 audit 2.7 addition).
     if filings_payload:
         lines.append("-- COMPANY FILINGS (PROSE) --")
         for filing in filings_payload:
@@ -260,10 +560,22 @@ def _build_ticker_context(
             if mda or risk_fac:
                 # 10-K / 10-Q style: MD&A + risk factors sections available.
                 lines.append(f"  [{form_type}, filed {filed_at}]")
+
                 if mda:
-                    lines.append(f"  MD&A: {mda[:caps.max_filing_mda_chars]}")
+                    # Attempt de-boilerplate pairing for periodic forms with
+                    # sufficient MD&A text and a prior-year baseline.
+                    mda_to_render = _render_mda(
+                        filing=filing,
+                        mda=mda,
+                        baselines=baselines,
+                        caps=caps,
+                        mda_stub_threshold=mda_stub_threshold,
+                    )
+                    lines.append(f"  MD&A: {mda_to_render}")
+
                 if risk_fac:
                     lines.append(f"  Risk factors: {risk_fac[:caps.max_filing_risk_chars]}")
+
             elif body_expt:
                 # 8-K style: no MD&A/risk sections, but there is a body excerpt
                 # capturing the event (earnings, guidance, material disclosure).
@@ -326,11 +638,48 @@ def _build_ticker_context(
     exercise_count = sum(1 for d in derivatives if d.transaction_code == "M")
     grant_count    = sum(1 for d in derivatives if d.transaction_code == "A")
 
+    # --- Bug 2 fix: conviction signal (single dominant buyer/seller) ---
+    # Aggregate gross open-market dollars per distinct filer name, then
+    # compare the maximum single-filer total against the configurable
+    # conviction threshold.  This covers the CEO-alone scenario (e.g. Elon
+    # Musk buying $950 M) that the cluster flag misses because cluster
+    # requires ≥ 3 distinct names.
+    conviction_threshold = (
+        get_analysts_config().fundamental.insider_conviction_threshold_dollars
+    )
+
+    buy_by_filer: dict[str, float]  = {}
+    sell_by_filer: dict[str, float] = {}
+
+    for t in trades:
+        code    = t.transaction_code or ""
+        name    = t.insider_name or "__unknown__"
+        dollars = (t.shares or 0.0) * (t.price_per_share or 0.0)
+        if code == "P":
+            buy_by_filer[name]  = buy_by_filer.get(name, 0.0)  + dollars
+        elif code == "S":
+            sell_by_filer[name] = sell_by_filer.get(name, 0.0) + dollars
+
+    conviction_buy  = bool(
+        buy_by_filer and max(buy_by_filer.values()) >= conviction_threshold
+    )
+    conviction_sell = bool(
+        sell_by_filer and max(sell_by_filer.values()) >= conviction_threshold
+    )
+
+    # Bug 1 fix: render net dollars with an explicit sign and direction label.
+    # Previously ``{net_dollars:,.0f}`` emitted no sign on positive values,
+    # letting the LLM read +$949.7 M of buying as "selling $949.7 M".
+    net_sign  = "+" if net_dollars >= 0 else ""
+    direction = "net buy" if net_dollars > 0 else ("net sell" if net_dollars < 0 else "flat")
+
     lines.extend([
-        f"  net Form-4 dollars:           {net_dollars:,.0f}",
+        f"  net Form-4 dollars (+ = net buy / − = net sell):  {net_sign}{net_dollars:,.0f}  [{direction}]",
         f"  buys / sells (count):         {len(buys)} / {len(sells)}",
         f"  cluster_buying:               {cluster_buy}",
         f"  cluster_selling:              {cluster_sell}",
+        f"  conviction_buy:               {conviction_buy}",
+        f"  conviction_sell:              {conviction_sell}",
         f"  planned-sale ratio (10b5-1):  {planned_ratio:.2f}",
         f"  top filer role:               {top_role}",
         f"  derivative exercises:         {exercise_count}",
@@ -368,6 +717,7 @@ def _build_ticker_fundamental_context(ticker: str, data: dict) -> str:
         {
             "ratios":                    dict | None,
             "filings":                   [dict, ...],
+            "baseline_filings":          [dict, ...],  # prior-year, Phase 13
             "insider_trades":            [dict, ...],
             "insider_derivative_trades": [dict, ...],
         }
@@ -383,9 +733,10 @@ def _build_ticker_fundamental_context(ticker: str, data: dict) -> str:
         Ticker symbol label.
     data:
         Per-ticker payload dict.  ``"filings"`` must be a list of serialised
-        Filing dicts; ``"insider_trades"`` and
-        ``"insider_derivative_trades"`` must be lists of
-        ``InsiderTrade.model_dump()`` / ``InsiderDerivativeTrade.model_dump()``
+        Filing dicts; ``"baseline_filings"`` is an optional list of prior-year
+        Filing dicts used for MD&A de-boilerplate (Phase 13).
+        ``"insider_trades"`` and ``"insider_derivative_trades"`` must be lists
+        of ``InsiderTrade.model_dump()`` / ``InsiderDerivativeTrade.model_dump()``
         dicts respectively.  All three default to empty on absence.
 
     Returns
@@ -395,6 +746,10 @@ def _build_ticker_fundamental_context(ticker: str, data: dict) -> str:
         produces — suitable for direct inclusion in an LLM prompt.
     """
     filings_payload: list[dict] = data.get("filings") or []
+
+    # Prior-year baseline filings — populated by the Phase 13 baseline fetch.
+    # Empty list when absent (pre-Phase 13 callers); disables de-boilerplate.
+    baseline_filings_payload: list[dict] = data.get("baseline_filings") or []
 
     # Reconstruct the typed Form4Bundle from the two flat lists emitted by
     # the producer (Phase 7 unified shape).  Invalid rows are silently dropped;
@@ -418,4 +773,5 @@ def _build_ticker_fundamental_context(ticker: str, data: dict) -> str:
         insider_bundle,
         insider_lookback_days=insider_lookback_days,
         ratios=ratios,
+        baseline_filings_payload=baseline_filings_payload,
     )

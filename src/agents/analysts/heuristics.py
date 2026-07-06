@@ -77,6 +77,115 @@ class TechnicalHeuristics(_Frozen):
     Tune via ``config/analyst_heuristics.json`` without a code change.
     """
 
+    suppress_bearish_under_golden_cross: bool = Field(default=True)
+    """Regime gate: neutralise a bearish 20-day lean while a golden cross holds.
+
+    The Phase-13 technical audit (docs/Phase13-analyst-improvement/audit/
+    technical-audit.md §6/§7) found the bearish lean to be anti-predictive in
+    this large-cap universe (sub-50 % hit rate at every horizon), and *most*
+    so when the name is simultaneously in a confirmed up-trend regime:
+    ``bearish + golden_cross`` (n=24) posted a 21 % down-rate and +2.23 %
+    mean +20-day return — i.e. the analyst was loudly bearish on names that
+    kept rising.  A modest negative 20-day blip inside a multi-month uptrend
+    is noise, not a reversal.
+
+    When ``True`` (default), a bearish base lean is downgraded to neutral
+    whenever ``golden_cross`` is set, and the ``bearish_suppressed_golden_cross``
+    factor is appended for traceability.  Set to ``False`` to restore the
+    regime-blind behaviour.
+
+    Tune via ``config/analyst_heuristics.json`` without a code change.
+    """
+
+    suppress_bullish_under_death_cross: bool = Field(default=True)
+    """Regime gate: neutralise a bullish 20-day lean while a death cross holds.
+
+    The symmetric counterpart to ``suppress_bearish_under_golden_cross``.  The
+    offline replay over the four audited runs (644 decisions) found
+    ``bullish + death_cross`` (n=24) was a genuinely poor call — a 46 % up-rate
+    and a **−0.71 %** mean +20-day return — i.e. a short-term positive blip
+    against a confirmed down-trend regime tended to fade.  Suppressing it lifted
+    the overall bullish +20-day hit rate from 58.4 % to 59.5 % and bullish mean
+    +20-day return from +1.95 % to +2.18 %, with no offsetting downside.
+
+    When ``True`` (default), a bullish base lean is downgraded to neutral
+    whenever ``death_cross`` is set, and the ``bullish_suppressed_death_cross``
+    factor is appended for traceability.  Set to ``False`` to restore the
+    regime-blind behaviour.
+
+    Tune via ``config/analyst_heuristics.json`` without a code change.
+    """
+
+    directional_52w_confidence: bool = Field(default=True)
+    """Make the 52-week-proximity confidence boost corroborate the lean.
+
+    The audit found the unconditional ``near_52w_low`` boost actively harmful:
+    bearish names near their 52-week low had a 35 % down-rate (vs 51 % without
+    the tag) and +2.09 % mean +20-day return — the boost lifted confidence to
+    0.90 precisely on the falling names most likely to bounce.  Proximity to
+    the low is a *mean-reversion* zone, not a continuation signal.
+
+    When ``True`` (default), the proximity boost only fires when it corroborates
+    the lean:
+
+    - ``near_52w_high`` boosts confidence only on a **bullish** lean.
+    - ``near_52w_low``  boosts confidence only on a **bullish** lean (a name
+      bouncing off its low) — never on a bearish lean.
+
+    The context *factors* (``near_52w_high`` / ``near_52w_low``) are still
+    emitted regardless of lean — only the confidence arithmetic is gated.
+
+    Set to ``False`` to restore the legacy unconditional ``+confidence_boost_step``
+    on either proximity.  Tune via ``config/analyst_heuristics.json``.
+    """
+
+    beta_confidence_damping_enabled: bool = Field(default=False)
+    """Gate the ``beta_confidence_damping`` technical feature, independent of beta.
+
+    The ``pit_composite`` provider now populates a PIT-correct trailing
+    market-model beta on ``CompanyRatios`` (for the Fundamental analyst).  The
+    technical extractor would otherwise auto-emit a ``beta_confidence_damping``
+    feature (``1 / (1 + |beta - 1|)``) whenever beta is present, silently adding
+    a context line to the strategist's technical digest.
+
+    This flag decouples the two: beta can be populated for the Fundamental
+    analyst while the technical damping feature stays off.  Crucially, the
+    feature is **strategist-facing context only** — ``derive_technical_verdict``
+    never reads it, so toggling it does not change the technical verdict's lean,
+    magnitude, or confidence (and therefore cannot change directional hit-rate).
+
+    Phase-14 offline validation over the four audited runs (baseline-2025-09
+    iter-9/iter-10, iran-conflict-2026-02 iter-9/iter-10) confirmed the feature
+    is verdict-neutral: ON and OFF produce byte-identical technical verdicts and
+    identical +5d/+20d hit-rates.  As the gain is unproven and it only adds noise
+    to the strategist prompt, it ships ``False`` (disabled) by default.  Set to
+    ``True`` in ``config/analyst_heuristics.json`` to surface the feature if a
+    future strategist tuning wants it.
+    """
+
+    momentum_band_confidence_floor: float = Field(default=0.5, ge=0.0, le=1.0)
+    """Confidence damping for directional calls just outside the neutral band.
+
+    The analyst is stateless per tick, so literal hysteresis on the lean is not
+    available.  Instead we damp *confidence* as ``abs(pct_change_20d)`` shrinks
+    toward ``momentum_neutral_band_pct``: a call that only just cleared the band
+    (a borderline whipsaw) should be low-confidence, while a call well beyond
+    the band keeps full confidence.
+
+    A linear ramp scales the post-modifier confidence by a factor that runs
+    from this floor (at the band edge) up to ``1.0`` (at twice the band):
+
+        ramp = floor + (1 - floor) * clamp((|pct20| - band) / band, 0, 1)
+
+    With the defaults (band 0.02, floor 0.5) a name at exactly +2 % 20-day keeps
+    half its confidence; a name at +4 % or beyond keeps all of it.  Neutral
+    leans (inside the band) are unaffected — they carry no directional
+    confidence to damp.
+
+    Set to ``1.0`` to disable the damping entirely (ramp collapses to a constant
+    1.0).  Tune via ``config/analyst_heuristics.json`` without a code change.
+    """
+
 
 class SocialHeuristics(_Frozen):
     """Thresholds for the deterministic social verdict."""

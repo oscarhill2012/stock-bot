@@ -59,7 +59,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from config._slack import apply_slack
-from config.analysts import LlmCaps  # Shared shape — imported to avoid drift
+from config.analysts import LlmCaps  # Shared base shape — extended below
 
 # Project-root-relative default path. The package is imported via
 # PYTHONPATH=src, so we resolve relative to the working directory rather than
@@ -119,6 +119,50 @@ class PositionThesisCaps(BaseModel):
     last_review_note_max_chars: int = Field(ge=20,  le=1000)
 
 
+class StrategistLlmCaps(LlmCaps):
+    """Strategist-specific LLM caps — the shared :class:`LlmCaps` plus the
+    decoding knobs the strategist needs.
+
+    The strategist is the only LLM agent that tunes its sampler.  On long,
+    repetitive full-watchlist prompts ``gemini-2.5-pro`` is prone to rambling
+    and falling into attractor states (re-emitting the same tokens), which
+    burns the output budget and starves the verdict JSON.  Lowering the
+    temperature and applying frequency/presence penalties damps that.  These
+    used to be hardcoded probe values inside the agent's
+    ``GenerateContentConfig``; lifting them here makes them tunable without a
+    code change (per the project's no-hardcoded-config convention).
+
+    The analyst LlmAgents build their own ``GenerateContentConfig`` and do not
+    consume these fields, which is why they live on this strategist-only
+    subclass rather than the shared :class:`LlmCaps`.
+
+    Attributes
+    ----------
+    temperature:
+        Sampling temperature.  Lower values make the output more
+        deterministic / less rambly.  Range ``[0.0, 2.0]``.
+    frequency_penalty:
+        Penalises tokens in proportion to how often they have already
+        appeared, discouraging verbatim token-level repetition.  Range
+        ``[-2.0, 2.0]`` (positive penalises repetition).
+    presence_penalty:
+        Penalises tokens that have appeared at all, nudging the model toward
+        new content rather than re-using already-emitted tokens.  Range
+        ``[-2.0, 2.0]``.
+
+    Note that ``thinking_budget`` (inherited from :class:`LlmCaps`) is set for
+    the strategist in ``config/strategist.json`` — rather than left ``None`` as
+    it is for most analysts.  ``gemini-2.5-pro`` cannot fully disable thinking,
+    so the floor is ``128``.  These tokens are charged against
+    ``max_output_tokens``.  A Claude-on-Vertex model ignores the Gemini-only
+    thinking config (see the model-routing branch).
+    """
+
+    temperature:       float = Field(ge=0.0, le=2.0)
+    frequency_penalty: float = Field(ge=-2.0, le=2.0)
+    presence_penalty:  float = Field(ge=-2.0, le=2.0)
+
+
 class StrategistConfig(BaseModel):
     """Top-level shape of ``config/strategist.json``.
 
@@ -138,17 +182,19 @@ class StrategistConfig(BaseModel):
         Caps on the persisted thesis for held positions.
     llm:
         Per-call runtime caps for the strategist LLM (timeout, output
-        tokens, and per-class retry budgets).  Shares the same
-        :class:`~config.analysts.LlmCaps` shape as the analyst agents but
-        carries larger defaults (180 s, 8000 tokens) suited to the
-        strategist's full-watchlist stance output.
+        tokens, thinking budget, decoding knobs, and per-class retry
+        budgets).  Uses :class:`StrategistLlmCaps` — the shared
+        :class:`~config.analysts.LlmCaps` shape extended with the
+        strategist-only sampler knobs (temperature, frequency/presence
+        penalties) — and carries larger defaults (180 s, 16000 tokens)
+        suited to the strategist's full-watchlist stance output.
     """
 
     slack_percent:        int = Field(ge=0, le=50, default=10)
     decision_caps:        DecisionCaps
     stance_caps:          StanceCaps
     position_thesis_caps: PositionThesisCaps
-    llm:                  LlmCaps                                # Per-call runtime caps (timeout, tokens, retries)
+    llm:                  StrategistLlmCaps                      # Per-call runtime caps (timeout, tokens, thinking, decoding, retries)
 
     def schema_cap(self, prompt_cap: int) -> int:
         """Derive the schema-enforced ``max_length`` from a prompt-stated cap.

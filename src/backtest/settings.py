@@ -67,6 +67,65 @@ class BacktestSettings(BaseModel):
     forward_return_horizons_days:  list[int]
     ohlcv_warmup_days:             int = 90
 
+    # ── Scoreboard evaluation settings ────────────────────────────────────────
+
+    # Per-analyst primary scoring horizon (calendar days).  The scoreboard
+    # reports ALL horizons but ranks analysts using this per-type horizon.
+    # News signals decay quickly (~1 day); fundamental signals persist (~20 days).
+    # Analysts NOT present in this map fall back to max(forward_return_horizons_days).
+    # Example: {"news": 1, "fundamental": 20, "technical": 5}
+    primary_horizon_by_analyst: dict[str, int] = Field(
+        default_factory=lambda: {"news": 1, "fundamental": 20},
+    )
+
+    # Cross-sectional neutralisation mode for the scoreboard excess metric.
+    # "sector"   → subtract the per-tick mean of the ticker's GICS sector peers
+    #              (uses CachedDataStore.read_company_ratios to look up sector).
+    #              Tickers whose sector is unavailable in the cache fall back to
+    #              "universe" mode for that ticker only, with a WARNING logged.
+    # "universe" → subtract the per-tick whole-universe cross-sectional mean
+    #              (original behaviour; no sector lookup required).
+    scoreboard_neutralise_by: str = Field(
+        default="sector",
+        pattern=r"^(sector|universe)$",
+    )
+
+    # Inference mode for the scoreboard t-stat / p-value.
+    #
+    # The scored observations are NOT independent: for a given ticker the
+    # verdict persists across ticks and the overlapping forward-return windows
+    # (+5d / +20d) induce strong serial autocorrelation, plus some
+    # cross-sectional correlation within a tick.  A naive one-sample t-test
+    # (``scipy.stats.ttest_1samp``) treats every observation as independent and
+    # therefore UNDERSTATES the standard error — inflating |t| and shrinking p,
+    # so genuinely-noisy analysts read as "significant".
+    #
+    # "cluster_ticker" → cluster-robust (sandwich) standard error clustered by
+    #                    ticker.  Captures the dominant within-ticker temporal
+    #                    autocorrelation while remaining deterministic and cheap.
+    #                    Degrees of freedom = (#clusters − 1).  On genuinely
+    #                    i.i.d. data (every ticker a singleton cluster) it
+    #                    reduces to the naive estimator, so it never spuriously
+    #                    moves a result that had no autocorrelation to correct.
+    # "naive"          → the original ``ttest_1samp`` (over-confident; retained
+    #                    only as an explicit, opt-in escape hatch and for A/B
+    #                    comparison in the audit).
+    scoreboard_inference: str = Field(
+        default="cluster_ticker",
+        pattern=r"^(cluster_ticker|naive)$",
+    )
+
+    # Number of confidence buckets for the scoreboard's confidence-gradient
+    # view (Phase 14, iter-11).  Confidence is a continuous float in [0, 1]
+    # (not categorical), and its real-world range varies sharply per analyst
+    # (e.g. technical spans ~0.14-0.9, fundamental ~0.6-0.85), so a single
+    # global numeric cutoff would be meaningless across analysts.  Buckets are
+    # therefore DATA-DRIVEN: computed per (analyst, horizon) as quantile cuts
+    # over that analyst's own directional (non-neutral) confidence values at
+    # its primary horizon, rather than a hardcoded threshold.  This setting
+    # only controls how many quantile buckets to cut into (3 = terciles).
+    scoreboard_confidence_buckets: int = Field(default=3, ge=2)
+
 
 _DEFAULT_PATH:                 Path = Path("config/backtest_settings.json")
 _cache: BacktestSettings | None      = None

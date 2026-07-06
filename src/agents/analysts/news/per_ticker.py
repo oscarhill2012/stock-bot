@@ -25,6 +25,8 @@ from agents.analysts.report_cache import (
 )
 from agents.isolated_failure import IsolatedFailureWrapper
 from agents.llm_retry import RetryingAgentWrapper, build_retry_policies
+from agents.model_resolver import resolve_model
+from agents.thinking_config import build_thinking_config
 from config.analysts import get_analysts_config
 from config.models import get_models_config
 from contract.evidence import LlmTickerVerdict
@@ -148,16 +150,37 @@ def build_news_branch_for_ticker(
     llm_caps = get_analysts_config().news.llm
 
     # -----------------------------------------------------------------------
+    # Build the GenerateContentConfig.
+    #
+    # ``max_output_tokens`` caps output so long-running generation cannot
+    # wedge the tick before the wall-clock timeout fires.
+    #
+    # Thinking control is config-driven and model-family-agnostic: the config
+    # block sets exactly one of ``thinking_budget`` (Gemini 2.5 integer
+    # ceiling) or ``thinking_level`` (Gemini 3 effort enum).  ``build_thinking_
+    # config`` selects the right ``ThinkingConfig`` shape, returns ``None`` when
+    # neither is set (native thinking), and refuses both-at-once — which is the
+    # exact request Gemini 3 rejects with an HTTP 400.  The knob is
+    # Gemini-specific; a Claude-on-Vertex model ignores it.
+    # -----------------------------------------------------------------------
+    thinking_config = build_thinking_config(
+        thinking_budget = llm_caps.thinking_budget,
+        thinking_level  = llm_caps.thinking_level,
+    )
+
+    # -----------------------------------------------------------------------
     # Assemble the LlmAgent.
     # - before_agent_callback and after_agent_callback are intentionally omitted
     #   (left as None) — see docstring above.
     # - before_model_callback / after_model_callback carry cache + trace hooks.
-    # - generate_content_config caps output tokens so long-running generation
-    #   cannot wedge the tick before the wall-clock timeout fires.
     # -----------------------------------------------------------------------
     llm = LlmAgent(
         name                    = f"NewsAnalyst_{ticker}",
-        model                   = model,
+        # ``model`` (the raw config string) is reused above for the trace /
+        # observability labels; only the ADK call site needs the resolved
+        # form, which is a bare string for Gemini or a native ADK ``Claude``
+        # instance for an ``anthropic_vertex/<region>/<model>`` ID.
+        model                   = resolve_model(model),
         instruction             = instruction,
         output_schema           = LlmTickerVerdict,
         output_key              = f"temp:news_verdict_{ticker}",
@@ -165,6 +188,12 @@ def build_news_branch_for_ticker(
         after_model_callback    = after_cb,
         generate_content_config = genai_types.GenerateContentConfig(
             max_output_tokens = llm_caps.max_output_tokens,
+            thinking_config   = thinking_config,
+            # Low sampling temperature → consistent structured verdicts.  The
+            # verdict is classification-like JSON, so a low temperature reduces
+            # run-to-run sampling variance (the dominant source of iter-to-iter
+            # backtest swings at the default temperature = 1).
+            temperature       = llm_caps.temperature,
         ),
     )
 

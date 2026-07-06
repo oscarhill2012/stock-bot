@@ -27,10 +27,12 @@ from hashlib import blake2b
 from pathlib import Path
 from typing import Any
 
+from agents.analysts.fundamental.deboilerplate import MDA_DEBOILERPLATE_ALGO_VERSION
 from agents.analysts.fundamental.fetch import _bundle_from_flat_lists
 from agents.analysts.fundamental.prompts import build_fundamental_instruction
 from agents.analysts.heuristics import load_heuristics
 from agents.analysts.news.prompts import build_news_instruction
+from config.analysts import get_analysts_config
 from data.models import (
     CompanyRatios,
     Filing,
@@ -200,9 +202,13 @@ def fundamental_hash_inputs(
 ) -> str:
     """Hash the Fundamental analyst's view of the world for one ticker.
 
-    Ratios floats are rounded to 4 decimal places so insignificant jitter
-    (e.g. ``pe = 36.23879 -> 36.23880``) does not bust the cache. Filings are
-    keyed by accession number; insider trades by ``(name, date, shares,
+    Price-volatile ratio fields (``last_price``, ``market_cap``, the PE/PEG/
+    yield trio, the moving averages, the 52-week extremes) and the ``as_of``
+    retrieval date are excluded from the key — they re-quote every trading day
+    and would otherwise force a needless filing-LLM re-run each morning.  The
+    remaining ratios floats are rounded to 4 decimal places so insignificant
+    jitter (e.g. ``roe = 0.50001 -> 0.50000``) does not bust the cache.  Filings
+    are keyed by accession number; insider trades by ``(name, date, shares,
     price_per_share)``; derivatives by ``(name, date, transaction_code)``.
 
     ``price_per_share`` is optional in ``InsiderTrade`` — ``None`` is preserved
@@ -222,11 +228,46 @@ def fundamental_hash_inputs(
     str
         Blake2b hex digest over the combined payload.
     """
-    # Round all float values in ratios to 4 dp so minor yfinance jitter does
+    # Exclude price-volatile and metadata fields from the cache key.  These
+    # re-quote every trading day even when no new filing has arrived, so
+    # including them forced a full filing-LLM re-run every morning that
+    # reproduced the previous verdict (~49% hit rate, all open ticks missing).
+    # They remain in the LLM prompt — only the *key* is narrowed — so the
+    # analyst still sees fresh prices on the ticks where it genuinely re-runs.
+    #
+    #   - last_price / market_cap                  : direct price quotes
+    #   - trailing_pe / forward_pe / peg           : price ÷ earnings (peg is
+    #                                                trailing_pe-derived, so it
+    #                                                moves daily too)
+    #   - dividend_yield                           : dividend ÷ price
+    #   - fifty_/two_hundred_day_average           : rolling price means
+    #   - fifty_two_week_high / _low               : trailing price extremes
+    #   - as_of                                    : PIT retrieval date, advances
+    #                                                every tick (pure metadata)
+    #
+    # Slower fundamentals (roe, revenue_growth_yoy, profit_margin,
+    # debt_to_equity, free_cash_flow, beta, analyst_rating_avg, …) stay in the
+    # key so a genuine quarterly change still busts the cache.
+    _PRICE_VOLATILE_RATIO_FIELDS = frozenset({
+        "last_price",
+        "market_cap",
+        "trailing_pe",
+        "forward_pe",
+        "peg",
+        "dividend_yield",
+        "fifty_day_average",
+        "two_hundred_day_average",
+        "fifty_two_week_high",
+        "fifty_two_week_low",
+        "as_of",
+    })
+
+    # Round all remaining float values to 4 dp so minor yfinance jitter does
     # not produce a different digest between back-to-back ticks.
     ratios_payload = {
         k: (round(v, 4) if isinstance(v, float) else v)
         for k, v in ratios.model_dump().items()
+        if k not in _PRICE_VOLATILE_RATIO_FIELDS
     }
 
     # Filings are keyed by accession number — content changes are irrelevant
@@ -256,11 +297,23 @@ def fundamental_hash_inputs(
         for d in (insider.derivatives if insider else [])
     )
 
+    # Phase 13 additions: include the de-boilerplate algorithm version and
+    # the MD&A char cap in the hash so that:
+    # (a) bumping MDA_DEBOILERPLATE_ALGO_VERSION invalidates all cached entries
+    #     (the rendered MD&A text would change after an algorithm update).
+    # (b) changing max_filing_mda_chars also invalidates the cache
+    #     (a wider cap may expose paragraphs that were previously cut off).
+    cfg = get_analysts_config()
+    deboilerplate_version = MDA_DEBOILERPLATE_ALGO_VERSION
+    max_mda_chars = cfg.fundamental.max_filing_mda_chars
+
     payload = {
-        "ratios":               ratios_payload,
-        "filings":              filings_accessions,
-        "insider_trades":       insider_trades,
-        "insider_derivatives":  insider_derivatives,
+        "ratios":                  ratios_payload,
+        "filings":                 filings_accessions,
+        "insider_trades":          insider_trades,
+        "insider_derivatives":     insider_derivatives,
+        "deboilerplate_version":   deboilerplate_version,
+        "max_filing_mda_chars":    max_mda_chars,
     }
     return _digest(payload)
 

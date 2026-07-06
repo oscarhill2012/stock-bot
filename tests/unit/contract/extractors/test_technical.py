@@ -202,8 +202,15 @@ def test_technical_emits_death_cross_when_50d_below_200d():
     assert features["golden_cross"] == 0.0
 
 
-def test_technical_emits_beta_confidence_damping():
-    """beta_confidence_damping should be 1/(1+|beta-1|) and non-zero when beta is set."""
+def test_technical_emits_beta_confidence_damping(monkeypatch):
+    """beta_confidence_damping is 1/(1+|beta-1|) when beta is set AND the gate is ON.
+
+    Phase-14: the feature is gated by ``technical.beta_confidence_damping_enabled``
+    (default OFF).  Force the gate ON here to exercise the formula.
+    """
+    import contract.extractors.technical as tech_mod
+    monkeypatch.setattr(tech_mod, "_beta_damping_enabled", lambda: True)
+
     ratios = CompanyRatios(
         ticker="AAPL", as_of=date(2023, 3, 10),
         last_price=150.0, beta=1.5,
@@ -212,6 +219,35 @@ def test_technical_emits_beta_confidence_damping():
     features = extract_technical_features(raw, state={})
     # beta=1.5 → |1.5-1| = 0.5 → 1/(1+0.5) = 0.6667
     assert abs(features["beta_confidence_damping"] - (1.0 / 1.5)) < 1e-6
+
+
+def test_beta_confidence_damping_gate_off_omits_feature(monkeypatch):
+    """With the gate OFF (the default), the feature is absent even when beta is set."""
+    import contract.extractors.technical as tech_mod
+    monkeypatch.setattr(tech_mod, "_beta_damping_enabled", lambda: False)
+
+    ratios = CompanyRatios(
+        ticker="AAPL", as_of=date(2023, 3, 10),
+        last_price=150.0, beta=1.5,
+    )
+    raw = {"ticker": "AAPL", "bars": [], "ratios": ratios.model_dump()}
+    features = extract_technical_features(raw, state={})
+
+    # Gate OFF → key omitted entirely (not 0.0), so the strategist digest skips it.
+    assert "beta_confidence_damping" not in features
+
+
+def test_beta_confidence_damping_gate_default_is_off():
+    """The shipped config default for the gate is OFF (Phase-14 decision)."""
+    import os
+
+    from agents.analysts.heuristics import load_heuristics
+
+    # Read the real config (no override) — the committed default must be False.
+    os.environ.pop("ANALYST_HEURISTICS_PATH", None)
+    load_heuristics.cache_clear()
+    h = load_heuristics().technical
+    assert h.beta_confidence_damping_enabled is False
 
 
 # ---------------------------------------------------------------------------

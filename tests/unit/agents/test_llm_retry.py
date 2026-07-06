@@ -37,6 +37,7 @@ from agents.llm_retry import (
     _is_rate_limit,
     _is_schema_error,
     _is_timeout,
+    _is_transport,
     _merge_increment,
     _sleep_per_policy,
 )
@@ -67,14 +68,27 @@ def _make_validation_error() -> _VE:
 def _fast_policies(
     *,
     rate_limit_attempts: int = 5,
+    transport_attempts:  int = 5,
     timeout_attempts:    int = 3,
     schema_attempts:     int = 3,
 ) -> dict[str, RetryPolicy]:
-    """Build a policy dict with sub-second 429 backoff for fast tests."""
+    """Build a policy dict with sub-second exp-jitter backoff for fast tests.
+
+    Mirrors production's four-class shape (rate_limit / transport /
+    timeout / schema) so tests exercise the same dispatcher the wrapper
+    sees at runtime.  The two exp-jitter classes use millisecond delays
+    so the retry loop runs near-instantly under test.
+    """
 
     return {
         "rate_limit": RetryPolicy(
             max_attempts       = rate_limit_attempts,
+            backoff            = "exp_jitter",
+            base_delay_seconds = 0.001,
+            max_delay_seconds  = 0.005,
+        ),
+        "transport": RetryPolicy(
+            max_attempts       = transport_attempts,
             backoff            = "exp_jitter",
             base_delay_seconds = 0.001,
             max_delay_seconds  = 0.005,
@@ -167,6 +181,48 @@ def test_is_rate_limit_recognises_429_client_error() -> None:
     assert _classify(err)      == "rate_limit"
 
 
+def test_is_rate_limit_recognises_anthropic_rate_limit_error() -> None:
+    """An anthropic 429 (the Claude-on-Vertex path) classifies as rate_limit.
+
+    ADK's native ``Claude`` model wraps the ``anthropic`` SDK, which maps a
+    Vertex HTTP 429 onto ``anthropic.RateLimitError`` rather than a
+    ``google.genai`` error; without Layer 3 of ``_is_rate_limit`` this would
+    fall through to ``None`` and be re-raised with no backoff.
+    """
+
+    import httpx
+    from anthropic import RateLimitError as _AnthropicRateLimitError
+
+    response = httpx.Response(
+        429,
+        request = httpx.Request("POST", "https://example.invalid"),
+    )
+    err = _AnthropicRateLimitError(
+        "429 Too Many Requests",
+        response = response,
+        body     = None,
+    )
+
+    assert _is_rate_limit(err) is True
+    assert _classify(err)      == "rate_limit"
+
+
+def test_is_rate_limit_recognises_generic_429_status() -> None:
+    """The provider-agnostic fallback catches any exception carrying a 429.
+
+    Covers a wrapper that exposes ``status_code == 429`` without being a
+    class we import — Layer 4 of ``_is_rate_limit``.
+    """
+
+    class _SomeApiError(Exception):
+        status_code = 429
+
+    err = _SomeApiError("rate limited")
+
+    assert _is_rate_limit(err) is True
+    assert _classify(err)      == "rate_limit"
+
+
 def test_is_rate_limit_walks_cause_chain() -> None:
     inner = ClientError(
         code            = 429,
@@ -187,6 +243,96 @@ def test_is_timeout_recognises_asyncio_timeout() -> None:
     assert _is_timeout(asyncio.TimeoutError()) is True
     assert _is_timeout(TimeoutError())          is True
     assert _classify(asyncio.TimeoutError())    == "timeout"
+
+
+def test_is_transport_recognises_dns_gaierror() -> None:
+    """``socket.gaierror`` — the root cause of a name-resolution outage —
+    classifies as a transport failure.  This is the exact error class the
+    backtest tick died on (``[Errno -3] Temporary failure in name
+    resolution``)."""
+
+    import socket
+
+    err = socket.gaierror(-3, "Temporary failure in name resolution")
+
+    assert _is_transport(err) is True
+    assert _classify(err)     == "transport"
+
+
+def test_is_transport_recognises_builtin_connection_error() -> None:
+    """A builtin ``ConnectionError`` (refused / reset / aborted) is a
+    transport failure."""
+
+    err = ConnectionResetError("connection reset by peer")
+
+    assert _is_transport(err) is True
+    assert _classify(err)     == "transport"
+
+
+def test_is_transport_recognises_google_auth_transport_error() -> None:
+    """``google.auth.exceptions.TransportError`` — raised by the OAuth
+    token-refresh path — classifies as transport.  This is the top of the
+    cause chain in the original backtest failure."""
+
+    from google.auth.exceptions import TransportError
+
+    err = TransportError("failed to refresh token")
+
+    assert _is_transport(err) is True
+    assert _classify(err)     == "transport"
+
+
+def test_is_transport_recognises_requests_connection_error() -> None:
+    """``requests.exceptions.ConnectionError`` is NOT a subclass of the
+    builtin ``ConnectionError``, so it needs its own detection layer."""
+
+    from requests.exceptions import ConnectionError as _RequestsConnectionError
+
+    err = _RequestsConnectionError("max retries exceeded")
+
+    assert _is_transport(err) is True
+    assert _classify(err)     == "transport"
+
+
+def test_is_transport_recognises_httpx_transport_error() -> None:
+    """``httpx.TransportError`` (the async genai model-call path's base
+    transport error) classifies as transport."""
+
+    import httpx
+
+    err = httpx.ConnectError("connection failed")
+
+    assert _is_transport(err) is True
+    assert _classify(err)     == "transport"
+
+
+def test_is_transport_walks_cause_chain() -> None:
+    """The real backtest failure nested ``socket.gaierror`` several causes
+    deep beneath a ``google.auth`` ``TransportError`` — the predicate must
+    walk ``__cause__`` to find it."""
+
+    import socket
+
+    root = socket.gaierror(-3, "Temporary failure in name resolution")
+    try:
+        try:
+            raise root
+        except socket.gaierror as ge:
+            raise RuntimeError("token refresh failed") from ge
+    except RuntimeError as outer:
+        assert _is_transport(outer) is True
+        assert _classify(outer)     == "transport"
+
+
+def test_is_transport_false_for_unrelated_oserror() -> None:
+    """A non-network ``OSError`` (e.g. a file error) must NOT classify as
+    transport — the predicate keys off connection / DNS error types, not
+    ``OSError`` broadly."""
+
+    err = FileNotFoundError("no such file")
+
+    assert _is_transport(err) is False
+    assert _classify(err)     is None
 
 
 def test_is_schema_error_recognises_pydantic_validation_error() -> None:
@@ -285,8 +431,9 @@ def test_merge_increment_returns_new_dict_and_increments() -> None:
     assert out2 == {"schema": 3}
 
 
-def test_build_retry_policies_composes_three_classes(monkeypatch) -> None:
+def test_build_retry_policies_composes_four_classes(monkeypatch) -> None:
     from config import retry_429 as cfg_mod
+    from config import retry_transport as transport_mod
 
     monkeypatch.setattr(
         cfg_mod,
@@ -297,11 +444,22 @@ def test_build_retry_policies_composes_three_classes(monkeypatch) -> None:
             max_delay_seconds  = 30.0,
         ),
     )
+    monkeypatch.setattr(
+        transport_mod,
+        "get_retry_transport_policy",
+        lambda: transport_mod.RetryTransportPolicy(
+            max_attempts       = 4,
+            base_delay_seconds = 2.0,
+            max_delay_seconds  = 30.0,
+        ),
+    )
 
     policies = build_retry_policies(timeout_retries=3, schema_retries=3)
-    assert set(policies.keys()) == {"rate_limit", "timeout", "schema"}
+    assert set(policies.keys()) == {"rate_limit", "transport", "timeout", "schema"}
     assert policies["rate_limit"].max_attempts == 5
     assert policies["rate_limit"].backoff      == "exp_jitter"
+    assert policies["transport"].max_attempts  == 4
+    assert policies["transport"].backoff       == "exp_jitter"
     assert policies["timeout"].max_attempts    == 3
     assert policies["timeout"].backoff         == "immediate"
     assert policies["schema"].max_attempts     == 3
@@ -397,6 +555,80 @@ async def test_rate_limit_retries_then_succeeds() -> None:
     assert inner.call_count == 3
     # The two retry state_delta events come first; the success event last.
     assert out[-1] is ev
+
+
+@pytest.mark.asyncio
+async def test_transport_retries_up_to_max_then_raises() -> None:
+    """Consecutive transport errors exhaust max_attempts and re-raise.
+
+    This is the failure the hardening targets: a DNS / connection blip
+    that does NOT clear within the attempt budget must still surface as
+    the original error once retries are spent (rather than retrying
+    forever)."""
+
+    import socket
+
+    err = socket.gaierror(-3, "Temporary failure in name resolution")
+
+    inner = _FakeInner(name="X", script=[err] * 5)
+
+    wrapper = RetryingAgentWrapper(
+        inner           = inner,
+        timeout_seconds = 5.0,
+        policies        = _fast_policies(transport_attempts=4),
+        retry_state_key = "temp:_obs_test_retries",
+    )
+
+    with pytest.raises(socket.gaierror):
+        async for _ in wrapper._run_async_impl(_ctx_with_state()):
+            pass
+
+    assert inner.call_count == 4
+
+
+@pytest.mark.asyncio
+async def test_transport_retries_then_succeeds() -> None:
+    """A transient DNS blip followed by success yields only the success
+    events — the tick is recovered instead of being aborted.
+
+    Mirrors the real incident: the first token refresh fails name
+    resolution, then the network recovers and the retry goes through."""
+
+    import socket
+
+    err = socket.gaierror(-3, "Temporary failure in name resolution")
+    ev  = Event(author="X", content=None, actions=EventActions())
+
+    inner = _FakeInner(name="X", script=[err, err, [ev]])
+
+    wrapper = RetryingAgentWrapper(
+        inner           = inner,
+        timeout_seconds = 5.0,
+        policies        = _fast_policies(),
+        retry_state_key = "temp:_obs_test_retries",
+    )
+
+    out: list[Event] = []
+    async for e in wrapper._run_async_impl(_ctx_with_state()):
+        out.append(e)
+
+    assert inner.call_count == 3
+    assert out[-1] is ev
+
+    # The retry-counter state_delta must attribute the retries to the
+    # transport class so the terminal-log suffix renders correctly.  Two
+    # transport failures → two increment events (the mock ctx does not
+    # apply deltas back, so each is computed from the empty base — same
+    # contract the rate-limit counter test relies on).
+    delta_evs = [
+        e for e in out
+        if e.actions is not None
+        and e.actions.state_delta
+        and "temp:_obs_test_retries" in (e.actions.state_delta or {})
+    ]
+    assert len(delta_evs) == 2
+    for e in delta_evs:
+        assert e.actions.state_delta["temp:_obs_test_retries"] == {"transport": 1}
 
 
 @pytest.mark.asyncio
@@ -663,7 +895,12 @@ async def test_exhaustion_emits_structured_error_log(caplog) -> None:
     assert len(exhausted) == 1
     rec = exhausted[0]
     assert rec.exhausted_class == "rate_limit"
-    assert rec.attempts_used   == {"rate_limit": 5, "timeout": 0, "schema": 0}
+    assert rec.attempts_used   == {
+        "rate_limit": 5,
+        "transport":  0,
+        "timeout":    0,
+        "schema":     0,
+    }
 
 
 # ---------------------------------------------------------------------------

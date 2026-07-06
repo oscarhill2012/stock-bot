@@ -1,20 +1,26 @@
-"""RetryingAgentWrapper — wrap any ADK agent with three-class retry
-(rate-limit / timeout / schema) plus a per-call wall-clock timeout.
+"""RetryingAgentWrapper — wrap any ADK agent with four-class retry
+(rate-limit / transport / timeout / schema) plus a per-call wall-clock
+timeout.
 
 Why this exists
 ---------------
 Vertex AI's Gemini models share capacity via Dynamic Shared Quota by
 default — transient HTTP 429 responses are a normal operating condition,
-not a true outage.  Beyond 429s, two other failure modes are observable
+not a true outage.  Beyond 429s, three other failure modes are observable
 in practice:
 
+* **Network-transport blips.**  Reaching Vertex means an OAuth token
+  refresh plus the model call; a momentary local connectivity loss
+  (Wi-Fi reconnect, VPN drop, DNS-resolver hiccup) surfaces as a
+  ``socket.gaierror`` / ``ConnectionError`` / transport error and used
+  to abort the whole tick.  These clear on their own within seconds.
 * **Wall-clock runaways.**  A model that streams forever (or hangs in a
   callback) blocks the tick indefinitely if no timeout is applied.
 * **Schema-validation failures.**  ADK validates each LLM output against
   the agent's ``output_schema``; a ``pydantic.ValidationError`` on
   mismatch used to propagate straight out with no retry.
 
-This wrapper handles all three failure classes with independent per-class
+This wrapper handles all four failure classes with independent per-class
 attempt budgets.
 
 What this wrapper must NOT wrap
@@ -40,6 +46,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import socket
 from collections.abc import AsyncGenerator
 from typing import Any, Literal
 
@@ -59,12 +66,21 @@ def _is_rate_limit(exc: BaseException) -> bool:
     is the same as the legacy ``_is_resource_exhausted`` — kept identical
     so existing behaviour is preserved verbatim.
 
-    Two detection layers (matching the legacy function):
+    Detection layers:
 
     * ADK's :class:`google.adk.models.google_llm._ResourceExhaustedError`
       — defensive import so a future rename does not silently break us.
     * The underlying :class:`google.genai.errors.ClientError` with
       ``status_code == 429`` — caught directly and via ``__cause__``.
+    * :class:`anthropic.RateLimitError` — the Claude-on-Vertex path dispatches
+      through ADK's native ``Claude`` model (see ``agents.model_resolver``),
+      which wraps the ``anthropic`` SDK and raises its ``RateLimitError`` (an
+      ``APIStatusError`` carrying ``status_code == 429``) on a Vertex 429
+      rather than a ``google.genai`` error.  Without this layer the wrapper
+      would re-raise Claude 429s immediately with no exp-jitter backoff.
+    * Provider-agnostic fallback — any exception exposing ``status_code ==
+      429``, so a future wrapper that carries the HTTP code without a class
+      we import is still classified correctly.
 
     Parameters
     ----------
@@ -106,6 +122,28 @@ def _is_rate_limit(exc: BaseException) -> bool:
     except ImportError:
         pass
 
+    # Layer 3 — the anthropic SDK's rate-limit error (the Claude-on-Vertex
+    # path).  ADK's native ``Claude`` model wraps ``anthropic`` and raises
+    # ``anthropic.RateLimitError`` (an ``APIStatusError`` carrying
+    # ``status_code == 429``) on a Vertex 429 — neither layer above matches
+    # it.  Defensive import so a pure-Gemini deployment without the optional
+    # ``anthropic`` SDK installed is unaffected.
+    try:
+        from anthropic import RateLimitError as _AnthropicRateLimitError
+
+        if isinstance(exc, _AnthropicRateLimitError):
+            return True
+
+    except ImportError:
+        pass
+
+    # Layer 4 — provider-agnostic fallback.  Any exception exposing an HTTP
+    # 429 status is, unambiguously, a rate-limit signal.  This catches
+    # anthropic error subclasses (and any future wrapper) that carry the code
+    # without us importing their class.
+    if getattr(exc, "status_code", None) == 429:
+        return True
+
     # Walk the __cause__ chain.  Stop on self-loops (defensive).
     cause = exc.__cause__
 
@@ -137,6 +175,104 @@ def _is_timeout(exc: BaseException) -> bool:
     """
 
     return isinstance(exc, TimeoutError)
+
+
+def _is_transport(exc: BaseException) -> bool:
+    """Return ``True`` if ``exc`` (or any link in its cause chain) is a
+    transient network-transport / DNS failure the wrapper should retry.
+
+    These are *local* connectivity blips on the path to Vertex AI — a
+    Wi-Fi reconnect, a VPN drop, or a momentary DNS-resolver hiccup —
+    not server-side capacity problems (those are HTTP 429s, classified
+    by :func:`_is_rate_limit`).  The canonical symptom is the token
+    refresh against ``oauth2.googleapis.com`` failing with
+    ``socket.gaierror`` ("Temporary failure in name resolution"), which
+    surfaces wrapped as ``google.auth.exceptions.TransportError`` →
+    ``requests.exceptions.ConnectionError`` → ``urllib3`` errors →
+    ``socket.gaierror``.
+
+    Detection layers (each tolerant of the optional dependency being
+    absent, mirroring :func:`_is_rate_limit`):
+
+    * Builtin :class:`ConnectionError` (connection refused / reset /
+      aborted) and :class:`socket.gaierror` (DNS resolution failure) —
+      both always importable; ``gaierror`` is the actual root cause of
+      the name-resolution outages this predicate exists for.
+    * :class:`google.auth.exceptions.TransportError` — raised by the
+      synchronous OAuth token-refresh path (run in a thread by the genai
+      client), which wraps ``requests`` rather than ``httpx``.
+    * :class:`requests.exceptions.ConnectionError` /
+      :class:`requests.exceptions.Timeout` — the ``requests``-layer
+      transport errors underneath the google-auth wrapper.  Note these
+      are NOT subclasses of the builtin ``ConnectionError`` / ``TimeoutError``,
+      so they need their own check.
+    * :class:`httpx.TransportError` — the base class for the async genai
+      model-call path's connect / read / write / pool / protocol errors.
+
+    Parameters
+    ----------
+    exc:
+        The exception to classify.
+
+    Returns
+    -------
+    bool
+        ``True`` if this exception (or anything in its cause chain) is a
+        transient network-transport failure; ``False`` otherwise.
+    """
+
+    # Layer 1 — builtin connection errors and DNS-resolution failures.
+    # ``socket.gaierror`` is an ``OSError`` subclass but NOT a
+    # ``ConnectionError`` subclass, so it must be named explicitly.
+    if isinstance(exc, (ConnectionError, socket.gaierror)):
+        return True
+
+    # Layer 2 — google-auth's transport wrapper (token-refresh path).
+    try:
+        from google.auth.exceptions import TransportError as _GAuthTransportError
+
+        if isinstance(exc, _GAuthTransportError):
+            return True
+
+    except ImportError:
+        pass
+
+    # Layer 3 — the ``requests`` transport errors underneath google-auth.
+    # ``requests.exceptions.ConnectionError`` derives from ``IOError`` but
+    # not from the builtin ``ConnectionError``, so Layer 1 does not catch it.
+    try:
+        from requests.exceptions import (
+            ConnectionError as _RequestsConnectionError,
+        )
+        from requests.exceptions import (
+            Timeout as _RequestsTimeout,
+        )
+
+        if isinstance(exc, (_RequestsConnectionError, _RequestsTimeout)):
+            return True
+
+    except ImportError:
+        pass
+
+    # Layer 4 — httpx transport errors (the async genai model-call path).
+    # ``httpx.TransportError`` is the base class covering ConnectError,
+    # ReadError, WriteError, PoolTimeout, RemoteProtocolError, etc.
+    try:
+        from httpx import TransportError as _HttpxTransportError
+
+        if isinstance(exc, _HttpxTransportError):
+            return True
+
+    except ImportError:
+        pass
+
+    # Walk the __cause__ chain.  Stop on self-loops (defensive).
+    cause = exc.__cause__
+
+    if cause is not None and cause is not exc:
+        return _is_transport(cause)
+
+    return False
 
 
 def _is_schema_error(exc: BaseException) -> bool:
@@ -333,11 +469,12 @@ def _format_schema_error_for_llm(exc: BaseException) -> str:
 def _classify(exc: BaseException) -> str | None:
     """Top-level retry classifier — dispatches to the per-class predicates.
 
-    Returns one of ``"rate_limit"``, ``"timeout"``, ``"schema"``, or
-    ``None`` (not retryable).  Order matters when two predicates could
-    in principle match the same exception — none currently overlap, but
-    the order encodes priority should that ever change: rate-limit first
-    (most common transient), then timeout, then schema.
+    Returns one of ``"rate_limit"``, ``"transport"``, ``"timeout"``,
+    ``"schema"``, or ``None`` (not retryable).  Order matters when two
+    predicates could in principle match the same exception — none
+    currently overlap, but the order encodes priority should that ever
+    change: rate-limit first (most common transient), then transport
+    (network blip), then timeout, then schema.
 
     Parameters
     ----------
@@ -353,6 +490,9 @@ def _classify(exc: BaseException) -> str | None:
 
     if _is_rate_limit(exc):
         return "rate_limit"
+
+    if _is_transport(exc):
+        return "transport"
 
     if _is_timeout(exc):
         return "timeout"
@@ -491,11 +631,15 @@ def build_retry_policies(
 ) -> dict[str, RetryPolicy]:
     """Compose the per-agent retry-policy dict for the wrapper.
 
-    The 429 (``rate_limit``) policy is project-wide — loaded once from
-    ``config/retry_429.json``.  The ``timeout`` and ``schema`` policies
-    are per-agent, with their ``max_attempts`` supplied by the caller
-    and their backoff hard-coded to ``"immediate"`` (no sleep — these
-    are model-misbehaviour failures, not capacity issues).
+    The 429 (``rate_limit``) and network-transport (``transport``)
+    policies are both project-wide — loaded once from
+    ``config/retry_429.json`` and ``config/retry_transport.json``
+    respectively, each with exponential-with-jitter backoff (a transient
+    capacity or connectivity blip needs a moment to clear).  The
+    ``timeout`` and ``schema`` policies are per-agent, with their
+    ``max_attempts`` supplied by the caller and their backoff hard-coded
+    to ``"immediate"`` (no sleep — these are model-misbehaviour failures,
+    not capacity issues).
 
     Parameters
     ----------
@@ -513,11 +657,13 @@ def build_retry_policies(
         :class:`RetryingAgentWrapper`'s ``policies`` constructor arg.
     """
 
-    # Resolve the project-wide 429 policy.  ``get_retry_429_policy()`` is
-    # cached, so this is effectively free after the first call.
+    # Resolve the project-wide 429 and transport policies.  Both loaders
+    # are cached, so this is effectively free after the first call.
     from config.retry_429 import get_retry_429_policy
+    from config.retry_transport import get_retry_transport_policy
 
-    cfg = get_retry_429_policy()
+    cfg           = get_retry_429_policy()
+    transport_cfg = get_retry_transport_policy()
 
     return {
         "rate_limit": RetryPolicy(
@@ -525,6 +671,12 @@ def build_retry_policies(
             backoff            = "exp_jitter",
             base_delay_seconds = cfg.base_delay_seconds,
             max_delay_seconds  = cfg.max_delay_seconds,
+        ),
+        "transport": RetryPolicy(
+            max_attempts       = transport_cfg.max_attempts,
+            backoff            = "exp_jitter",
+            base_delay_seconds = transport_cfg.base_delay_seconds,
+            max_delay_seconds  = transport_cfg.max_delay_seconds,
         ),
         "timeout":    RetryPolicy(max_attempts=timeout_retries, backoff="immediate"),
         "schema":     RetryPolicy(max_attempts=schema_retries,  backoff="immediate"),
@@ -637,12 +789,15 @@ def _log_exhausted(
 
 
 class RetryingAgentWrapper(BaseAgent):
-    """Proxy an inner ADK agent with three-class retry + per-call timeout.
+    """Proxy an inner ADK agent with four-class retry + per-call timeout.
 
-    The wrapper recognises three retryable failure classes and applies an
+    The wrapper recognises four retryable failure classes and applies an
     independent attempt budget to each:
 
     * **rate_limit** — Vertex HTTP 429 (RESOURCE_EXHAUSTED).
+    * **transport**  — transient network / DNS failures on the path to
+                       Vertex (``socket.gaierror``, ``ConnectionError``,
+                       google-auth / requests / httpx transport errors).
     * **timeout**    — ``asyncio.TimeoutError`` raised by the per-call
                        ``asyncio.wait_for`` that bounds the inner agent's
                        wall-clock time.

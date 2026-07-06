@@ -14,6 +14,7 @@ and reference these files by relative path (resolved from the project root).
 | `risk_gate.json` | Five position-sizing constraints for the risk gate | `src/config/risk_gate.py` (`get_risk_gate_config()`) |
 | `models.json` | LLM + embedding model IDs for every model-using component | `src/config/models.py` (`get_models_config()`) |
 | `retry_429.json` | Backoff + retry policy for Vertex AI HTTP 429 (RESOURCE_EXHAUSTED) responses. Per-agent timeout/schema retry counts live in `analysts.json` / `strategist.json`. | `src/config/retry_429.py` (`get_retry_429_policy()`) |
+| `retry_transport.json` | Backoff + retry policy for transient network transport / DNS failures on the path to Vertex AI (`socket.gaierror`, `ConnectionError`, transport errors). | `src/config/retry_transport.py` (`get_retry_transport_policy()`) |
 | `backtest_windows.json` | Era-keyed historical date windows for the backtest harness | `src/backtest/windows.py` (`load_windows()`) |
 | `backtest_settings.json` | Backtests root (cache + runs nest per-window underneath), tick schedule, and lookback defaults for backtesting | `src/backtest/settings.py` (`get_backtest_settings()`) |
 
@@ -120,7 +121,7 @@ Thresholds used by `derive_technical_verdict()`.
 | `rsi_overbought` | float [50–100] | RSI level considered overbought. |
 | `rsi_oversold` | float [0–50] | RSI level considered oversold. |
 | `pct_change_momentum_scale` | float >0 | Divisor scaling daily % change into a magnitude contribution. |
-| `vol_ratio_breakout` | float >1 | Volume ratio (current/avg) above which a breakout is signalled. |
+| `vol_ratio_breakout` | float >1 | Volume ratio (20-bar mean / 50-bar mean) above which a breakout is signalled (adds a magnitude boost). **Recalibrated to 1.3** (Phase-13 audit) — the old 1.5 was mathematically unreachable for two heavily-overlapping multi-week averages (observed max 1.545, p95 1.316), so the breakout rule and its boost never fired. 1.3 ≈ p94 of the realised distribution, making the rule live (~6 % of rows) again. Tune here without a code change. |
 | `vol_ratio_dry_up` | float (0–1) | Volume ratio below which volume is considered dried-up. |
 | `atr_high_volatility_pct` | float >0 | ATR as % of price above which volatility is flagged as high. |
 | `near_52w_extreme_pct` | float >0 | Within this % of a 52-week high/low counts as "near extreme". |
@@ -130,6 +131,11 @@ Thresholds used by `derive_technical_verdict()`.
 | `magnitude_cap` | float (0–1] | Maximum magnitude value emitted. |
 | `momentum_neutral_band_pct` | float [0–1] | **Conviction gate.** If `abs(pct_change_20d)` is below this threshold the analyst abstains (`lean="neutral"`), regardless of sign. Units: fractional return — the same units as `pct_change_20d` (e.g. `0.02` = ±2 %). **Provisional value** — pending a measured sweep against the eval scoreboard. Tune here without a code change. |
 | `rsi_mean_reversion` | float [0–50] | **Moderate-oversold mean-reversion guard.** When the 20-day trend calls bearish and RSI is strictly below this level, the call is downgraded to neutral. Names with RSI in the 25–35 band tend to mean-revert at the 20-day horizon, making a straight bearish call anti-predictive. The stronger capitulation flip (`RSI < rsi_oversold` AND `pct_change_5d < 0` → bullish) still wins for genuinely capitulating names because `rsi_oversold` (default 25) is below this threshold. Set to `0.0` to disable the rule entirely. Default 35. |
+| `suppress_bearish_under_golden_cross` | bool | **Regime-aware bearish gate (Phase-13).** When `true` (default), a bearish 20-day lean is downgraded to neutral while a `golden_cross` holds (confirmed up-trend), and the `bearish_suppressed_golden_cross` factor is emitted. The audit found `bearish + golden_cross` was strongly anti-predictive (21 % down-rate, +2.23 % mean +20d). Applies after the RSI capitulation flip, so a genuine capitulation bullish flip is never clobbered. Set `false` for the legacy regime-blind behaviour. |
+| `suppress_bullish_under_death_cross` | bool | **Symmetric regime gate (Phase-13).** When `true` (default), a bullish 20-day lean is downgraded to neutral while a `death_cross` holds, emitting `bullish_suppressed_death_cross`. Offline replay found `bullish + death_cross` faded (46 % up-rate, −0.71 % mean +20d); suppressing it lifted the bullish +20d hit rate (58.4 %→59.5 %) with no downside. Set `false` to disable. |
+| `directional_52w_confidence` | bool | **Directional 52-week confidence boost (Phase-13).** When `true` (default), the `confidence_boost_step` for 52-week proximity fires only when it corroborates a **bullish** lean (`near_52w_high` or `near_52w_low`) — never on a bearish lean. The audit found the unconditional `near_52w_low` boost actively harmful on bearish names (35 % down-rate vs 51 % without it; it pushed confidence to 0.90 on the names most likely to bounce). The context factors are still emitted regardless; only the confidence arithmetic is gated. Set `false` for the legacy unconditional boost. |
+| `momentum_band_confidence_floor` | float [0–1] | **Neutral-band confidence damping (Phase-13).** The analyst is stateless per tick, so the ±band cliff cannot use true hysteresis. Instead, directional calls have confidence scaled by a linear ramp from this floor (at the band edge, `abs(pct_change_20d) == momentum_neutral_band_pct`) up to `1.0` (at twice the band width). A borderline call that only just cleared the band — a likely whipsaw — is therefore low-confidence, while a call well beyond the band keeps full confidence. Neutral leans are unaffected. Set to `1.0` to disable the damping. Default 0.5. |
+| `beta_confidence_damping_enabled` | bool | **Beta-aware confidence-damping feature gate (Phase-14).** Gates the technical extractor's `beta_confidence_damping` feature (`1 / (1 + abs(beta - 1))`) **independently of beta presence**. Now that `pit_composite` populates a PIT-correct trailing beta on `CompanyRatios` (for the Fundamental analyst), this feature would otherwise auto-emit whenever beta is known, silently adding a context line to the strategist's technical digest. The feature is strategist-facing context only — `derive_technical_verdict` never reads it, so toggling it cannot change the technical verdict (lean / magnitude / confidence) or directional hit-rate. Phase-14 offline validation over the four audited runs confirmed it is verdict-neutral; as the gain is unproven, it ships **disabled** (`false`) by default. Set `true` to surface the feature to the strategist. |
 
 ### `social` — deterministic Social analyst
 
@@ -216,12 +222,15 @@ process restart is required after edits.
 
 | Setting | Type | Meaning |
 |---|---|---|
-| `news.max_articles_per_ticker` | int [1–200] | Hard ceiling on the total number of articles per ticker fed to the News LLM, applied **after** specificity re-ranking. Default 25. |
+| `news.max_articles_per_ticker` | int [1–200] | Hard ceiling on the total number of articles per ticker fed to the News LLM, applied **after** dedup + specificity re-ranking. Default 25. |
 | `news.max_generic_articles_per_ticker` | int [0–200] | Maximum number of generic (score 0) off-topic macro articles kept after the specificity re-rank. Specific articles (ticker symbol or company name found in headline/summary) fill the budget first; generic articles backfill up to this cap AND the remaining total budget — whichever is smaller. Prevents broad market-roundup pieces from crowding out genuine company news. Set to `0` to exclude generic articles entirely. Default 10. |
 | `news.max_summary_chars` | int [1–10000] | Maximum characters of each article's summary kept in the prompt. Default 1500. |
-| `news.roundup_company_threshold` | int [2–50] | Minimum number of **distinct** watchlist companies named in a headline (or summary) for the article to be classified as a macro roundup and demoted to score 0 (generic), regardless of whether the target ticker appears. Addresses the false-positive where "Nvidia, AMD, Tesla, Apple Are Big Movers" scores as "specific" for every named ticker — name-dropping in a list article is not company-specificity. Set higher to widen the definition of "specific"; lower to demote roundups more aggressively. Minimum 2 (a single-peer comparison headline is not a roundup). Default 3. |
+| `news.dedup_title_similarity_threshold` | float [0.0–1.0] | Minimum `difflib.SequenceMatcher` ratio between two normalised article titles for them to be treated as near-duplicates and collapsed to one representative. Normalisation strips punctuation, collapses whitespace, lower-cases, and removes trailing source attributions such as `"(Reuters)"`. At the default `0.85`, syndication variants (trailing period, capitalisation, source tag) cluster correctly while genuinely different stories remain distinct. Set to `1.0` for exact-normalised-match only; lower to `0.70` for more aggressive dedup (risk: distinct stories with shared sub-phrases may collapse). Default **0.85**. |
 | `news.llm.timeout_seconds` | float (0–600] | Wall-clock timeout (seconds) for one News-analyst LLM call. Range `(0, 600]`. Default 60. |
-| `news.llm.max_output_tokens` | int [256–32768] | Cap on output tokens per call. Range `[256, 32768]`. Default 2000. |
+| `news.llm.max_output_tokens` | int [256–32768] | Cap on output tokens per call. Range `[256, 32768]`. Default 8000 — the analyst runs on `gemini-3.5-flash`, a thinking model whose reasoning tokens are charged against this same budget, so the cap must hold both the thinking and the verdict JSON. Raised from 4000 after `medium` thinking on dense ticker prompts starved the JSON and truncated it (`finish_reason=MAX_TOKENS` → schema retries → `is_no_data`). Watch for truncation → schema retries if `thinking_level` is raised. |
+| `news.llm.thinking_level` | string `minimal`/`low`/`medium`/`high` or omitted | Gemini 3 *thinking effort* knob — the replacement for the integer `thinking_budget` on the Gemini 3 family (e.g. `gemini-3.5-flash`). Currently **`medium`** (the model's own default for `gemini-3.5-flash`, set explicitly so the request shape is deterministic across SDK/endpoint versions). **Mutually exclusive with `thinking_budget`** — setting both is the exact request Gemini 3 rejects with an HTTP 400, so the config loader and the `build_thinking_config` helper both reject the pair. Omit for native thinking. Gemini-specific; a Claude-on-Vertex model ignores it. |
+| `news.llm.thinking_budget` | int [-1–24576] or omitted | Integer ceiling on the model's internal *thinking* tokens — the **Gemini 2.5** form of the knob, retained for routing the analyst back to a 2.5 model. Mutually exclusive with `thinking_level` (see above). Not set on the news analyst now that it runs `gemini-3.5-flash` (which uses `thinking_level`). Omit for native dynamic thinking, `0` to disable thinking, `-1` for explicit dynamic. Gemini-specific; a Claude-on-Vertex model ignores it. |
+| `news.llm.temperature` | float [0.0–2.0] | Sampling temperature for the News-analyst call. Currently **0.3**. The verdict is structured (classification-like) JSON, for which a low temperature is recommended for run-to-run consistency; lowered from the model default `1` because iter-to-iter backtest swings were dominated by sampling variance rather than genuine signal changes. Range `[0.0, 2.0]`. |
 | `news.llm.timeout_retries` | int [1–10] | Total attempts on timeout (1 initial try + retries). Range `[1, 10]`. Default 3. |
 | `news.llm.schema_retries` | int [1–10] | Total attempts on `pydantic.ValidationError`. Range `[1, 10]`. Default 3. |
 
@@ -229,13 +238,19 @@ process restart is required after edits.
 
 | Setting | Type | Meaning |
 |---|---|---|
-| `fundamental.max_filing_mda_chars` | int [1–20000] | Character cap on the MD&A excerpt for each filing. Default 1500 (widened from 500). |
+| `fundamental.max_filing_mda_chars` | int [1–20000] | Character cap on the MD&A text rendered per periodic filing. Applied **after** Phase 13 de-boilerplate diffing (unchanged paragraphs are stripped first, then the survivors are capped here). Raised from 1500 → 12000 in Phase 13. |
 | `fundamental.max_filing_risk_chars` | int [1–20000] | Character cap on the risk-factors excerpt for each filing. Default 1500 (widened from 500). |
 | `fundamental.max_filing_8k_body_chars` | int [1–20000] | Character cap on the `body_excerpt` rendered for 8-K filings (catalysts, earnings, guidance events). Applied when `mda_excerpt` and `risk_factors_excerpt` are both absent/empty. Default 1500. |
 | `fundamental.max_insider_footnotes` | int [0–50] | Maximum insider footnote snippets included in the LLM prompt per ticker. Default 5. |
 | `fundamental.max_insider_footnote_chars` | int [1–5000] | Character cap per footnote excerpt. Default 400 (widened from 200). |
+| `fundamental.mda_stub_char_threshold` | int [1–2000] | Minimum character count that **both** the current and prior-year MD&A must exceed before de-boilerplate diffing is attempted. Below this the text is considered a stub (too short to diff meaningfully); the full current text is rendered with a marker. Default 400. |
+| `fundamental.insider_conviction_threshold_dollars` | int ≥ 1 | Minimum gross open-market dollar value (USD) from a **single filer** in the 30-day window that triggers `insider_conviction_buy_flag` or `insider_conviction_sell_flag`. Designed to fire on a CEO buying tens of millions or more (TSLA $950 M scenario) while staying silent on routine director purchases (~$100 K–$5 M). Default **50,000,000** ($50 M). Both flags are surfaced in the rendered insider block, in the extractor feature columns, and in the strategist digest. |
+| `fundamental.trailing_pe_implausibility_threshold` | int ≥ 10 | When the trailing P/E exceeds this value, the ratios render flags it as "POSSIBLY DISTORTED BY ONE-TIME EPS ITEM". If forward P/E is available, it is also surfaced prominently with a pointer. If forward P/E is absent, the trailing is flagged as "SUSPECT". Designed for cases like AMD 2023 (export-control charge cratered EPS → P/E of 676) where the raw multiple would anchor the LLM incorrectly. Default **200** (historically rare for undistorted earnings). |
 | `fundamental.llm.timeout_seconds` | float (0–600] | Wall-clock timeout (seconds) for one Fundamental-analyst LLM call. Range `(0, 600]`. Default 60. |
-| `fundamental.llm.max_output_tokens` | int [256–32768] | Cap on output tokens per call. Range `[256, 32768]`. Default 2000. |
+| `fundamental.llm.max_output_tokens` | int [256–32768] | Cap on output tokens per call. Range `[256, 32768]`. Default 8000 — the analyst runs on `gemini-3.5-flash`, a thinking model whose reasoning tokens are charged against this same budget, so the cap must hold both the thinking and the verdict JSON. Raised from 4000 after `medium` thinking on dense ticker prompts starved the JSON and truncated it (`finish_reason=MAX_TOKENS` → schema retries → `is_no_data`). Watch for truncation → schema retries if `thinking_level` is raised. |
+| `fundamental.llm.thinking_level` | string `minimal`/`low`/`medium`/`high` or omitted | Gemini 3 *thinking effort* knob — the replacement for the integer `thinking_budget` on the Gemini 3 family (e.g. `gemini-3.5-flash`). Currently **`medium`** (the model's own default for `gemini-3.5-flash`, set explicitly so the request shape is deterministic across SDK/endpoint versions). **Mutually exclusive with `thinking_budget`** — setting both is the exact request Gemini 3 rejects with an HTTP 400, so the config loader and the `build_thinking_config` helper both reject the pair. Omit for native thinking. Gemini-specific; a Claude-on-Vertex model ignores it. |
+| `fundamental.llm.thinking_budget` | int [-1–24576] or omitted | Integer ceiling on the model's internal *thinking* tokens — the **Gemini 2.5** form of the knob, retained for routing the analyst back to a 2.5 model. Mutually exclusive with `thinking_level` (see above). Not set on the fundamental analyst now that it runs `gemini-3.5-flash` (which uses `thinking_level`). Omit for native dynamic thinking, `0` to disable thinking, `-1` for explicit dynamic. Gemini-specific; a Claude-on-Vertex model ignores it. |
+| `fundamental.llm.temperature` | float [0.0–2.0] | Sampling temperature for the Fundamental-analyst call. Currently **0.3**. The verdict is structured (classification-like) JSON, for which a low temperature is recommended for run-to-run consistency; lowered from the model default `1` because iter-to-iter backtest swings were dominated by sampling variance rather than genuine signal changes. Range `[0.0, 2.0]`. |
 | `fundamental.llm.timeout_retries` | int [1–10] | Total attempts on timeout (1 initial try + retries). Range `[1, 10]`. Default 3. |
 | `fundamental.llm.schema_retries` | int [1–10] | Total attempts on `pydantic.ValidationError`. Range `[1, 10]`. Default 3. |
 
@@ -364,7 +379,11 @@ mechanism that keeps data clean without losing meaning. See the docstring of
 | Setting | Type | Meaning |
 |---|---|---|
 | `llm.timeout_seconds` | float | Wall-clock timeout (seconds) for the strategist LLM call. Range `(0, 600]`. Default 180. |
-| `llm.max_output_tokens` | int | Cap on output tokens per strategist call. Range `[256, 32768]`. Default 16000 — sized for a 20-ticker watchlist with full open-thesis composites (weight + rationale + horizon + target_price + stop_price + catalyst per stance) plus decision-level reasoning + thesis. |
+| `llm.max_output_tokens` | int | Cap on output tokens per strategist call. Range `[256, 32768]`. Default 16000 — sized for a 20-ticker watchlist with full open-thesis composites (weight + rationale + horizon + target_price + stop_price + catalyst per stance) plus decision-level reasoning + thesis. On `gemini-2.5-pro` the `thinking_budget` tokens are charged against this same cap. |
+| `llm.thinking_budget` | int [-1–24576] or omitted | Ceiling on the model's internal *thinking* tokens (Gemini 2.5 thinking models). Currently **2048** (under evaluation). The floor `gemini-2.5-pro` allows is `128` — it cannot fully disable thinking. These tokens count against `max_output_tokens`. Omit the field for native dynamic thinking, `-1` for explicit dynamic. Gemini-specific; a Claude-on-Vertex model (see the analyst model-routing work) ignores it. |
+| `llm.temperature` | float [0.0–2.0] | Sampling temperature for the strategist call. Currently **0.3** — lowered from `1` to damp rambling / attractor states on the long full-watchlist prompt and reduce run-to-run sampling variance (the dominant source of iter-to-iter backtest swings). Higher values trade determinism for variety. |
+| `llm.frequency_penalty` | float [-2.0–2.0] | Penalises tokens in proportion to how often they have already appeared (positive = penalise repetition). Default **0.5** — damps verbatim token-level repetition. |
+| `llm.presence_penalty` | float [-2.0–2.0] | Penalises tokens that have appeared at all, nudging toward new content over re-using emitted tokens. Default **0.5**. |
 | `llm.timeout_retries` | int | Total attempts on timeout (1 initial try + retries). Range `[1, 10]`. Default 3. |
 | `llm.schema_retries` | int | Total attempts on `pydantic.ValidationError`. Range `[1, 10]`. Default 3. |
 
@@ -419,17 +438,47 @@ pick a model directly.
 
 | Setting | Type | Meaning |
 |---|---|---|
-| `strategist` | string | Model ID for the Strategist `LlmAgent` (read by `src/agents/strategist/agent.py::build_strategist`). Currently `gemini-3.5-flash` — trialling next-gen Flash. |
-| `news_analyst` | string | Model ID for the News analyst `LlmAgent` (read by `src/agents/analysts/news/agent.py::build_news_analyst`). Currently `gemini-2.5-flash-lite`. |
-| `fundamental_analyst` | string | Model ID for the Fundamental analyst `LlmAgent` (read by `src/agents/analysts/fundamental/agent.py::build_fundamental_analyst`). Currently `gemini-2.5-flash-lite`. |
+| `strategist` | string | Model ID for the Strategist `LlmAgent` (read by `src/agents/strategist/agent.py::build_strategist`). Currently `gemini-2.5-pro`. |
+| `news_analyst` | string | Model ID for the News analyst `LlmAgent` (read by `src/agents/analysts/news/per_ticker.py::build_news_branch_for_ticker`). Currently `gemini-3.5-flash` (upgraded from `gemini-2.5-flash` to test whether the larger Flash improves the analysts' weak stock-selection signal). A Gemini 3 model uses the `thinking_level` knob, not `thinking_budget` (see `news.llm.thinking_level`). Swap to a `anthropic_vertex/<region>/<model>` ID (see below) to route via Claude. |
+| `fundamental_analyst` | string | Model ID for the Fundamental analyst `LlmAgent` (read by `src/agents/analysts/fundamental/per_ticker.py::build_fundamental_branch_for_ticker`). Currently `gemini-3.5-flash` (upgraded from `gemini-2.5-flash` alongside the news analyst). A Gemini 3 model uses the `thinking_level` knob, not `thinking_budget` (see `fundamental.llm.thinking_level`). Swap to e.g. `anthropic_vertex/global/claude-haiku-4-5@20251001` (see below) if dense filings need more headroom. |
 | `memory_compressor` | string | Model ID for the day-digest LLM compressor fallback (read by `src/agents/memory/compress.py::_default_llm_compress`). Only invoked when the concatenated digest exceeds `DIGEST_BUDGET` (2000 chars). Currently `gemini-2.5-flash-lite`. |
 | `memory_embedding` | string | Embedding model ID for the memory-buffer dedup embedder (read by `src/agents/memory/embeddings.py::_default_embed`). Distinct family from Gemini chat models, but the same "where does this live" problem belongs in the same config. Currently `text-embedding-005`. |
+| `memory_embedding_location` | string (Vertex region) | Vertex AI region the embedding client is pinned to (read by `src/agents/memory/embeddings.py::_default_embed`, passed explicitly as `genai.Client(location=...)`). Kept separate from every generative model above: the `global` Vertex endpoint that the rest of the pipeline's generative agents run on (via the ambient `GOOGLE_CLOUD_LOCATION` env var) serves **no** embedding models at all — `text-embedding-005`, `-004`, `gemini-embedding-001`, multilingual, and large-exp all 404 under `global`. Embedding models are region-pinned, so this field routes the embedding client to a real regional endpoint independently of wherever the generative models happen to run. Currently `europe-west2` (London) — `text-embedding-005` is also available in `us-central1`. |
+
+### Native Gemini vs ADK-native Claude (on Vertex)
+
+Each value above may be either a **native Gemini ID** (no `/`, e.g.
+`gemini-2.5-flash`) or a **Claude-on-Vertex ID** of the form
+`anthropic_vertex/<region>/<model>` (e.g.
+`anthropic_vertex/global/claude-haiku-4-5@20251001`). The agent construction
+sites do not branch on this themselves — they pass the raw string through
+`src/agents/model_resolver.py::resolve_model()`, which returns the bare
+string for Gemini (ADK's native `google-genai` path) or builds a native
+`google.adk.models.anthropic_llm.Claude` instance for a Claude ID. Swapping a
+slot between Gemini and Claude is therefore a one-line edit here; no source
+and no `.env` change is needed.
+
+**Why the region lives in the ID.** Claude is **not** served from every Vertex
+region — in particular not from `us-central1`, which the native-Gemini
+strategist uses via `GOOGLE_CLOUD_LOCATION`. So the Claude serving region
+travels *inside* the model ID (the `<region>` segment — `global`, `us-east5`,
+or `europe-west1`) rather than overloading `GOOGLE_CLOUD_LOCATION`. The
+resolver assembles a full `projects/<project>/locations/<region>/...` Vertex
+resource path from that region plus the **GCP project read from
+`GOOGLE_CLOUD_PROJECT`** (a deployment secret, kept out of this file). ADK's
+`Claude` client parses project and region from that path and uses them
+verbatim, overriding `GOOGLE_CLOUD_LOCATION` — so the Gemini strategist stays
+on `us-central1` untouched. This path bills to the GCP project and requires
+the `anthropic` SDK (declared in `requirements.txt`); no LiteLLM extra is
+involved.
 
 A contract test (`tests/contract/test_no_hardcoded_models.py`) AST-walks
 `src/` and fails CI if any string literal starting with `gemini-` or
-`text-embedding-` survives outside docstrings or comments. The escape hatch
-for legitimate documentation references is to put the literal in a
-docstring or behind a `# noqa: model-literal` comment.
+`text-embedding-` survives outside docstrings or comments. (Claude IDs such
+as `anthropic_vertex/global/claude-…` are not on the forbidden-prefix list,
+but they must still live only in `models.json`, never inlined in source.) The
+escape hatch for legitimate documentation references is to put the literal in
+a docstring or behind a `# noqa: model-literal` comment.
 
 A leading `_comment` field is permitted at the top of `models.json` for an
 operator-facing note; the loader strips it before validation.
@@ -474,6 +523,45 @@ loader strips it before validation.
 
 ---
 
+## `retry_transport.json` — network transport / DNS backoff + retry policy
+
+Retry policy for transient network-transport failures on the path to Vertex AI,
+applied to every LLM-bearing agent in the pipeline (Fundamental, News,
+Strategist). Same wrapper as the 429 policy
+(`src/agents/llm_retry.py::RetryingAgentWrapper`); the `transport` retry class
+catches the connectivity blip and re-runs the inner agent with
+exponential-with-jitter backoff before failing the tick.
+
+Loaded once at boot via
+`src/config/retry_transport.py::get_retry_transport_policy()`
+(`lru_cache(maxsize=1)`); a process restart is required after edits.
+
+**Why this is needed.** Reaching Vertex requires an OAuth token refresh against
+`oauth2.googleapis.com` followed by the model call. A momentary *local*
+connectivity loss — a Wi-Fi reconnect, a VPN drop, or a DNS-resolver hiccup —
+makes the token refresh fail with `socket.gaierror` ("Temporary failure in name
+resolution"), which previously aborted the entire backtest tick (the driver
+treats a failed pipeline as fatal). These blips clear on their own within
+seconds, so a short backoff-and-retry recovers the tick instead of losing the
+whole run.
+
+**Scope of retry.** Only transient transport failures trigger this class:
+builtin `ConnectionError`, `socket.gaierror` (DNS), and the
+google-auth / `requests` / `httpx` transport-error types. Server-side HTTP 429s
+are handled separately by `retry_429.json`; HTTP 5xx and other application
+errors propagate immediately.
+
+| Setting | Type | Meaning |
+|---|---|---|
+| `max_attempts` | int ≥1 | Total number of attempts (not retries after the first failure). `1` disables retries entirely. Default 4. |
+| `base_delay_seconds` | float >0 | Initial wait before the first retry, in seconds. Subsequent retries grow exponentially with jitter, capped at `max_delay_seconds`. Default 2.0. |
+| `max_delay_seconds` | float ≥ `base_delay_seconds` | Upper bound on any single inter-retry wait, in seconds. Default 30.0. |
+
+A leading `_comment` field is permitted at the top of `retry_transport.json`;
+the loader strips it before validation.
+
+---
+
 ## `backtest_windows.json` — era-window definitions
 
 Era-keyed historical windows for the backtest harness. Each entry:
@@ -501,6 +589,10 @@ the project root.
 | `fake_broker_starting_cash` | float | Starting cash balance (USD) for the in-memory fake broker used in backtests. |
 | `forward_return_horizons_days` | list[int] | Horizons (in calendar days) over which forward returns are computed for scoring. |
 | `ohlcv_warmup_days` | int | Extra calendar days of OHLCV history fetched before the window start during cache fill. 90 calendar days (≈ 63 trading bars) ensures 50-bar features such as `vol_ratio_20d` are valid from the first replay tick (50 bars ≈ 70 calendar days, so 90 gives a comfortable margin), while also covering RSI(14) and ATR(14). |
+| `primary_horizon_by_analyst` | dict[str, int] | Per-analyst primary scoring horizon in calendar days. The scoreboard reports all horizons in `forward_return_horizons_days`, but ranks analysts using this per-type horizon. News signals decay quickly (~1 day); fundamental signals persist (~20 days). Analysts not listed here fall back to `max(forward_return_horizons_days)`. Default: `{"news": 1, "fundamental": 20, "technical": 5, "social": 1, "smart_money": 20}`. |
+| `scoreboard_neutralise_by` | `"sector"` \| `"universe"` | Cross-sectional neutralisation mode for the analyst predictive-power scoreboard. `"sector"` subtracts the per-tick mean of the ticker's GICS sector peers (read from `CachedDataStore.read_company_ratios`) — preferred because it isolates single-name selection skill from sector-wide moves. Tickers with no sector data in the cache fall back to `"universe"` for that ticker only (a WARNING is logged). `"universe"` subtracts the whole-universe per-tick mean (the original pre-Phase-14 behaviour). Default: `"sector"` — `company_ratios` now populates `sector` across the fetched windows, and the sector lens is the honest measure of single-name selection skill (it strips sector-wide moves that the universe lens would otherwise credit to the analyst). Tickers still missing sector data fall back to `"universe"` for that ticker only, with a WARNING logged. |
+| `scoreboard_inference` | `"cluster_ticker"` \| `"naive"` | Inference mode driving the scoreboard's `t-stat` / `p-value`. The scored observations are **not** independent: a ticker's verdict persists across ticks and the overlapping forward-return windows (+5d / +20d) induce strong serial autocorrelation, so a naive one-sample t-test understates the standard error and overstates significance (the audit estimated ~4.5× inflation). `"cluster_ticker"` (default) uses a cluster-robust ("sandwich") standard error clustered by ticker, with degrees of freedom = (#tickers − 1); it captures the dominant within-ticker temporal autocorrelation, is deterministic, and reduces exactly to the naive estimator on genuinely i.i.d. data (every ticker a singleton cluster). `"naive"` restores the original `scipy.stats.ttest_1samp` — retained only as an explicit opt-in escape hatch and for A/B comparison. Only the standard error / `t-stat` / `p-value` change; `n` and `mean excess (bps)` are identical across modes. |
+| `scoreboard_confidence_buckets` | int (≥ 2) | Number of quantile buckets the scoreboard's confidence-gradient view cuts each analyst's directional (non-neutral) confidence values into, at that analyst's primary horizon. Confidence is a continuous float in `[0, 1]` whose real-world range varies sharply per analyst (e.g. technical spans ~0.14–0.9, fundamental ~0.6–0.85), so buckets are data-driven quantile cuts per analyst rather than a single hardcoded numeric threshold. Default `3` (terciles: low/mid/high confidence). |
 
 **Per-window storage layout.** Each window owns its own subtree — there is
 no shared cache across windows.  Example:

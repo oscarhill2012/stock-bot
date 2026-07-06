@@ -176,7 +176,7 @@ def test_news_branch_wires_llm_caps_from_config() -> None:
     # Wrapper-level wiring.
     assert retrying.timeout_seconds == 60
     assert retrying.retry_state_key == "temp:_obs_news_retries"
-    assert set(retrying.policies.keys()) == {"rate_limit", "timeout", "schema"}
+    assert set(retrying.policies.keys()) == {"rate_limit", "transport", "timeout", "schema"}
     assert retrying.policies["timeout"].max_attempts  == 3
     assert retrying.policies["schema"].max_attempts   == 3
 
@@ -185,7 +185,22 @@ def test_news_branch_wires_llm_caps_from_config() -> None:
     cfg = llm.generate_content_config
 
     assert cfg is not None
-    assert cfg.max_output_tokens == 2000
+    assert cfg.max_output_tokens == 8000
+
+    # The News analyst runs on the Gemini 3 family (gemini-3.5-flash), which
+    # uses the coarse ``thinking_level`` effort enum rather than the Gemini 2.5
+    # integer ``thinking_budget``.  ``medium`` is wired through into a
+    # level-only thinking_config (budget must remain unset — the two knobs are
+    # mutually exclusive and sending both is a Gemini 3 HTTP 400).
+    from google.genai import types as genai_types
+
+    assert cfg.thinking_config is not None
+    assert cfg.thinking_config.thinking_level == genai_types.ThinkingLevel.MEDIUM
+    assert cfg.thinking_config.thinking_budget is None
+
+    # Low sampling temperature flows into generate_content_config for
+    # consistent run-to-run structured verdicts.
+    assert cfg.temperature == 0.3
 
 
 def test_fundamental_branch_wires_llm_caps_from_config() -> None:
@@ -212,6 +227,7 @@ def test_fundamental_branch_wires_llm_caps_from_config() -> None:
     # Wrapper-level wiring — timeout and retry state key.
     assert retrying.timeout_seconds == 60
     assert retrying.retry_state_key == "temp:_obs_fundamental_retries"
+    assert set(retrying.policies.keys()) == {"rate_limit", "transport", "timeout", "schema"}
     assert retrying.policies["timeout"].max_attempts == 3
     assert retrying.policies["schema"].max_attempts  == 3
 
@@ -220,4 +236,19 @@ def test_fundamental_branch_wires_llm_caps_from_config() -> None:
     cfg = llm.generate_content_config
 
     assert cfg is not None
-    assert cfg.max_output_tokens == 2000
+    assert cfg.max_output_tokens == 8000
+
+    # The Fundamental analyst runs on the Gemini 3 family (gemini-3.5-flash),
+    # which uses the coarse ``thinking_level`` effort enum rather than the
+    # Gemini 2.5 integer ``thinking_budget``.  ``medium`` is wired through into
+    # a level-only thinking_config (budget must remain unset — the two knobs
+    # are mutually exclusive and sending both is a Gemini 3 HTTP 400).
+    from google.genai import types as genai_types
+
+    assert cfg.thinking_config is not None
+    assert cfg.thinking_config.thinking_level == genai_types.ThinkingLevel.MEDIUM
+    assert cfg.thinking_config.thinking_budget is None
+
+    # Low sampling temperature flows into generate_content_config for
+    # consistent run-to-run structured verdicts.
+    assert cfg.temperature == 0.3

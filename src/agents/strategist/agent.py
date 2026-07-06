@@ -272,12 +272,28 @@ def build_strategist():
         include_contents        = "none",
         before_model_callback   = before_model,
         after_model_callback    = after_model,
+        # Decoding knobs (temperature + frequency/presence penalties) and the
+        # thinking budget all come from the strategist's ``llm`` config block
+        # (config/strategist.json → StrategistLlmCaps) rather than being
+        # hardcoded here.  The temperature/penalties damp rambling and
+        # attractor states on the long full-watchlist prompt; the thinking
+        # budget is charged against ``max_output_tokens`` (its floor on
+        # ``gemini-2.5-pro`` is 128 — the model cannot fully disable thinking).
+        #
+        # ``thinking_config`` is built conditionally — when ``thinking_budget``
+        # is ``None`` we pass ``None`` (identical to omitting it), mirroring the
+        # analyst agents.  This also keeps a Claude-on-Vertex model, which
+        # ignores the Gemini-only thinking config, working unchanged.
         generate_content_config = genai_types.GenerateContentConfig(
             max_output_tokens  = llm_caps.max_output_tokens,
-            temperature        = 0.3,                                           # probe: lower temp to discourage rambling / attractor states
-            frequency_penalty  = 0.5,                                           # probe: penalise verbatim token-level repetition
-            presence_penalty   = 0.5,                                           # probe: penalise re-using already-emitted tokens
-            thinking_config    = genai_types.ThinkingConfig(thinking_budget=128), # probe: minimum thinking budget allowed on 2.5-pro
+            temperature        = llm_caps.temperature,
+            frequency_penalty  = llm_caps.frequency_penalty,
+            presence_penalty   = llm_caps.presence_penalty,
+            thinking_config    = (
+                genai_types.ThinkingConfig(thinking_budget = llm_caps.thinking_budget)
+                if llm_caps.thinking_budget is not None
+                else None
+            ),
         ),
     )
 

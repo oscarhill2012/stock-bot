@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncGenerator
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
@@ -54,9 +54,19 @@ from google.adk.events import Event, EventActions
 from agents.analysts.fundamental.fetch import _build_ticker_fundamental_context
 from data import get_company_filings, get_company_ratios, get_insider_trades
 from data.config import get_config
+from data.filing_selection import _PERIODIC_FORMS
 from data.models import Form4Bundle
 from data.timeguard import resolve_as_of
 from observability.trace import trace_maybe
+
+# How far back to reach for prior-year periodic baselines (Phase 13).
+# Mirrors _PERIODIC_BASELINE_REACH_DAYS in edgar.py.  This is a *pool* reach,
+# not a single anchor: the worst case is a current 10-K filed ~1 year after its
+# period end, whose prior-year 10-K sits ~2 years (730 days) before the tick.
+# 800 = 730 + a ~70-day guard band for late-filer extensions (Form 12b-25) and
+# irregular fiscal calendars.  The pairing layer then matches the correct
+# same-period-prior-year filing out of the pool on `period_of_report`.
+_BASELINE_REACH_DAYS = 800
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -126,7 +136,7 @@ class FundamentalFetchAgent(BaseAgent):
                 _LOGGER.warning("company_ratios fetch failed for %s: %s", ticker, exc)
                 ratios_payload = None
 
-            # --- SEC filings ---
+            # --- SEC filings (current tick) ---
             # The selection rule (latest 10-K + latest 10-Q + recent 8-Ks)
             # is handled by the shared analyst-visibility rule inside the
             # provider — no per-form count is passed here.
@@ -145,6 +155,52 @@ class FundamentalFetchAgent(BaseAgent):
             except Exception as exc:  # noqa: BLE001 — degrade gracefully
                 _LOGGER.warning("filings fetch failed for %s: %s", ticker, exc)
                 filings_payload = []
+
+            # --- Prior-year baseline filings (Phase 13 — de-boilerplate) ---
+            # Issue a second provider call in *pool* mode (from_date given) to
+            # retrieve the raw periodic-filing pool reaching ~800 days back.
+            # The same provider dispatch table routes this call to the edgar
+            # provider (live, backfill path) or the cache provider (backtest,
+            # pool branch), so parity is maintained without any special-casing
+            # here — both return the same unbounded-below window of filings.
+            #
+            # Pool mode (rather than a single -400d anchor) is essential: a
+            # current 10-K filed long after its period end can leave the
+            # prior-year 10-K nearly two years before the tick.  A single
+            # anchor narrows to ONE filing and silently misses the correct
+            # same-period-prior-year baseline; the pool hands every candidate
+            # to the pairing layer, which matches on `period_of_report`.
+            #
+            # We filter to periodic forms only (no 8-Ks) because 8-Ks don't
+            # carry MD&A and are never used as de-boilerplate baselines.
+            baseline_payload: list[dict] = []
+            try:
+                baseline_from = as_of - timedelta(days=_BASELINE_REACH_DAYS)
+                baseline_filings = await get_company_filings(
+                    ticker,
+                    as_of=as_of,
+                    from_date=baseline_from,
+                    include_excerpts=include_filing_excerpts,
+                )
+                baseline_payload = [
+                    f.model_dump() if hasattr(f, "model_dump") else f
+                    for f in baseline_filings
+                    if (f.form_type if hasattr(f, "form_type") else f.get("form_type", ""))
+                    in _PERIODIC_FORMS
+                ]
+                _LOGGER.debug(
+                    "baseline pool for %s: %d periodic filings in [%s, %s]",
+                    ticker, len(baseline_payload),
+                    baseline_from.date(), as_of.date(),
+                )
+            except Exception as exc:  # noqa: BLE001 — degrade gracefully
+                # Baseline failure must never abort the main analysis — log and
+                # continue with empty baseline (de-boilerplate disabled for this tick).
+                _LOGGER.warning(
+                    "baseline filings fetch failed for %s: %s — de-boilerplate disabled",
+                    ticker, exc,
+                )
+                baseline_payload = []
 
             # --- Insider trades (Form 4) ---
             try:
@@ -167,6 +223,10 @@ class FundamentalFetchAgent(BaseAgent):
             fundamental_data[ticker] = {
                 "ratios":  ratios_payload,
                 "filings": filings_payload,
+                # Prior-year periodic filings for MD&A de-boilerplate (Phase 13).
+                # Empty list when the baseline fetch failed — de-boilerplate is
+                # then silently disabled for this ticker/tick.
+                "baseline_filings": baseline_payload,
                 # Flat-list shape — Phase 7 extractor path.  The typed
                 # Form4Bundle is dumped to two flat lists (common + derivative)
                 # so the contract extractor sees the same shape regardless of

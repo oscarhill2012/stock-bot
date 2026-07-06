@@ -290,7 +290,17 @@ def _emit_ratios_features(raw: dict) -> dict[str, float]:
         # Death cross: 50-day below 200-day AND price below 50-day MA.
         out["death_cross"]  = 1.0 if ma50 < ma200 and last < ma50 else 0.0
 
-    if beta is not None:
+    # The beta-aware confidence-damping feature is gated INDEPENDENTLY of beta
+    # presence by ``technical.beta_confidence_damping_enabled``.  This decouples
+    # two concerns that used to be conflated: now that ``pit_composite``
+    # populates a PIT-correct beta for the Fundamental analyst, the damping
+    # feature would auto-activate and silently alter the strategist's technical
+    # digest.  The offline validation (Phase-14 beta commit) found the feature
+    # does not move the technical *verdict* (``derive_technical_verdict`` never
+    # consumes it — it is a strategist-facing context line only), so the gate
+    # ships DISABLED by default; flip it in ``config/analyst_heuristics.json``
+    # if a future strategist tuning wants the signal back.
+    if beta is not None and _beta_damping_enabled():
         # Bug #23b: only emit this key when beta is actually known.  When beta
         # is absent the feature stays at the _zero_features default of None,
         # which the renderer maps to "(no data)".  The old 0.0 default was a
@@ -303,6 +313,28 @@ def _emit_ratios_features(raw: dict) -> dict[str, float]:
         out["beta_confidence_damping"] = 1.0 / (1.0 + abs(beta - 1.0))
 
     return out
+
+
+def _beta_damping_enabled() -> bool:
+    """Whether the ``beta_confidence_damping`` feature should be emitted.
+
+    Reads the ``technical.beta_confidence_damping_enabled`` flag from the
+    validated heuristics config.  Imported lazily (mirroring
+    ``derive_technical_verdict``) to dodge the import cycle between this module
+    and ``agents.analysts.heuristics``.  Defaults to disabled if the config
+    cannot be loaded — fail safe, since the feature is non-essential context.
+
+    Returns
+    -------
+    bool
+        ``True`` when the feature is enabled in config, else ``False``.
+    """
+    try:
+        from agents.analysts.heuristics import load_heuristics  # noqa: PLC0415
+
+        return load_heuristics().technical.beta_confidence_damping_enabled
+    except Exception:  # noqa: BLE001 — config load is best-effort; degrade to OFF
+        return False
 
 
 def _resolve_bars(raw: Mapping[str, Any]) -> list:
@@ -700,18 +732,53 @@ def derive_technical_verdict(
     # --- Trend regime: golden / death cross (Bug #13) ------------------------
     # The extractor populates these flags when ratios are available. Surface
     # them as corroborating factors so the strategist can weigh the
-    # medium-term regime alongside the short-term RSI / momentum reads. The
-    # flags themselves never flip ``lean`` on their own — that responsibility
-    # stays with 20-day momentum (and the RSI capitulation rule above) so the
-    # cross flag remains pure context.
+    # medium-term regime alongside the short-term RSI / momentum reads.
     #
     # ``.get(..., 0.0)`` guards the live behaviour where ratios are absent and
     # the extractor omits the keys entirely (see ``_emit_ratios_features``).
-    if features.get("golden_cross", 0.0) >= 1.0:
+    golden = features.get("golden_cross", 0.0) >= 1.0
+    death  = features.get("death_cross",  0.0) >= 1.0
+
+    if golden:
         factors.append("golden_cross")
 
-    if features.get("death_cross", 0.0) >= 1.0:
+    if death:
         factors.append("death_cross")
+
+    # Phase-13 fix: regime-aware lean suppression.
+    #
+    # The bearish lean is anti-predictive in this large-cap universe and worst
+    # of all when the name is simultaneously in a confirmed up-trend regime
+    # (``bearish + golden_cross`` posted a 21 % down-rate / +2.23 % mean +20d in
+    # the audit).  A modest negative 20-day blip inside a multi-month uptrend is
+    # noise, not a reversal — so when the golden cross holds we downgrade the
+    # bearish call to neutral rather than propagating it.
+    #
+    # The symmetric case is mirrored: a bullish lean against a confirmed
+    # down-trend (``bullish + death_cross``, n=24) replayed at a 46 % up-rate
+    # and −0.71 % mean +20d — a fading bounce.  Suppressing it lifted the overall
+    # bullish +20d hit rate (58.4 % → 59.5 %) with no downside, so it is gated on
+    # by default too.
+    #
+    # Placed AFTER the RSI capitulation block so a genuine capitulation flip
+    # (bearish → bullish) is never clobbered: if the lean has already moved there
+    # is nothing for the same-direction gate to suppress.  Both gates are config-
+    # toggled so the regime-blind behaviour can be restored without a code change.
+    if (
+        h.suppress_bearish_under_golden_cross
+        and lean == "bearish"
+        and golden
+    ):
+        lean = "neutral"
+        factors.append("bearish_suppressed_golden_cross")
+
+    if (
+        h.suppress_bullish_under_death_cross
+        and lean == "bullish"
+        and death
+    ):
+        lean = "neutral"
+        factors.append("bullish_suppressed_death_cross")
 
     # --- 52-week proximity ---------------------------------------------------
     # dist_from_high_52w_pct is negative — negate to get a positive "distance".
@@ -744,14 +811,54 @@ def derive_technical_verdict(
     if "momentum_agree" in factors:
         confidence += h.confidence_boost_step
 
-    # Either 52w extreme proximity boosts conviction.
-    if "near_52w_high" in factors or "near_52w_low" in factors:
-        confidence += h.confidence_boost_step
+    # 52-week proximity confidence boost.
+    #
+    # Phase-13 fix: the boost is now *directional* — it only fires when the
+    # proximity corroborates the lean, because the audit found the
+    # unconditional ``near_52w_low`` boost actively harmful on bearish names
+    # (35 % down-rate vs 51 % without it; it lifted confidence to 0.90 on the
+    # very names most likely to mean-revert up).  Proximity to the low is a
+    # bounce zone, so it only adds conviction to a *bullish* lean.  Proximity
+    # to the high corroborates a bullish (momentum-continuation) lean.
+    #
+    # The context factors themselves are still emitted (above) regardless of
+    # lean — only the confidence arithmetic is gated here.  Gated by config so
+    # the legacy unconditional boost can be restored without a code change.
+    if h.directional_52w_confidence:
+        # Boost only when 52-week proximity supports the (bullish) lean.
+        if lean == "bullish" and ("near_52w_high" in factors or "near_52w_low" in factors):
+            confidence += h.confidence_boost_step
+    else:
+        # Legacy behaviour: either extreme proximity boosts conviction.
+        if "near_52w_high" in factors or "near_52w_low" in factors:
+            confidence += h.confidence_boost_step
 
     if "high_volatility" in factors:
         confidence -= h.confidence_penalty_step
 
     confidence = max(0.0, min(1.0, confidence))
+
+    # Phase-13 fix: damp confidence on borderline directional calls.
+    #
+    # The analyst is stateless per tick, so the ±band cliff cannot be smoothed
+    # with true hysteresis.  Instead we scale confidence by how far the 20-day
+    # return cleared the neutral band: a call that only just escaped the band
+    # is a likely whipsaw and should be low-confidence, whereas a call well
+    # beyond the band keeps full confidence.  The ramp runs linearly from
+    # ``momentum_band_confidence_floor`` at the band edge to 1.0 at twice the
+    # band width.  Neutral leans carry no directional confidence to damp, so
+    # they are left untouched.
+    if (
+        lean != "neutral"
+        and h.momentum_band_confidence_floor < 1.0
+        and h.momentum_neutral_band_pct > 0.0
+    ):
+        band = h.momentum_neutral_band_pct
+        # Distance beyond the band, normalised to one band-width; clamped [0, 1].
+        excess = max(0.0, min((abs(pct20) - band) / band, 1.0))
+        floor  = h.momentum_band_confidence_floor
+        ramp   = floor + (1.0 - floor) * excess
+        confidence = max(0.0, min(1.0, confidence * ramp))
 
     # --- Rationale -----------------------------------------------------------
     # Deterministic extractors carry their prose exclusively in ``rationale``

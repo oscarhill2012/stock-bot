@@ -24,7 +24,7 @@ import json
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from config._slack import apply_slack
 
@@ -57,6 +57,48 @@ class LlmCaps(BaseModel):
         Cap on the model's generated output tokens.  Set on every call
         (not just retries) so output loops cannot wedge the tick in the
         first place.  Range ``[256, 32768]``.
+
+        Note that on Gemini 2.5 *thinking* models (e.g. ``gemini-2.5-flash``)
+        this budget is shared between the model's internal reasoning tokens
+        and the visible output, so it must be sized to hold both — see
+        ``thinking_budget`` below.
+    temperature:
+        Sampling temperature passed through to ``GenerateContentConfig``.
+        Lower values make the output more deterministic / less varied.  The
+        analysts emit *structured* JSON verdicts (a classification-like
+        task), for which a low temperature is recommended for run-to-run
+        consistency — at the default ``temperature = 1`` the iter-to-iter
+        backtest swings were dominated by sampling variance rather than by
+        genuine signal changes.  Mirrors the strategist's ``temperature``
+        knob (see :class:`config.strategist.StrategistLlmCaps`) but lives on
+        the shared base because both analyst tiers now tune it.  Range
+        ``[0.0, 2.0]``.
+    thinking_budget:
+        Optional ceiling on the model's internal *thinking* tokens, passed
+        through to ``GenerateContentConfig.thinking_config`` on Gemini 2.5
+        thinking models.  ``None`` (the default) leaves the model's native
+        thinking behaviour untouched — for ``gemini-2.5-flash`` that means
+        *dynamic* (unbounded) thinking, which can spike arbitrarily and
+        starve the verdict JSON of output budget, truncating it.  A positive
+        value bounds thinking to that many tokens so the split with the
+        visible output is deterministic; ``0`` disables thinking entirely;
+        ``-1`` requests explicit dynamic thinking.  Only wired for the
+        per-ticker analyst LlmAgents (News, Fundamental); the strategist
+        leaves this ``None``.  Range ``[-1, 24576]`` when set.
+
+        Mutually exclusive with ``thinking_level`` — set at most one (see
+        :meth:`_reject_both_thinking_knobs`).
+    thinking_level:
+        Optional Gemini 3 *thinking effort* level — one of ``"minimal"``,
+        ``"low"``, ``"medium"`` or ``"high"`` — passed through to
+        ``GenerateContentConfig.thinking_config`` on Gemini 3 models (e.g.
+        ``gemini-3.5-flash``).  Gemini 3 replaced the integer
+        ``thinking_budget`` with this coarse enum and rejects a request that
+        carries *both* knobs with an HTTP 400; the two are therefore mutually
+        exclusive here.  ``None`` (the default) leaves native thinking
+        untouched.  ``gemini-3.5-flash`` itself defaults to ``"medium"`` when
+        the level is omitted, but we set it explicitly so the request shape is
+        deterministic across SDK/endpoint versions.
     timeout_retries:
         Total attempts the wrapper makes when wall-clock timeouts fire.
         ``3`` means one initial try plus up to two retries.  Range
@@ -67,10 +109,32 @@ class LlmCaps(BaseModel):
         ``timeout_retries``.
     """
 
-    timeout_seconds:   float = Field(gt=0.0, le=600.0)
-    max_output_tokens: int   = Field(ge=256, le=32_768)
-    timeout_retries:   int   = Field(ge=1, le=10)
-    schema_retries:    int   = Field(ge=1, le=10)
+    timeout_seconds:   float      = Field(gt=0.0, le=600.0)
+    max_output_tokens: int        = Field(ge=256, le=32_768)
+    thinking_budget:   int | None = Field(default=None, ge=-1, le=24_576)
+    thinking_level:    str | None = Field(default=None, pattern=r"^(minimal|low|medium|high)$")
+    temperature:       float      = Field(ge=0.0, le=2.0)       # low → consistent structured verdicts
+    timeout_retries:   int        = Field(ge=1, le=10)
+    schema_retries:    int        = Field(ge=1, le=10)
+
+    @model_validator(mode="after")
+    def _reject_both_thinking_knobs(self) -> LlmCaps:
+        """Forbid setting ``thinking_budget`` and ``thinking_level`` together.
+
+        The two are the Gemini 2.5 and Gemini 3 forms of the same control and
+        are mutually exclusive — Gemini 3 rejects a request carrying both with
+        an HTTP 400.  Catching it at config-load time turns a per-call runtime
+        400 into an early, explicit failure naming the offending block.
+        """
+
+        if self.thinking_budget is not None and self.thinking_level is not None:
+            raise ValueError(
+                "thinking_budget and thinking_level are mutually exclusive — "
+                "set at most one (thinking_level for Gemini 3, thinking_budget "
+                "for Gemini 2.5); got both."
+            )
+
+        return self
 
 
 class NewsCaps(BaseModel):
@@ -90,33 +154,86 @@ class NewsCaps(BaseModel):
     max_summary_chars:
         Maximum characters of each article's summary kept in the prompt.
     roundup_company_threshold:
-        Minimum number of **distinct** watchlist companies that must be
-        named in a headline (or summary) for the article to be classified
-        as a macro roundup and demoted to score 0 (generic), regardless of
-        whether the target ticker is among them.  The rationale: naming a
-        ticker in a multi-company roundup ("Nvidia, AMD, Tesla, Apple Are
-        Big Movers") is not company-specificity — it is name-dropping in a
-        list article.  Default 3.
+        Minimum number of distinct watchlist companies that must be named in
+        a headline (or summary) for the article to be classified as a macro
+        roundup and demoted to score 0 (generic).  Default 3.
+    dedup_title_similarity_threshold:
+        Minimum normalised title similarity ratio [0.0–1.0] required for
+        two articles to be treated as near-duplicates and collapsed into
+        one representative.  Uses ``difflib.SequenceMatcher`` on the
+        normalised (lower-case, punctuation-stripped) title strings.
+        ``1.0`` means exact normalised match only; ``0.85`` (default)
+        collapses syndication variants such as trailing "(Reuters)" suffixes
+        or minor punctuation differences while leaving genuinely distinct
+        stories untouched.  Setting this below ~0.7 risks collapsing
+        legitimately different stories that share a common sub-phrase.
     llm:
         Per-call LLM runtime caps (timeout, token limit, retry counts).
     """
 
-    max_articles_per_ticker:         int     = Field(ge=1,  le=200)
-    max_generic_articles_per_ticker: int     = Field(ge=0,  le=200)
-    max_summary_chars:               int     = Field(ge=1,  le=10_000)
-    roundup_company_threshold:       int     = Field(ge=2,  le=50,   default=3)
-    llm:                             LlmCaps                           # per-call runtime caps
+    max_articles_per_ticker:            int   = Field(ge=1,   le=200)
+    max_generic_articles_per_ticker:    int   = Field(ge=0,   le=200)
+    max_summary_chars:                  int   = Field(ge=1,   le=10_000)
+    roundup_company_threshold:          int   = Field(ge=2,   le=50,    default=3)
+    dedup_title_similarity_threshold:   float = Field(ge=0.0, le=1.0,   default=0.85)
+    llm:                                LlmCaps                           # per-call runtime caps
 
 
 class FundamentalCaps(BaseModel):
-    """Truncation caps for the Fundamental analyst's LLM context."""
+    """Truncation caps for the Fundamental analyst's LLM context.
+
+    Attributes
+    ----------
+    max_filing_mda_chars:
+        Maximum characters of MD&A text included in the LLM prompt per
+        periodic filing.  Applied after Phase 13 de-boilerplate diffing, so
+        the effective input to the LLM is the de-duplicated survivors
+        truncated to this limit.  Raised from 1500 → 12000 in Phase 13 to
+        accommodate the additional context now that boilerplate is stripped.
+    max_filing_risk_chars:
+        Maximum characters of risk-factor text included per filing.
+        No de-boilerplate pass is applied to risk factors.
+    max_filing_8k_body_chars:
+        Maximum characters of 8-K body excerpt (event-driven filings).
+    max_insider_footnotes:
+        Maximum number of prose footnotes included from Form 4 filings.
+    max_insider_footnote_chars:
+        Maximum characters per footnote.
+    mda_stub_char_threshold:
+        Minimum character count that BOTH the current and prior-year MD&A
+        must exceed before de-boilerplate diffing is attempted.  Below this
+        threshold the text is a stub (e.g. a single placeholder sentence)
+        that would produce meaningless diffs; the full current text is
+        rendered with a marker instead.
+    llm:
+        Per-call LLM runtime caps (timeout, token limit, retry counts).
+    """
 
     max_filing_mda_chars:       int     = Field(ge=1, le=20_000)
     max_filing_risk_chars:      int     = Field(ge=1, le=20_000)
     max_filing_8k_body_chars:   int     = Field(ge=1, le=20_000)
     max_insider_footnotes:      int     = Field(ge=0, le=50)
     max_insider_footnote_chars: int     = Field(ge=1, le=5_000)
-    llm:                        LlmCaps                        # NEW — per-call runtime caps
+    mda_stub_char_threshold:    int     = Field(ge=1, le=2_000, default=400)
+
+    # Conviction-buy/sell threshold — minimum gross dollar value (USD) of
+    # open-market transactions by a *single* filer that triggers the
+    # ``insider_conviction_buy_flag`` / ``insider_conviction_sell_flag``
+    # features.  Designed to fire on a CEO buying tens of millions or more
+    # (the TSLA $950 M scenario) while staying silent on routine small trades.
+    # Default: $50 M — well above director-level routine purchases (~$100 K–
+    # $5 M) but well below major executive concentration events.
+    insider_conviction_threshold_dollars: int = Field(ge=1, default=50_000_000)
+
+    # Trailing P/E implausibility threshold — when trailing P/E exceeds this
+    # value the ratios render flags it as possibly distorted by a one-time
+    # EPS item and, if available, surfaces forward P/E prominently instead.
+    # Default: 200× — historically rare for non-distorted earnings; a one-time
+    # write-down or export charge easily pushes EPS to near-zero, sending P/E
+    # into the hundreds (AMD 676 in 2023).
+    trailing_pe_implausibility_threshold: int = Field(ge=10, default=200)
+
+    llm:                        LlmCaps                        # per-call runtime caps
 
 
 class CacheSettings(BaseModel):

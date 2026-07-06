@@ -177,3 +177,64 @@ def test_fundamental_hash_changes_on_new_insider_trade() -> None:
     b2 = Form4Bundle(trades=[t], derivatives=[])
 
     assert fundamental_hash_inputs(r, [], b1) != fundamental_hash_inputs(r, [], b2)
+
+
+def test_fundamental_hash_ignores_daily_price_moves() -> None:
+    """Daily price-driven ratio moves must NOT bust the fundamental cache.
+
+    ``last_price``, ``market_cap``, the two moving averages, the price-based
+    ``trailing_pe`` / ``forward_pe`` / ``peg`` / ``dividend_yield`` and the
+    52-week extremes all re-quote every trading day even when no new filing has
+    arrived.  Including them in the cache key forced a full filing-LLM re-run
+    every morning for an identical verdict.  They stay in the prompt (the
+    analyst still sees fresh prices when it actually runs) but must be excluded
+    from the key so unchanged filings reuse the cached report.
+    """
+    bundle = Form4Bundle(trades=[], derivatives=[])
+
+    # Identical fundamentals; only price-derived fields differ between the two
+    # trading days (the exact pattern observed for AAPL Feb 10 → Feb 11).
+    day1 = CompanyRatios(
+        ticker="AAPL", roe=0.50, revenue_growth_yoy=0.07,
+        last_price=273.0, market_cap=4_014_000_000_000.0,
+        trailing_pe=113.4, forward_pe=30.1, peg=2.5, dividend_yield=0.0040,
+        fifty_day_average=260.0, two_hundred_day_average=240.0,
+        fifty_two_week_high=290.0, fifty_two_week_low=210.0,
+    )
+    day2 = CompanyRatios(
+        ticker="AAPL", roe=0.50, revenue_growth_yoy=0.07,
+        last_price=280.0, market_cap=4_120_000_000_000.0,
+        trailing_pe=116.0, forward_pe=31.0, peg=2.6, dividend_yield=0.0039,
+        fifty_day_average=262.0, two_hundred_day_average=241.0,
+        fifty_two_week_high=290.0, fifty_two_week_low=210.0,
+    )
+
+    assert fundamental_hash_inputs(day1, [], bundle) == fundamental_hash_inputs(day2, [], bundle)
+
+
+def test_fundamental_hash_ignores_as_of_retrieval_date() -> None:
+    """The PIT retrieval date (``as_of``) is metadata, not signal.
+
+    It advances every tick, so including it in the key would bust the cache
+    daily regardless of the price fields.
+    """
+    bundle = Form4Bundle(trades=[], derivatives=[])
+
+    r1 = CompanyRatios(ticker="AAPL", roe=0.50, as_of=date(2026, 2, 10))
+    r2 = CompanyRatios(ticker="AAPL", roe=0.50, as_of=date(2026, 2, 11))
+
+    assert fundamental_hash_inputs(r1, [], bundle) == fundamental_hash_inputs(r2, [], bundle)
+
+
+def test_fundamental_hash_changes_on_fundamental_field() -> None:
+    """A genuine fundamental change MUST still bust the cache.
+
+    Guards against over-exclusion: narrowing the key to drop price noise must
+    not accidentally drop true quarterly fundamentals like return on equity.
+    """
+    bundle = Form4Bundle(trades=[], derivatives=[])
+
+    r1 = CompanyRatios(ticker="AAPL", roe=0.50, revenue_growth_yoy=0.07)
+    r2 = CompanyRatios(ticker="AAPL", roe=0.55, revenue_growth_yoy=0.07)
+
+    assert fundamental_hash_inputs(r1, [], bundle) != fundamental_hash_inputs(r2, [], bundle)

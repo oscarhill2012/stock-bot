@@ -192,15 +192,25 @@ async def test_backfill_mode_returns_range_plus_anchors(
     # Raw union — anchors AND in-window rows, superseded forms kept.
     assert {f.accession_no for f in out} == {"K-anchor", "Q-anchor", "Q-mid", "E-mid"}
 
-    # Anchor queries must be pinned to window start, not window end.
-    anchor_as_ofs = {a for _, _, a in captured["latest_calls"]}
-    assert anchor_as_ofs == {datetime.combine(window_start, datetime.min.time(), tzinfo=UTC)}
-
-    # Two range queries: the window body and the pre-window 8-K staleness reach.
-    spans = [(forms, lower, upper) for _, forms, lower, upper in captured["range_calls"]]
+    # Anchor queries: the ONLY latest-filing calls are the window-start anchors
+    # (as_of = window_lower) for the current-period 10-K and 10-Q.  The
+    # prior-year baseline is supplied as a RANGE query (below), NOT a single
+    # anchor — a single "latest as of window_start - N" filing cannot guarantee
+    # the same-period-prior-year match the pairing layer needs (Phase 13).
     window_lower = datetime.combine(window_start, datetime.min.time(), tzinfo=UTC)
+
+    anchor_as_ofs = {a for _, _, a in captured["latest_calls"]}
+    assert anchor_as_ofs == {window_lower}, (
+        "the only latest-filing anchors must be at window start — no -400d anchor"
+    )
+
+    # Three range queries: the window body, the pre-window 8-K staleness reach,
+    # and the prior-year periodic baseline POOL (reaching 800 days back so a
+    # late-filed current 10-K still pools its ~2-year-prior counterpart).
+    spans = [(forms, lower, upper) for _, forms, lower, upper in captured["range_calls"]]
     assert (("10-K", "10-Q", "8-K"), window_lower, AS_OF) in spans
     assert ((("8-K",)), window_lower - timedelta(days=90), window_lower) in spans
+    assert (("10-K", "10-Q"), window_lower - timedelta(days=800), window_lower) in spans
 
 
 @pytest.mark.asyncio

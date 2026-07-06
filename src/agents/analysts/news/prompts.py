@@ -63,6 +63,8 @@ this exact order:
   is_no_data    boolean — true ONLY if the headlines block is empty for this
                 ticker; false in every other case (including ambiguous data).
   key_factors   list of closed-vocabulary tags — at least 1, at most 8.
+                List DISTINCT tags only — never repeat a tag; if you cannot
+                find a second distinct driver, you do not have one.
   report        object with summary + drivers (schema below).  REQUIRED on
                 every emit, including when is_no_data=true (then summary is
                 "no news in window" and drivers describe the absence).
@@ -105,9 +107,22 @@ SHAPE EXAMPLE (placeholders only — fill from the actual headlines):
 }}
 
 Decision rule:
-- Lean ← direction: positive → bullish; negative → bearish; mixed/none → neutral.
-- Magnitude ← novelty × material weight: high novelty + material → higher magnitude.
-- Confidence scales with headline count; fewer than 3 articles caps confidence low.
+- Lean is driven by NEW, incremental, company-specific information — not by
+  overall sentiment.  Positive coverage of a stable large-cap is the DEFAULT
+  state and is NOT a reason to be bullish.
+    bullish ← at least one genuinely-new positive company-specific catalyst
+              (0–2 days old, not a restatement of older news), with no
+              comparably fresh negative catalyst.
+    bearish ← at least one genuinely-new material negative signal.
+    neutral ← everything else: positive-but-already-priced-in, mixed signals,
+              opinion or price commentary only, or nothing fresh.
+              Do NOT default to bullish.
+- Magnitude ← expected size of the 1–3 session move if the lean is right
+  (novelty × materiality).
+- Confidence ← how sure you are the news is real, unpriced, AND material.
+  Confidence is NOT driven by article COUNT — 200 "great stock" pieces are
+  weaker than one report of a missed guide.  Fewer than ~3 genuinely
+  company-specific articles caps confidence low.
 - Conflicting direction signals across articles → mixed → neutral with low confidence.
 - Bearish is appropriate for missed guidance, downgrade, supplier loss,
   executive departure, regulatory action, or adverse legal outcome —
@@ -130,6 +145,14 @@ Recency and already-priced-in discount:
   is weak signal at the 1-day horizon.
 - If a published age is marked ``age unknown``, treat that article
   conservatively: do not let it anchor your confidence upward.
+
+Source and signal quality:
+- Weight: company disclosures, wire-service reporting of FACTS (earnings,
+  contracts, approvals), and sell-side rating or price-target CHANGES that
+  move outside the prior consensus range.
+- Treat as NOISE (never a driver): pundit opinion ("Cramer says..."),
+  "stock up/down today" price commentary, technical-rating blurbs
+  (RSI or relative-strength), and notes that merely restate consensus.
 
 Stop emitting if you are about to repeat a token or symbol three or more times in a row.
 Return the verdict as-is and never emit filler tokens.

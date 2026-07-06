@@ -20,6 +20,7 @@ from config.analysts import AnalystsConfig, load_analysts_config
 _MINIMAL_LLM_CAPS: dict = {
     "timeout_seconds":   60,
     "max_output_tokens": 2000,
+    "temperature":       0.3,
     "timeout_retries":   3,
     "schema_retries":    3,
 }
@@ -142,6 +143,7 @@ def test_load_analysts_config_exposes_news_llm_caps(tmp_path) -> None:
             "llm": {
                 "timeout_seconds":   60,
                 "max_output_tokens": 2000,
+                "temperature":       0.3,
                 "timeout_retries":   3,
                 "schema_retries":    3,
             },
@@ -155,6 +157,8 @@ def test_load_analysts_config_exposes_news_llm_caps(tmp_path) -> None:
             "llm": {
                 "timeout_seconds":   60,
                 "max_output_tokens": 2000,
+                "thinking_budget":   2048,
+                "temperature":       0.3,
                 "timeout_retries":   3,
                 "schema_retries":    3,
             },
@@ -175,11 +179,60 @@ def test_load_analysts_config_exposes_news_llm_caps(tmp_path) -> None:
     assert cfg.news.llm.max_output_tokens == 2000
     assert cfg.news.llm.timeout_retries   == 3
     assert cfg.news.llm.schema_retries    == 3
+    # thinking_budget is optional — omitted on the News block, so it defaults
+    # to None (leave the model's native thinking behaviour untouched).
+    assert cfg.news.llm.thinking_budget is None
 
     assert cfg.fundamental.llm.timeout_seconds   == 60
     assert cfg.fundamental.llm.max_output_tokens == 2000
     assert cfg.fundamental.llm.timeout_retries   == 3
     assert cfg.fundamental.llm.schema_retries    == 3
+    # Set on the Fundamental block — parsed through as the bounded ceiling.
+    assert cfg.fundamental.llm.thinking_budget == 2048
+
+
+def test_llm_caps_accepts_thinking_level(tmp_path: Path) -> None:
+    """``thinking_level`` (the Gemini 3 knob) is parsed and exposed."""
+
+    cfg_dict = json.loads(json.dumps(_MINIMAL_CFG))
+    cfg_dict["news"]["llm"] = {**_MINIMAL_LLM_CAPS, "thinking_level": "medium"}
+    cfg_file = tmp_path / "analysts.json"
+    cfg_file.write_text(json.dumps(cfg_dict))
+
+    cfg = load_analysts_config(path=cfg_file)
+
+    assert cfg.news.llm.thinking_level == "medium"
+    # The two knobs are mutually exclusive, so a level-only block leaves the
+    # budget unset.
+    assert cfg.news.llm.thinking_budget is None
+
+
+def test_llm_caps_rejects_both_thinking_knobs(tmp_path: Path) -> None:
+    """Setting both thinking knobs is the Gemini 3 400 — reject at config load."""
+
+    cfg_dict = json.loads(json.dumps(_MINIMAL_CFG))
+    cfg_dict["news"]["llm"] = {
+        **_MINIMAL_LLM_CAPS,
+        "thinking_budget": 512,
+        "thinking_level":  "medium",
+    }
+    cfg_file = tmp_path / "analysts.json"
+    cfg_file.write_text(json.dumps(cfg_dict))
+
+    with pytest.raises(ValidationError, match="mutually exclusive"):
+        load_analysts_config(path=cfg_file)
+
+
+def test_llm_caps_rejects_invalid_thinking_level(tmp_path: Path) -> None:
+    """An unrecognised level fails validation rather than silently passing."""
+
+    cfg_dict = json.loads(json.dumps(_MINIMAL_CFG))
+    cfg_dict["news"]["llm"] = {**_MINIMAL_LLM_CAPS, "thinking_level": "ultra"}
+    cfg_file = tmp_path / "analysts.json"
+    cfg_file.write_text(json.dumps(cfg_dict))
+
+    with pytest.raises(ValidationError):
+        load_analysts_config(path=cfg_file)
 
 
 def test_load_analysts_config_rejects_zero_timeout_seconds(tmp_path) -> None:

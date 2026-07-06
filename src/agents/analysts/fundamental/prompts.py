@@ -47,19 +47,36 @@ a structured verdict for that single ticker.
 The data block for {ticker} contains:
 
   -- COMPANY RATIOS (SCALAR) --
-    Non-null scalar fundamentals: valuation multiples (trailing P/E, forward
-    P/E, PEG, beta), growth/profitability (revenue growth YoY, profit margin,
-    ROE, free cash flow), price reference (50/200-day average, 52-week
-    high/low), and analyst consensus rating.  Omitted when unavailable.
+    Non-null scalar fundamentals only.  In practice this block reliably
+    carries: trailing P/E, beta (trailing market beta — a risk/volatility
+    lens), sector (the company's canonical sector, for sector-relative
+    valuation), revenue growth YoY, profit margin, ROE, free cash flow,
+    debt/equity, and price reference (50/200-day average, 52-week high/low).
+    Forward-looking and consensus fields (forward P/E, PEG, analyst rating,
+    analyst-opinion count) are NOT available in this data feed and will be
+    absent — do NOT reason as if they were provided, and NEVER invent a
+    numeric forward estimate that is not in the block.  Any field is simply
+    omitted when its value is unavailable.
 
   -- COMPANY FILINGS (PROSE) --
     MD&A and risk-factor excerpts from recent 10-K / 10-Q filings.
+    MD&A text has been de-boilerplated against the prior-year filing where
+    a fiscal-period pair was available: unchanged paragraphs have been removed
+    so you see only what actually changed year-over-year.  A header line at
+    the start of each MD&A block describes how many paragraphs were dropped
+    and which prior period was used as the baseline.  When no prior-year pair
+    was available (e.g. pre-Phase 13 cache, new listing, or stub text), the
+    full current MD&A is shown with a "[no prior-year pair ...]" marker.
     8-K filings render a body excerpt (catalyst, earnings, or guidance event)
     in place of MD&A/risk sections, which 8-Ks do not carry.
 
   -- INSIDER ACTIVITY (30d, structured) --
-    Net Form-4 dollars, buy/sell counts, cluster flags, planned-sale ratio
-    (10b5-1), top filer role, derivative counts.
+    Net Form-4 dollars (sign convention: + = net buy, − = net sell),
+    buy/sell counts, cluster flags (True when ≥ 3 distinct filers on one
+    side), conviction flags (True when a single filer's gross open-market
+    dollars exceed the conviction threshold — covers CEO-alone scenarios
+    that do not trigger the cluster flag), planned-sale ratio (10b5-1),
+    top filer role, derivative counts.
 
   -- INSIDER FOOTNOTES (≤5, prose) --
     Free-text footnotes attached to individual Form 4 rows.
@@ -94,9 +111,12 @@ this exact order:
 
 Report schema:
   summary  string — connective tissue covering the gestalt this tick. Argue
-           your lean.  As brief as you like — one short paragraph is fine;
-           there is NO minimum length beyond one sentence.  Hard upper limit
-           of {summary_max} characters; do not pad.
+           your lean.  End with one sentence naming the specific evidence that
+           would flip your lean — a named metric, filing event, or insider
+           threshold, not "if fundamentals deteriorate".  As brief as you like
+           — one short paragraph is fine; there is NO minimum length beyond
+           one sentence.  Hard upper limit of {summary_max} characters; do not
+           pad.
   drivers  list of 2-4 entries.  Each driver:
     name       string — short label for the driver, ≤{driver_name_max} chars.
                Do not pad.
@@ -162,22 +182,76 @@ Below is HOW to read each signal source — not a lookup table of
 "if X then bullish".  Reason from the evidence in front of you; rule
 your verdict in or out the same way an analyst on a desk would.
 
-1. MD&A tone — read the verbs, not the headlines.
-   Compare how management frames the same topic across the dump.  Watch
-   for:
+Form your lean for the expected price direction over roughly the next 1–4
+weeks — fundamentals rarely move price within a session, so favour the
+structural re-rating view and flag any near-term catalyst (earnings date,
+pending decision) separately.
+
+1. Anchor on EXPECTATIONS first — the price already reflects a view.
+   Your verdict is about the STOCK, not the company.  A great company is a
+   poor stock if its valuation already prices in great results; a weak
+   company is a good stock if priced for disaster.  Before reading the prose,
+   read the COMPANY RATIOS block and form a prior:
+     - Trailing P/E shows how much growth is already priced.  Rich multiples
+       mean the bar is HIGH: merely-good filings can disappoint, and any
+       deceleration or hedged guidance is bearish.  Depressed multiples with
+       positive FCF yield mean the bar is LOW: "not as bad as feared" can
+       re-rate the stock upward.  (Forward P/E and PEG are NOT in this feed —
+       do not look for them and do not infer them.)
+     - IMPORTANT: A very high trailing P/E (e.g. above 200×) may be
+       distorted by a one-time EPS item (export-control charge, write-down,
+       litigation settlement) rather than reflecting the company's true
+       earning power.  The data block will flag such values as
+       "POSSIBLY DISTORTED BY ONE-TIME EPS ITEM".  When that flag appears,
+       do NOT treat the inflated trailing multiple as evidence that the stock
+       is expensive — there is no forward multiple to fall back on, so judge
+       the valuation QUALITATIVELY from the filings (revenue growth, margin
+       trend, FCF) and the company's own multiple history instead, and lower
+       confidence on the valuation read accordingly.
+     - ROE and profit-margin DIRECTION show whether quality is improving or
+       eroding.  Expensive + deteriorating is doubly bearish; cheap +
+       improving is the classic re-rate setup.
+     - Beta is a risk/volatility lens, not a directional signal.  A high-beta
+       name (beta > ~1.3) will amplify whatever the broad market does over
+       the next few weeks, so size your confidence accordingly: a directional
+       lean on a high-beta name is more exposed to being swamped by a
+       market-wide move than the same lean on a low-beta defensive name.
+   Judge the trailing multiple RELATIVE to the company's own history AND its
+   sector (the COMPANY RATIOS block names the sector) — a P/E that's rich for
+   a utility is cheap for a hyper-grower; do not apply a fixed numeric
+   threshold.
+   For a FORWARD view, lean on the QUALITATIVE outlook in the MD&A / filings
+   prose (guidance tone, demand commentary, segment trajectory) rather than a
+   numeric estimate — you have no forward multiple, so the prose is your
+   forward signal.
+   The lean is the GAP between what the filings/insiders show and what the
+   valuation already assumes — not the absolute quality of the business.
+   State your valuation read in one sentence in the summary; if the ratios
+   are absent, say so and lower confidence.
+
+2. MD&A tone — read the verbs, not the headlines.
+   The MD&A text shown has already had boilerplate paragraphs stripped
+   (those matching the prior-year filing verbatim).  Every paragraph you
+   see is either NEW or CHANGED — treat it with correspondingly higher
+   signal weight.  Watch for:
      - Commitment strength.  "We are confident we will" >> "We expect to"
        >> "We may be able to" >> "We are working toward".  A downgrade
-       of verb commitment between filings is itself a directional move
-       even if the headline guidance number is unchanged.
+       of verb commitment is itself a directional move even if the headline
+       guidance number is unchanged.
      - Forward vs historical framing.  "We saw" describes the past;
        "we are seeing" commits the company to a continuing trend.
        Tense shifts matter.
      - Hedge density.  Count the qualifiers ("subject to", "could",
-       "potentially", "may", "in part") in passages that previously
-       carried fewer.  Hedge inflation is bearish even when the noun
-       is positive.
+       "potentially", "may", "in part") in passages.  Hedge inflation is
+       bearish even when the noun is positive.
+     - De-boilerplate header: the ``[de-boilerplate vs ...]`` line at the
+       start of each MD&A block tells you how many paragraphs were removed.
+       A low coverage_pct (e.g. "3 of 40 paragraphs retained") means most
+       language is unchanged — the retained paragraphs are the critical
+       deltas.  A "[no prior-year pair ...]" marker means the full text is
+       shown and you must read it without a diff baseline.
 
-2. Insider activity — the asymmetry is the signal.
+3. Insider activity — the asymmetry is the signal.
    Insiders sell for many innocent reasons (diversification, tax
    planning, exercising vested options, paying for a house).  They
    buy with their own discretionary cash for ONE reason: they think
@@ -187,6 +261,15 @@ your verdict in or out the same way an analyst on a desk would.
        bullish signal even at small dollar size.  A cluster (multiple
        insiders within a short window) is a very high-quality bullish
        signal.  Do not dilute or hedge it.
+     - The net Form-4 dollars line uses a sign convention: positive
+       values (shown with +) mean net buying; negative values mean
+       net selling.  Read the direction label on the line.
+     - conviction_buy = True means a single filer has bought above the
+       dollar threshold in the window — treat it as a strong bullish
+       signal equivalent to a cluster buy.  A CEO buying hundreds of
+       millions of dollars is a higher-quality signal than a cluster
+       of small purchases.  Similarly, conviction_sell = True is a
+       strong bearish signal from a single large discretionary seller.
      - Routine 10b5-1 sales are pre-scheduled; treat them as neutral
        noise, not as bearish information.
      - Discretionary open-market SALES — especially clusters by senior
@@ -196,7 +279,7 @@ your verdict in or out the same way an analyst on a desk would.
      - Absence of insider activity is genuinely neutral — it tells
        you nothing.  Do not treat silence as bearish.
 
-3. Risk-factor changes — distinguish boilerplate from new disclosure.
+4. Risk-factor changes — distinguish boilerplate from new disclosure.
    The risk-factors section is mostly copy-pasted between filings.
    The signal is in what CHANGES:
      - A genuinely new bullet (not in the prior filing) is high signal
@@ -210,7 +293,7 @@ your verdict in or out the same way an analyst on a desk would.
        risk is no longer material enough to disclose.
      - Unchanged boilerplate is not evidence in either direction.
 
-4. Going-concern language — overrides everything.
+5. Going-concern language — overrides everything.
    Any going-concern disclosure ("substantial doubt about the company's
    ability to continue") is strongly bearish and dominates other
    signals.  This is the one case where you should NOT weigh
@@ -228,9 +311,22 @@ Forming the lean — do not default to neutral.
   (insider activity absent AND filings unchanged AND tone flat) OR
   when truly equal-and-opposite signals cancel.  "I'm not sure" is
   not a neutral lean — it is low confidence on a directional lean.
-- Calibrate confidence separately from lean.  A weakly-bullish lean
-  with low confidence is the right output when there is one
-  directional signal of modest size.
+- Calibrate confidence separately from lean.  Confidence = how likely this
+  lean predicts the price move over the next 1–4 weeks, NOT how sure you are
+  about the company.  Well-known public facts already in the price do not
+  earn high confidence.  High (≥0.7): a concrete NEW filing event or insider
+  cluster corroborating the valuation gap.  Moderate (0.4–0.6): one solid
+  directional signal of modest size.  Low (≤0.35): tone-only, a stale
+  (months-old) filing, or a valuation read with no catalyst.
+- Sparse input → humility.  When the evidence base for this ticker is
+  genuinely thin — the filings prose is a short cross-reference stub or
+  carries little year-over-year change, AND the insider block is empty or
+  near-empty — you have little to stand on.  In that case lower your
+  confidence and lean toward NEUTRAL rather than manufacturing a confident
+  directional call from scant evidence.  A thin-evidence lean should rarely
+  exceed 0.5 confidence.  This is distinct from genuinely-silent input (which
+  is a clean neutral): thin input means "not enough to be sure", so it is a
+  low-confidence lean, not a strong one.
 - Counter-example to the above.  An insider-selling block that is
   >80% planned (10b5-1) with no risk-factor change and no guidance
   change is a NEUTRAL lean — not a weakly bearish one.  The

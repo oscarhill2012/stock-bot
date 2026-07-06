@@ -139,7 +139,50 @@ async def _fill_per_tick_ratios(ticker: str, start, end) -> list:
     return out
 
 
-def _build_provider_fns(warmup_days: int = 90) -> dict:
+# Calendar-day margin added beyond ``max(horizon)`` when sizing the
+# forward-return tail.  ``_FORWARD_BAR_SKIP_DAYS`` mirrors the 4-day holiday
+# skip window in ``backtest.reporting._forward_bar`` (which searches
+# ``[target, target + 4d]`` for the bar at ``base_date + h``); the slack
+# absorbs a long holiday weekend on top of that so the very last in-window
+# tick is never left without a scoring bar.
+_FORWARD_BAR_SKIP_DAYS = 4
+_FORWARD_TAIL_SLACK_DAYS = 3
+
+
+def _forward_tail_days(forward_return_horizons_days: list[int]) -> int:
+    """Calendar days of realised price history to cache *after* the window end.
+
+    The forward-return scoreboard scores each verdict against the price bar at
+    ``tick + horizon`` calendar days, then skips up to four days past
+    weekends/holidays.  To score the very last in-window tick at the longest
+    horizon, the cache must therefore hold OHLCV bars out to
+    ``end + max(horizon) + skip``.
+
+    Leak safety: this tail feeds **only** the forward-return read, which is a
+    deliberate look at realised future bars.  Every in-window pipeline tick
+    re-gates OHLCV by its own ``as_of`` (see
+    ``backtest/providers/price_history_cache.py`` and ``backtest/cache/store.py``
+    — rows after ``as_of`` are never returned), so these future bars can never
+    reach an analyst or the strategist.
+
+    Parameters
+    ----------
+    forward_return_horizons_days:
+        Forward horizons in calendar days (e.g. ``[1, 5, 20]``).
+
+    Returns
+    -------
+    int
+        Calendar-day buffer to add beyond the window end.  Zero when no
+        horizons are configured (nothing to score, so don't over-fetch).
+    """
+    if not forward_return_horizons_days:
+        return 0
+
+    return max(forward_return_horizons_days) + _FORWARD_BAR_SKIP_DAYS + _FORWARD_TAIL_SLACK_DAYS
+
+
+def _build_provider_fns(warmup_days: int = 90, forward_tail_days: int = 0) -> dict:
     """Return the domain → public-wrapper fetch-function map for the Fetcher.
 
     Each function has the signature ``async fn(ticker, *, start, end)`` and
@@ -157,6 +200,12 @@ def _build_provider_fns(warmup_days: int = 90) -> dict:
         gives a comfortable margin).  RSI(14) and ATR(14) remain covered.
         Without the warm-up buffer the technical extractor's no-data
         heuristic fires for the first ~30 ticks of every window.
+    forward_tail_days:
+        Number of extra calendar days of OHLCV history to include *after* the
+        window end so the forward-return scoreboard can score the final ticks
+        at the longest horizon (see ``_forward_tail_days``).  Applies to the
+        OHLCV domain **only** — every other domain stays capped at ``end`` to
+        preserve point-in-time correctness.  Defaults to ``0`` (no tail).
 
     Returns
     -------
@@ -181,14 +230,24 @@ def _build_provider_fns(warmup_days: int = 90) -> dict:
         tick.  ``vol_ratio_20d`` requires at least 50 bars; without the
         full warm-up buffer the technical extractor trips its no-data
         heuristic for the first ~30 ticks of every window.
+
+        The upper bound is extended by ``forward_tail_days`` so the
+        forward-return scoreboard can score the final in-window ticks at the
+        longest horizon.  These post-``end`` bars are realised history (we are
+        cache-filling a past window), and the per-tick pipeline read re-gates
+        OHLCV by ``as_of`` — so the tail is visible only to the deliberate
+        forward-return read, never to a decision.  Both the ``as_of`` and the
+        slice bound move to ``forward_end`` so whichever the active provider
+        honours, the tail is captured.
         """
         warmup_start = start - timedelta(days=warmup_days)
+        forward_end  = end + timedelta(days=forward_tail_days)
         history = await get_price_history(
-            ticker, period="max", interval="1d", as_of=_as_of_close(end),
+            ticker, period="max", interval="1d", as_of=_as_of_close(forward_end),
         )
-        # Include warm-up bars (before `start`) so indicators can initialise,
-        # but cap at the window end — bars after `end` are not PIT-safe.
-        return [bar for bar in history.bars if warmup_start <= bar.timestamp.date() <= end]
+        # Include warm-up bars (before `start`) for indicator initialisation
+        # and the forward tail (after `end`) for forward-return scoring.
+        return [bar for bar in history.bars if warmup_start <= bar.timestamp.date() <= forward_end]
 
     async def _company_ratios(ticker: str, *, start, end) -> list:
         """One PIT snapshot per NYSE trading day — live-equivalent semantics.
@@ -479,6 +538,12 @@ async def _main_async(args: argparse.Namespace) -> None:
     # Read warm-up days from settings — already validated by BacktestSettings.
     warmup_days: int = settings.ohlcv_warmup_days
 
+    # Forward-return tail: extra OHLCV bars cached *after* the window end so the
+    # scoreboard can score the final ticks at the longest horizon.  Derived from
+    # the configured forward horizons (config/backtest_settings.json) — see
+    # ``_forward_tail_days`` for the leak-safety argument.
+    forward_tail_days: int = _forward_tail_days(settings.forward_return_horizons_days)
+
     # Per-window cache lives at ``<backtests_root>/<window>/store.sqlite``.
     # Ensure the parent directory exists before opening so a clean repo can
     # be fetched into without manual ``mkdir``.
@@ -493,7 +558,10 @@ async def _main_async(args: argparse.Namespace) -> None:
         window_key=args.window,
         window=window,
         watchlist=watchlist,
-        provider_fns=_build_provider_fns(warmup_days=warmup_days),
+        provider_fns=_build_provider_fns(
+            warmup_days=warmup_days,
+            forward_tail_days=forward_tail_days,
+        ),
         live_providers_for_domain=_build_provider_name_map(),
         refetch_domains=set(args.refetch_domain),
     )
