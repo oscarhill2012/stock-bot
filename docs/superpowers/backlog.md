@@ -150,39 +150,6 @@ The two entries below — and [[B13]] in Tier 2 — are deferred experiments ins
 
 ---
 
-### B18. Cross-tick analyst memory and "what changed since last tick"
-
-**Origin:** Surfaced during the analyst-surface-redesign brainstorm (`docs/superpowers/specs/analyst-surface-redesign-design.md`). The hybrid analyst-report design originally included a `what_changed` field — the LLM surfaces what's new since the prior tick. Removed from that spec because filling it cleanly requires feeding the prior report into the LLM, which is most of an analyst-memory feature. Doing it half-implemented (no prior context, LLM fabricates the delta) creates a field that promises more than it delivers.
-
-**The goal:** give each LLM analyst persistent memory of its prior verdict + report per ticker, fed back into the next tick's prompt as continuity context. Enables genuine `what_changed`, drift detection ("I said X two ticks ago and now I'm saying not-X — why?"), and prepares the substrate for the calibration loop in [[B2]].
-
-**Distinction from [[B11]] (RAG / retrieval substrate):**
-
-- **B11** retrieves *external* prose (filings, news, transcripts) into the analyst prompt — document chunks the analyst hasn't seen.
-- **B18** retrieves the *analyst's own prior output* — degenerate one-document RAG over the analyst's last verdict + report for a ticker.
-
-The two share retrieval primitives but answer different questions. They likely co-design but ship as separate features.
-
-**Substrate already in place after the analyst-surface-redesign spec ships:**
-- `AnalystReport` schema (`summary` + `drivers`) on `AnalystVerdict.report`.
-- Per-(analyst, ticker) report cache at `cache/reports/<analyst>/<ticker>.json` — already stores the most recent verdict + report with a prompt-version fingerprint. Natural seed for "prior tick" lookup.
-- Hash-cache machinery for input change detection (gives `what_changed` a clean denominator: which articles/filings are new vs prior).
-
-**Key questions:**
-- Memory shape: just the prior tick's report, or a rolling N reports? Verbatim or summarised? Per-ticker only, or also a portfolio-wide rolling memory?
-- Storage: extend the existing report cache (it already stores the prior report; just add a `previous_*` field), or a sibling memory store with its own retention policy?
-- Wiring: feed prior report into the prompt unconditionally on every cache miss, or only when an explicit "summarise the delta" instruction is active?
-- Hallucination risk: an LLM citing prior context can confidently misremember it. What's the forcing function tying recalled memory back to ground truth — assertions over the cached report? Diffing the LLM's `what_changed` against the deterministic hash-diff?
-- Cold-start: first tick after deploy has no prior report. Behaviour? (Probably: omit `what_changed`, emit a "first observation this tick" flag.)
-- Eviction: when does memory get forgotten — never, on watchlist removal, on TTL, on a manual invalidation event?
-- Interaction with the prompt-version fingerprint: bumping the prompt version invalidates the cache; does it also invalidate memory, or do we let the new prompt "see" the old report?
-
-**Dependencies:** Analyst surface redesign spec shipped (`analyst-surface-redesign-design.md`). Likely co-specced with [[B11]] since they share retrieval / continuity primitives.
-
-**Likely outcome of the brainstorm:** unify [[B11]] and B18 under one retrieval-and-continuity substrate spec, with two sub-features (external corpus retrieval; self-prior-report retrieval) sharing storage + invalidation machinery.
-
----
-
 ### B26. Provider Protocol return-type unification — eliminate cache-vs-live shape drift  *(architectural cleanup, high priority)*
 
 **Origin:** Surfaced during the providers-and-silent-gaps-v1 PR (commit `900c720`). The backtest's `insider_trades_cache` provider had to wrap a flat `list[InsiderTrade]` in `Form4Bundle(trades=..., derivatives=[])` on the way out because the live EDGAR provider returns the bundle but the cache store persists only the flat rows. The wrap fixed the immediate failure (smart_money silently degrading to `is_no_data`) but the underlying contract drift remains — and will recur every time a future domain has the same mismatch. The current `Provider` protocol declares only the call signature; it does not pin the return *type*.
@@ -393,24 +360,6 @@ Two narrative-prose sources remain unread after Phase 5:
 
 ---
 
-### B19. Historical social-sentiment ingestion  *(unlocks social analyst in backtest)*
-
-**Origin:** Backtest harness spec (`docs/superpowers/specs/backtest-harness-design.md`) explicitly skips social in backtest — Finnhub's social endpoint went paid, the official Reddit API has no historical depth past ~1000 posts, and Twitter/X historical is dead since 2023. The strategist already tolerates `social=None`, so the harness ships without it, but every backtest is one signal short until this lands.
-
-**The goal:** restore historical social sentiment back to ~2022 for free by scraping a Pushshift-successor mirror (pullpush.io / arctic_shift / similar) and computing sentiment locally so we are not dependent on a paid endpoint.
-
-**Key questions:**
-- Which mirror is most reliable? pullpush.io is community-run with no SLA — what's the failure mode and what's the fallback?
-- Which subreddits earn their place: WSB only, or a broader set (`investing`, `stocks`, ticker-specific subs)?
-- Sentiment model: VADER is 3 lines, runs on CPU, decent on social text. FinBERT is more accurate but heavier. Pick one or run both side-by-side?
-- How do deletions / edits get handled — snapshot once and freeze, or refresh periodically?
-- Where does this wire in: register as a new `social` upstream in the existing provider shell, so live and backtest use it identically.
-- Backfill posture: one-time fill into the existing `backtests/cache/store.sqlite` plus an incremental nightly job once live.
-
-**Dependencies:** Backtest harness shipped (so we know what shape the cache expects). Not gated on anything else.
-
----
-
 ### B25. Backtest-vs-live data fidelity matrix  *(pre-live readiness gate)*
 
 **Origin:** Phase -1 verification pass (2026-05-17) on the providers-and-silent-gaps-v1 plan. Confirmed Alpha Vantage NEWS_SENTIMENT returns 9–25 articles per ticker per week on the free tier, while plausible future live news providers (paid AV, Polygon, Finnhub paid, NewsAPI) would deliver 100+/day. Comparable density / coverage / latency gaps almost certainly exist for fundamentals (free-tier XBRL coverage vs paid analyst feeds like FactSet or S&P Capital IQ), short interest (FINRA `regShoDaily` synthesised proxy vs the real biweekly NYSE/Nasdaq snapshot), and politician trades (Quiver soft-failing today vs FMP `/senate-disclosure` on a paid plan). The provider-switching architecture already enables one-line config swaps, but no one has audited *what changes about the data* when the swap happens.
@@ -428,28 +377,11 @@ Two narrative-prose sources remain unread after Phase 5:
 - Granularity: per-provider or per-domain? Per-domain is more decision-relevant; per-provider is more action-relevant.
 
 **Overlaps:**
-- [[B19]] (historical social-sentiment ingestion) — same family of "backtest data shape vs live data shape" concern, but B19 is one specific domain (social). B25 is the cross-domain audit that decides whether other domains need their own B19-equivalents.
+- [[B36]] (GDELT macro-news enrichment) — same family of "backtest data shape vs live data shape" concern, scoped to one specific domain (macro news). B25 is the cross-domain audit that decides which domains need their own parity-proof before a provider swap.
 
 **Dependencies:** providers-and-silent-gaps-v1 PR merged (gives us the v1 backtest-fill stack to audit against). Live provider candidates short-listed for at least news + fundamentals (otherwise we have nothing to compare to). Probably gated on the first real backtest completing — until we know which agents drive verdict variance, we don't know which deltas matter.
 
 **Likely outcome of the brainstorm:** decide whether the matrix is a one-off document or an ongoing per-domain checklist run before every provider swap. Likely the latter.
-
----
-
-### B27. Normalise `state["smart_money_data"]` shape to the per-ticker convention  *(small-medium refactor)*
-
-**Origin:** Surfaced during the providers-and-silent-gaps-v1 PR (commit `900c720`). Every other analyst's per-ticker raw data lives under `state["<analyst>_data"]` as `{ticker: payload}`. Smart_money breaks this convention — it stores `{"politicians": {ticker: [...]}, "notable_holders": {ticker: [...]}}` (two-level nesting keyed by *category* first, *ticker* second). The Phase 7 work surfaced a slicing bug in `agents/analysts/smart_money/agent.py` where `data.get(ticker, {})` always returned `{}` because the top-level keys were `politicians` / `notable_holders`, not ticker symbols. The fix correctly reshapes per-ticker at dispatch time; the underlying shape inconsistency remains as a footgun for future maintainers.
-
-**The goal:** rewrite `smart_money_fetch_callback` to write `state["smart_money_data"]` as `{ticker: {"politicians": [...], "notable_holders": [...]}}` — same convention as `state["fundamental_data"]`, `state["news_data"]`, etc. Update the agent's `_run_async_impl` and `make_evidence_callback` to drop the reshape shim. Update unit tests.
-
-**Key questions:**
-- Are there other multi-source analysts (today or planned — e.g. Fundamental aggregates ratios + filings + insider; News aggregates Finnhub + AV) where the same `{source: {ticker: ...}}` shape exists? If yes, normalise them in one pass.
-- Does the per-ticker reshape happen once per tick at fetch time (no per-ticker compute hit at extractor time) or per-call? Today's reshape-at-dispatch is mid-tick, called per ticker.
-- Does the typed `SmartMoneyRaw` Pydantic model from Phase 7 settle the question — the model already pins per-ticker shape, the state-key just doesn't follow.
-
-**Effort:** small. One callback, one agent file, two or three unit tests, no API surface change.
-
-**Dependencies:** None hard. Cleanest to land before [[B26]] starts auditing provider return shapes — they overlap on the question "what counts as a canonical extractor input".
 
 ---
 
@@ -521,6 +453,40 @@ The drift was harmless before today because nothing cross-referenced the three s
 
 ---
 
+### B35. Watchlist expansion toward mid-caps — restore drift-effect statistical power
+
+**Origin:** Phase 14 analyst-drift refactor (`docs/Phase14-analyst-refactor/specs/analyst-drift-refactor-design.md` §2, caveat 1). Every effect the refactor targets — PEAD, economic-links momentum, Lazy Prices, negative-news drift — is documented as strongest in small/mid caps and weakest in megacaps. The current watchlist is megacap-heavy, so a null eval result on any drift channel is *ambiguous*: it cannot distinguish "the channel is arbitraged away" from "our watchlist is where the channel is weakest." Named as out-of-scope of the refactor but a prerequisite for trusting its evals — especially the linkage channel (Plan 4), which is the most cap-attenuated of all.
+
+**The goal:** widen `config/watchlist.json` to include a mid-cap cohort chosen for drift-effect exposure (thinner analyst coverage, real supplier/customer chains, genuine event surprise), and re-baseline the golden cache for the target windows so the Phase 14 drift evals run on a watchlist where the literature predicts a *detectable* effect. Produces an apples-to-apples megacap-vs-midcap comparison of the same signals.
+
+**Key questions to brainstorm:**
+- Selection rule: fixed mid-cap list, or a screen (market-cap band × sector-link density × analyst-coverage thinness)? How many names before cache/backtest cost bites?
+- Provider coverage: does Finnhub `/company-news` retention and filings coverage hold up for mid-caps, or do gaps reintroduce the silent-degradation class we just fought?
+- Backtest windows: reuse `baseline-2025-09` / `iran-conflict-2026-02`, or add a mid-cap-specific stress window?
+- Portfolio/risk implications: do mid-cap liquidity and position-sizing assumptions in the risk gate still hold, or does this need its own sizing pass?
+- Does this land *before* the Plan 2→Plan 4 eval gate (so linkage is testable) or as a follow-on re-eval?
+
+**Dependencies:** Phase 14 Plans 1–2 shipped. Gates the credibility of the Plan 4 linkage eval — [[B31]] and the linkage channel both need this to be evaluable on their strongest terrain. Golden-cache refetch (permitted per Phase 14 D3).
+
+---
+
+### B36. GDELT (or comparable) macro-news enrichment — a properly backtestable macro feed
+
+**Origin:** Phase 14 refactor (§6.4 rejected alternatives; §10). The refactor is Finnhub-only (D1) and drops the general-news feed (D2, parity), so the linkage channel sees macro/geopolitical events only as their *equity-market echo* via roundups. GDELT DOC 2.0 was rejected for the refactor (only ~3 months guaranteed, titles-only payload, new-provider normalisation cost) — but a dedicated session could assess whether an enriched macro feed with real backtest history is worth the integration.
+
+**The goal:** evaluate and, if justified, add a second macro-news source that is *historically queryable* (so backtest/live parity holds) to give the linkage digester real macro/geopolitical input rather than the equity-news lens. Scoped as a spike-then-decide: prove the parity story first, integrate only if it survives.
+
+**Key questions to brainstorm:**
+- Which source clears the parity bar? GDELT DOC (retention/titles-only limits), a paid macro feed, or central-bank/gov RSS archives with real history?
+- Normalisation: how to fold a second schema into the one-`NewsArticle`-model discipline without the formatting-issue explosion D1 was avoiding?
+- Does it feed the existing linkage digester (Plan 4) unchanged, or need its own staleness namespace and event categories?
+- Value test: does macro input measurably move linkage verdicts vs the roundup-only lens, on a window where a known macro shock occurred?
+- Parity proof obligation: what's the minimum evidence that backtest and live see the same macro stream before we'd trust an eval?
+
+**Dependencies:** Phase 14 Plan 4 (linkage) shipped and its consumers stable. Directly relaxes the D2 constraint that shaped the linkage design — revisit only after linkage has an eval result on the roundup-only lens, so we know the marginal value of richer macro input. Cross-domain parity audit overlaps [[B25]].
+
+---
+
 ## Tier 3 — Small follow-ups & easy wins
 
 ### B6. Persist `risk_clamps_applied`
@@ -582,59 +548,6 @@ The drift was harmless before today because nothing cross-referenced the three s
 
 ---
 
-### B21. Multi-window orchestration + cross-window dashboards
-
-**Origin:** Backtest harness v1 ships with one configured era window (`svb-stress-2023-03`) to keep scope tight. Real evaluation needs results across multiple regimes (covid recovery, fed pivot, AI rally, election, tariff shock, etc.).
-
-**The goal:** a driver that runs all configured era windows in sequence (or a subset by tag), and a cross-window report comparing Sharpe / vs-SPY / trade count by regime — so we can spot "the bot wins in calm regimes but loses in stress regimes" or vice versa.
-
-**Key questions:**
-- Cache pre-fill orchestration: warm every window's cache once up front, or lazily as each run starts?
-- Report shape: one combined `metrics.md` table, or per-window + a top-level summary?
-- Era tagging: add a `tags: ["high-volatility", "rate-shock", ...]` field to `backtest_windows.json` so we can filter (`--tags rate-shock`)?
-- LLM cost guardrails: a full sweep is N× single-window cost. Add a `--dry-run-cost-estimate` mode.
-
-**Dependencies:** Backtest harness shipped. Worth more once B19 (social ingestion) is also in so the analyst pack is complete.
-
----
-
-### ~~B22~~. Shared report-cache callback factory (deduplicate News + Fundamental)
-
-**Status: resolved (2026-05-14)** — Pulled forward from the backlog and shipped as an urgent fix after a live trace (`trace-20260514T150248-5f0a2911-AAPL.json`) revealed the lifecycle bug: both per-analyst `_after` hooks read `state[verdicts_state_key]`, but ADK's `__maybe_save_output_to_state` writes to state *after* the after-model-callback chain fires, so the hooks iterated zero verdicts and the cache was never populated. The refactor was the correct structural fix: the new `make_report_cache_callbacks` factory in `src/agents/analysts/cache_callbacks.py` reads `llm_response.content` directly in `_after`, bypassing the state-save timing issue entirely. See commit `refactor(analysts): shared report-cache callback factory (B22)`.
-
-**Origin:** Phase 5 analyst-surface-redesign Task 6 shipped a hash-based LLM report cache for the News and Fundamental analysts. The two agents now hold byte-identical copies (~150 LOC each) of `_build_*_cache_callbacks` — the only differences are the analyst label, prompt-version constant, state key, hash function, output key, and trace section name. Flagged in the Opus final review as a non-blocking follow-up; deferred so Phase 5 could close cleanly before backtest.
-
-**The goal:** collapse both copies into a single `_build_report_cache_callbacks(analyst, prompt_version, input_reader, hash_fn, output_key, trace_section)` factory in `src/agents/analysts/_common.py` (where `_chain_before` / `_chain_after` already live after the Task 6 polish pass). News and Fundamental agents become ~10-line call sites passing the differences as arguments.
-
-**Key questions:**
-- Factory signature: pass `input_reader` as a `Callable[[state, ticker], Any]` so each analyst owns its dict→typed-model reconstruction (Fundamental rebuilds `CompanyRatios` / `Filing` / `Form4Bundle`; News just reads the article list)? Or pass the state keys and let the factory do generic dict access?
-- Where to live: `_common.py` is the obvious home — verify nothing in the news/fundamental imports would now cycle.
-- Test strategy: the existing integration tests (`test_news_cache_*`, `test_fundamental_cache_*`) act as the regression net. Add one unit test exercising the factory directly with a stub analyst so a future third analyst's wiring is exercised.
-- A future third analyst that wants caching (e.g. politician-trades, fundamentals-deep) becomes a 10-line addition rather than a third 150-LOC mirror — name this as the motivating use case in the spec.
-
-**Dependencies:** None. Pure refactor on top of `worktree-phase5-analyst-surface-redesign`.
-
----
-
-### ~~B23~~. Auto-derived prompt-version fingerprint (close the silent-stale-cache risk)
-
-**Status: resolved (2026-05-14)** — Shipped as a pre-backtest hardening pass: the report-cache version strings in `src/agents/analysts/report_cache.py` are now auto-derived at import time from a blake2b digest of each analyst's rendered prompt instruction. Any edit to a prompt template, the closed-vocab JSON, or the analyst output caps automatically flips the version → all cached entries miss on next read and are overwritten with fresh LLM output. The hand-maintained string constants are gone; the silent-stale-cache risk is closed structurally rather than by human discipline. See commit `refactor(analysts): auto-derive prompt-version fingerprint (B23)`.
-
-**Origin:** Phase 5 Task 6 keyed the report cache on `(input_hash, prompt_version)`. The version strings (`NEWS_PROMPT_VERSION` / `FUNDAMENTAL_PROMPT_VERSION` in `src/agents/analysts/report_cache.py:43-47`) are hand-maintained constants living in a different file from the prompt templates (`src/agents/analysts/{news,fundamental}/prompts.py`). A contributor editing a template has no structural prompt to bump the constant; if they forget, the cache silently serves stale verdicts generated under the old prompt. Flagged in the Opus final review as a non-blocking follow-up; risk is low while pre-deployment but bites once the cache has accumulated weeks of live entries.
-
-**The goal:** derive each prompt-version string from a hash of its rendered template (plus closed vocabulary) instead of maintaining it by hand. Any edit to the template automatically invalidates every cached entry — no human discipline required.
-
-**Key questions:**
-- What to hash: just the rendered instruction text? Instruction + vocab JSON? Instruction + vocab + the `AnalystVerdict` / `AnalystReport` schema fingerprint (catches contract drift too)?
-- Reference vocab problem: News and Fundamental render against a `Vocabulary` value that varies tick-to-tick. Hashing the instruction needs a deterministic reference vocab so the version is stable across ticks. Hard-code a `_REFERENCE_VOCAB` constant per analyst, or hash the *template* (pre-substitution) rather than the rendered output?
-- Backtest compatibility: a mid-sweep template edit would now invalidate a partially-populated cache. Probably the right behaviour, but the backtest harness should pin the version string for the duration of a sweep — verify this is compatible with the cache layout.
-- Migration: existing cache entries on disk use the old string-literal version. First run after this lands invalidates them all. Acceptable, but document it.
-- Where to live: probably `src/agents/analysts/report_cache.py` — a `_derive_prompt_version(instruction, schema)` helper, and the module-level constants become `NEWS_PROMPT_VERSION = _derive_prompt_version(...)` at import time.
-
-**Dependencies:** None. Cleanest after [[B22]] (which centralises the cache wiring) but doesn't strictly require it.
-
----
-
 ### B24. Persistence schema refresh — after first backtest runs
 
 **Origin:** Backtest harness design review (May 2026). `src/orchestrator/persistence.py` (~420 lines) hasn't been touched since the early scaffolding. Backtest reuses it via the existing `db_session` seam and per-run `create_all(engine)` pattern — no refactor is required to ship backtest. But the schema carries early-days cruft: no FK relationships between `evidence` / `ticker_stance` / `decision` / `portfolio_snapshot` (all just stamp `tick_id` as a free-string column, no JOINs), inconsistent timestamp column names (`timestamp` vs `recorded_at` vs `opened_at`), no Alembic / migration story, and a single 420-line module that wants splitting per table. Flagged during the spec review as deferred deliberately — refactor-before-X is a classic trap, and backtest runs are the right pressure to learn which schema choices actually hurt.
@@ -664,18 +577,6 @@ The drift was harmless before today because nothing cross-referenced the three s
 
 ---
 
-### B32. Analyst output-cap diet — per-ticker output budget tightening
-
-**Origin:** Surfaced during the Phase 9 per-ticker fan-out brainstorm (`docs/Phase9-agent-fanning-per-ticker/spec.md`). Phase 9 fixes the *batched* output-overflow crash by emitting one verdict per LLM call; that resolves the immediate budget pressure but leaves the per-ticker caps as-is (`report_summary_max_chars: 2000`, `report_driver_body_max_chars: 1000`, ≤4 drivers). Each per-ticker output budget is now ~1,750 tokens against an 8,192-token Flash-Lite ceiling — well within budget, but the caps were sized for a regime that no longer exists.
-
-**The goal:** halve (or further) `report_summary_max_chars` and `report_driver_body_max_chars`, drop max-drivers from 4 to 3, and re-verify no signal is lost on a surface-trace A/B. Cheaper prompts, faster ticks, tighter prose.
-
-**Effort:** small. Two values in `config/analysts.json`, one re-run of the SVB-stress backtest, A/B the verdict distribution against the pre-diet baseline.
-
-**Dependencies:** Phase 9 shipped (so the per-ticker baseline is the comparison floor). Independent of everything else.
-
----
-
 ### B33. Per-ticker state-key sanitiser — fix silent context drop for dotted/hyphenated tickers  *(small, latent-bug fix)*
 
 **Origin:** Surfaced during the Phase 9 final Opus review (commit `d820e4a`). The per-ticker branch factories build their LLM instructions with placeholders of the form `{temp:news_context_<TICKER>}` and `{temp:fundamental_context_<TICKER>}` so ADK's `inject_session_state` resolves the right per-ticker state key at run time. ADK's `_is_valid_state_name` requires the part after `temp:` to be a valid Python identifier (`parts[1].isidentifier()`); when it isn't, `inject_session_state` silently returns the unsubstituted placeholder and the LLM receives the literal token `{temp:news_context_BRK.B}` instead of the news context block. For tickers like `BRK.B`, `BF.B`, or `BRK-B`, the branch completes without error but the model gets zero data — likely emitting `is_no_data=true` or hallucinating. The current watchlist has no dotted tickers, so the bug is latent.
@@ -700,6 +601,30 @@ The drift was harmless before today because nothing cross-referenced the three s
 
 ---
 
+### B37. Capture-only archive job for the Finnhub general feed
+
+**Origin:** Phase 14 refactor (§10). The Finnhub `/news?category=…` general feed is latest-only and can't be queried historically, which is exactly why D2 dropped it from the strategy (no backtest parity). But *from now on* we could archive it forward, building the historical macro corpus we lack — option value for a future, properly-backtestable macro window without paying a new provider.
+
+**The goal:** a small scheduled capture job that polls the general feed (minId pagination) and appends normalised `NewsArticle` rows to a dedicated archive table/store, timestamped at capture. Pure data accretion — no analyst reads it yet. In a year it becomes a parity-safe macro backtest input; started now it costs almost nothing.
+
+**Effort:** ~half a phase. Reuse the existing Finnhub client and `NewsArticle` normaliser; add a capture table (kept out of the golden cache to avoid PIT confusion — capture-time ≠ as-of), a minId cursor, and a cron/schedule entry. No pipeline or contract changes. Explicitly *not* built into the live path pre-deployment — it's a standalone accretion job.
+
+**Dependencies:** None hard. Complements [[B36]] (both chase a real macro feed; this one builds the corpus ourselves rather than buying history). Deferred until there's somewhere to *run* a persistent job — currently pre-deployment, so this is a "start the clock once infra exists" item.
+
+---
+
+### B38. Stale-news fade — the contrarian Tetlock reversal trade
+
+**Origin:** Phase 14 Plan 2 builds the staleness measure (embedding similarity of an article against the per-ticker news history) purely as a *filter* — stale news is discarded before the LLM. Tetlock (2011) documents that stale news doesn't just under-inform, it *over-reacts and reverses* (~1 week). The measure Plan 2 builds is exactly the input for trading that reversal, but the contrarian trade was held out as a separate experiment to keep the drift reframe clean.
+
+**The goal:** a small experimental analyst (or a Plan 2 verdict flag) that, when an article is classified stale *and* the ticker has moved with it, emits a low-confidence *contrarian* lean anticipating the reversal — rather than simply suppressing the article. Evaluated in isolation on the scoreboard so its (likely weak, likely noisy) signal is measured separately from the drift channels.
+
+**Effort:** ~half to one phase. The staleness score already exists post-Plan 2; this adds a small verdict path plus a recent-price-move check (technical data already in state), and a scoreboard cluster. No new provider, no new LLM hop if done deterministically. Main cost is eval discipline — separating this from Plan 2's drift signal.
+
+**Dependencies:** Phase 14 Plan 2 shipped (owns the staleness measure). Independent of the linkage channel. Best evaluated once [[B35]] gives it a watchlist where reversal is detectable.
+
+---
+
 ## How segments interact
 
 ```
@@ -715,8 +640,7 @@ Phase 4 (Goals 1 + 2 — strategist v2 + analyst contract, plans A→B→C→D)
    │     │                                                              │
    │     ├── B9  (sparse-execution gate)  — consolidated into above ───┤── often co-developed
    │     ├── B10 (narrative analyst — 13D/Form4)                       │
-   │     ├── B11 (RAG / retrieval substrate)                          ─┤
-   │     ├── B18 (cross-tick analyst memory — degenerate self-RAG)    ─┘
+   │     ├── B11 (RAG / retrieval substrate)                          ─┘
    │     └── B16 (LLM augmentation ratchet — policy anchor; gates B12/B13/B14 + future LLM hops)
    │
    ├── TradingAgents-inspired explorations (all trace-justified via B16)
@@ -742,20 +666,25 @@ Phase 4 (Goals 1 + 2 — strategist v2 + analyst contract, plans A→B→C→D)
    │
    ├── Provider/cache contract cleanup (from providers-and-silent-gaps-v1):
    │     ├── B26 (Provider Protocol return-type unification — HIGH PRIORITY)
-   │     ├── B27 (smart_money state shape normalisation)
    │     ├── B28 (cache Form 4 Table II derivative trades)
    │     ├── B29 (integration smoke-test scaffolding dedup — test-only)
    │     └── B30 (single-source-of-truth for analyst lookback days — fill ⇆ replay parity)
    │
-   └── Phase 9 (per-ticker fan-out for News + Fundamental LLM analysts):
-         spec: docs/Phase9-agent-fanning-per-ticker/spec.md
-         ├── B31 (cross-ticker context aggregator — restores relative reasoning;
-         │        overlaps with B12, gated by B16)
-         ├── B32 (analyst output-cap diet — small follow-up cleanup)
-         ├── B33 (per-ticker state-key sanitiser — latent dotted-ticker fix)
-         └── B34 (end-to-end failure-isolation integration test)
+   ├── Phase 9 (per-ticker fan-out for News + Fundamental LLM analysts):
+   │     spec: docs/Phase9-agent-fanning-per-ticker/spec.md
+   │     ├── B31 (cross-ticker context aggregator — restores relative reasoning;
+   │     │        overlaps with B12, gated by B16)
+   │     ├── B33 (per-ticker state-key sanitiser — latent dotted-ticker fix)
+   │     └── B34 (end-to-end failure-isolation integration test)
+   │
+   └── Phase 14 (analyst drift refactor — filing-delta, news-drift, linkage):
+         spec: docs/Phase14-analyst-refactor/specs/analyst-drift-refactor-design.md
+         ├── B35 (mid-cap watchlist expansion — makes drift/linkage evals trustworthy)
+         ├── B36 (GDELT macro-news enrichment — a backtestable macro feed; overlaps B25)
+         ├── B37 (capture-only archive of the Finnhub general feed — forward corpus)
+         └── B38 (stale-news fade — contrarian Tetlock reversal on Plan 2's staleness measure)
 ```
 
-**Rough order if doing them in series:** Phase 4 plans A → B → C → D → Phase 5 (analyst re-categorisation) → B16 (ratchet policy operationalised by Phase 5's surface trace) → analyst-surface-redesign (consolidates B9 + half of B14) → **B26** (architectural cleanup — high priority before more providers land) → B27 / B28 / B30 (related provider/cache contract follow-ups) → B6 → B7 → B11 → B18 (co-specced with B11) → B10 → B2 (long arc) → B5 → B17 (likely folds into B2) → B4 → B3 → B8 → B29 (test-only cleanup, rule-of-three). B12/B13/B14-deterministic-narrator/B15 fold in only as trace data justifies, ordered ad-hoc against [[B16]]'s checklist.
+**Rough order if doing them in series:** Phase 4 plans A → B → C → D → Phase 5 (analyst re-categorisation) → B16 (ratchet policy operationalised by Phase 5's surface trace) → analyst-surface-redesign (consolidates B9 + half of B14) → **B26** (architectural cleanup — high priority before more providers land) → B28 / B30 (related provider/cache contract follow-ups) → B6 → B7 → B11 → B10 → B2 (long arc) → B5 → B17 (likely folds into B2) → B4 → B3 → B8 → B29 (test-only cleanup, rule-of-three). The Phase 14 follow-ons (B35 mid-cap watchlist, then B36/B37/B38) sequence against the Plan 2→Plan 4 eval-gate outcome. B12/B13/B14-deterministic-narrator/B15 fold in only as trace data justifies, ordered ad-hoc against [[B16]]'s checklist.
 
 Most are independent enough to reorder by what hurts most in operation. Two strict orderings hold: **Phase 4 before B2** (the knowledge base needs a clean signal contract and decision telemetry to reason over) and **Phase 5 before B9/B10/B11/B12/B13/B14** (every analyst-side and debate-side experiment assumes the post-Phase 5 5-analyst pack, deterministic baseline, and surface-trace harness).
