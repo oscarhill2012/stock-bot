@@ -56,6 +56,25 @@ Two caveats recorded up front:
 | 3 | Macro stream data plumbing (router + refetch) | — |
 | 4 | Linkage analyst (digester, exposure map, matcher, registry) | 2, 3 |
 
+> **Design numbering vs. plan-file numbering.** This spec numbers plans by
+> *design grouping* (the four design-plans above). The implementation plans
+> under `docs/Phase14-analyst-refactor/plans/` are numbered by *execution
+> order* (five files): the macro-stream design-plan (Plan 3 above) is split
+> into two execution plans — a deterministic router + news-cap parity plan
+> and a macro-feed emission + cache-refetch plan — sequenced so file order
+> equals execution order across the eval gate. Map:
+>
+> | Spec design-plan (this doc) | Execution plan file |
+> | --- | --- |
+> | Plan 1 — filing-delta | `plan1-filing-delta-fundamental.md` (Plan 1) |
+> | Plan 2 — news rebuild | `plan3-news-drift-rebuild.md` (Plan 3) |
+> | Plan 3 — macro stream (router + refetch) | `plan2-macro-router-caps.md` (Plan 2, router + news caps) **+** `plan4-macro-feed.md` (Plan 4, emission + refetch) |
+> | Plan 4 — linkage | `plan5-linkage-analyst.md` (Plan 5) |
+>
+> Section references from the plan files (§5, §6.1–§6.4, §7, §8) point at
+> this spec's *sections*, which are stable; the plan files cite spec
+> sections by number + design-name, not by plan number.
+
 **Eval gate:** Plans 1–2 are built and evaluated first. Plan 4's build
 routes through a **two-step gate**: (1) Plan 2's eval must show the drift
 reframe has signal, **and then** (2) the watchlist is broadened toward

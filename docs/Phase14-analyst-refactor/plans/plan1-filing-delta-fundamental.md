@@ -17,7 +17,7 @@
 - **Backtest PIT rules** — every read of `state["as_of"]` goes through `resolve_as_of`; any datetime written to ADK state is ISO-stringified first. (No task in this plan touches ADK state directly, but Task 4 modifies code adjacent to it — do not regress this.)
 - **Shell conventions** — never prefix Bash commands with `cd`; run from the project root. Tests: `.venv/bin/python -m pytest tests/... -v`. Scripts: `PYTHONPATH=src .venv/bin/python -m scripts.<name>`.
 - **`.git/info/exclude` gotcha** — new files under `tests/unit/data/` are silently ignored by a bare `data` pattern; `git add -f` them (called out in the relevant commit step).
-- **Co-planned sibling (Plan 2):** Plan 2 adds `horizon_days: int = Field(default=1, ge=1)` to `AnalystVerdict` in `src/contract/evidence.py` (and `TickerVerdict` inherits it). This plan **consumes** that field — Task 5's propagation tests fail until it exists. Execute this plan on the shared Phase 14 branch **after** Plan 2's contract change lands, and do **not** add defensive `getattr` shims for it. This plan owns the `LlmTickerVerdict` (emit-schema) side of the field plus a one-line interim patch to the current news prompt; Plan 2's news rebuild replaces that prompt wholesale.
+- **Horizon contract ownership:** Task 5 of this plan adds `horizon_days` to **both** `AnalystVerdict` (canonical, `Field(default=1, ge=1)`, inherited by `TickerVerdict`) and `LlmTickerVerdict` (emit schema, required — no default) in `src/contract/evidence.py`. This is the shared drift-horizon contract the whole Phase 14 programme builds on: Plan 3's news rebuild and Plans 4–5's macro/linkage analyst all **consume** it. Task 5 also interim-patches the current news prompt so it stays schema-valid until Plan 3 replaces that prompt wholesale. Plan 1 therefore runs **first** in the programme; do **not** add defensive `getattr` shims for the field anywhere.
 
 ## Context primer (read once before Task 1)
 
@@ -976,19 +976,97 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 ---
 
-### Task 5: `horizon_days` on the LLM emit schema (+ interim news prompt line)
+### Task 5: `horizon_days` across the verdict contracts (canonical + emit) + interim prompt patches
 
 **Files:**
-- Modify: `src/contract/evidence.py` (class `LlmTickerVerdict`)
-- Modify: `src/agents/analysts/news/prompts.py` (OUTPUT CONTRACT + shape example — interim patch; Plan 2 replaces this prompt wholesale)
-- Modify: `tests/unit/contract/test_llm_to_ticker_inflate.py`, `tests/unit/agents/analysts/fundamental/test_joiner.py`, plus any fixture that constructs an `LlmTickerVerdict` (enumerated in Step 5)
-- Test: `tests/unit/contract/test_llm_to_ticker_inflate.py`
+- Modify: `src/contract/evidence.py` (`AnalystVerdict` base default + `LlmTickerVerdict` emit schema)
+- Modify: `src/agents/analysts/news/prompts.py` (OUTPUT CONTRACT + SHAPE EXAMPLE — interim patch; Plan 3's news rebuild replaces this prompt wholesale)
+- Modify: `src/agents/analysts/fundamental/prompts.py` (OUTPUT CONTRACT — interim patch; Task 6 rewrites this prompt wholesale)
+- Modify: `tests/contract/test_llm_ticker_verdict.py`, `tests/unit/contract/test_llm_to_ticker_inflate.py`
+- Modify: `tests/unit/agents/analysts/news/test_joiner.py`, `tests/unit/agents/analysts/fundamental/test_joiner.py`
+- Modify (fixture sweep): any test file constructing an `LlmTickerVerdict` payload (enumerated in Step 4)
 
 **Interfaces:**
-- Consumes: **Plan 2's** `AnalystVerdict.horizon_days: int = Field(default=1, ge=1)` (inherited by `TickerVerdict`). Must exist on the branch before this task's propagation test can pass.
-- Produces: `LlmTickerVerdict.horizon_days: int = Field(ge=1)` — **required** on the emit schema (no default: Vertex's constrained decoder omits optional fields, which would silently collapse every long-horizon signal to the canonical default of 1 — the exact silent-degradation class this codebase raises on). Consumed by Task 6's prompt. `to_ticker_verdict()` carries it across with zero code change (field-name-subset invariant).
+- Produces: `AnalystVerdict.horizon_days: int = Field(default=1, ge=1)` (inherited by `TickerVerdict`) and `LlmTickerVerdict.horizon_days: int = Field(ge=1)` — **required** on the emit schema (no default). Consumed by Task 6's fundamental prompt, the strategist, and the scoreboard; the macro/linkage analyst (Plans 4–5) reads the same field. `to_ticker_verdict()` carries it across with zero code change (field-name-subset invariant).
 
-- [ ] **Step 1: Write the failing tests**
+**Interface being added:**
+
+```python
+# On AnalystVerdict (base class — default keeps deterministic analysts valid):
+horizon_days: int = Field(default=1, ge=1)
+
+# On LlmTickerVerdict (emit schema, extra="forbid" — REQUIRED, no default):
+horizon_days: int = Field(ge=1)
+```
+
+`horizon_days` is the number of **trading days** the analyst expects its lean to
+remain valid. Deterministic analysts (technical) inherit the default of 1 (their
+verdicts are recomputed every tick). The news analyst must state it explicitly:
+~5 for a fresh-surprise lean, longer for drift continuation (spec §5 news-rebuild design /
+literature table: PEAD 5–90d).
+
+`horizon_days` is REQUIRED on `LlmTickerVerdict` deliberately: the emit schema's
+doctrine is "structured commitments before prose, nothing optional the model can
+lazily omit". `to_ticker_verdict()` inflates via `model_dump()` →
+`model_validate()`, so the field carries across automatically once it exists on
+both classes — no inflation-code change needed.
+
+**Steps:**
+
+- [ ] **Step 1: Write the failing contract tests.**
+
+In `tests/contract/test_llm_ticker_verdict.py`, first update the shared
+`_valid_emit_payload` helper: add `"horizon_days": 5,` immediately after the
+`"is_no_data"` entry (keep the payload's field order matching the schema's
+declaration order). Then append these tests at the end of the file (add
+`AnalystVerdict` to the existing `from contract.evidence import ...` line):
+
+```python
+def test_horizon_days_is_required_on_the_llm_emit():
+    """The news prompt must commit to a horizon — the schema enforces it."""
+    payload = _valid_emit_payload()
+    del payload["horizon_days"]
+
+    with pytest.raises(ValidationError):
+        LlmTickerVerdict.model_validate(payload)
+
+
+def test_horizon_days_must_be_at_least_one_trading_day():
+    """A zero or negative horizon is meaningless — ge=1 rejects it."""
+    payload = _valid_emit_payload()
+    payload["horizon_days"] = 0
+
+    with pytest.raises(ValidationError):
+        LlmTickerVerdict.model_validate(payload)
+
+
+def test_to_ticker_verdict_carries_horizon_days():
+    """Inflation to the full TickerVerdict must not drop the horizon."""
+    payload = _valid_emit_payload()
+    payload["horizon_days"] = 7
+
+    verdict = LlmTickerVerdict.model_validate(payload)
+
+    assert verdict.to_ticker_verdict().horizon_days == 7
+
+
+def test_analyst_verdict_defaults_horizon_to_one_day():
+    """Deterministic analysts never set a horizon — the base default is 1."""
+    verdict = AnalystVerdict(
+        lean="neutral", magnitude=0.0, confidence=0.0,
+        rationale="deterministic baseline",
+    )
+
+    assert verdict.horizon_days == 1
+```
+
+Run and watch them fail (missing-field / unexpected-attribute errors):
+
+```bash
+.venv/bin/python -m pytest tests/contract/test_llm_ticker_verdict.py -v
+```
+
+- [ ] **Step 2: Add the inflation-path failing tests.**
 
 In `tests/unit/contract/test_llm_to_ticker_inflate.py`:
 
@@ -1028,33 +1106,90 @@ def test_horizon_days_is_required_on_llm_emit():
         LlmTickerVerdict.model_validate(payload)
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+Run both new test files and watch them fail (missing field / `extra="forbid"`):
 
-Run: `.venv/bin/python -m pytest tests/unit/contract/test_llm_to_ticker_inflate.py -v`
-Expected: FAIL — `TypeError`/`ValidationError` on `horizon_days` (unknown field, `extra="forbid"`).
+```bash
+.venv/bin/python -m pytest tests/contract/test_llm_ticker_verdict.py tests/unit/contract/test_llm_to_ticker_inflate.py -v
+```
 
-- [ ] **Step 3: Add the field to `LlmTickerVerdict`**
+- [ ] **Step 3: Add the field to both classes in `src/contract/evidence.py`.**
 
-In `src/contract/evidence.py`, inside `LlmTickerVerdict`'s structured-commitment block, between `confidence` and `is_no_data`:
+In `AnalystVerdict`, immediately after the `is_no_data: bool = False` line:
 
 ```python
-    # Trading-day horizon this lean is expected to hold (Phase 14 drift
-    # reframe).  REQUIRED on the LLM emit — no default and no Optional, for
-    # the same reason as ``is_no_data`` below: Vertex's constrained decoder
-    # omits optional fields, and an omitted horizon would silently collapse
-    # to the canonical default (1) and flatten every long-horizon signal.
-    # The fundamental prompt instructs a fixed config-driven value
-    # (``filing_delta_horizon_days``); the news prompt emits 1 until the
-    # Plan 2 rebuild reframes it.  Mirrors ``AnalystVerdict.horizon_days``
-    # (default=1, ge=1) on the canonical side, which Plan 2 owns.
+    # Phase 14: how many TRADING DAYS the analyst expects this lean
+    # to remain valid.  Deterministic analysts recompute every tick and keep
+    # the default of 1; drift-aware analysts (news, macro) state it
+    # explicitly — ~5 for a fresh surprise, longer for drift continuation.
+    horizon_days: int = Field(default=1, ge=1)
+```
+
+In `LlmTickerVerdict`, immediately after its `is_no_data: bool` line (i.e. BEFORE
+the `key_factors` block — structured commitments stay ahead of prose):
+
+```python
+    # Trading days the lean should hold.  REQUIRED — the emit schema never
+    # lets the model lazily omit a structured commitment.  Inflation to
+    # TickerVerdict carries it across via model_dump()/model_validate().
+    # Vertex's constrained decoder omits optional fields, and an omitted
+    # horizon would silently collapse to the canonical default (1) and
+    # flatten every long-horizon signal — the exact silent-degradation class
+    # this codebase raises on.  The fundamental prompt (Task 6) instructs a
+    # fixed config-driven value (``filing_delta_horizon_days``); the news
+    # prompt emits 1 until Plan 3's rebuild reframes it.
     horizon_days: int = Field(ge=1)
 ```
 
-No change to `to_ticker_verdict()` — `model_dump()` carries the field and `TickerVerdict` (via Plan 2's `AnalystVerdict`) validates it. If the propagation test fails with "horizon_days — extra/unexpected" on the *canonical* side, Plan 2's contract change has not landed yet: stop and land it first (do not add a shim here).
+- [ ] **Step 4: Fixture sweep.**
 
-- [ ] **Step 4: Interim patch to the current news prompt**
+`LlmTickerVerdict` is `extra="forbid"` with `horizon_days` now required, so every
+hand-built emit payload in the test suite needs the key. Run the full suite and
+fix every fixture that now fails validation with "horizon_days — Field required"
+(add `horizon_days=60` in fundamental-flavoured fixtures, `horizon_days=1` in
+news-flavoured ones; for raw emit *dicts*, add the JSON key):
 
-In `src/agents/analysts/news/prompts.py` (the OUTPUT CONTRACT block, ~line 59), insert a `horizon_days` line between the `confidence` and `is_no_data` lines:
+```bash
+.venv/bin/python -m pytest tests/ -q 2>&1 | tail -30
+grep -rln "LlmTickerVerdict(\|LlmTickerVerdict\|temp:news_verdict_\|temp:fundamental_verdict_" tests/
+```
+
+Known construction/fixture sites to update:
+
+- `tests/contract/test_llm_ticker_verdict.py` (done in Step 1)
+- `tests/unit/contract/test_llm_to_ticker_inflate.py` (done in Step 2)
+- `tests/integration/backtest/conftest.py`
+- `tests/integration/test_fundamental_canned_output.py`
+- `tests/unit/agents/analysts/test_cache_callbacks_per_ticker.py`
+- `tests/unit/agents/analysts/test_per_ticker_branch.py`
+- `tests/unit/agents/test_output_caps_per_ticker.py`
+
+One additional targeted edit while in the sweep:
+`tests/unit/agents/analysts/fundamental/test_joiner.py` — add `"horizon_days": 60,`
+to the two raw `temp:fundamental_verdict_*` dicts (after `"confidence"`), and in
+`test_joiner_synthesises_no_data_for_missing_key` add one assertion after the
+existing `assert msft_verdict["is_no_data"] is True` line:
+
+```python
+    # Phase 14: a synthesised no-data verdict carries the canonical default
+    # horizon (1) — the long fundamental horizon applies only to real emits.
+    assert msft_verdict["horizon_days"] == 1
+```
+
+Let pytest be the arbiter — fix exactly what fails, nothing speculative:
+
+```bash
+.venv/bin/python -m pytest tests/ -v
+```
+
+- [ ] **Step 5: Interim prompt compatibility.**
+
+Until Plan 3's rebuild rewrites the news prompt (and Task 6 rewrites the
+fundamental prompt), both LLM analysts emit payloads WITHOUT `horizon_days` and
+would now fail schema validation at runtime. Keep them valid with an interim
+patch to each prompt's OUTPUT CONTRACT.
+
+In `src/agents/analysts/news/prompts.py` (the OUTPUT CONTRACT block, ~line 59),
+insert a `horizon_days` line between the `confidence` and `is_no_data` lines:
 
 ```
   confidence    ∈ [0, 1]
@@ -1065,49 +1200,86 @@ In `src/agents/analysts/news/prompts.py` (the OUTPUT CONTRACT block, ~line 59), 
 
 And in the same file's SHAPE EXAMPLE JSON block, add a `"horizon_days": 1,` line immediately after the `"confidence": <0.0-1.0>,` line (match the example's existing formatting).
 
-This is a deliberate sibling-in-pass patch: the emit schema is shared with the news analyst, and without this line the current news LLM would hit schema retries until Plan 2's rebuild replaces the prompt. Plan 2 owns the real news horizon semantics.
+In `src/agents/analysts/fundamental/prompts.py`, add to the OUTPUT CONTRACT's
+field descriptions (matching the file's existing list formatting):
 
-- [ ] **Step 5: Sweep remaining `LlmTickerVerdict` construction sites**
-
-Run the full suite and fix every fixture that now fails validation with "horizon_days — Field required":
-
-```bash
-.venv/bin/python -m pytest tests/ -q 2>&1 | tail -30
-grep -rln "LlmTickerVerdict(" tests/
+```
+- horizon_days: integer >= 1 — trading days you expect this lean to hold.
 ```
 
-Known construction/fixture sites to update (add `horizon_days=60` in fundamental-flavoured fixtures, `horizon_days=1` in news-flavoured ones; for raw emit *dicts*, add the JSON key):
+This is a deliberate interim patch: the emit schema is shared with the news and
+fundamental analysts, and without these lines the current LLMs would hit schema
+retries until their real rewrites land (Plan 3 for news, Task 6 for fundamental).
+Note: editing the prompts auto-flips `NEWS_PROMPT_VERSION` /
+`FUNDAMENTAL_PROMPT_VERSION` (they are derived by hashing the rendered prompt in
+`report_cache.py`), which correctly invalidates any on-disk report-cache entries
+that lack the new field — old cached verdicts can never hit the now-stricter
+schema gate.
 
-- `tests/contract/test_llm_ticker_verdict.py`
-- `tests/unit/contract/test_llm_to_ticker_inflate.py` (done in Step 1)
-- `tests/integration/backtest/conftest.py`
-- `tests/integration/test_fundamental_canned_output.py`
-- `tests/unit/agents/analysts/test_cache_callbacks_per_ticker.py`
-- `tests/unit/agents/analysts/test_per_ticker_branch.py`
-- `tests/unit/agents/test_output_caps_per_ticker.py`
+- [ ] **Step 6: Add a joiner propagation test** (spec §8: "horizon field propagation").
 
-Two additional targeted edits while in the sweep:
-
-1. `tests/unit/agents/analysts/fundamental/test_joiner.py` — add `"horizon_days": 60,` to the two raw `temp:fundamental_verdict_*` dicts (after `"confidence"`), and in `test_joiner_synthesises_no_data_for_missing_key` add one assertion after the existing `assert msft_verdict["is_no_data"] is True` line:
+Append to `tests/unit/agents/analysts/news/test_joiner.py`, reusing
+that file's existing imports and session/context harness (mirror the state
+fixture shape its existing happy-path test uses — the load-bearing part is the
+final assertion):
 
 ```python
-    # Phase 14: a synthesised no-data verdict carries the canonical default
-    # horizon (1) — the long fundamental horizon applies only to real emits.
-    assert msft_verdict["horizon_days"] == 1
+@pytest.mark.asyncio
+async def test_joiner_propagates_horizon_days_into_the_verdict_batch():
+    """horizon_days must survive the joiner's validate→inflate→dump round trip."""
+    svc = InMemorySessionService()
+    session = await svc.create_session(
+        app_name="test",
+        user_id="test",
+        state={
+            "tickers": ["AAPL"],
+            "tick_id": "t-1",
+            "as_of": "2026-07-06T14:00:00",
+            "temp:news_data": {"AAPL": {"news": []}},
+            "temp:news_verdict_AAPL": {
+                "ticker": "AAPL",
+                "lean": "bullish",
+                "magnitude": 0.4,
+                "confidence": 0.6,
+                "is_no_data": False,
+                "horizon_days": 5,
+                "key_factors": ["catalyst:earnings"],
+                "report": {
+                    "summary": "Genuine positive surprise; positioning for drift.",
+                    "drivers": [
+                        {"name": "eps_beat", "direction": "bull", "weight": 0.6,
+                         "body": "EPS well above consensus."},
+                        {"name": "guidance", "direction": "bull", "weight": 0.4,
+                         "body": "Full-year guidance raised."},
+                    ],
+                },
+            },
+        },
+        session_id="t-1",
+    )
+
+    agent = NewsJoinerAgent(name="NewsJoiner")
+    ctx = InvocationContext(
+        session_service=svc, session=session, invocation_id="inv-1", agent=agent,
+    )
+
+    events = [ev async for ev in agent.run_async(ctx)]
+
+    batch = events[-1].actions.state_delta["news_verdicts"]
+    assert batch["verdicts"][0]["horizon_days"] == 5
 ```
 
-2. Note (do **not** "fix"): stale on-disk report-cache entries lack `horizon_days` and will fail re-validation → cache miss → fresh LLM call. That is the intended cache-bust behaviour; the auto-derived prompt versions bust those entries in Task 6 anyway.
-
-- [ ] **Step 6: Run the full suite to verify green**
-
-Run: `.venv/bin/python -m pytest tests/ -q`
-Expected: all PASS (allowing only failures that pre-date this branch, if any — record them before starting if unsure).
-
-- [ ] **Step 7: Commit**
+- [ ] **Step 7: Verify and commit.**
 
 ```bash
-git add src/contract/evidence.py src/agents/analysts/news/prompts.py tests/
-git commit -m "feat(contract): required horizon_days on the LLM emit schema
+.venv/bin/python -m pytest tests/ -v
+.venv/bin/python -m ruff check src/ tests/
+git add -A
+git commit -m "feat(contract): add horizon_days across AnalystVerdict and LlmTickerVerdict
+
+Canonical default on AnalystVerdict; required on the LlmTickerVerdict emit
+schema (no default — Vertex omits optionals). Interim prompt patches keep the
+news and fundamental emits valid until their real rewrites land.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
@@ -1563,6 +1735,6 @@ No source files should be dirty at this point. If the run surfaced notes worth r
 
 ## Self-review (performed)
 
-- **Spec coverage (spec §5 Plan 1 + task scope):** previous-comparable retrieval on both paths — already existing (Phase 13 pool machinery), verified and extended with the new section through EDGAR (Task 2), cache schema + refetch (Tasks 3, 7); diff-oriented prompt across MD&A / risk factors / litigation / executive-team language (Tasks 4, 6 — executive-team changes surface via 8-K Item 5.02 bodies and filing prose; 10-K Item 10 is proxy-incorporated and deliberately not fetched); sign convention (Task 6); XOM stub fallback (Tasks 4, 6); verdict through the existing `fundamental` stream (no pipeline changes anywhere); `horizon_days` = 60 via config (Tasks 1, 5, 6). Testing section of the spec (§8: filing-pair selection unit tests, positive-signal assertions) covered in Tasks 2–6.
+- **Spec coverage (spec §5 filing-delta design + task scope):** previous-comparable retrieval on both paths — already existing (Phase 13 pool machinery), verified and extended with the new section through EDGAR (Task 2), cache schema + refetch (Tasks 3, 7); diff-oriented prompt across MD&A / risk factors / litigation / executive-team language (Tasks 4, 6 — executive-team changes surface via 8-K Item 5.02 bodies and filing prose; 10-K Item 10 is proxy-incorporated and deliberately not fetched); sign convention (Task 6); XOM stub fallback (Tasks 4, 6); verdict through the existing `fundamental` stream (no pipeline changes anywhere); `horizon_days` = 60 via config (Tasks 1, 5, 6). Testing section of the spec (§8: filing-pair selection unit tests, positive-signal assertions) covered in Tasks 2–6.
 - **Placeholder scan:** no TBD/TODO/"similar to Task N"; every code step carries the actual code; the one intentionally conditional step (Task 2 Step 5 key verification) specifies the expected values, the exact check command, and the concrete corrective action.
-- **Type consistency:** `litigation_excerpt: str | None` uniform across `Filing`, `FilingRow` (`Text`, nullable), `write_filings`, render dicts; `_render_diffed_section(filing: dict, text: str, *, section_field: str, baselines: list[dict], cap_chars: int, stub_threshold: int) -> str` matches all three call sites; `horizon_days: int = Field(ge=1)` on `LlmTickerVerdict` vs Plan 2's `Field(default=1, ge=1)` on `AnalystVerdict`; config names (`max_filing_litigation_chars`, `filing_delta_horizon_days`) identical in `FundamentalCaps`, JSON, README, prompt substitution and tests.
+- **Type consistency:** `litigation_excerpt: str | None` uniform across `Filing`, `FilingRow` (`Text`, nullable), `write_filings`, render dicts; `_render_diffed_section(filing: dict, text: str, *, section_field: str, baselines: list[dict], cap_chars: int, stub_threshold: int) -> str` matches all three call sites; `horizon_days: int = Field(ge=1)` on `LlmTickerVerdict` vs `Field(default=1, ge=1)` on `AnalystVerdict` (both added in Task 5); config names (`max_filing_litigation_chars`, `filing_delta_horizon_days`) identical in `FundamentalCaps`, JSON, README, prompt substitution and tests.

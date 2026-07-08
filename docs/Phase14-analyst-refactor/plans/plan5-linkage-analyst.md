@@ -1,18 +1,18 @@
-# Plan 4 — Linkage Analyst (Digester, Exposure Map, Matcher, Registry) Implementation Plan
+# Plan 5 — Linkage Analyst (Digester, Exposure Map, Matcher, Registry) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Spec:** `docs/Phase14-analyst-refactor/specs/analyst-drift-refactor-design.md` — this plan implements §6.3 (linkage analyst) on the §6.1 architecture, honouring §7 (error handling) and §8 (testing). §6.4 lists rejected alternatives — do not resurrect them.
 
-> **EXECUTION ORDER — READ FIRST.** Plan 4 executes **after Plans 2 and 3 have landed**, and its build routes through a **two-step precondition** (spec §3): (1) Plan 2's eval shows the drift reframe has signal, **and then** (2) the watchlist is broadened toward mid-caps (backlog B35 — a committed programme step, not a maybe) so the linkage channel actually has drift-*targets* present. Economic-links drift is an *attention-constrained* effect: the drift-target must be a thin-coverage firm that under-reacts to news about a larger counterparty. On the current megacap-only watchlist that target population is **structurally absent**, so a linkage eval there cannot distinguish "channel is dead" from "wrong firms" — do **not** begin this plan on the megacap watchlist. This plan **consumes** deliverables owned by its siblings and **trusts them completely** — there are NO defensive shims, NO `if key in state` fallbacks, and NO local stubs for anything Plans 2/3 own. Specifically:
-> - `state["macro_articles"]` (Plan 3) is **always present** — a list of `MacroArticle.model_dump(mode="json")` dicts, shape `{"article": {<serialised NewsArticle, published_at ISO string>}, "mentioned_tickers": ["..."]}`, empty list on a quiet tick. If it is absent, that is a **loud `KeyError` bug in Plan 3**, not a condition this plan handles.
-> - `agents.analysts.news.history.NewsHistoryStore` (Plan 2) with `async staleness(namespace, text) -> float`, `async record(namespace, article_key, text, published_at) -> None`, plus the `get_news_history_store()` / `reset_news_history_store()` singletons.
-> - `AnalystVerdict.horizon_days: int = Field(default=1, ge=1)` (Plan 2, on `src/contract/evidence.py`).
-> - `config/analysts.json::staleness_similarity_threshold` (top-level float, Plan 2) — shared verbatim by this plan's `"macro"` staleness pass.
+> **EXECUTION ORDER — READ FIRST.** Plan 5 executes **after Plans 1–4 have landed**, and its build routes through a **two-step precondition** (spec §3): (1) Plan 3's eval shows the drift reframe has signal, **and then** (2) the watchlist is broadened toward mid-caps (backlog B35 — a committed programme step, not a maybe) so the linkage channel actually has drift-*targets* present. Economic-links drift is an *attention-constrained* effect: the drift-target must be a thin-coverage firm that under-reacts to news about a larger counterparty. On the current megacap-only watchlist that target population is **structurally absent**, so a linkage eval there cannot distinguish "channel is dead" from "wrong firms" — do **not** begin this plan on the megacap watchlist. This plan **consumes** deliverables owned by its siblings and **trusts them completely** — there are NO defensive shims, NO `if key in state` fallbacks, and NO local stubs for anything Plans 1–4 own. Specifically:
+> - `state["macro_articles"]` (Plan 4) is **always present** — a list of `MacroArticle.model_dump(mode="json")` dicts, shape `{"article": {<serialised NewsArticle, published_at ISO string>}, "mentioned_tickers": ["..."]}`, empty list on a quiet tick. If it is absent, that is a **loud `KeyError` bug in Plan 4**, not a condition this plan handles.
+> - `agents.analysts.news.history.NewsHistoryStore` (Plan 3) with `async staleness(namespace, text) -> float`, `async record(namespace, article_key, text, published_at) -> None`, plus the `get_news_history_store()` / `reset_news_history_store()` singletons.
+> - `AnalystVerdict.horizon_days: int = Field(default=1, ge=1)` (Plan 1, on `src/contract/evidence.py`).
+> - `config/analysts.json::staleness_similarity_threshold` (top-level float, Plan 3) — shared verbatim by this plan's `"macro"` staleness pass.
 
 **Goal:** Add a fourth analyst stream, `linkage`, that positions for economic-links drift (Cohen & Frazzini): a deterministic staleness pre-filter over the macro stream, one flash-class **event digester** call per tick, a persistent per-run **event registry** with horizon decay, an offline-built per-ticker **exposure map**, and one flash-class **matcher** call per tick that crosses active events against exposures to emit per-ticker `AnalystVerdict`s carrying `horizon_days`. The stream is wired end-to-end into the pipeline, strategist, evidence persistence, and scoreboard.
 
-**Architecture:** A new package `src/agents/analysts/linkage/` owns the branch, assembled (mirroring the News branch) as `SequentialAgent[LinkageStalenessAgent, LinkageDigesterAgent, LinkageRegistryAgent, LinkageMatcherAgent, LinkageJoinerAgent]`. The two LLM stages (`LinkageDigesterAgent`, `LinkageMatcherAgent`) are `BaseAgent` subclasses that call an **injectable async `llm_fn(prompt, schema) -> BaseModel`** boundary (the testable seam, mirroring Plan 2's injectable `embed_fn`). The stages are sequentially interdependent (the registry reads the digest; the matcher reads the active set), so the **whole branch** is wrapped in one `IsolatedFailureWrapper` (analyst `linkage`, ticker sentinel `"_ALL"`) rather than each stage individually — any stage's exhausted call or a stale-map error fails loudly and is *contained to the linkage stream*: the wrapper logs a structured `branch_failed` record, the analyst pool and the other three analysts continue, and the digest neutral-fills the absent `linkage` slot for that tick. The registry is a SQLite `linkage_events` table via the existing `src/orchestrator/persistence.py` ORM, fronted by a per-run store (`src/agents/analysts/linkage/registry.py`) reset per window replay exactly as Plan 2 resets its history store. The exposure map is a JSON data artefact built offline by `scripts/build_exposure_map.py` and loaded read-only on the tick path, failing loudly when stale.
+**Architecture:** A new package `src/agents/analysts/linkage/` owns the branch, assembled (mirroring the News branch) as `SequentialAgent[LinkageStalenessAgent, LinkageDigesterAgent, LinkageRegistryAgent, LinkageMatcherAgent, LinkageJoinerAgent]`. The two LLM stages (`LinkageDigesterAgent`, `LinkageMatcherAgent`) are `BaseAgent` subclasses that call an **injectable async `llm_fn(prompt, schema) -> BaseModel`** boundary (the testable seam, mirroring Plan 3's injectable `embed_fn`). The stages are sequentially interdependent (the registry reads the digest; the matcher reads the active set), so the **whole branch** is wrapped in one `IsolatedFailureWrapper` (analyst `linkage`, ticker sentinel `"_ALL"`) rather than each stage individually — any stage's exhausted call or a stale-map error fails loudly and is *contained to the linkage stream*: the wrapper logs a structured `branch_failed` record, the analyst pool and the other three analysts continue, and the digest neutral-fills the absent `linkage` slot for that tick. The registry is a SQLite `linkage_events` table via the existing `src/orchestrator/persistence.py` ORM, fronted by a per-run store (`src/agents/analysts/linkage/registry.py`) reset per window replay exactly as Plan 3 resets its history store. The exposure map is a JSON data artefact built offline by `scripts/build_exposure_map.py` and loaded read-only on the tick path, failing loudly when stale.
 
 **Tech Stack:** Python 3.12, Pydantic v2 (`extra="forbid"` emit schemas, caps stated in prompts not `max_length`), Google ADK (`BaseAgent` state_delta events, `google.genai` structured output), SQLite via SQLAlchemy ORM, pytest + pytest-asyncio.
 
@@ -26,7 +26,7 @@ Every task's requirements implicitly include this section.
 - **Token economics (spec D4):** at most **two flash-class LLM calls per tick** for the whole watchlist — the digester and the matcher. The deterministic staleness pre-filter does the volume kill; on a quiet tick each LLM stage is **skipped**, not called with empty input.
 - **ADK rules:** every read of `state["as_of"]` goes through `resolve_as_of`; every datetime written to state is ISO-stringified first (`model_dump(mode="json")` or `.isoformat()`) — the backtest `DatabaseSessionService` cannot hold `datetime`. Never mutate `adk_session.state["temp:_*"]` after `create_session`; if a temp handle is ever needed use a `BasePlugin.before_run_callback`. Per-stage `temp:linkage_*` keys are private to the branch; the joiner owns the durable `linkage_verdicts` / `linkage_evidence` keys.
 - **No `max_length` on LLM free-text schema fields** (Vertex pad-toward-cap pathology). Prose caps are stated in the prompt only. `max_length` on a **list** field (a count bound, e.g. `key_factors`) is allowed.
-- **Config convention:** linkage-specific settings live in a new `config/linkage.json` modelled by `src/config/linkage.py`; model IDs live in `config/models.json` (per that file's one-slot-per-role convention); the shared staleness threshold stays in `config/analysts.json` (Plan 2). Every new setting gets a `config/README.md` row **in the same task that introduces it**. Never hardcode a config value in source.
+- **Config convention:** linkage-specific settings live in a new `config/linkage.json` modelled by `src/config/linkage.py`; model IDs live in `config/models.json` (per that file's one-slot-per-role convention); the shared staleness threshold stays in `config/analysts.json` (Plan 3). Every new setting gets a `config/README.md` row **in the same task that introduces it**. Never hardcode a config value in source.
 - **Names are pinned — use verbatim:** analyst name `linkage`; state keys `linkage_verdicts`, `linkage_evidence`; registry table `linkage_events`; event categories `{macro, sector, merger}`; staleness namespace literal `"macro"`.
 - **Shell conventions:** never prefix commands with `cd`. Tests: `.venv/bin/python -m pytest <path> -v`. Lint: `.venv/bin/python -m ruff check src/ tests/`. Scripts: `PYTHONPATH=src .venv/bin/python -m scripts.<name>`.
 - **Git quirk:** new files under `tests/unit/data/` are silently swallowed by `.git/info/exclude` — stage them with `git add -f`. (Noted again in each affected commit step.)
@@ -34,7 +34,7 @@ Every task's requirements implicitly include this section.
 
 ## Cross-plan facts this plan relies on (verified 2026-07-07)
 
-- `state["macro_articles"]` is emitted unconditionally by `NewsFetchAgent` (Plan 3, Task 3) as `[MacroArticle.model_dump(mode="json"), ...]`.
+- `state["macro_articles"]` is emitted unconditionally by `NewsFetchAgent` (Plan 4, Task 1) as `[MacroArticle.model_dump(mode="json"), ...]`.
 - The strategist's per-ticker view is fed by `agents/strategist/context_shim.py`, which currently indexes evidence via `_index_evidence(state, "news_evidence")` at line 375 — the linkage index is added alongside.
 - `DEFAULT_ANALYST_WEIGHTS` (`src/contract/digest.py:56`) currently holds only `technical`/`fundamental`/`news`; the digest neutral-fills (with a WARNING) any weighted analyst absent this tick, so `linkage` must be added there **only in the same task that wires it into the pipeline and the shim** (avoids phantom-slot dilution).
 - `src/agents/contract/evidence_writer.py::_EVIDENCE_KEYS` is a **hardcoded tuple** of `(state_key, analyst)` pairs; the `analyst_evidence` SQLite table is populated only from those pairs. The backtest scoreboard (`src/backtest/scoreboard.py`) derives its analyst set **dynamically from that table** (`ScoreboardResult.analysts` is data-driven), so adding `("linkage_evidence", "linkage")` to `_EVIDENCE_KEYS` is what makes `linkage` first-class in the scoreboard's `(analyst, ...)` clustering. The only additional scoreboard knob is `primary_horizon_by_analyst["linkage"]` in `config/backtest_settings.json`.
@@ -66,7 +66,7 @@ Every task's requirements implicitly include this section.
 Create `tests/unit/config/test_linkage_config.py` with exactly this content:
 
 ```python
-"""Unit tests for the linkage analyst config (Phase 14 Plan 4).
+"""Unit tests for the linkage analyst config (Phase 14 Plan 5).
 
 Locks the committed ``config/linkage.json`` shape and the three linkage
 model slots in ``config/models.json`` so a missing or malformed key is a
@@ -122,7 +122,7 @@ Expected: FAIL at collection with `ModuleNotFoundError: No module named 'config.
 
 ```json
 {
-  "_comment": "Linkage analyst (Phase 14 Plan 4) settings. Model IDs live in config/models.json; the shared staleness threshold lives in config/analysts.json (staleness_similarity_threshold).",
+  "_comment": "Linkage analyst (Phase 14 Plan 5) settings. Model IDs live in config/models.json; the shared staleness threshold lives in config/analysts.json (staleness_similarity_threshold).",
   "exposure_map_path": "data/linkage/exposure_map.json",
   "exposure_map_staleness_cap_days": 7,
   "event_horizon_days": {
@@ -172,7 +172,7 @@ mirroring the ``src/config/models.py`` / ``src/config/analysts.py`` pattern:
 What lives here vs elsewhere:
   * Model IDs live in ``config/models.json`` (one slot per role).
   * The staleness similarity threshold is shared with the per-ticker news
-    filter and lives in ``config/analysts.json`` (Plan 2).
+    filter and lives in ``config/analysts.json`` (Plan 3).
   * Everything linkage-specific — the exposure-map artefact path and
     staleness cap, per-category drift horizons, and the two LLM caps
     blocks — lives here.
@@ -315,7 +315,7 @@ Add a `linkage.json` section (mirror the layout of the existing `analysts.json` 
 ```markdown
 ### `config/linkage.json`
 
-Settings for the linkage analyst (Phase 14 Plan 4). Model IDs live in `models.json`; the staleness similarity threshold is shared with the news filter and lives in `analysts.json`.
+Settings for the linkage analyst (Phase 14 Plan 5). Model IDs live in `models.json`; the staleness similarity threshold is shared with the news filter and lives in `analysts.json`.
 
 | Setting | Type | Description |
 | --- | --- | --- |
@@ -354,7 +354,7 @@ Expected: all 3 tests PASS.
 
 ```bash
 git add config/linkage.json config/models.json config/README.md src/config/linkage.py src/config/models.py tests/unit/config/test_linkage_config.py
-git commit -m "feat(linkage): add config/linkage.json, loader, and model slots (Phase 14 Plan 4)
+git commit -m "feat(linkage): add config/linkage.json, loader, and model slots (Phase 14 Plan 5)
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
@@ -431,7 +431,7 @@ Expected: PASS.
 
 ```bash
 git add src/contract/evidence.py tests/unit/contract/test_linkage_analyst_name.py
-git commit -m "feat(contract): add linkage to the AnalystName literal (Phase 14 Plan 4)
+git commit -m "feat(contract): add linkage to the AnalystName literal (Phase 14 Plan 5)
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
@@ -461,7 +461,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 Create `tests/unit/agents/analysts/linkage/__init__.py` as an empty file, then create `tests/unit/agents/analysts/linkage/test_schemas.py`:
 
 ```python
-"""Validation tests for the linkage Pydantic contracts (Phase 14 Plan 4).
+"""Validation tests for the linkage Pydantic contracts (Phase 14 Plan 5).
 
 These lock the emit shapes the digester and matcher must produce and the
 exposure-map artefact shape.  Positive assertions: a well-formed payload
@@ -616,7 +616,7 @@ Expected: FAIL at collection with `ModuleNotFoundError: No module named 'agents.
 Create `src/agents/analysts/linkage/__init__.py` as an empty file. Create `src/agents/analysts/linkage/schemas.py` with exactly this content:
 
 ```python
-"""Pydantic contracts for the linkage analyst (Phase 14 Plan 4).
+"""Pydantic contracts for the linkage analyst (Phase 14 Plan 5).
 
 Three families of shape:
 
@@ -813,9 +813,9 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 ### Task 4: Event registry — persistence row + per-run store with horizon decay
 
-**Design note (resolved ambiguity — read before implementing).** The spec asks for a SQLite `linkage_events` table *and* for the registry to be "per-run/per-window in backtests, never persisted across windows (mirror Plan 2's Driver.run reset pattern)". These are reconciled with **two roles, not two sources of truth in tension**:
+**Design note (resolved ambiguity — read before implementing).** The spec asks for a SQLite `linkage_events` table *and* for the registry to be "per-run/per-window in backtests, never persisted across windows (mirror Plan 3's Driver.run reset pattern)". These are reconciled with **two roles, not two sources of truth in tension**:
 
-1. **Per-run in-memory registry** (`LinkageEventRegistry`, this task) is the **active-events source of truth** the matcher reads. It is a process-global singleton reset per window replay via `reset_linkage_registry()` — the *exact* shape of Plan 2's `NewsHistoryStore`, so the Driver.run reset (Task 14) is a pure singleton swap with no db-session coupling.
+1. **Per-run in-memory registry** (`LinkageEventRegistry`, this task) is the **active-events source of truth** the matcher reads. It is a process-global singleton reset per window replay via `reset_linkage_registry()` — the *exact* shape of Plan 3's `NewsHistoryStore`, so the Driver.run reset (Task 14) is a pure singleton swap with no db-session coupling.
 2. **SQLite `linkage_events` table** (this task) is the **durable, inspectable audit record** written through transactionally with the tick by the `LinkageRegistryAgent` (Task 8), sitting in the same run db as `analyst_evidence`. Backtest runs already use a fresh db per window, so the table is naturally PIT-isolated; the in-memory reset is the belt-and-braces PIT guarantee the spec asks for.
 
 The registry class stays **pure in-memory** (no session dependency) so it is unit-testable without a database; the write-through lives in the agent.
@@ -833,14 +833,14 @@ The registry class stays **pure in-memory** (no session dependency) so it is uni
   - `registry.RegisteredEvent` dataclass `(event_id, summary, category, tickers, direction, event_date, horizon_days, source_article_ids)`.
   - `registry.make_event_id(summary: str, event_date: datetime, category: str) -> str` (deterministic).
   - `registry.LinkageEventRegistry` with `record(event: RegisteredEvent) -> bool` (True if newly added, False if the `event_id` was already present — idempotent) and `active_events(as_of: datetime) -> list[RegisteredEvent]` (events whose `event_date + horizon_days` calendar days has not passed `as_of`).
-  - `registry.get_linkage_registry() -> LinkageEventRegistry` / `registry.reset_linkage_registry() -> None` (module singleton, mirrors Plan 2).
+  - `registry.get_linkage_registry() -> LinkageEventRegistry` / `registry.reset_linkage_registry() -> None` (module singleton, mirrors Plan 3).
 
 - [ ] **Step 1: Write the failing registry tests**
 
 Create `tests/unit/agents/analysts/linkage/test_registry.py`:
 
 ```python
-"""Unit tests for the per-run linkage event registry (Phase 14 Plan 4).
+"""Unit tests for the per-run linkage event registry (Phase 14 Plan 5).
 
 The registry is the matcher's active-events source of truth: it holds
 normalised events keyed by a deterministic ``event_id`` and answers "which
@@ -967,7 +967,7 @@ Expected: FAIL at collection with `ModuleNotFoundError: No module named 'agents.
 - [ ] **Step 3: Create `src/agents/analysts/linkage/registry.py`**
 
 ```python
-"""Per-run linkage event registry with horizon decay (Phase 14 Plan 4).
+"""Per-run linkage event registry with horizon decay (Phase 14 Plan 5).
 
 The registry is the matcher's active-events source of truth.  Normalised
 events (distilled by the digester, enriched with tickers/direction/horizon
@@ -977,7 +977,7 @@ answers the drift-window question: which events are still inside their
 horizon as of the current tick?
 
 Lifecycle — PIT correctness (spec §6.3):
-    The registry is strictly PER-RUN state, mirroring Plan 2's
+    The registry is strictly PER-RUN state, mirroring Plan 3's
     ``NewsHistoryStore``.  Live trading accumulates events within one process
     run; the backtest driver calls ``reset_linkage_registry()`` at the start
     of every window replay so events never leak across windows.  Durable
@@ -1124,7 +1124,7 @@ class LinkageEventRegistry:
 
 # ── Module-level per-run singleton ────────────────────────────────────────
 #
-# Mirrors Plan 2's NewsHistoryStore: one registry per process run, reset by
+# Mirrors Plan 3's NewsHistoryStore: one registry per process run, reset by
 # the backtest driver before each window replay.
 
 _REGISTRY: LinkageEventRegistry | None = None
@@ -1169,7 +1169,7 @@ Expected: all 6 tests PASS.
 Create `tests/unit/orchestrator/test_linkage_event_persistence.py`:
 
 ```python
-"""Durable audit persistence for linkage events (Phase 14 Plan 4).
+"""Durable audit persistence for linkage events (Phase 14 Plan 5).
 
 The in-memory registry is the active-events source of truth; this SQLite
 table is the durable, inspectable audit record written through with the
@@ -1248,7 +1248,7 @@ In `src/orchestrator/persistence.py`, add `import json` is already present at th
 # ── LinkageEventRow ───────────────────────────────────────────────────
 
 class LinkageEventRow(Base):
-    """One registered linkage event — durable audit record (Phase 14 Plan 4).
+    """One registered linkage event — durable audit record (Phase 14 Plan 5).
 
     The in-memory ``LinkageEventRegistry`` is the matcher's active-events
     source of truth; this table is the inspectable audit trail written
@@ -1380,7 +1380,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 Create `tests/unit/agents/analysts/linkage/test_llm.py`:
 
 ```python
-"""Unit tests for the shared linkage LLM seam (Phase 14 Plan 4).
+"""Unit tests for the shared linkage LLM seam (Phase 14 Plan 5).
 
 The default ``llm_fn`` grounds the digester, matcher, and exposure builder
 in one place.  Tests inject a fake genai client via ``client_factory`` so no
@@ -1496,12 +1496,12 @@ Expected: FAIL at collection with `ModuleNotFoundError: No module named 'agents.
 - [ ] **Step 3: Create `src/agents/analysts/linkage/llm.py`**
 
 ```python
-"""Shared injectable LLM seam for the linkage stages (Phase 14 Plan 4).
+"""Shared injectable LLM seam for the linkage stages (Phase 14 Plan 5).
 
 The digester, matcher, and offline exposure builder all issue exactly one
 structured-output call.  Rather than each embedding a genai client, they
 accept an injectable ``async llm_fn(prompt, schema) -> BaseModel`` (the
-testable seam, mirroring Plan 2's ``embed_fn``).  ``make_default_llm_fn``
+testable seam, mirroring Plan 3's ``embed_fn``).  ``make_default_llm_fn``
 builds the production default, grounded in ``google.genai`` structured
 output with a bounded retry loop.
 
@@ -1969,7 +1969,7 @@ Expected: all 6 tests PASS.
 - [ ] **Step 9: Create the offline builder script `scripts/build_exposure_map.py`**
 
 ```python
-"""Offline exposure-map builder (Phase 14 Plan 4).
+"""Offline exposure-map builder (Phase 14 Plan 5).
 
 Builds the per-ticker economic-links exposure map used by the linkage
 matcher and writes it to the path configured in ``config/linkage.json``.
@@ -2068,14 +2068,14 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 ### Task 6: Staleness pre-filter stage (macro namespace)
 
-**Design note.** This is the deterministic **volume kill** (spec D4): before any LLM call, each macro article's embedding is compared against the `"macro"` namespace of Plan 2's news-history store; only articles below the shared similarity threshold survive. It also writes two side-channels the registry stage (Task 8) needs — the union of `mentioned_tickers` and the surviving article keys — so events can be enriched without the digester schema carrying free-text IDs.
+**Design note.** This is the deterministic **volume kill** (spec D4): before any LLM call, each macro article's embedding is compared against the `"macro"` namespace of Plan 3's news-history store; only articles below the shared similarity threshold survive. It also writes two side-channels the registry stage (Task 8) needs — the union of `mentioned_tickers` and the surviving article keys — so events can be enriched without the digester schema carrying free-text IDs.
 
 **Files:**
 - Create: `src/agents/analysts/linkage/staleness.py`
 - Test: `tests/unit/agents/analysts/linkage/test_staleness.py`
 
 **Interfaces:**
-- Consumes: `state["macro_articles"]` (Plan 3, always present — loud `KeyError` if absent); `agents.analysts.news.history.get_news_history_store` with `async staleness(namespace, text) -> float` and `async record(namespace, article_key, text, published_at) -> None` (Plan 2); `config.analysts.get_analysts_config().staleness_similarity_threshold` (Plan 2, top-level float).
+- Consumes: `state["macro_articles"]` (Plan 4, always present — loud `KeyError` if absent); `agents.analysts.news.history.get_news_history_store` with `async staleness(namespace, text) -> float` and `async record(namespace, article_key, text, published_at) -> None` (Plan 3); `config.analysts.get_analysts_config().staleness_similarity_threshold` (Plan 3, top-level float).
 - Produces (consumed by Tasks 7, 8):
   - `LinkageStalenessAgent(BaseAgent)` with an optional injectable `store` field.
   - `build_linkage_staleness_agent(*, store=None) -> LinkageStalenessAgent`.
@@ -2086,7 +2086,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 Create `tests/unit/agents/analysts/linkage/test_staleness.py`:
 
 ```python
-"""Unit tests for the linkage staleness pre-filter (Phase 14 Plan 4).
+"""Unit tests for the linkage staleness pre-filter (Phase 14 Plan 5).
 
 A fake news-history store makes the embedding pass deterministic: it reports
 a novel article (similarity 0.0) the first time a text is seen and a stale
@@ -2104,7 +2104,7 @@ from agents.analysts.linkage.staleness import build_linkage_staleness_agent
 
 
 class _FakeStore:
-    """Deterministic stand-in for Plan 2's NewsHistoryStore.
+    """Deterministic stand-in for Plan 3's NewsHistoryStore.
 
     ``staleness`` returns 1.0 for any text already recorded in the namespace
     and 0.0 otherwise, so an exact-duplicate article reads as fully stale.
@@ -2123,7 +2123,7 @@ class _FakeStore:
 
 
 def _macro_article(url: str, headline: str, tickers: list[str]) -> dict:
-    """Build a serialised MacroArticle dict (Plan 3 shape)."""
+    """Build a serialised MacroArticle dict (Plan 4 shape)."""
     return {
         "article": {
             "ticker": tickers[0] if tickers else "",
@@ -2197,11 +2197,11 @@ Expected: FAIL at collection with `ModuleNotFoundError: No module named 'agents.
 - [ ] **Step 3: Create `src/agents/analysts/linkage/staleness.py`**
 
 ```python
-"""Deterministic staleness pre-filter over the macro stream (Phase 14 Plan 4).
+"""Deterministic staleness pre-filter over the macro stream (Phase 14 Plan 5).
 
 The volume kill before any LLM call (spec D4): each macro article's text is
 compared, via embedding similarity, against the ``"macro"`` namespace of
-Plan 2's news-history store.  Articles at or above the shared similarity
+Plan 3's news-history store.  Articles at or above the shared similarity
 threshold are stale (Tetlock reversal territory) and dropped; only novel
 articles survive to the digester.  Surviving articles are recorded into the
 namespace so a near-duplicate on a later tick reads as stale.
@@ -2231,7 +2231,7 @@ _LOGGER = logging.getLogger(__name__)
 class LinkageStalenessAgent(BaseAgent):
     """Filter the macro stream to novel articles via embedding staleness."""
 
-    # Optional injectable store (tests pass a fake); ``None`` → the Plan 2
+    # Optional injectable store (tests pass a fake); ``None`` → the Plan 3
     # per-run singleton resolved at run time.
     store: Any = None
 
@@ -2258,11 +2258,11 @@ class LinkageStalenessAgent(BaseAgent):
         """
         state = ctx.session.state
 
-        # Trust Plan 3: ``macro_articles`` is always present.  A KeyError here
-        # is a loud Plan 3 bug, not a condition we handle.
+        # Trust Plan 4: ``macro_articles`` is always present.  A KeyError here
+        # is a loud Plan 4 bug, not a condition we handle.
         macro_articles: list[dict] = state["macro_articles"]
 
-        # Resolve the store lazily so the module imports without Plan 2's
+        # Resolve the store lazily so the module imports without Plan 3's
         # singleton being initialised.
         store = self.store
         if store is None:
@@ -2299,7 +2299,7 @@ class LinkageStalenessAgent(BaseAgent):
 
             # Record the survivor so a repeat on a later tick reads as stale.
             # ``published_at`` is the article's own timestamp (a datetime per
-            # Plan 2's record signature), parsed from its ISO serialisation.
+            # Plan 3's record signature), parsed from its ISO serialisation.
             await store.record(
                 "macro", key, text, datetime.fromisoformat(article["published_at"]),
             )
@@ -2334,7 +2334,7 @@ def build_linkage_staleness_agent(*, store: Any = None) -> LinkageStalenessAgent
     ----------
     store:
         Optional injectable news-history store (tests pass a fake). ``None``
-        resolves the Plan 2 per-run singleton at run time.
+        resolves the Plan 3 per-run singleton at run time.
 
     Returns
     -------
@@ -2380,7 +2380,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 Create `tests/unit/agents/analysts/linkage/test_digester.py`:
 
 ```python
-"""Unit tests for the linkage event digester (Phase 14 Plan 4).
+"""Unit tests for the linkage event digester (Phase 14 Plan 5).
 
 A stubbed llm_fn makes the call deterministic.  We assert the positive
 signal (a normalised event appears in ``temp:linkage_digest``), the schema
@@ -2670,7 +2670,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 Create `tests/unit/agents/analysts/linkage/test_registry_stage.py`:
 
 ```python
-"""Unit tests for the linkage registry ADK stage (Phase 14 Plan 4)."""
+"""Unit tests for the linkage registry ADK stage (Phase 14 Plan 5)."""
 from __future__ import annotations
 
 import pytest
@@ -2789,7 +2789,7 @@ Expected: FAIL at collection with `ModuleNotFoundError: No module named 'agents.
 - [ ] **Step 3: Create `src/agents/analysts/linkage/registry_stage.py`**
 
 ```python
-"""Registry ADK stage — enrich, persist, and load active events (Phase 14 Plan 4).
+"""Registry ADK stage — enrich, persist, and load active events (Phase 14 Plan 5).
 
 Bridges the digester's ticker-free events to the matcher's active-event
 input.  For each ``LinkageEvent`` in the tick's digest this stage:
@@ -3020,7 +3020,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 Create `tests/unit/agents/analysts/linkage/test_matcher.py`:
 
 ```python
-"""Unit tests for the linkage matcher (Phase 14 Plan 4)."""
+"""Unit tests for the linkage matcher (Phase 14 Plan 5)."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -3180,7 +3180,7 @@ Expected: FAIL at collection with `ModuleNotFoundError: No module named 'agents.
 - [ ] **Step 3: Create `src/agents/analysts/linkage/matcher.py`**
 
 ```python
-"""Matcher — cross active events against the exposure map (Phase 14 Plan 4).
+"""Matcher — cross active events against the exposure map (Phase 14 Plan 5).
 
 The second and final flash call per tick (spec D4).  Active drift events are
 crossed against the per-ticker exposure map to produce per-ticker
@@ -3511,7 +3511,7 @@ Expected: FAIL at collection with `ModuleNotFoundError: No module named 'contrac
 - [ ] **Step 3: Create `src/contract/extractors/linkage.py`**
 
 ```python
-"""Deterministic feature extractor for linkage matches (Phase 14 Plan 4).
+"""Deterministic feature extractor for linkage matches (Phase 14 Plan 5).
 
 The matcher already emits a structured ``LinkageMatch``; this extractor lifts
 its numeric fields into the flat ``dict[str, float]`` shape ``AnalystEvidence``
@@ -3558,7 +3558,7 @@ Expected: PASS. (If `tests/unit/contract/extractors/` lacks an `__init__.py`, cr
 Create `tests/unit/agents/analysts/linkage/test_joiner.py`:
 
 ```python
-"""Unit tests for the linkage joiner (Phase 14 Plan 4)."""
+"""Unit tests for the linkage joiner (Phase 14 Plan 5)."""
 from __future__ import annotations
 
 import pytest
@@ -3824,7 +3824,7 @@ Expected: FAIL at collection with `ModuleNotFoundError: No module named 'agents.
 - [ ] **Step 3: Create `src/agents/analysts/linkage/agent.py`**
 
 ```python
-"""Linkage analyst branch factory (Phase 14 Plan 4).
+"""Linkage analyst branch factory (Phase 14 Plan 5).
 
 Assembles the five linkage stages into one SequentialAgent and wraps the
 whole branch in an ``IsolatedFailureWrapper``.  Whole-branch (not per-stage)
@@ -3938,8 +3938,8 @@ Add the import alongside the other branch imports inside the function:
 Build the branch just before the `return`:
 
 ```python
-    # Phase 14 Plan 4: the linkage branch is watchlist-wide (not per-ticker
-    # fan-out).  It reads state["macro_articles"] (Plan 3), makes at most two
+    # Phase 14 Plan 5: the linkage branch is watchlist-wide (not per-ticker
+    # fan-out).  It reads state["macro_articles"] (Plan 4), makes at most two
     # flash calls per tick, and writes durable linkage_verdicts /
     # linkage_evidence.  ``db_session`` threads through for the registry's
     # durable audit write.
@@ -3994,7 +3994,7 @@ Spec §6.3 mandates adding `linkage` to `contract.digest.DEFAULT_ANALYST_WEIGHTS
 - `contract/digest.py` computes `total_weight = sum(weights.values())` as the denominator for every ticker's aggregate magnitude. Adding a fourth weighted analyst raises the denominator from `3.0` to `4.0`, so on a tick where linkage produces **no** verdict for a ticker (the common case — linkage is inherently sparse), that ticker's `_fill_missing` neutral-fills the `linkage` slot and its aggregate magnitude is scaled by `3/4`. Every unexposed ticker's conviction shrinks ~25%.
 - `_fill_missing` also emits a `missing_analyst_slot` WARNING for each neutral-filled analyst, so quiet linkage ticks will log one such warning per unexposed ticker.
 
-This is a **consequential change to shared aggregation maths** (per the house "assume-I'm-wrong / mutual-agreement" rule). Do **not** silently re-tune the other weights to compensate, and do **not** invent a sparse-analyst exemption in `digest.py` as part of this task — that is a separate design decision. The task adds `"linkage": 1.0` exactly as the spec directs, and the **eval gate (Plan 2 → Plan 4) is where the dilution's real cost is measured**. If the scoreboard shows the dilution degrading the surviving analysts, the fix is decided then, with data. Record the trade-off in the commit body so it is not lost.
+This is a **consequential change to shared aggregation maths** (per the house "assume-I'm-wrong / mutual-agreement" rule). Do **not** silently re-tune the other weights to compensate, and do **not** invent a sparse-analyst exemption in `digest.py` as part of this task — that is a separate design decision. The task adds `"linkage": 1.0` exactly as the spec directs, and the **eval gate (Plan 3 → Plan 5) is where the dilution's real cost is measured**. If the scoreboard shows the dilution degrading the surviving analysts, the fix is decided then, with data. Record the trade-off in the commit body so it is not lost.
 
 The `missing_analyst_slot` warning volume is expected and benign here; it is the loud-failure convention working as designed (a neutral-fill is announced, never silent). It is not a bug to suppress.
 
@@ -4014,7 +4014,7 @@ The `missing_analyst_slot` warning volume is expected and benign here; it is the
 Create `tests/unit/agents/strategist/test_linkage_wiring.py`:
 
 ```python
-"""Linkage is a first-class strategist input (Phase 14 Plan 4)."""
+"""Linkage is a first-class strategist input (Phase 14 Plan 5)."""
 from __future__ import annotations
 
 from agents.contract.evidence_writer import _EVIDENCE_KEYS
@@ -4083,7 +4083,7 @@ _EVIDENCE_KEYS = (
     ("news_evidence", "news"),
     ("smart_money_evidence", "smart_money"),
     ("social_evidence", "social"),
-    # "linkage_evidence" / "linkage" added in Phase 14 Plan 4 — the economic-
+    # "linkage_evidence" / "linkage" added in Phase 14 Plan 5 — the economic-
     # links drift analyst.  Sparse by design: most ticks write no linkage rows.
     ("linkage_evidence", "linkage"),
 )
@@ -4094,7 +4094,7 @@ _EVIDENCE_KEYS = (
 After the line `sm   = _index_evidence(state, "smart_money_evidence")` add:
 
 ```python
-        # Phase 14 Plan 4: the economic-links drift analyst.  Sparse — present
+        # Phase 14 Plan 5: the economic-links drift analyst.  Sparse — present
         # only for tickers the matcher flagged this tick.
         link = _index_evidence(state, "linkage_evidence")
 ```
@@ -4132,11 +4132,11 @@ DEFAULT_ANALYST_WEIGHTS: dict[str, float] = {
     "technical":   1.0,
     "fundamental": 1.0,
     "news":        1.0,
-    # "linkage" added in Phase 14 Plan 4 (spec §6.3).  DELIBERATE TRADE-OFF:
+    # "linkage" added in Phase 14 Plan 5 (spec §6.3).  DELIBERATE TRADE-OFF:
     # linkage is a sparse analyst, so on ticks where it produces no verdict for
     # a ticker the aggregate magnitude is diluted by the raised total_weight
     # denominator (3->4) and _fill_missing logs a missing_analyst_slot warning.
-    # This is accepted for the eval gate (Plan 2 -> Plan 4): the scoreboard
+    # This is accepted for the eval gate (Plan 3 -> Plan 5): the scoreboard
     # measures whether linkage's signal outweighs the dilution.  Do NOT re-tune
     # the other weights or add a sparse-analyst exemption without agreement.
     "linkage":     1.0,
@@ -4170,7 +4170,7 @@ git commit -m "feat(linkage): wire linkage into evidence writer, context shim, d
 
 Adds linkage as a first-class analyst stream. Note the deliberate
 DEFAULT_ANALYST_WEIGHTS dilution trade-off (sparse analyst raises the
-aggregate denominator) — accepted for the Plan 2 -> Plan 4 eval gate, to
+aggregate denominator) — accepted for the Plan 3 -> Plan 5 eval gate, to
 be revisited with scoreboard data, not re-tuned pre-eval.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
@@ -4196,7 +4196,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 Create `tests/unit/backtest/test_linkage_scoreboard_horizon.py`:
 
 ```python
-"""Linkage ranks at its ~1-month drift horizon (Phase 14 Plan 4)."""
+"""Linkage ranks at its ~1-month drift horizon (Phase 14 Plan 5)."""
 from __future__ import annotations
 
 from backtest.settings import get_backtest_settings
@@ -4254,7 +4254,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 ### Task 14: Driver — reset the linkage registry per window replay
 
-**Design note.** The in-memory `LinkageEventRegistry` (Task 4) is the active-events source of truth. Like Plan 2's news-history store it must be reset at the start of each window replay so drift windows never leak across runs (PIT-correctness). Plan 2 already adds a `reset_news_history_store()` call at the top of `BacktestDriver.run`; this task adds the sibling call. Trust Plan 2's call lands — add ours beside it.
+**Design note.** The in-memory `LinkageEventRegistry` (Task 4) is the active-events source of truth. Like Plan 3's news-history store it must be reset at the start of each window replay so drift windows never leak across runs (PIT-correctness). Plan 3 already adds a `reset_news_history_store()` call at the top of `BacktestDriver.run`; this task adds the sibling call. Trust Plan 3's call lands — add ours beside it.
 
 **Files:**
 - Modify: `src/backtest/driver.py` (`BacktestDriver.run`, before the tick loop)
@@ -4296,10 +4296,10 @@ Add the import near the top of the module (alongside the other analyst imports):
 from agents.analysts.linkage.registry import reset_linkage_registry
 ```
 
-In `BacktestDriver.run`, immediately before the `for tick in schedule:` loop (next to Plan 2's `reset_news_history_store()` call), add:
+In `BacktestDriver.run`, immediately before the `for tick in schedule:` loop (next to Plan 3's `reset_news_history_store()` call), add:
 
 ```python
-        # Phase 14 Plan 4: clear the in-memory linkage event registry so
+        # Phase 14 Plan 5: clear the in-memory linkage event registry so
         # active drift windows never leak across window replays (PIT-correct).
         reset_linkage_registry()
 ```
@@ -4520,4 +4520,4 @@ Consistent throughout.
 
 **4. Cross-plan trust (no defensive shims)**
 
-`state["macro_articles"]` (Plan 3) and Plan 2's embedding store / `reset_news_history_store()` are read as guaranteed-present — an absent key is a loud `KeyError`, never a handled branch. Task 14's reset sits beside Plan 2's. No fallbacks for sibling-owned state.
+`state["macro_articles"]` (Plan 4) and Plan 3's embedding store / `reset_news_history_store()` are read as guaranteed-present — an absent key is a loud `KeyError`, never a handled branch. Task 14's reset sits beside Plan 3's. No fallbacks for sibling-owned state.

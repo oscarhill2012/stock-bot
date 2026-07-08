@@ -1,4 +1,4 @@
-# Plan 2 — News Subsystem Rebuild (Ticker-Level Drift)
+# Plan 3 — News Subsystem Rebuild (Ticker-Level Drift)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development
 > (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps
@@ -9,7 +9,7 @@
 > observed behaviour diverges from what the plan predicts, STOP and re-read the
 > source file before improvising.
 
-**Spec:** `docs/Phase14-analyst-refactor/specs/analyst-drift-refactor-design.md` §5 (Plan 2), plus D1/D2/D4 and §8 (testing).
+**Spec:** `docs/Phase14-analyst-refactor/specs/analyst-drift-refactor-design.md` §5 (news-rebuild design), plus D1/D2/D4 and §8 (testing).
 
 **Goal:** Rebuild the internals of `src/agents/analysts/news/` so the news analyst
 positions for post-news drift instead of reacting to sentiment. Three pillars:
@@ -58,13 +58,13 @@ ownership of durable `news_verdicts` / `news_evidence` keys, the closed-vocab
 
 ### Cross-plan interfaces (co-planned — trust, do not shim)
 
-This plan is one of four co-planned Phase 14 plans. Sibling plans land alongside
+This plan is one of five co-planned Phase 14 plans. Sibling plans land alongside
 this one; do **not** write defensive fallbacks for their deliverables.
 
-**This plan CONSUMES (Plan 3 — specificity router):**
+**This plan CONSUMES (Plan 2 — specificity router):**
 
 ```python
-# src/agents/analysts/news/router.py  (Plan 3's deliverable — do not create/modify)
+# src/agents/analysts/news/router.py  (Plan 2's deliverable — do not create/modify)
 def route_articles(articles: list, watchlist: list[str]) -> RoutedArticles: ...
 
 class RoutedArticles:
@@ -72,235 +72,27 @@ class RoutedArticles:
     macro:   list              # roundup/macro articles (Plan 4's input — NOT consumed here)
 ```
 
-Until Plan 3 merges, `from agents.analysts.news.router import route_articles` will
+Until Plan 2 merges, `from agents.analysts.news.router import route_articles` will
 fail at import time. That is expected and correct — **do not** add a try/except or
 a local stub in `src/`. Unit tests patch `route_articles` at the point of use, so
-the test suite for this plan passes independently of Plan 3's merge order. Task 7
-(full-suite verification) is the only task that requires Plan 3 to be present.
+the test suite for this plan passes independently of Plan 2's merge order. Task 6
+(full-suite verification) is the only task that requires Plan 2 to be present.
 
-**This plan PROVIDES (consumed by Plans 3 and 4):**
+**This plan PROVIDES (consumed by Plan 5 — the macro/linkage analyst):**
 
 - `src/agents/analysts/news/history.py` —
   `NewsHistoryStore.staleness(namespace, text) -> float` and
   `NewsHistoryStore.record(namespace, article_key, text, published_at)`.
-  Namespaces are strings: this plan uses ticker symbols; Plan 4 uses `"macro"`.
-- `AnalystVerdict.horizon_days: int = Field(default=1, ge=1)` in
-  `src/contract/evidence.py` (Plan 4's macro analyst also emits it).
+  Namespaces are strings: this plan uses ticker symbols; Plan 5's macro analyst uses `"macro"`.
+- The `horizon_days` field on `AnalystVerdict` / `LlmTickerVerdict` in
+  `src/contract/evidence.py` is **added by Plan 1** (Task 5) — this plan does not
+  define it; its rewritten prompt (Task 4) only **emits** it.
 - `config/analysts.json::staleness_similarity_threshold` (top-level — shared by
-  Plan 4's macro staleness pass).
+  Plan 5's macro staleness pass).
 
 ---
 
-## Task 1 — Add `horizon_days` to the verdict contract
-
-**Files:**
-- Modify: `src/contract/evidence.py`
-- Modify: `tests/contract/test_llm_ticker_verdict.py`
-- Modify: `tests/unit/agents/analysts/news/test_joiner.py`
-- Modify (fixture sweep): any test file constructing an `LlmTickerVerdict` payload
-
-**Interface being added:**
-
-```python
-# On AnalystVerdict (base class — default keeps deterministic analysts valid):
-horizon_days: int = Field(default=1, ge=1)
-
-# On LlmTickerVerdict (emit schema, extra="forbid" — REQUIRED, no default):
-horizon_days: int = Field(ge=1)
-```
-
-`horizon_days` is the number of **trading days** the analyst expects its lean to
-remain valid. Deterministic analysts (technical) inherit the default of 1 (their
-verdicts are recomputed every tick). The news analyst must state it explicitly:
-~5 for a fresh-surprise lean, longer for drift continuation (spec §5 Plan 2 /
-literature table: PEAD 5–90d).
-
-`horizon_days` is REQUIRED on `LlmTickerVerdict` deliberately: the emit schema's
-doctrine is "structured commitments before prose, nothing optional the model can
-lazily omit". `to_ticker_verdict()` inflates via `model_dump()` →
-`model_validate()`, so the field carries across automatically once it exists on
-both classes — no inflation-code change needed.
-
-**Steps:**
-
-**1.1 — Write the failing contract tests.**
-
-In `tests/contract/test_llm_ticker_verdict.py`, first update the shared
-`_valid_emit_payload` helper: add `"horizon_days": 5,` immediately after the
-`"is_no_data"` entry (keep the payload's field order matching the schema's
-declaration order). Then append these tests at the end of the file (add
-`AnalystVerdict` to the existing `from contract.evidence import ...` line):
-
-```python
-def test_horizon_days_is_required_on_the_llm_emit():
-    """The news prompt must commit to a horizon — the schema enforces it."""
-    payload = _valid_emit_payload()
-    del payload["horizon_days"]
-
-    with pytest.raises(ValidationError):
-        LlmTickerVerdict.model_validate(payload)
-
-
-def test_horizon_days_must_be_at_least_one_trading_day():
-    """A zero or negative horizon is meaningless — ge=1 rejects it."""
-    payload = _valid_emit_payload()
-    payload["horizon_days"] = 0
-
-    with pytest.raises(ValidationError):
-        LlmTickerVerdict.model_validate(payload)
-
-
-def test_to_ticker_verdict_carries_horizon_days():
-    """Inflation to the full TickerVerdict must not drop the horizon."""
-    payload = _valid_emit_payload()
-    payload["horizon_days"] = 7
-
-    verdict = LlmTickerVerdict.model_validate(payload)
-
-    assert verdict.to_ticker_verdict().horizon_days == 7
-
-
-def test_analyst_verdict_defaults_horizon_to_one_day():
-    """Deterministic analysts never set a horizon — the base default is 1."""
-    verdict = AnalystVerdict(
-        lean="neutral", magnitude=0.0, confidence=0.0,
-        rationale="deterministic baseline",
-    )
-
-    assert verdict.horizon_days == 1
-```
-
-Run and watch them fail (missing-field / unexpected-attribute errors):
-
-```bash
-.venv/bin/python -m pytest tests/contract/test_llm_ticker_verdict.py -v
-```
-
-**1.2 — Add the field to both classes in `src/contract/evidence.py`.**
-
-In `AnalystVerdict`, immediately after the `is_no_data: bool = False` line:
-
-```python
-    # Phase 14 (Plan 2): how many TRADING DAYS the analyst expects this lean
-    # to remain valid.  Deterministic analysts recompute every tick and keep
-    # the default of 1; drift-aware analysts (news, macro) state it
-    # explicitly — ~5 for a fresh surprise, longer for drift continuation.
-    horizon_days: int = Field(default=1, ge=1)
-```
-
-In `LlmTickerVerdict`, immediately after its `is_no_data: bool` line (i.e. BEFORE
-the `key_factors` block — structured commitments stay ahead of prose):
-
-```python
-    # Trading days the lean should hold.  REQUIRED — the emit schema never
-    # lets the model lazily omit a structured commitment.  Inflation to
-    # TickerVerdict carries it across via model_dump()/model_validate().
-    horizon_days: int = Field(ge=1)
-```
-
-**1.3 — Fixture sweep.** `LlmTickerVerdict` is `extra="forbid"` with
-`horizon_days` now required, so every hand-built emit payload in the test suite
-needs the key. Find them:
-
-```bash
-grep -rln "LlmTickerVerdict\|temp:news_verdict_\|temp:fundamental_verdict_" tests/
-```
-
-Then run the full suite and add `"horizon_days": 1,` (after `"is_no_data"`) to
-every payload dict that fails validation. Expected locations: the news joiner
-tests, the fundamental joiner/branch tests, cache-callback tests, and any
-integration/backtest conftest canned LLM outputs. Let pytest be the arbiter —
-fix exactly what fails, nothing speculative:
-
-```bash
-.venv/bin/python -m pytest tests/ -v
-```
-
-**1.4 — Interim prompt compatibility.** Until this plan's Task 5 rewrites the
-news prompt (and Plan 1 rewrites the fundamental prompt), both LLM analysts emit
-payloads WITHOUT `horizon_days` and would now fail schema validation at runtime.
-Keep them valid with a one-line addition to each prompt's OUTPUT CONTRACT field
-list — in `src/agents/analysts/news/prompts.py` and
-`src/agents/analysts/fundamental/prompts.py`, add to the contract's field
-descriptions (matching each file's existing list formatting):
-
-```
-- horizon_days: integer >= 1 — trading days you expect this lean to hold.
-```
-
-Do not restructure either prompt here — Task 5 (news) and Plan 1 (fundamental)
-own the real rewrites; this is a minimal compatibility patch. Note: editing the
-prompts auto-flips `NEWS_PROMPT_VERSION` / `FUNDAMENTAL_PROMPT_VERSION` (they are
-derived by hashing the rendered prompt in `report_cache.py`), which correctly
-invalidates any on-disk report-cache entries that lack the new field — old cached
-verdicts can never hit the now-stricter schema gate.
-
-**1.5 — Add a joiner propagation test** (spec §8: "horizon field propagation —
-Plan 2"). Append to `tests/unit/agents/analysts/news/test_joiner.py`, reusing
-that file's existing imports and session/context harness (mirror the state
-fixture shape its existing happy-path test uses — the load-bearing part is the
-final assertion):
-
-```python
-@pytest.mark.asyncio
-async def test_joiner_propagates_horizon_days_into_the_verdict_batch():
-    """horizon_days must survive the joiner's validate→inflate→dump round trip."""
-    svc = InMemorySessionService()
-    session = await svc.create_session(
-        app_name="test",
-        user_id="test",
-        state={
-            "tickers": ["AAPL"],
-            "tick_id": "t-1",
-            "as_of": "2026-07-06T14:00:00",
-            "temp:news_data": {"AAPL": {"news": []}},
-            "temp:news_verdict_AAPL": {
-                "ticker": "AAPL",
-                "lean": "bullish",
-                "magnitude": 0.4,
-                "confidence": 0.6,
-                "is_no_data": False,
-                "horizon_days": 5,
-                "key_factors": ["catalyst:earnings"],
-                "report": {
-                    "summary": "Genuine positive surprise; positioning for drift.",
-                    "drivers": [
-                        {"name": "eps_beat", "direction": "bull", "weight": 0.6,
-                         "body": "EPS well above consensus."},
-                        {"name": "guidance", "direction": "bull", "weight": 0.4,
-                         "body": "Full-year guidance raised."},
-                    ],
-                },
-            },
-        },
-        session_id="t-1",
-    )
-
-    agent = NewsJoinerAgent(name="NewsJoiner")
-    ctx = InvocationContext(
-        session_service=svc, session=session, invocation_id="inv-1", agent=agent,
-    )
-
-    events = [ev async for ev in agent.run_async(ctx)]
-
-    batch = events[-1].actions.state_delta["news_verdicts"]
-    assert batch["verdicts"][0]["horizon_days"] == 5
-```
-
-**1.6 — Verify and commit.**
-
-```bash
-.venv/bin/python -m pytest tests/ -v
-.venv/bin/python -m ruff check src/ tests/
-git add -A
-git commit -m "feat(contract): add horizon_days to AnalystVerdict and LlmTickerVerdict
-
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
-```
-
----
-
-## Task 2 — `NewsHistoryStore` + `staleness_similarity_threshold` config
+## Task 1 — `NewsHistoryStore` + `staleness_similarity_threshold` config
 
 **Files:**
 - Create: `src/agents/analysts/news/history.py`
@@ -328,7 +120,7 @@ def reset_news_history_store() -> None: ...
 `tests/unit/agents/analysts/news/test_history.py`:
 
 ```python
-"""Unit tests for the per-run NewsHistoryStore (Phase 14 Plan 2).
+"""Unit tests for the per-run NewsHistoryStore (Phase 14 Plan 3).
 
 The store backs the deterministic embedding staleness pre-filter: it holds
 one embedding vector per previously-seen article, per namespace, and
@@ -497,7 +289,7 @@ against everything already recorded in that namespace.  Scores at or above
 as a stale rehash rather than a fresh surprise.
 
 Namespaces are plain strings.  This plan uses ticker symbols (company
-news); Plan 4's macro analyst uses the reserved namespace ``"macro"``.
+news); Plan 5's macro analyst uses the reserved namespace ``"macro"``.
 
 Lifecycle — PIT correctness (spec D2):
     The store is strictly PER-RUN state.  Live trading accumulates it
@@ -643,7 +435,7 @@ class NewsHistoryStore:
 
 # ── Module-level per-run singleton ────────────────────────────────────────
 #
-# The fetch agent (and Plan 4's macro analyst) share one store per process
+# The fetch agent (and Plan 5's macro analyst) share one store per process
 # run.  The backtest driver resets it at the start of every window replay.
 
 _STORE: NewsHistoryStore | None = None
@@ -676,7 +468,7 @@ def reset_news_history_store() -> None:
 ```
 
 **2.3 — Add the config threshold.** In `src/config/analysts.py`, add a top-level
-field to `AnalystsConfig` (top-level, not under `NewsCaps`, because Plan 4's
+field to `AnalystsConfig` (top-level, not under `NewsCaps`, because Plan 5's
 `"macro"` namespace shares the same threshold). Place it alongside the existing
 top-level fields (e.g. after `slack_percent`):
 
@@ -734,7 +526,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 ---
 
-## Task 3 — Staleness partition helpers in `fetch.py`
+## Task 2 — Staleness partition helpers in `fetch.py`
 
 **Files:**
 - Modify: `src/agents/analysts/news/fetch.py` (additions only in this task)
@@ -1087,10 +879,10 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 ---
 
-## Task 4 — Rebuild the fetch flow (router + staleness filter + two-section context)
+## Task 3 — Rebuild the fetch flow (router + staleness filter + two-section context)
 
 This is the core rewiring task: `NewsFetchAgent` now routes the fetched union
-through Plan 3's `route_articles`, staleness-partitions each ticker's articles,
+through Plan 2's `route_articles`, staleness-partitions each ticker's articles,
 and renders a two-section context (fresh in full, previously-seen as headline
 one-liners). The heuristic reranker is deleted outright.
 
@@ -1108,7 +900,7 @@ one-liners). The heuristic reranker is deleted outright.
 `_watchlist_universe` (delete this one only if, after the rewrite, `grep -rn
 "_watchlist_universe" src/ tests/` shows no remaining callers — the router now
 receives the watchlist from state). `roundup_company_threshold` stays in config —
-Plan 3's router consumes it.
+Plan 2's router consumes it.
 
 **Kept symbols:** `_dedup_and_sort_articles`, `_normalise_title`,
 `_title_similarity`, `_parse_published`, `_caps()`, `_MISSING_SENTINEL` — the
@@ -1119,7 +911,7 @@ the title pass cannot.
 **Steps:**
 
 **4.1 — Config: replace the generic-articles cap with a stale-headlines cap.**
-With routing owned by Plan 3, the old "generic articles" concept (roundups
+With routing owned by Plan 2, the old "generic articles" concept (roundups
 stapled onto a ticker's feed) no longer reaches the per-ticker context, so
 `max_generic_articles_per_ticker` is dead. The new knob caps the
 headline-only PREVIOUSLY SEEN section.
@@ -1167,7 +959,7 @@ or a news-config dict, swap the key for `max_stale_headlines_per_ticker`.
 
 The heuristic specificity re-ranker (``_score_article_specificity`` /
 ``_rerank_articles``) was replaced by the embedding staleness pre-filter
-(Plan 2) and the specificity router (Plan 3); its tests were deleted with
+(Plan 3) and the specificity router (Plan 2); its tests were deleted with
 it.  Title-dedup and recency-sort tests live in ``test_dedup_recency.py``;
 staleness-partition tests live in ``test_staleness_filter.py``.  This file
 covers the two-section context renderer.
@@ -1421,7 +1213,7 @@ Run the renderer tests green:
 ```python
 """Unit tests for NewsFetchAgent — Phase 14 routed + staleness-filtered flow.
 
-Plan 3's ``route_articles`` and the embedding backend are both stubbed:
+Plan 2's ``route_articles`` and the embedding backend are both stubbed:
 these tests pin THIS agent's contract (fetch → union-dedup → route →
 partition → render → single state_delta event), not the router's or the
 embedder's.
@@ -1555,7 +1347,7 @@ async def test_previously_seen_article_moves_to_stale_on_the_next_tick():
 
 @pytest.mark.asyncio
 async def test_macro_stream_is_not_consumed_here():
-    """Roundup/macro articles routed to .macro belong to Plan 4's analyst —
+    """Roundup/macro articles routed to .macro belong to Plan 5's analyst —
     the per-ticker context must not contain them."""
     roundup = _article("Markets roundup: five movers", "Blah.",
                        "2026-07-05T12:00:00", "https://news/r1")
@@ -1629,16 +1421,16 @@ becomes:
 ```python
 """NewsFetchAgent — fetch, route, staleness-filter, and render per ticker.
 
-Phase 14 (Plan 2) rebuild.  Per tick this agent:
+Phase 14 (Plan 3) rebuild.  Per tick this agent:
 
 1. Fetches ``/company-news`` for every watchlist ticker (existing provider
    path — cache-backed during backtests; D1: no new providers).
 2. Unions the feeds and de-duplicates exact re-fetches by ``article_key``
    (the same story is stapled onto several tickers' feeds — judge it once).
-3. Routes the union through the specificity router (Plan 3):
+3. Routes the union through the specificity router (Plan 2):
    company-specific articles come back keyed by ticker in
    ``RoutedArticles.company``; roundup/macro articles land in ``.macro``,
-   which this agent does NOT consume — Plan 4's macro analyst owns that
+   which this agent does NOT consume — Plan 5's macro analyst owns that
    stream.
 4. Per ticker: title-level dedup (cheap exact/near-exact hygiene), then the
    deterministic embedding staleness pre-filter against the per-run
@@ -1724,7 +1516,7 @@ class NewsFetchAgent(BaseAgent):
         for article in all_articles:
             unique.setdefault(article_key(article), article)
 
-        # ── 3. Specificity routing (Plan 3) ──────────────────────────────
+        # ── 3. Specificity routing (Plan 2) ──────────────────────────────
         # ``routed.macro`` is deliberately ignored here — Plan 4 consumes it.
         routed = route_articles(list(unique.values()), tickers)
 
@@ -1833,7 +1625,7 @@ The grep must return nothing. Commit:
 git add -A
 git commit -m "feat(news): route + staleness-filter fetch flow with two-section context
 
-Replaces the heuristic specificity reranker with Plan 3 routing and the
+Replaces the heuristic specificity reranker with Plan 2 routing and the
 deterministic embedding staleness pre-filter; per-ticker contexts now
 render fresh articles in full and previously-seen headlines only.
 
@@ -1842,7 +1634,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 ---
 
-## Task 5 — Rewrite the per-ticker prompt: surprise classification + drift positioning
+## Task 4 — Rewrite the per-ticker prompt: surprise classification + drift positioning
 
 **Files:**
 - Modify: `src/agents/analysts/news/prompts.py` (replace `_TEMPLATE`)
@@ -2044,7 +1836,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 ---
 
-## Task 6 — Backtest lifecycle: per-run history-store reset
+## Task 5 — Backtest lifecycle: per-run history-store reset
 
 **Files:**
 - Modify: `src/backtest/driver.py`
@@ -2073,7 +1865,7 @@ store-identity change):
 ```python
 """Contract test: Driver.run resets the per-run news-history store.
 
-PIT-correctness (Phase 14 Plan 2): each window replay must rebuild the
+PIT-correctness (Phase 14 Plan 3): each window replay must rebuild the
 staleness history from that window's own news timeline — nothing may leak
 in from a previous window (or a previous run) executed in this process.
 """
@@ -2136,7 +1928,7 @@ Then, in `Driver.run`, immediately before the tick loop begins (before the
 `for tick in schedule:` line and any `total_ticks = len(schedule)` bookkeeping):
 
 ```python
-        # Phase 14 (Plan 2): the news staleness pre-filter's embedding store
+        # Phase 14 (Plan 3): the news staleness pre-filter's embedding store
         # is strictly per-run state.  Reset it before the first tick so this
         # replay rebuilds it from the window's golden-cache news timeline in
         # tick order — nothing may leak in from a previous window (or a
@@ -2162,7 +1954,7 @@ file, `git add -f tests/unit/backtest/test_driver_news_history_reset.py`.
 
 ---
 
-## Task 7 — Full-suite verification and cross-plan integration check
+## Task 6 — Full-suite verification and cross-plan integration check
 
 **Files:** none created — verification only.
 
@@ -2176,16 +1968,16 @@ file, `git add -f tests/unit/backtest/test_driver_news_history_reset.py`.
 ```
 
 If `from agents.analysts.news.router import route_articles` fails at import
-time because Plan 3 has not merged yet, every OTHER test must still pass
+time because Plan 2 has not merged yet, every OTHER test must still pass
 (the fetch-agent tests patch the symbol, but the import itself needs the
 module). In that situation report the suite status against this plan's own
-test files and flag the pending Plan 3 dependency in the completion report —
-do NOT stub `router.py` yourself; Plan 3 owns that file.
+test files and flag the pending Plan 2 dependency in the completion report —
+do NOT stub `router.py` yourself; Plan 2 owns that file.
 
 **7.2 — Dead-symbol and convention sweep:**
 
 ```bash
-grep -rn "_rerank_articles\|_score_article_specificity\|_build_company_terms\|_count_roundup_companies\|max_generic_articles_per_ticker" src/ tests/ config/ docs/Phase14-analyst-refactor/plans/plan2-news-drift-rebuild.md --include="*.py" --include="*.json"
+grep -rn "_rerank_articles\|_score_article_specificity\|_build_company_terms\|_count_roundup_companies\|max_generic_articles_per_ticker" src/ tests/ config/ docs/Phase14-analyst-refactor/plans/plan3-news-drift-rebuild.md --include="*.py" --include="*.json"
 grep -rn "max_length" src/contract/evidence.py
 ```
 
@@ -2211,29 +2003,29 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 
 Performed against the writing-plans checklist before hand-off:
 
-- **Spec coverage (§5 Plan 2):** staleness pre-filter replacing heuristic rerank
-  (Tasks 3–4), NewsHistoryStore with pinned signatures (Task 2), prompt rewrite
-  to surprise + drift with `horizon_days` (Tasks 1, 5), branch shape and
-  wrappers untouched (Task 4 rewrites only `fetch_agent.py` internals; `agent.py`
+- **Spec coverage (§5 news-rebuild design):** staleness pre-filter replacing heuristic rerank
+  (Tasks 2–3), NewsHistoryStore with pinned signatures (Task 1), prompt rewrite
+  to surprise + drift with `horizon_days` (Task 4; the field itself is added by Plan 1), branch shape and
+  wrappers untouched (Task 3 rewrites only `fetch_agent.py` internals; `agent.py`
   and `per_ticker.py` wrappers unchanged apart from the hash-inputs lambda),
-  backtest PIT lifecycle (Task 6), D1 (no new providers — fetch path unchanged),
+  backtest PIT lifecycle (Task 5), D1 (no new providers — fetch path unchanged),
   D4 (stale renders headline-only; identity short-circuit avoids re-embedding).
-- **§8 testing requirements:** horizon propagation (1.5), staleness threshold
-  behaviour with positive assertions (Task 3 and the agent-level test in 4.4),
+- **§8 testing requirements:** horizon propagation (Plan 1, Task 5), staleness threshold
+  behaviour with positive assertions (Task 2 and the agent-level test in 4.4),
   loud-failure tests for embedding outages (2.1, 3.1, 4.4).
 - **Placeholder scan:** no TODOs/ellipses in code blocks; the only intentional
   "adapt to existing" instructions are where the plan cannot see private test
-  harness details (joiner harness in 1.5, prompt substitution tokens in 5.2,
-  driver construction in 6.1) and each names the exact reference file to copy.
+  harness details (prompt substitution tokens in 5.2, driver construction in 6.1)
+  and each names the exact reference file to copy.
 - **Type consistency:** `horizon_days` int/ge=1 on both classes; store
   signatures match the cross-plan pin exactly (`staleness(namespace, text)`,
   `record(namespace, article_key, text, published_at)`); `route_articles`
   consumed with the pinned `RoutedArticles.company` shape and never stubbed in
   `src/`.
 - **Known judgement calls** (recorded for the reviewer): `horizon_days` made
-  REQUIRED on `LlmTickerVerdict` (schema doctrine) with a one-line interim
-  compat patch to both LLM prompts in Task 1.4; `staleness_similarity_threshold`
-  placed at the top level of `analysts.json` because Plan 4's macro namespace
+  REQUIRED on `LlmTickerVerdict` (schema doctrine) by Plan 1's Task 5, which also
+  owns the interim prompt compat patch (this plan's Task 4 emits the field); `staleness_similarity_threshold`
+  placed at the top level of `analysts.json` because Plan 5's macro namespace
   shares it; the title-dedup pass retained as a cheap pre-embedding hygiene
   step; `max_generic_articles_per_ticker` retired in favour of
   `max_stale_headlines_per_ticker`; report-cache key redefined to the

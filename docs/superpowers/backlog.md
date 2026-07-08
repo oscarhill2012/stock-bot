@@ -455,7 +455,7 @@ The drift was harmless before today because nothing cross-referenced the three s
 
 ### B35. Watchlist expansion toward mid-caps — restore drift-effect statistical power
 
-**Origin:** Phase 14 analyst-drift refactor (`docs/Phase14-analyst-refactor/specs/analyst-drift-refactor-design.md` §2, caveat 1). Every effect the refactor targets — PEAD, economic-links momentum, Lazy Prices, negative-news drift — is documented as strongest in small/mid caps and weakest in megacaps. The current watchlist is megacap-heavy, so a null eval result on any drift channel is *ambiguous*: it cannot distinguish "the channel is arbitraged away" from "our watchlist is where the channel is weakest." Named as out-of-scope of the refactor but a prerequisite for trusting its evals — especially the linkage channel (Plan 4), which is the most cap-attenuated of all.
+**Origin:** Phase 14 analyst-drift refactor (`docs/Phase14-analyst-refactor/specs/analyst-drift-refactor-design.md` §2, caveat 1). Every effect the refactor targets — PEAD, economic-links momentum, Lazy Prices, negative-news drift — is documented as strongest in small/mid caps and weakest in megacaps. The current watchlist is megacap-heavy, so a null eval result on any drift channel is *ambiguous*: it cannot distinguish "the channel is arbitraged away" from "our watchlist is where the channel is weakest." Named as out-of-scope of the refactor but a prerequisite for trusting its evals — especially the linkage channel (Plan 5), which is the most cap-attenuated of all.
 
 **The goal:** widen `config/watchlist.json` to include a mid-cap cohort chosen for drift-effect exposure (thinner analyst coverage, real supplier/customer chains, genuine event surprise), and re-baseline the golden cache for the target windows so the Phase 14 drift evals run on a watchlist where the literature predicts a *detectable* effect. Produces an apples-to-apples megacap-vs-midcap comparison of the same signals.
 
@@ -464,11 +464,11 @@ The drift was harmless before today because nothing cross-referenced the three s
 - Provider coverage: does Finnhub `/company-news` retention and filings coverage hold up for mid-caps, or do gaps reintroduce the silent-degradation class we just fought?
 - Backtest windows: reuse `baseline-2025-09` / `iran-conflict-2026-02`, or add a mid-cap-specific stress window?
 - Portfolio/risk implications: do mid-cap liquidity and position-sizing assumptions in the risk gate still hold, or does this need its own sizing pass?
-- Does this land *before* the Plan 2→Plan 4 eval gate (so linkage is testable) or as a follow-on re-eval?
+- Does this land *before* the Plan 3→Plan 5 eval gate (so linkage is testable) or as a follow-on re-eval?
 
-**Status:** Committed, not speculative. This is the **original programme goal** and a scheduled step in the Phase 14 sequence — it runs *after* Plan 2's eval and *before* the Plan 4 linkage build (the two-step gate in the spec §3). It sits in the backlog only because it post-dates the four-plan bundle; it is a precondition for linkage, not an optional enhancement.
+**Status:** Committed, not speculative. This is the **original programme goal** and a scheduled step in the Phase 14 sequence — it runs *after* Plan 3's eval and *before* the Plan 5 linkage build (the two-step gate in the spec §3). It sits in the backlog only because it post-dates the four-plan bundle; it is a precondition for linkage, not an optional enhancement.
 
-**Dependencies:** Phase 14 Plans 1–2 shipped and Plan 2's eval positive. Gates the credibility of the Plan 4 linkage eval — [[B31]] and the linkage channel both need this to be evaluable on their strongest terrain (economic-links drift is attention-constrained, so it has no drift-targets in a megacap-only universe). Golden-cache refetch (permitted per Phase 14 D3).
+**Dependencies:** Phase 14 Plans 1–3 shipped and Plan 3's eval positive. Gates the credibility of the Plan 5 linkage eval — [[B31]] and the linkage channel both need this to be evaluable on their strongest terrain (economic-links drift is attention-constrained, so it has no drift-targets in a megacap-only universe). Golden-cache refetch (permitted per Phase 14 D3).
 
 ---
 
@@ -481,11 +481,11 @@ The drift was harmless before today because nothing cross-referenced the three s
 **Key questions to brainstorm:**
 - Which source clears the parity bar? GDELT DOC (retention/titles-only limits), a paid macro feed, or central-bank/gov RSS archives with real history?
 - Normalisation: how to fold a second schema into the one-`NewsArticle`-model discipline without the formatting-issue explosion D1 was avoiding?
-- Does it feed the existing linkage digester (Plan 4) unchanged, or need its own staleness namespace and event categories?
+- Does it feed the existing linkage digester (Plan 5) unchanged, or need its own staleness namespace and event categories?
 - Value test: does macro input measurably move linkage verdicts vs the roundup-only lens, on a window where a known macro shock occurred?
 - Parity proof obligation: what's the minimum evidence that backtest and live see the same macro stream before we'd trust an eval?
 
-**Dependencies:** Phase 14 Plan 4 (linkage) shipped and its consumers stable. Directly relaxes the D2 constraint that shaped the linkage design — revisit only after linkage has an eval result on the roundup-only lens, so we know the marginal value of richer macro input. Cross-domain parity audit overlaps [[B25]].
+**Dependencies:** Phase 14 Plan 5 (linkage) shipped and its consumers stable. Directly relaxes the D2 constraint that shaped the linkage design — revisit only after linkage has an eval result on the roundup-only lens, so we know the marginal value of richer macro input. Cross-domain parity audit overlaps [[B25]].
 
 ---
 
@@ -617,13 +617,13 @@ The drift was harmless before today because nothing cross-referenced the three s
 
 ### B38. Stale-news fade — the contrarian Tetlock reversal trade
 
-**Origin:** Phase 14 Plan 2 builds the staleness measure (embedding similarity of an article against the per-ticker news history) purely as a *filter* — stale news is discarded before the LLM. Tetlock (2011) documents that stale news doesn't just under-inform, it *over-reacts and reverses* (~1 week). The measure Plan 2 builds is exactly the input for trading that reversal, but the contrarian trade was held out as a separate experiment to keep the drift reframe clean.
+**Origin:** Phase 14 Plan 3 builds the staleness measure (embedding similarity of an article against the per-ticker news history) purely as a *filter* — stale news is discarded before the LLM. Tetlock (2011) documents that stale news doesn't just under-inform, it *over-reacts and reverses* (~1 week). The measure Plan 3 builds is exactly the input for trading that reversal, but the contrarian trade was held out as a separate experiment to keep the drift reframe clean.
 
-**The goal:** a small experimental analyst (or a Plan 2 verdict flag) that, when an article is classified stale *and* the ticker has moved with it, emits a low-confidence *contrarian* lean anticipating the reversal — rather than simply suppressing the article. Evaluated in isolation on the scoreboard so its (likely weak, likely noisy) signal is measured separately from the drift channels.
+**The goal:** a small experimental analyst (or a Plan 3 verdict flag) that, when an article is classified stale *and* the ticker has moved with it, emits a low-confidence *contrarian* lean anticipating the reversal — rather than simply suppressing the article. Evaluated in isolation on the scoreboard so its (likely weak, likely noisy) signal is measured separately from the drift channels.
 
-**Effort:** ~half to one phase. The staleness score already exists post-Plan 2; this adds a small verdict path plus a recent-price-move check (technical data already in state), and a scoreboard cluster. No new provider, no new LLM hop if done deterministically. Main cost is eval discipline — separating this from Plan 2's drift signal.
+**Effort:** ~half to one phase. The staleness score already exists post-Plan 3; this adds a small verdict path plus a recent-price-move check (technical data already in state), and a scoreboard cluster. No new provider, no new LLM hop if done deterministically. Main cost is eval discipline — separating this from Plan 3's drift signal.
 
-**Dependencies:** Phase 14 Plan 2 shipped (owns the staleness measure). Independent of the linkage channel. Best evaluated once [[B35]] gives it a watchlist where reversal is detectable.
+**Dependencies:** Phase 14 Plan 3 shipped (owns the staleness measure). Independent of the linkage channel. Best evaluated once [[B35]] gives it a watchlist where reversal is detectable.
 
 ---
 
@@ -684,9 +684,9 @@ Phase 4 (Goals 1 + 2 — strategist v2 + analyst contract, plans A→B→C→D)
          ├── B35 (mid-cap watchlist expansion — makes drift/linkage evals trustworthy)
          ├── B36 (GDELT macro-news enrichment — a backtestable macro feed; overlaps B25)
          ├── B37 (capture-only archive of the Finnhub general feed — forward corpus)
-         └── B38 (stale-news fade — contrarian Tetlock reversal on Plan 2's staleness measure)
+         └── B38 (stale-news fade — contrarian Tetlock reversal on Plan 3's staleness measure)
 ```
 
-**Rough order if doing them in series:** Phase 4 plans A → B → C → D → Phase 5 (analyst re-categorisation) → B16 (ratchet policy operationalised by Phase 5's surface trace) → analyst-surface-redesign (consolidates B9 + half of B14) → **B26** (architectural cleanup — high priority before more providers land) → B28 / B30 (related provider/cache contract follow-ups) → B6 → B7 → B11 → B10 → B2 (long arc) → B5 → B17 (likely folds into B2) → B4 → B3 → B8 → B29 (test-only cleanup, rule-of-three). The Phase 14 follow-ons (B35 mid-cap watchlist, then B36/B37/B38) sequence against the Plan 2→Plan 4 eval-gate outcome. B12/B13/B14-deterministic-narrator/B15 fold in only as trace data justifies, ordered ad-hoc against [[B16]]'s checklist.
+**Rough order if doing them in series:** Phase 4 plans A → B → C → D → Phase 5 (analyst re-categorisation) → B16 (ratchet policy operationalised by Phase 5's surface trace) → analyst-surface-redesign (consolidates B9 + half of B14) → **B26** (architectural cleanup — high priority before more providers land) → B28 / B30 (related provider/cache contract follow-ups) → B6 → B7 → B11 → B10 → B2 (long arc) → B5 → B17 (likely folds into B2) → B4 → B3 → B8 → B29 (test-only cleanup, rule-of-three). The Phase 14 follow-ons (B35 mid-cap watchlist, then B36/B37/B38) sequence against the Plan 3→Plan 5 eval-gate outcome. B12/B13/B14-deterministic-narrator/B15 fold in only as trace data justifies, ordered ad-hoc against [[B16]]'s checklist.
 
 Most are independent enough to reorder by what hurts most in operation. Two strict orderings hold: **Phase 4 before B2** (the knowledge base needs a clean signal contract and decision telemetry to reason over) and **Phase 5 before B9/B10/B11/B12/B13/B14** (every analyst-side and debate-side experiment assumes the post-Phase 5 5-analyst pack, deterministic baseline, and surface-trace harness).
