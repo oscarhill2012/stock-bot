@@ -37,7 +37,11 @@ Two caveats recorded up front:
 - **Cap-size attenuation.** Every effect above is strongest in small/mid
   caps and weakest in megacaps. The current watchlist is megacap-heavy;
   a null eval result on megacaps does not falsify the channel. Watchlist
-  composition is out of scope here but flagged for the backlog.
+  composition is out of scope for *these four plans*, but broadening it
+  toward mid-caps is a **committed next step** — the original programme
+  goal — sequenced after Plan 2's eval and before the linkage plan
+  (backlog B35). It is a precondition for the linkage channel, not an
+  afterthought.
 - **LLM look-ahead.** Any LLM call in a backtest carries training-knowledge
   contamination risk on pre-cutoff windows. Not new to this design, but the
   exposure map (§6.3) is more knowledge-dependent than most calls and is
@@ -52,10 +56,15 @@ Two caveats recorded up front:
 | 3 | Macro stream data plumbing (router + refetch) | — |
 | 4 | Linkage analyst (digester, exposure map, matcher, registry) | 2, 3 |
 
-**Eval gate:** Plans 1–2 are built and evaluated first. Plan 4's build is
-gated on Plan 2's eval showing the drift reframe has signal. Plans are
-co-planned: each plan trusts its siblings land as specified — no defensive
-shims for state a sibling owns.
+**Eval gate:** Plans 1–2 are built and evaluated first. Plan 4's build
+routes through a **two-step gate**: (1) Plan 2's eval must show the drift
+reframe has signal, **and then** (2) the watchlist is broadened toward
+mid-caps (the original programme goal — see the §2 cap-attenuation caveat
+and backlog B35) *before* linkage is built. The economic-links channel is
+an attention-constrained effect with no drift-targets in a megacap-only
+universe, so building it before the watchlist widens would produce an
+uninformative eval. Plans are co-planned: each plan trusts its siblings
+land as specified — no defensive shims for state a sibling owns.
 
 **Eval-window dependency:** Plan 1's 3–6-month signal needs long windows;
 `long-baseline-2025` requires the pending cache refetch (revenue-concept

@@ -466,7 +466,9 @@ The drift was harmless before today because nothing cross-referenced the three s
 - Portfolio/risk implications: do mid-cap liquidity and position-sizing assumptions in the risk gate still hold, or does this need its own sizing pass?
 - Does this land *before* the Plan 2→Plan 4 eval gate (so linkage is testable) or as a follow-on re-eval?
 
-**Dependencies:** Phase 14 Plans 1–2 shipped. Gates the credibility of the Plan 4 linkage eval — [[B31]] and the linkage channel both need this to be evaluable on their strongest terrain. Golden-cache refetch (permitted per Phase 14 D3).
+**Status:** Committed, not speculative. This is the **original programme goal** and a scheduled step in the Phase 14 sequence — it runs *after* Plan 2's eval and *before* the Plan 4 linkage build (the two-step gate in the spec §3). It sits in the backlog only because it post-dates the four-plan bundle; it is a precondition for linkage, not an optional enhancement.
+
+**Dependencies:** Phase 14 Plans 1–2 shipped and Plan 2's eval positive. Gates the credibility of the Plan 4 linkage eval — [[B31]] and the linkage channel both need this to be evaluable on their strongest terrain (economic-links drift is attention-constrained, so it has no drift-targets in a megacap-only universe). Golden-cache refetch (permitted per Phase 14 D3).
 
 ---
 
