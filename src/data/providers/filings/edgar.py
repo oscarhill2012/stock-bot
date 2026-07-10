@@ -136,9 +136,21 @@ _ALL_FORMS: tuple[str, ...] = (*_PERIODIC_FORMS, _EVENT_FORM)
 
 # Section keys per edgartools naming. 8-Ks have no stable RF/MD&A so
 # they're skipped — we still return the metadata.
+# Phase 14: Legal Proceedings joins the extracted set (10-K Part I Item 3,
+# 10-Q Part II Item 1) so the filing-delta prompt can diff litigation
+# language year-over-year.  NB the 10-Q keys are close but distinct:
+# part_ii_item_1 is Legal Proceedings, part_ii_item_1a is Risk Factors.
 _SECTION_KEYS = {
-    "10-K": {"risk_factors_excerpt": "part_i_item_1a", "mda_excerpt": "part_ii_item_7"},
-    "10-Q": {"risk_factors_excerpt": "part_ii_item_1a", "mda_excerpt": "part_i_item_2"},
+    "10-K": {
+        "risk_factors_excerpt": "part_i_item_1a",
+        "mda_excerpt":          "part_ii_item_7",
+        "litigation_excerpt":   "part_i_item_3",
+    },
+    "10-Q": {
+        "risk_factors_excerpt": "part_ii_item_1a",
+        "mda_excerpt":          "part_i_item_2",
+        "litigation_excerpt":   "part_ii_item_1",
+    },
 }
 
 
@@ -226,15 +238,22 @@ def _build_filing(filing: Any, symbol: str, include_excerpts: bool) -> Filing:
 
     risk: str | None = None
     mda: str | None = None
+    litigation: str | None = None
+
     if include_excerpts and form_type in _SECTION_KEYS:
         try:
             obj = filing.obj()
             keys = _SECTION_KEYS[form_type]
-            risk = _section_text(obj, keys["risk_factors_excerpt"])
-            mda = _section_text(obj, keys["mda_excerpt"])
+
+            # Each section is independently nullable — a filing may carry
+            # MD&A but no Legal Proceedings (and vice versa).
+            risk       = _section_text(obj, keys["risk_factors_excerpt"])
+            mda        = _section_text(obj, keys["mda_excerpt"])
+            litigation = _section_text(obj, keys["litigation_excerpt"])
         except Exception:
             risk = None
             mda = None
+            litigation = None
 
     # --- 8-K specific fields (Phase 7 — audit 2.7) ---
     body_excerpt: str | None = None
@@ -276,6 +295,7 @@ def _build_filing(filing: Any, symbol: str, include_excerpts: bool) -> Filing:
         url=str(url),
         risk_factors_excerpt=risk,
         mda_excerpt=mda,
+        litigation_excerpt=litigation,
         body_excerpt=body_excerpt,
         items_8k=items_8k,
         period_of_report=period_of_report,

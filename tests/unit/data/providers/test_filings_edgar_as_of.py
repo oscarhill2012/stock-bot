@@ -545,3 +545,119 @@ async def test_get_filings_called_with_amendments_false(
         assert kwargs.get("amendments") is False, (
             f"get_filings called without amendments=False: {kwargs}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Litigation section extraction (Phase 14 Plan 1)
+# ---------------------------------------------------------------------------
+
+class _FakeSection:
+    """Stand-in for an edgartools section object exposing ``.text()``."""
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    def text(self) -> str:
+        """Return the raw section text."""
+        return self._text
+
+
+class _FakeSections:
+    """Stand-in for edgartools' sections container exposing ``.get(key)``."""
+
+    def __init__(self, mapping: dict[str, str]) -> None:
+        self._mapping = mapping
+
+    def get(self, key: str):
+        """Return a ``_FakeSection`` for a known key, else ``None``."""
+        text = self._mapping.get(key)
+        return _FakeSection(text) if text is not None else None
+
+
+class _FakeSectionedFiling(_FakeFiling):
+    """A fake 10-K/10-Q whose ``.obj()`` exposes named sections."""
+
+    def __init__(self, *, form: str, sections: dict[str, str], **kwargs) -> None:
+        super().__init__(form=form, **kwargs)
+        self._sections = sections
+
+    def obj(self):
+        """Return an object carrying a ``sections`` container."""
+
+        class _Obj:
+            sections = _FakeSections(self._sections)
+
+        return _Obj()
+
+
+def test_build_filing_extracts_10k_litigation_section() -> None:
+    """A 10-K's Legal Proceedings section (part_i_item_3) must populate
+    ``litigation_excerpt`` — the Phase 14 filing-delta signal diffs litigation
+    language year-over-year, so a silent None here starves the whole channel.
+    """
+    import data.providers.filings.edgar as mod
+
+    fake = _FakeSectionedFiling(
+        form="10-K",
+        filing_date=date(2026, 1, 30),
+        accession_no="lit-10k",
+        sections={
+            "part_i_item_1a": "Risk factors text.",
+            "part_ii_item_7": "MD&A text.",
+            "part_i_item_3":  "In re Example Securities Litigation, filed 2025.",
+        },
+    )
+
+    built = mod._build_filing(fake, "AAPL", include_excerpts=True)
+
+    # Positive signal: the litigation prose arrived, alongside the two
+    # pre-existing sections (no regression).
+    assert built.litigation_excerpt == "In re Example Securities Litigation, filed 2025."
+    assert built.mda_excerpt == "MD&A text."
+    assert built.risk_factors_excerpt == "Risk factors text."
+
+
+def test_build_filing_extracts_10q_litigation_section() -> None:
+    """A 10-Q's Legal Proceedings section (part_ii_item_1) must populate
+    ``litigation_excerpt`` — note 10-Q risk factors live at part_ii_item_1a,
+    so the two keys must not be conflated.
+    """
+    import data.providers.filings.edgar as mod
+
+    fake = _FakeSectionedFiling(
+        form="10-Q",
+        filing_date=date(2026, 2, 10),
+        accession_no="lit-10q",
+        sections={
+            "part_ii_item_1a": "Quarterly risk factors.",
+            "part_i_item_2":   "Quarterly MD&A.",
+            "part_ii_item_1":  "The company is a defendant in ongoing patent litigation.",
+        },
+    )
+
+    built = mod._build_filing(fake, "AAPL", include_excerpts=True)
+
+    assert built.litigation_excerpt == "The company is a defendant in ongoing patent litigation."
+    assert built.risk_factors_excerpt == "Quarterly risk factors."
+
+
+def test_build_filing_litigation_none_when_section_absent() -> None:
+    """A filing without a Legal Proceedings section yields ``None`` (nullable
+    field) — the render layer treats absence as 'section not filed', never as
+    an empty diff.
+    """
+    import data.providers.filings.edgar as mod
+
+    fake = _FakeSectionedFiling(
+        form="10-K",
+        filing_date=date(2026, 1, 30),
+        accession_no="lit-none",
+        sections={
+            "part_i_item_1a": "Risk factors only.",
+            "part_ii_item_7": "MD&A only.",
+        },
+    )
+
+    built = mod._build_filing(fake, "AAPL", include_excerpts=True)
+
+    assert built.litigation_excerpt is None

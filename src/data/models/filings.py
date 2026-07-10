@@ -28,6 +28,10 @@ class Filing(BaseModel):
       layer can de-boilerplate MD&A text by diffing out unchanged paragraphs.
       Available from edgartools ``Filing.period_of_report`` at no extra
       network cost (extracted from SGML header metadata).
+
+    Phase 14 additions (filing-delta / Lazy Prices):
+    - ``litigation_excerpt`` — Legal Proceedings prose, diffed year-over-year
+      by the assembly layer alongside MD&A and risk factors.
     """
 
     ticker: str
@@ -50,6 +54,18 @@ class Filing(BaseModel):
             "Full text of Item 7 (MD&A) when available. "
             "No truncation at fetch time — the assembly layer applies de-boilerplate "
             "diffing then caps the rendered output via max_filing_mda_chars."
+        ),
+    )
+
+    litigation_excerpt: str | None = Field(
+        default=None,
+        description=(
+            "Full text of the Legal Proceedings section when available "
+            "(10-K Part I Item 3; 10-Q Part II Item 1).  No truncation at "
+            "fetch time — the assembly layer applies prior-year diffing then "
+            "caps the rendered output via max_filing_litigation_chars.  "
+            "None for form types without the section (8-K) and for cache "
+            "rows written before Phase 14."
         ),
     )
 
