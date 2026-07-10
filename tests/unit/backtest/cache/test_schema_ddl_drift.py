@@ -68,10 +68,13 @@ def _build_ddl_snapshot() -> list[tuple[str, str, str, bool, bool]]:
 # Part B — DDL drift guard
 # ---------------------------------------------------------------------------
 
-# Pinned snapshot of the current schema (as of Phase 13, period_of_report
-# included).  If this test fails after a DDL change, update this snapshot AND
-# read the assertion message to decide whether a SCHEMA_VERSION bump is also
-# required.
+# Pinned snapshot of the current schema (as of Phase 14, period_of_report and
+# litigation_excerpt included).  ``litigation_excerpt`` was added to the
+# ``filings`` table in Phase 14 (Plan 1, Task 3) as an additive nullable TEXT
+# column — no SCHEMA_VERSION bump was needed, as the runtime auto-migration in
+# CachedDataStore._migrate_additive_columns backfills existing cache files.  If
+# this test fails after a DDL change, update this snapshot AND read the
+# assertion message to decide whether a SCHEMA_VERSION bump is also required.
 _PINNED_DDL_SNAPSHOT: list[tuple[str, str, str, bool, bool]] = [
     # cache_runs table
     ("cache_runs", "domain",          "VARCHAR", True,  False),
@@ -107,6 +110,7 @@ _PINNED_DDL_SNAPSHOT: list[tuple[str, str, str, bool, bool]] = [
     ("filings", "accession_no",         "VARCHAR", False, True),
     ("filings", "filed_at",             "DATETIME", True,  False),
     ("filings", "form_type",            "VARCHAR", True,  False),
+    ("filings", "litigation_excerpt",   "TEXT",    True,  False),
     ("filings", "mda_excerpt",          "TEXT",    True,  False),
     ("filings", "period_of_report",     "TEXT",    True,  False),
     ("filings", "risk_factors_excerpt", "TEXT",    True,  False),
