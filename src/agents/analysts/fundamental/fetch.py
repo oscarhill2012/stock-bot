@@ -15,9 +15,9 @@ The per-ticker triad payload layout is::
 
 The context block written into state combines:
 
-- Filing excerpts (MD&A + risk factors) for each ticker, with MD&A paragraphs
-  de-boilerplated against the prior-year filing where a fiscal-period pair
-  can be established (Phase 13).
+- Filing excerpts (MD&A, risk factors, litigation) for each ticker, with each
+  section de-boilerplated against the prior-year filing where a fiscal-period
+  pair can be established (Phase 13, generalised beyond MD&A in Phase 14).
 - A structured insider activity section (numeric flows + footnote prose).
 
 Separating the LLM-readable context from the machine-readable data dict
@@ -243,47 +243,68 @@ def _render_ratios_block(lines: list[str], ratios: dict) -> None:
         lines.extend(rendered_rows)
 
 
-def _render_mda(
+def _render_diffed_section(
     filing: dict,
-    mda: str,
+    text: str,
+    *,
+    section_field: str,
     baselines: list[dict],
-    caps: FundamentalCaps,
-    mda_stub_threshold: int,
+    cap_chars: int,
+    stub_threshold: int,
 ) -> str:
-    """Return the MD&A text to include in the LLM context for one filing.
+    """Return one prose section's text, diffed against the prior-year pair.
 
-    Attempts de-boilerplate diffing against the prior-year baseline filing when:
-    - The current filing has a ``period_of_report`` field (Phase 13 cache).
-    - A matching baseline filing can be found (same form type, ~365 days earlier).
-    - Both the current and prior MD&A texts exceed ``mda_stub_threshold`` chars
-      (stubs are too short to diff meaningfully).
+    Phase 14 generalisation of the Phase 13 MD&A-only ``_render_mda``: the
+    same pairing + paragraph-diff machinery now serves MD&A, risk factors and
+    litigation.  Attempts de-boilerplate diffing against the prior-year
+    baseline filing when:
 
-    Falls back to full text (capped at ``max_filing_mda_chars``) with a
-    descriptive marker in these cases:
-    - No ``period_of_report`` on the current filing (pre-Phase 13 cache row).
+    - The current filing has a ``period_of_report`` field.
+    - A matching baseline filing exists (same form type, ~365 days earlier).
+    - Both the current and prior section texts exceed ``stub_threshold``
+      chars (stubs — e.g. an incorporated-by-reference cross-reference — are
+      too short to diff meaningfully).
+
+    Falls back to the full text (capped at ``cap_chars``) with a descriptive
+    NO-COMPARISON marker in these cases:
+
+    - No ``period_of_report`` on the current filing.
     - No matching baseline found.
-    - Either text is shorter than ``mda_stub_threshold``.
+    - Either side's text is shorter than ``stub_threshold``.
     - An unexpected exception inside the diff call.
+
+    The marker strings are load-bearing: the Phase 14 prompt tells the LLM
+    that any ``[no prior-year pair ...]`` / ``[... too short to diff ...]``
+    marker means "comparison unavailable" — which must never be read as
+    "nothing changed" (the quiet-bullish branch of the Lazy Prices sign
+    convention requires a *performed* diff that found little change).
 
     Parameters
     ----------
     filing:
         Current filing dict (``Filing.model_dump()`` shape).
-    mda:
-        Stripped MD&A text from the current filing.
+    text:
+        Stripped section text from the current filing (non-empty; the caller
+        guards).
+    section_field:
+        Which section this is — one of ``"mda_excerpt"``,
+        ``"risk_factors_excerpt"``, ``"litigation_excerpt"``.  Used both to
+        read the prior-year counterpart off the baseline dict and to label
+        log lines.
     baselines:
-        Prior-year baseline filing dicts from the provider call.
-    caps:
-        ``FundamentalCaps`` for this tick (read from config).
-    mda_stub_threshold:
-        Minimum character count for both current and prior MD&A before
-        de-boilerplate diffing is attempted.
+        Prior-year baseline filing dicts from the pool provider call.
+    cap_chars:
+        Character cap applied to the rendered output (per-section config
+        value from ``FundamentalCaps``).
+    stub_threshold:
+        Minimum character count for both sides before diffing is attempted
+        (``mda_stub_char_threshold`` in config — shared by all sections).
 
     Returns
     -------
     str
-        Either the de-boilerplated (diffed) MD&A text or the full text with a
-        fallback marker, capped at ``caps.max_filing_mda_chars``.
+        Either the de-boilerplated (diffed) section text or the full text
+        with a fallback marker, capped at ``cap_chars``.
     """
     form_type = filing.get("form_type", "?")
     current_period = filing.get("period_of_report") or ""
@@ -291,44 +312,48 @@ def _render_mda(
     # --- Attempt pairing only when period_of_report is available ---
     if not current_period:
         _logger.debug(
-            "_render_mda: no period_of_report for %s %s — rendering full text",
-            form_type, filing.get("accession_no", "?"),
+            "_render_diffed_section[%s]: no period_of_report for %s %s — full text",
+            section_field, form_type, filing.get("accession_no", "?"),
         )
-        return "[no prior-year pair: period_of_report absent — full text]\n\n" + mda[:caps.max_filing_mda_chars]
+        return "[no prior-year pair: period_of_report absent — full text]\n\n" + text[:cap_chars]
 
-    # --- Find prior-year baseline ---
+    # --- Find prior-year baseline (same form type, ~365 days earlier) ---
     baseline = _find_prior_year_baseline(current_period, form_type, baselines)
 
     if baseline is None:
         _logger.debug(
-            "_render_mda: no baseline found for %s period=%s — rendering full text",
-            form_type, current_period,
+            "_render_diffed_section[%s]: no baseline for %s period=%s — full text",
+            section_field, form_type, current_period,
         )
-        return "[no prior-year pair: baseline not in cache — full text]\n\n" + mda[:caps.max_filing_mda_chars]
+        return "[no prior-year pair: baseline not in cache — full text]\n\n" + text[:cap_chars]
 
-    prior_mda = (baseline.get("mda_excerpt") or "").strip()
+    prior_text = (baseline.get(section_field) or "").strip()
     prior_period = baseline.get("period_of_report") or "prior year"
 
-    # --- Stub guard: skip diffing if either text is too short ---
-    if len(mda) < mda_stub_threshold or len(prior_mda) < mda_stub_threshold:
+    # --- Stub guard: skip diffing if either side is too short ---
+    # This is the incorporated-by-reference path (e.g. XOM's 10-K Item 7 is
+    # an Exhibit 13 cross-reference stub): the stub is shown verbatim under a
+    # marker, and the delta signal comes from the ticker's 10-Q instead.
+    if len(text) < stub_threshold or len(prior_text) < stub_threshold:
         _logger.debug(
-            "_render_mda: stub text for %s (current=%d, prior=%d chars, threshold=%d) "
-            "— rendering full text",
-            form_type, len(mda), len(prior_mda), mda_stub_threshold,
+            "_render_diffed_section[%s]: stub text for %s (current=%d, prior=%d, "
+            "threshold=%d) — full text",
+            section_field, form_type, len(text), len(prior_text), stub_threshold,
         )
-        return "[prior-year pair found but text too short to diff — full text]\n\n" + mda[:caps.max_filing_mda_chars]
+        return "[prior-year pair found but text too short to diff — full text]\n\n" + text[:cap_chars]
 
-    # --- De-boilerplate diff ---
+    # --- De-boilerplate diff (generic paragraph-fingerprint filter) ---
     try:
         filtered_text, stats = deboilerplate_mda(
-            current_text=mda,
-            prior_text=prior_mda,
+            current_text=text,
+            prior_text=prior_text,
             algo_version=MDA_DEBOILERPLATE_ALGO_VERSION,
             prior_period_label=prior_period,
         )
         _logger.info(
-            "_render_mda: %s pair=%s→%s dropped=%d/%d (%.1f%% retained) "
-            "chars %d→%d",
+            "_render_diffed_section[%s]: %s pair=%s→%s dropped=%d/%d "
+            "(%.1f%% retained) chars %d→%d",
+            section_field,
             form_type,
             prior_period,
             current_period,
@@ -338,14 +363,14 @@ def _render_mda(
             stats["chars_in"],
             stats["chars_out"],
         )
-        return filtered_text[:caps.max_filing_mda_chars]
+        return filtered_text[:cap_chars]
 
     except Exception as exc:
         _logger.warning(
-            "_render_mda: deboilerplate_mda failed for %s %s: %s — rendering full text",
-            form_type, current_period, exc,
+            "_render_diffed_section[%s]: diff failed for %s %s: %s — full text",
+            section_field, form_type, current_period, exc,
         )
-        return "[de-boilerplate error — full text]\n\n" + mda[:caps.max_filing_mda_chars]
+        return "[de-boilerplate error — full text]\n\n" + text[:cap_chars]
 
 
 # Known on-disk formats for ``period_of_report``.  The live EDGAR provider
@@ -474,11 +499,13 @@ def _build_ticker_context(
     one formatted text block.  This text is concatenated across all tickers and
     written to ``state["fundamental_context"]`` by the fetch callback.
 
-    For periodic filings (10-K, 10-Q) with available MD&A text, this function
-    attempts to de-boilerplate the MD&A by diffing it against the prior-year
-    filing's MD&A from ``baseline_filings_payload`` (Phase 13).  If a prior-year
-    baseline is found and both texts are long enough, unchanged paragraphs are
-    filtered out so the LLM sees only what actually changed.
+    For periodic filings (10-K, 10-Q) with available prose text, this function
+    attempts to de-boilerplate the MD&A, risk-factor and litigation sections
+    by diffing each against the prior-year filing's counterpart section from
+    ``baseline_filings_payload`` (Phase 13, generalised beyond MD&A in Phase
+    14).  If a prior-year baseline is found and both texts are long enough,
+    unchanged paragraphs are filtered out so the LLM sees only what actually
+    changed.
 
     Parameters
     ----------
@@ -541,44 +568,60 @@ def _build_ticker_context(
     baselines: list[dict] = baseline_filings_payload or []
 
     # --- Filing excerpts ---
-    # For annual / quarterly filings (10-K, 10-Q) we render MD&A and risk
-    # factors.  MD&A is de-boilerplated against the prior-year filing when a
-    # fiscal-period pair can be established (Phase 13).
-    # For event-driven filings (8-K) those sections are absent; instead we
-    # render the body_excerpt which captures the catalyst, guidance update, or
-    # earnings announcement (Phase 7 audit 2.7 addition).
+    # For annual / quarterly filings (10-K, 10-Q) we render three prose
+    # sections — MD&A, risk factors, litigation — each de-boilerplated
+    # against the prior-year pair where a fiscal-period match exists
+    # (Phase 13 machinery, generalised in Phase 14 for the filing-delta
+    # signal).  For event-driven filings (8-K) those sections are absent;
+    # instead we render the body_excerpt which captures the catalyst,
+    # guidance update, or earnings announcement (Phase 7 audit 2.7).
     if filings_payload:
         lines.append("-- COMPANY FILINGS (PROSE) --")
         for filing in filings_payload:
             form_type = filing.get("form_type", "?")
             filed_at  = filing.get("filed_at", "?")
 
-            mda       = (filing.get("mda_excerpt") or "").strip()
-            risk_fac  = (filing.get("risk_factors_excerpt") or "").strip()
-            body_expt = (filing.get("body_excerpt") or "").strip()
+            mda        = (filing.get("mda_excerpt") or "").strip()
+            risk_fac   = (filing.get("risk_factors_excerpt") or "").strip()
+            litigation = (filing.get("litigation_excerpt") or "").strip()
+            body_expt  = (filing.get("body_excerpt") or "").strip()
 
-            if mda or risk_fac:
-                # 10-K / 10-Q style: MD&A + risk factors sections available.
+            if mda or risk_fac or litigation:
+                # 10-K / 10-Q style: periodic prose sections available.
                 lines.append(f"  [{form_type}, filed {filed_at}]")
 
                 if mda:
-                    # Attempt de-boilerplate pairing for periodic forms with
-                    # sufficient MD&A text and a prior-year baseline.
-                    mda_to_render = _render_mda(
-                        filing=filing,
-                        mda=mda,
+                    lines.append("  MD&A: " + _render_diffed_section(
+                        filing, mda,
+                        section_field="mda_excerpt",
                         baselines=baselines,
-                        caps=caps,
-                        mda_stub_threshold=mda_stub_threshold,
-                    )
-                    lines.append(f"  MD&A: {mda_to_render}")
+                        cap_chars=caps.max_filing_mda_chars,
+                        stub_threshold=mda_stub_threshold,
+                    ))
 
                 if risk_fac:
-                    lines.append(f"  Risk factors: {risk_fac[:caps.max_filing_risk_chars]}")
+                    lines.append("  Risk factors: " + _render_diffed_section(
+                        filing, risk_fac,
+                        section_field="risk_factors_excerpt",
+                        baselines=baselines,
+                        cap_chars=caps.max_filing_risk_chars,
+                        stub_threshold=mda_stub_threshold,
+                    ))
+
+                if litigation:
+                    lines.append("  Litigation: " + _render_diffed_section(
+                        filing, litigation,
+                        section_field="litigation_excerpt",
+                        baselines=baselines,
+                        cap_chars=caps.max_filing_litigation_chars,
+                        stub_threshold=mda_stub_threshold,
+                    ))
 
             elif body_expt:
-                # 8-K style: no MD&A/risk sections, but there is a body excerpt
-                # capturing the event (earnings, guidance, material disclosure).
+                # 8-K style: no periodic sections, but there is a body excerpt
+                # capturing the event (earnings, guidance, officer changes —
+                # Item 5.02 departures/appointments are part of the Phase 14
+                # executive-team-change surface).
                 lines.append(f"  [{form_type}, filed {filed_at}]")
                 lines.append(f"  Body: {body_expt[:caps.max_filing_8k_body_chars]}")
     else:

@@ -605,3 +605,208 @@ class TestMdaDeboilerplateFiresFromPool:
 
         assert "20251228" not in result, "adjacent Q1 wrongly chosen as baseline"
         assert "20250628" not in result, "adjacent Q3 wrongly chosen as baseline"
+
+
+# ---------------------------------------------------------------------------
+# Tests — Phase 14: risk-factor + litigation diffing, XOM stub fallback
+# ---------------------------------------------------------------------------
+
+# Year-over-year risk-factor prose: one boilerplate bullet shared verbatim,
+# one genuinely new bullet in the current filing.  Each clears the 50-char
+# stub threshold used by _deboilerplate_caps.
+_RISK_BOILERPLATE = (
+    "Our business is subject to intense competition across all markets in "
+    "which we operate, which may adversely affect our results of operations."
+)
+
+_RISK_NEW_BULLET = (
+    "We are subject to new export-control restrictions announced in March "
+    "that materially limit shipments of our highest-margin products to Asia."
+)
+
+_LITIGATION_BOILERPLATE = (
+    "The company is subject to various legal proceedings arising in the "
+    "ordinary course of business, none of which is expected to be material."
+)
+
+_LITIGATION_NEW = (
+    "In February the Department of Justice filed a civil antitrust complaint "
+    "against the company seeking structural remedies in the services segment."
+)
+
+
+class TestRiskAndLitigationDiffing:
+    """Risk factors and litigation de-boilerplate against the prior-year pair."""
+
+    def _current_filing(self) -> dict:
+        """Return a current 10-Q dict with all three prose sections."""
+        return {
+            "ticker": "AAPL",
+            "form_type": "10-Q",
+            "filed_at": "2026-05-01",
+            "period_of_report": "20260328",
+            "mda_excerpt": _BOILERPLATE_PARA + "\n\n" + _CURRENT_UNIQUE_PARA,
+            "risk_factors_excerpt": _RISK_BOILERPLATE + "\n\n" + _RISK_NEW_BULLET,
+            "litigation_excerpt": _LITIGATION_BOILERPLATE + "\n\n" + _LITIGATION_NEW,
+            "body_excerpt": None,
+        }
+
+    def _baseline_pool(self) -> list[dict]:
+        """Return the prior-year 10-Q carrying the shared boilerplate only."""
+        return [
+            {
+                "ticker": "AAPL", "form_type": "10-Q", "filed_at": "2025-05-02",
+                "period_of_report": "20250329",
+                "mda_excerpt": _BOILERPLATE_PARA + "\n\n" + _PRIOR_UNIQUE_PARA,
+                "risk_factors_excerpt": _RISK_BOILERPLATE,
+                "litigation_excerpt": _LITIGATION_BOILERPLATE,
+                "body_excerpt": None,
+            },
+        ]
+
+    def _render(self) -> str:
+        """Run the context builder with generous diff-friendly caps."""
+        with patch(
+            "agents.analysts.fundamental.fetch._caps",
+            return_value=_deboilerplate_caps(),
+        ):
+            return _build_ticker_context(
+                ticker="AAPL",
+                filings_payload=[self._current_filing()],
+                insider_bundle=_empty_bundle(),
+                insider_lookback_days=30,
+                ratios=None,
+                baseline_filings_payload=self._baseline_pool(),
+            )
+
+    def test_risk_factors_are_diffed_against_prior_year(self):
+        """The shared risk bullet is stripped; the new bullet survived."""
+        result = self._render()
+
+        # Positive signal: the diff fired on the risk section (header names
+        # the matched prior period) and the genuinely new bullet survived.
+        assert "Risk factors:" in result
+        assert "new export-control restrictions" in result
+
+        # The verbatim boilerplate bullet was removed as unchanged.
+        assert "intense competition across all markets" not in result
+
+    def test_litigation_is_rendered_and_diffed(self):
+        """The litigation line appears, boilerplate stripped, new matter kept."""
+        result = self._render()
+
+        assert "Litigation:" in result
+        assert "civil antitrust complaint" in result
+        assert "ordinary course of business" not in result
+
+    def test_all_three_sections_name_the_matched_prior_period(self):
+        """Every diffed section header names 20250329 — one pairing, three diffs."""
+        result = self._render()
+
+        # One de-boilerplate header per section (MD&A + risk + litigation).
+        assert result.count("[de-boilerplate vs 20250329:") == 3
+
+
+# An XOM-shaped 10-K MD&A: a cross-reference stub incorporating Exhibit 13 by
+# reference.  ~115 chars — under the 200-char stub threshold below.
+_XOM_MDA_STUB = (
+    "Reference is made to the Financial Section of the 2025 Annual Report, "
+    "Exhibit 13, incorporated herein by reference."
+)
+
+
+def _stub_guard_caps() -> FundamentalCaps:
+    """Caps with a 200-char stub threshold: the XOM stub (~115 chars) is
+    guarded while the ~380-char 10-Q prose fixtures still clear it."""
+    llm = LlmCaps(
+        timeout_seconds=30,
+        max_output_tokens=512,
+        temperature=0.3,
+        timeout_retries=1,
+        schema_retries=1,
+    )
+    return FundamentalCaps(
+        max_filing_mda_chars=12000,
+        max_filing_risk_chars=12000,
+        max_filing_litigation_chars=12000,
+        max_filing_8k_body_chars=200,
+        max_insider_footnotes=2,
+        max_insider_footnote_chars=100,
+        mda_stub_char_threshold=200,
+        llm=llm,
+    )
+
+
+class TestIncorporatedByReferenceStubFallback:
+    """XOM-style 10-K stub: no diff attempted; the 10-Q pair still diffs."""
+
+    def _payload(self) -> list[dict]:
+        """Return a 10-K with a stub MD&A plus a 10-Q with real prose."""
+        return [
+            {   # The stub 10-K — MD&A incorporated by reference (Exhibit 13).
+                "ticker": "XOM", "form_type": "10-K", "filed_at": "2026-02-25",
+                "period_of_report": "20251231",
+                "mda_excerpt": _XOM_MDA_STUB,
+                "risk_factors_excerpt": None,
+                "litigation_excerpt": None,
+                "body_excerpt": None,
+            },
+            {   # The 10-Q — genuine prose that must still diff normally.
+                "ticker": "XOM", "form_type": "10-Q", "filed_at": "2026-05-01",
+                "period_of_report": "20260331",
+                "mda_excerpt": _BOILERPLATE_PARA + "\n\n" + _CURRENT_UNIQUE_PARA,
+                "risk_factors_excerpt": None,
+                "litigation_excerpt": None,
+                "body_excerpt": None,
+            },
+        ]
+
+    def _baseline_pool(self) -> list[dict]:
+        """Prior-year pool: a stub 10-K (same shape) and a real-prose 10-Q."""
+        return [
+            {
+                "ticker": "XOM", "form_type": "10-K", "filed_at": "2025-02-26",
+                "period_of_report": "20241231",
+                "mda_excerpt": _XOM_MDA_STUB,
+                "risk_factors_excerpt": None,
+                "litigation_excerpt": None,
+                "body_excerpt": None,
+            },
+            {
+                "ticker": "XOM", "form_type": "10-Q", "filed_at": "2025-05-02",
+                "period_of_report": "20250331",
+                "mda_excerpt": _BOILERPLATE_PARA + "\n\n" + _PRIOR_UNIQUE_PARA,
+                "risk_factors_excerpt": None,
+                "litigation_excerpt": None,
+                "body_excerpt": None,
+            },
+        ]
+
+    def test_stub_10k_gets_marker_and_10q_still_diffs(self):
+        """The stub is marked (no fake diff); the 10-Q carries the delta signal.
+
+        This pins the established XOM fallback: an incorporated-by-reference
+        MD&A must surface as a NO-COMPARISON marker — never as a de-boilerplate
+        header that the prompt would read as 'nothing changed' (quiet-bullish).
+        """
+        with patch(
+            "agents.analysts.fundamental.fetch._caps",
+            return_value=_stub_guard_caps(),
+        ):
+            result = _build_ticker_context(
+                ticker="XOM",
+                filings_payload=self._payload(),
+                insider_bundle=_empty_bundle(),
+                insider_lookback_days=30,
+                ratios=None,
+                baseline_filings_payload=self._baseline_pool(),
+            )
+
+        # The stub 10-K: pairing succeeded but the stub guard blocked the diff.
+        assert "too short to diff" in result
+        # The stub text itself is still shown (the LLM sees WHY there is no diff).
+        assert "incorporated herein by reference" in result
+
+        # Positive signal: the 10-Q pair diffed normally in the same context.
+        assert "[de-boilerplate vs 20250331:" in result
+        assert "record March quarter for iPhone" in result
