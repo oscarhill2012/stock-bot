@@ -17,11 +17,13 @@
   },
   "fundamental": {
     "max_filing_mda_chars":       12000,
-    "max_filing_risk_chars":      1500,
+    "max_filing_risk_chars":      4000,
+    "max_filing_litigation_chars": 1500,
     "max_filing_8k_body_chars":   1500,
     "max_insider_footnotes":      5,
     "max_insider_footnote_chars": 400,
     "mda_stub_char_threshold":    400,
+    "filing_delta_horizon_days":  60,
     "insider_conviction_threshold_dollars":  50000000,
     "trailing_pe_implausibility_threshold":  200,
     "llm": {

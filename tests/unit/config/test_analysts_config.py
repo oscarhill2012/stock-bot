@@ -319,3 +319,49 @@ def test_load_analysts_config_rejects_tiny_max_output_tokens(tmp_path) -> None:
 
     with pytest.raises(ValidationError):
         load_analysts_config(path=cfg_path)
+
+
+# ---------------------------------------------------------------------------
+# Phase 14 Plan 1 — filing-delta settings
+# ---------------------------------------------------------------------------
+
+def test_fundamental_litigation_cap_loaded() -> None:
+    """``max_filing_litigation_chars`` must load from config/analysts.json.
+
+    The litigation section (Legal Proceedings) joins MD&A and risk factors as
+    a diffed prose block in Phase 14; its render cap must be config-driven,
+    never hardcoded in the assembly layer.
+    """
+    from config.analysts import load_analysts_config
+
+    cfg = load_analysts_config()
+
+    assert cfg.fundamental.max_filing_litigation_chars == 1500
+
+
+def test_fundamental_filing_delta_horizon_loaded() -> None:
+    """``filing_delta_horizon_days`` must load from config/analysts.json.
+
+    This is the trading-day horizon the fundamental prompt instructs the LLM
+    to emit as ``horizon_days`` — the Lazy Prices drift operates at 3–6
+    months, so the default is 60 trading days.
+    """
+    from config.analysts import load_analysts_config
+
+    cfg = load_analysts_config()
+
+    assert cfg.fundamental.filing_delta_horizon_days == 60
+
+
+def test_fundamental_risk_cap_raised_for_diffed_survivors() -> None:
+    """Risk-factor cap is 4000 now that unchanged paragraphs are stripped first.
+
+    Pre-Phase 14 the cap bounded the raw (mostly boilerplate) section at 1500;
+    post-diff it bounds only the year-over-year survivors, so it is raised —
+    the same reasoning as the Phase 13 MD&A raise (1500 → 12000).
+    """
+    from config.analysts import load_analysts_config
+
+    cfg = load_analysts_config()
+
+    assert cfg.fundamental.max_filing_risk_chars == 4000

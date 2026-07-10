@@ -191,8 +191,9 @@ class FundamentalCaps(BaseModel):
         truncated to this limit.  Raised from 1500 → 12000 in Phase 13 to
         accommodate the additional context now that boilerplate is stripped.
     max_filing_risk_chars:
-        Maximum characters of risk-factor text included per filing.
-        No de-boilerplate pass is applied to risk factors.
+        Maximum characters of risk-factor text included per filing.  Applied
+        after prior-year paragraph diffing (Phase 14) — bounds the survivors,
+        not the raw section.
     max_filing_8k_body_chars:
         Maximum characters of 8-K body excerpt (event-driven filings).
     max_insider_footnotes:
@@ -205,6 +206,12 @@ class FundamentalCaps(BaseModel):
         threshold the text is a stub (e.g. a single placeholder sentence)
         that would produce meaningless diffs; the full current text is
         rendered with a marker instead.
+    max_filing_litigation_chars:
+        Maximum characters of Legal Proceedings (litigation) text included
+        per periodic filing, applied after prior-year diffing (Phase 14).
+    filing_delta_horizon_days:
+        Trading-day horizon the prompt instructs the LLM to emit as
+        ``horizon_days`` — the Lazy Prices drift window (Phase 14).
     llm:
         Per-call LLM runtime caps (timeout, token limit, retry counts).
     """
@@ -215,6 +222,18 @@ class FundamentalCaps(BaseModel):
     max_insider_footnotes:      int     = Field(ge=0, le=50)
     max_insider_footnote_chars: int     = Field(ge=1, le=5_000)
     mda_stub_char_threshold:    int     = Field(ge=1, le=2_000, default=400)
+
+    # Phase 14 (Lazy Prices) — character cap on the Legal Proceedings
+    # (litigation) excerpt rendered per periodic filing.  Applied after the
+    # prior-year paragraph diff, so it bounds the year-over-year survivors.
+    max_filing_litigation_chars: int = Field(ge=1, le=20_000, default=1_500)
+
+    # Phase 14 (Lazy Prices) — trading-day horizon the fundamental prompt
+    # instructs the LLM to emit as ``horizon_days``.  The filing-language
+    # drift documented by Cohen, Malloy & Nguyen (2020) operates over 3–6
+    # months; 60 trading days sits inside that window.  Bounded at one
+    # trading year.
+    filing_delta_horizon_days: int = Field(ge=1, le=250, default=60)
 
     # Conviction-buy/sell threshold — minimum gross dollar value (USD) of
     # open-market transactions by a *single* filer that triggers the
