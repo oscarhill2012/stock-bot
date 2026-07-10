@@ -31,20 +31,23 @@ def _vocab() -> FundamentalVocabulary:
 
 def test_valuation_anchor_step_present() -> None:
     """The expectations-anchor step must teach the model to read the ratios
-    block and treat the lean as the gap between evidence and what is priced."""
+    block and treat the lean as the gap between evidence and what is priced.
+
+    Phase 14: the anchor step was folded into the diff-first framework as
+    step 2, "Anchor on EXPECTATIONS" (dropped the trailing "first" now that
+    step 1 is reading the filing deltas).  Re-pointed at the surviving
+    wording that carries the same idea.
+    """
 
     rendered = build_fundamental_instruction(vocab=_vocab())
 
-    assert "Anchor on EXPECTATIONS first" in rendered
-    # Uses the valuation multiples it is given.
-    assert "how much growth is already priced" in rendered
-    # The central idea: lean = gap between evidence and what's priced.
-    assert "the GAP between" in rendered
+    assert "Anchor on EXPECTATIONS" in rendered
     # Relative, not fixed-threshold, valuation judgement (sidesteps the
-    # sector-blind hardcoded-PE pitfall).  Phase 14: now explicitly
-    # sector-relative since the sector field is populated.
-    assert "RELATIVE to the company's own history" in rendered
-    assert "sector" in rendered
+    # sector-blind hardcoded-PE pitfall) — sector-relative since the sector
+    # field is populated.  Matched as two substrings since the template
+    # wraps the phrase across a line break.
+    assert "relative to the company's" in rendered
+    assert "own history AND its sector" in rendered
 
 
 def test_prompt_does_not_anchor_on_unavailable_forward_fields() -> None:
@@ -71,49 +74,70 @@ def test_prompt_does_not_anchor_on_unavailable_forward_fields() -> None:
 
 def test_prompt_anchors_on_available_fields() -> None:
     """The re-anchored valuation method must lean on fields that actually
-    exist: beta as a risk/volatility lens, the sector for sector-relative
-    valuation, and a QUALITATIVE forward outlook from the filings prose (since
-    there is no numeric forward multiple)."""
+    exist: beta as a risk lens (not directional), and the sector for
+    sector-relative valuation (since there is no numeric forward multiple).
+
+    Phase 14: the diff-first rewrite folded the forward-outlook framing into
+    the filing-delta doctrine itself (the deltas ARE the forward signal), so
+    re-pointed at the surviving beta framing.
+    """
 
     rendered = build_fundamental_instruction(vocab=_vocab())
 
-    # Beta is framed as a risk/volatility lens, not a directional signal.
-    assert "risk/volatility lens" in rendered
-    # The forward view comes from the qualitative prose, not a numeric estimate.
-    assert "QUALITATIVE outlook" in rendered
+    # Beta is framed as a risk lens, not a directional signal.
+    assert "risk lens, not a directional signal" in rendered
+    # Valuation is judged qualitatively from the prose, not a numeric estimate.
+    assert "judge valuation qualitatively from the prose" in rendered
 
 
 def test_prompt_includes_sparse_input_humility() -> None:
     """Thin-evidence cells must be nudged toward lower confidence / neutral
     rather than a confident directional lean — a prompt-level guard against
-    manufacturing signal from scant input."""
+    manufacturing signal from scant input.
+
+    Phase 14: re-pointed at the diff-first wording ("lean neutral or weakly
+    directional") which carries the same "don't manufacture confidence from
+    scant evidence" idea as the old "lean toward NEUTRAL" phrasing.
+    """
 
     rendered = build_fundamental_instruction(vocab=_vocab())
 
     assert "Sparse input" in rendered
-    assert "lean toward NEUTRAL" in rendered
+    assert "lean neutral or weakly directional" in rendered
 
 
 def test_trade_horizon_present() -> None:
-    """The lean must be anchored to a days-to-weeks horizon, not an intraday
-    one — fundamentals do not move price within a session."""
+    """The lean must be anchored to a fixed, named trading-day horizon, not
+    an intraday one — fundamentals do not move price within a session.
+
+    Phase 14: the horizon moved from a soft "1-4 weeks" heuristic to the
+    config-driven 3-6 month filing-delta drift window (Cohen, Malloy &
+    Nguyen "Lazy Prices"); re-pointed at the new explicit horizon framing.
+    """
 
     rendered = build_fundamental_instruction(vocab=_vocab())
 
-    assert "structural re-rating view" in rendered
+    assert "targets the NEXT 3–6 MONTHS, not the next" in rendered
 
 
 def test_confidence_ladder_present() -> None:
-    """Confidence is the probability the lean is right, NOT conviction about
-    the company; well-known facts already in the price earn low confidence."""
+    """Confidence is the probability the lean is right, calibrated
+    separately from the lean itself, with a High/Moderate/Low ladder.
+
+    Phase 14: re-pointed at the surviving ladder wording; the diff-first
+    rewrite ties confidence to the strength of the filing rewrite rather
+    than to public-fact familiarity, so the "NOT how sure you are about the
+    company" framing was dropped in favour of the drift-prediction framing.
+    """
 
     rendered = build_fundamental_instruction(vocab=_vocab())
 
     # Preserve the existing separate-from-lean guard.
     assert "Calibrate confidence separately from lean" in rendered
-    # The new behavioural anchor.
-    assert "NOT how sure you are" in rendered
-    assert "earn high confidence" in rendered
+    # The High/Moderate/Low ladder, keyed to filing-rewrite strength.
+    assert "High (≥0.7)" in rendered
+    assert "Moderate (0.4–0.6)" in rendered
+    assert "Low (≤0.35)" in rendered
 
 
 def test_falsifiable_flip_condition_present() -> None:

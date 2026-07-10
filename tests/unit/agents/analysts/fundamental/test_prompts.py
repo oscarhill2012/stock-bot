@@ -108,3 +108,49 @@ def test_instruction_honours_output_caps_from_config():
         "report_driver_body_max_chars value — the output_caps substitution "
         "path is broken in build_fundamental_instruction()."
     )
+
+
+def test_instruction_carries_filing_delta_horizon():
+    """The prompt must name horizon_days and the config-driven value (60).
+
+    Phase 14: the emit schema requires horizon_days; the prompt is where the
+    LLM learns WHAT to emit.  The value must come from config
+    (fundamental.filing_delta_horizon_days), never be hardcoded in the
+    template, so a config change re-tunes the horizon without a code edit.
+    """
+    from config.analysts import get_analysts_config
+
+    instruction = build_fundamental_instruction(_vocab())
+
+    horizon = get_analysts_config().fundamental.filing_delta_horizon_days
+
+    assert "horizon_days" in instruction
+    assert str(horizon) in instruction
+
+
+def test_instruction_states_lazy_prices_sign_convention():
+    """The diff-oriented sign convention must be stated, both branches.
+
+    Substantive year-over-year change → bearish by default; a performed diff
+    that found essentially nothing → quiet-bullish.  Greppable phrases pin
+    the doctrine so a future prompt edit cannot silently drop it.
+    """
+    instruction = build_fundamental_instruction(_vocab())
+
+    assert "BEARISH by default" in instruction
+    assert "quiet-bullish" in instruction
+
+
+def test_instruction_forbids_reading_markers_as_no_change():
+    """NO-COMPARISON markers must be excluded from the quiet-bullish branch.
+
+    An incorporated-by-reference stub (XOM 10-K) or a missing prior-year pair
+    renders a marker, not a diff.  The prompt must tell the LLM that markers
+    mean 'comparison unavailable' — treating them as 'nothing changed' would
+    manufacture quiet-bullish leans from data gaps.
+    """
+    instruction = build_fundamental_instruction(_vocab())
+
+    assert "no prior-year pair" in instruction
+    assert "too short to diff" in instruction
+    assert "NOT evidence of stability" in instruction

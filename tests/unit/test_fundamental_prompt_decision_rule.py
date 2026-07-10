@@ -30,24 +30,32 @@ def _vocab() -> FundamentalVocabulary:
 
 
 def test_framework_sections_present() -> None:
-    """The four analytical-framework sections must appear in the rendered prompt."""
+    """The four analytical-framework sections must appear in the rendered prompt.
+
+    Phase 14: the framework was rewritten diff-first (Lazy Prices sign
+    convention).  These assertions were re-pointed at the new wording that
+    carries the same ideas — MD&A verb/tense/hedge reading, insider
+    asymmetry, boilerplate-vs-new-disclosure risk reading, going-concern
+    override — see ``prompts.py::_TEMPLATE`` "How to analyse the evidence".
+    """
 
     rendered = build_fundamental_instruction(vocab=_vocab())
 
     # Section header — locates the framework block.
     assert "How to analyse the evidence" in rendered
 
-    # Section 1 — MD&A tone (verb strength, hedge density).
-    assert "MD&A tone" in rendered
-    assert "Commitment strength" in rendered
-    assert "Hedge density" in rendered
+    # Section 1 — MD&A survivors (verb/commitment strength, hedge density).
+    assert "MD&A survivors" in rendered
+    assert "commitment downgrades" in rendered
+    assert "hedge inflation" in rendered
 
     # Section 2 — insider asymmetry (the load-bearing idea).
     assert "asymmetry is the signal" in rendered
     assert "Routine 10b5-1" in rendered
 
-    # Section 3 — risk-factor change reading.
-    assert "boilerplate from new disclosure" in rendered
+    # Section 3 — risk-factor change reading (boilerplate vs new disclosure).
+    assert "Boilerplate risk-factor language is NOT evidence" in rendered
+    assert "genuinely new bullet is high-signal" in rendered
 
     # Section 4 — going-concern override.
     assert "going-concern" in rendered.lower()
