@@ -130,6 +130,12 @@ class FilingRow(CacheBase):
     url:                  str      = Column(String)
     risk_factors_excerpt: str      = Column(Text)
     mda_excerpt:          str      = Column(Text)
+    # Phase 14: Legal Proceedings prose for the filing-delta (Lazy Prices)
+    # diff.  Nullable — rows written before Phase 14 read back as None
+    # (correct degradation: the render layer marks the section as absent).
+    # Existing cache files self-heal via _migrate_additive_columns (nullable
+    # ALTER TABLE ADD COLUMN on store open); a refetch then populates it.
+    litigation_excerpt:   str      = Column(Text,     nullable=True)
     # Phase 13: period of report from SEC SGML header (YYYYMMDD string).
     # Nullable — existing cache rows will read back as None (correct degradation:
     # no fiscal pairing available, assembly falls back to full prose + marker).

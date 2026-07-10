@@ -264,6 +264,30 @@ def test_filings_read_has_no_lookback_bound(store: CachedDataStore) -> None:
     assert [f.accession_no for f in result] == ["0001-ancient"]
 
 
+def test_filings_round_trip_litigation_excerpt(store: CachedDataStore) -> None:
+    """``litigation_excerpt`` must survive the write → read round-trip.
+
+    Phase 14's filing-delta signal diffs litigation language year-over-year;
+    a column that silently drops on write would starve the channel for every
+    backtest while live EDGAR kept working — exactly the live/replay drift
+    the golden cache exists to prevent.  Assert the positive signal (prose
+    comes back), not merely the absence of an error.
+    """
+    filing = Filing(
+        ticker="AAPL", form_type="10-K", accession_no="0001-litigation",
+        filed_at=_dt(2023, 1, 15), url="https://sec/lit",
+        litigation_excerpt="In re Apple Securities Litigation: consolidated claims pending.",
+    )
+
+    store.write_filings("AAPL", [filing])
+
+    result = store.read_filings("AAPL", as_of=_dt(2023, 3, 15))
+
+    assert len(result) == 1
+    assert result[0].litigation_excerpt is not None
+    assert "Apple Securities Litigation" in result[0].litigation_excerpt
+
+
 # ── notable holders ───────────────────────────────────────────────────────────
 
 def test_notable_holders_pit_uses_filed_at(store: CachedDataStore) -> None:

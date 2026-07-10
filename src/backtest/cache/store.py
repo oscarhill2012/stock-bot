@@ -739,6 +739,8 @@ class CachedDataStore:
                     url=f.url,
                     risk_factors_excerpt=f.risk_factors_excerpt,
                     mda_excerpt=f.mda_excerpt,
+                    # Phase 14 — litigation prose for the filing-delta diff.
+                    litigation_excerpt=f.litigation_excerpt,
                     # Phase 13 — fiscal-period pairing field.  None for old
                     # cache rows (pre-Phase 13 fetches); also None for form
                     # types where EDGAR doesn't populate this (some 8-Ks).
