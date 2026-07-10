@@ -810,3 +810,160 @@ class TestIncorporatedByReferenceStubFallback:
         # Positive signal: the 10-Q pair diffed normally in the same context.
         assert "[de-boilerplate vs 20250331:" in result
         assert "record March quarter for iPhone" in result
+
+
+# ---------------------------------------------------------------------------
+# Tests — C1 fix: zero-survivor case must render as documented near-verbatim
+# marker (quiet-bullish), never as a full-text dump under a de-boilerplate
+# header (which the prompt's volume heuristic reads as heavily bearish).
+# ---------------------------------------------------------------------------
+
+# A litigation section that is byte-identical year-over-year — every
+# paragraph in the current filing matches a paragraph in the prior filing, so
+# ``deboilerplate_mda`` hits its zero-survivor fallback (all paragraphs
+# dropped).  Two paragraphs so the "N of N" count is unambiguous.
+_LITIGATION_VERBATIM_PARA_1 = (
+    "The company is subject to various legal proceedings arising in the "
+    "ordinary course of business, none of which is expected to be material."
+)
+
+_LITIGATION_VERBATIM_PARA_2 = (
+    "Management believes the ultimate resolution of these matters will not "
+    "have a material adverse effect on the company's financial condition."
+)
+
+_LITIGATION_VERBATIM_TEXT = (
+    _LITIGATION_VERBATIM_PARA_1 + "\n\n" + _LITIGATION_VERBATIM_PARA_2
+)
+
+
+class TestZeroSurvivorNearVerbatimMarker:
+    """A byte-identical YoY litigation section renders as near-verbatim, not
+    a full-text dump (Plan 1 review finding C1 — sign-inversion fix)."""
+
+    def _payload(self) -> list[dict]:
+        """Return a current 10-Q whose litigation text exactly matches its
+        prior-year pair — every paragraph is dropped as unchanged."""
+        return [
+            {
+                "ticker": "AAPL", "form_type": "10-Q", "filed_at": "2026-05-01",
+                "period_of_report": "20260328",
+                "mda_excerpt": None,
+                "risk_factors_excerpt": None,
+                "litigation_excerpt": _LITIGATION_VERBATIM_TEXT,
+                "body_excerpt": None,
+            },
+        ]
+
+    def _baseline_pool(self) -> list[dict]:
+        """Return the prior-year 10-Q carrying the identical litigation text."""
+        return [
+            {
+                "ticker": "AAPL", "form_type": "10-Q", "filed_at": "2025-05-02",
+                "period_of_report": "20250329",
+                "mda_excerpt": None,
+                "risk_factors_excerpt": None,
+                "litigation_excerpt": _LITIGATION_VERBATIM_TEXT,
+                "body_excerpt": None,
+            },
+        ]
+
+    def test_zero_survivor_renders_near_verbatim_marker_without_full_text(self):
+        """Byte-identical filing renders the documented all-removed marker and
+        omits the full section body — the quiet-bullish, not bearish, shape."""
+        with patch(
+            "agents.analysts.fundamental.fetch._caps",
+            return_value=_deboilerplate_caps(),
+        ):
+            result = _build_ticker_context(
+                ticker="AAPL",
+                filings_payload=self._payload(),
+                insider_bundle=_empty_bundle(),
+                insider_lookback_days=30,
+                ratios=None,
+                baseline_filings_payload=self._baseline_pool(),
+            )
+
+        # Positive signal 1: the documented near-verbatim marker fires, naming
+        # the matched prior period and the all-removed "2 of 2" count.
+        assert "[de-boilerplate vs 20250329: 2 of 2 paragraphs removed as unchanged" in result
+
+        # Positive signal 2: the full section body is ABSENT — this is the
+        # sign-inversion regression guard.  Before the fix, both verbatim
+        # paragraphs would appear in full under the header, which the
+        # prompt's volume heuristic reads as a large bearish delta.
+        assert _LITIGATION_VERBATIM_PARA_1 not in result
+        assert _LITIGATION_VERBATIM_PARA_2 not in result
+
+        # The undocumented deboilerplate.py fallback header must never reach
+        # the prompt — the render layer intercepts it via the stats dict.
+        assert "no unique paragraphs found" not in result
+
+
+class TestDiffExceptionDegradesToSignalAbsent:
+    """A diff crash must degrade to signal-absent (neutral), never bearish
+    (Plan 1 review finding I1)."""
+
+    def _payload(self) -> list[dict]:
+        """Return a current 10-Q with a valid prior-year pair present."""
+        return [
+            {
+                "ticker": "AAPL", "form_type": "10-Q", "filed_at": "2026-05-01",
+                "period_of_report": "20260328",
+                "mda_excerpt": _BOILERPLATE_PARA + "\n\n" + _CURRENT_UNIQUE_PARA,
+                "risk_factors_excerpt": None,
+                "litigation_excerpt": None,
+                "body_excerpt": None,
+            },
+        ]
+
+    def _baseline_pool(self) -> list[dict]:
+        """Return the prior-year 10-Q so pairing succeeds (only the diff call
+        itself is forced to raise)."""
+        return [
+            {
+                "ticker": "AAPL", "form_type": "10-Q", "filed_at": "2025-05-02",
+                "period_of_report": "20250329",
+                "mda_excerpt": _BOILERPLATE_PARA + "\n\n" + _PRIOR_UNIQUE_PARA,
+                "risk_factors_excerpt": None,
+                "litigation_excerpt": None,
+                "body_excerpt": None,
+            },
+        ]
+
+    def test_diff_exception_renders_no_prior_year_pair_marker(self):
+        """A forced ``deboilerplate_mda`` crash renders the no-comparison
+        marker family, never the (bearish-reading) de-boilerplate-header shape."""
+        with (
+            patch(
+                "agents.analysts.fundamental.fetch._caps",
+                return_value=_deboilerplate_caps(),
+            ),
+            patch(
+                "agents.analysts.fundamental.fetch.deboilerplate_mda",
+                side_effect=RuntimeError("boom"),
+            ),
+        ):
+            result = _build_ticker_context(
+                ticker="AAPL",
+                filings_payload=self._payload(),
+                insider_bundle=_empty_bundle(),
+                insider_lookback_days=30,
+                ratios=None,
+                baseline_filings_payload=self._baseline_pool(),
+            )
+
+        # Extract the rendered MD&A line so we can pin its exact start —
+        # the surrounding context (ratios block, insider section) is noise.
+        mda_line = next(
+            (line for line in result.splitlines() if line.strip().startswith("MD&A:")),
+            None,
+        )
+        assert mda_line is not None, "MD&A: line not found in rendered context"
+
+        rendered_section = mda_line.split("MD&A: ", 1)[1]
+
+        # Positive signal: starts with the documented no-comparison marker...
+        assert rendered_section.startswith("[no prior-year pair:")
+        # ...and NEVER with the de-boilerplate-header shape (bearish reading).
+        assert not rendered_section.startswith("[de-boilerplate")

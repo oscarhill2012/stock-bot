@@ -139,8 +139,10 @@ class FilingRow(CacheBase):
     # Phase 13: period of report from SEC SGML header (YYYYMMDD string).
     # Nullable — existing cache rows will read back as None (correct degradation:
     # no fiscal pairing available, assembly falls back to full prose + marker).
-    # Existing SQLite databases are NOT auto-migrated; wipe and refetch the
-    # cache after deploying this schema change to populate the new column.
+    # Existing SQLite databases self-heal via _migrate_additive_columns (a
+    # nullable ALTER TABLE ADD COLUMN on store open, same as litigation_excerpt
+    # above) — a refetch is only needed to populate the new column's values,
+    # not to make the database itself openable.
     period_of_report:     str      = Column(Text,     nullable=True)
 
     __table_args__ = (Index("ix_filings_ticker_filed", "ticker", "filed_at"),)
