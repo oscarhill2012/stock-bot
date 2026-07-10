@@ -128,6 +128,12 @@ class AnalystVerdict(BaseModel):
     key_factors: list[str] = Field(default_factory=list, max_length=8)
     is_no_data: bool = False
 
+    # Phase 14: how many TRADING DAYS the analyst expects this lean
+    # to remain valid.  Deterministic analysts recompute every tick and keep
+    # the default of 1; drift-aware analysts (news, macro) state it
+    # explicitly — ~5 for a fresh surprise, longer for drift continuation.
+    horizon_days: int = Field(default=1, ge=1)
+
     # New in Phase 5 redesign: LLM analysts populate this; deterministic
     # analysts leave it None. The Strategist prompt surface keys off presence
     # to decide whether to render a "Drivers:" block.
@@ -323,6 +329,17 @@ class LlmTickerVerdict(BaseModel):
     # required closes the dominant 2026-05-25 failure mode where the model
     # silently omitted the field.
     is_no_data: bool
+
+    # Trading days the lean should hold.  REQUIRED — the emit schema never
+    # lets the model lazily omit a structured commitment.  Inflation to
+    # TickerVerdict carries it across via model_dump()/model_validate().
+    # Vertex's constrained decoder omits optional fields, and an omitted
+    # horizon would silently collapse to the canonical default (1) and
+    # flatten every long-horizon signal — the exact silent-degradation class
+    # this codebase raises on.  The fundamental prompt (Task 6) instructs a
+    # fixed config-driven value (``filing_delta_horizon_days``); the news
+    # prompt emits 1 until Plan 3's rebuild reframes it.
+    horizon_days: int = Field(ge=1)
 
     # Closed-vocabulary tags — short, structured, list-bounded.  Declared
     # before ``report`` so the model commits the tags while still on-task.

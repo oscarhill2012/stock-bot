@@ -318,3 +318,56 @@ async def test_news_joiner_verdict_evidence_consistency():
     # Specific check: TSLA (missing verdict key) must be synthesised as no-data neutral.
     assert verdicts["TSLA"]["is_no_data"] is True
     assert verdicts["TSLA"]["lean"]       == "neutral"
+
+
+@pytest.mark.asyncio
+async def test_joiner_propagates_horizon_days_into_the_verdict_batch():
+    """horizon_days must survive the joiner's validate→inflate→dump round trip.
+
+    ``InMemorySessionService`` strips every ``temp:``-prefixed key from the
+    ``state=`` kwarg passed to ``create_session`` (see
+    ``test_news_joiner_passes_retries_to_summary`` above for the same
+    caveat) — so ``temp:news_verdict_AAPL`` has to be injected directly onto
+    ``session.state`` *after* the session exists, not via the constructor.
+    """
+    svc = InMemorySessionService()
+    session = await svc.create_session(
+        app_name="test",
+        user_id="test",
+        state={
+            "tickers": ["AAPL"],
+            "tick_id": "t-1",
+            "as_of": "2026-07-06T14:00:00",
+        },
+        session_id="t-1",
+    )
+
+    session.state["temp:news_data"] = {"AAPL": {"news": []}}
+    session.state["temp:news_verdict_AAPL"] = {
+        "ticker": "AAPL",
+        "lean": "bullish",
+        "magnitude": 0.4,
+        "confidence": 0.6,
+        "is_no_data": False,
+        "horizon_days": 5,
+        "key_factors": ["catalyst:earnings"],
+        "report": {
+            "summary": "Genuine positive surprise; positioning for drift.",
+            "drivers": [
+                {"name": "eps_beat", "direction": "bull", "weight": 0.6,
+                 "body": "EPS well above consensus."},
+                {"name": "guidance", "direction": "bull", "weight": 0.4,
+                 "body": "Full-year guidance raised."},
+            ],
+        },
+    }
+
+    agent = NewsJoinerAgent(name="NewsJoiner")
+    ctx = InvocationContext(
+        session_service=svc, session=session, invocation_id="inv-1", agent=agent,
+    )
+
+    events = [ev async for ev in agent.run_async(ctx)]
+
+    batch = events[-1].actions.state_delta["news_verdicts"]
+    assert batch["verdicts"][0]["horizon_days"] == 5

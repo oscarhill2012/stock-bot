@@ -130,12 +130,21 @@ def _make_per_ticker_analyst_llm_response(agent_name: str):
     from google.adk.models import LlmResponse
     from google.genai import types as genai_types
 
-    # Strip known prefixes to recover the ticker symbol.
+    # Strip known prefixes to recover the ticker symbol, and remember which
+    # analyst family this stub is standing in for — the two flavours carry a
+    # different Phase 14 ``horizon_days`` convention below.
     ticker = agent_name
+    is_fundamental = False
     for prefix in ("NewsAnalyst_", "FundamentalAnalyst_"):
         if agent_name.startswith(prefix):
             ticker = agent_name[len(prefix):]
+            is_fundamental = prefix == "FundamentalAnalyst_"
             break
+
+    # Phase 14: the fundamental analyst emits a long drift horizon (Lazy
+    # Prices window); the news analyst emits the deterministic-equivalent
+    # default of 1 until Plan 3's rebuild reframes it.
+    horizon_days = 60 if is_fundamental else 1
 
     # ``report`` is required on every emit on ``LlmTickerVerdict`` (no
     # default, no Optional).  Two drivers is the minimum the
@@ -146,6 +155,7 @@ def _make_per_ticker_analyst_llm_response(agent_name: str):
         "magnitude":   0.0,
         "confidence":  0.5,
         "is_no_data":  False,
+        "horizon_days": horizon_days,
         "key_factors": [],
         "report": {
             "summary": "Smoke-test stub report — verdict is neutral.",

@@ -60,6 +60,8 @@ this exact order:
   lean          ∈ {{bullish, bearish, neutral}}
   magnitude     ∈ [0, 1]
   confidence    ∈ [0, 1]
+  horizon_days  integer ≥ 1 — trading days you expect this lean to hold.
+                Emit 1 unless the evidence clearly supports a longer hold.
   is_no_data    boolean — true ONLY if the headlines block is empty for this
                 ticker; false in every other case (including ambiguous data).
   key_factors   list of closed-vocabulary tags — at least 1, at most 8.
@@ -93,6 +95,7 @@ SHAPE EXAMPLE (placeholders only — fill from the actual headlines):
   "lean": "<bullish|bearish|neutral>",
   "magnitude": <0.0-1.0>,
   "confidence": <0.0-1.0>,
+  "horizon_days": 1,
   "is_no_data": false,
   "key_factors": ["<closed-vocab tag>", "..."],
   "report": {{

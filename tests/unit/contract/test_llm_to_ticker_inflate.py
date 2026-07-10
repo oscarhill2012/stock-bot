@@ -26,6 +26,7 @@ def _make_llm_verdict(*, is_no_data: bool = False, report=None) -> LlmTickerVerd
         lean        = "bullish",
         magnitude   = 0.5,
         confidence  = 0.5,
+        horizon_days = 60,
         is_no_data  = is_no_data,
         key_factors = ["x"],
         report      = report,
@@ -82,3 +83,35 @@ def test_inflate_does_not_silently_drop_fields():
         assert dumped[k] == getattr(llm, k)
     assert dumped["key_factors"] == llm.key_factors
     assert dumped["report"]["summary"] == llm.report.summary
+
+
+def test_to_ticker_verdict_propagates_horizon_days():
+    """The emit-schema horizon must survive inflation to the canonical shape.
+
+    Phase 14: the fundamental analyst emits horizon_days=60 (Lazy Prices
+    drift window); the strategist and scoreboard read it off TickerVerdict.
+    A silent drop here would flatten every long-horizon signal to the
+    canonical default of 1 — assert the positive value, not just presence.
+    """
+    llm = _make_llm_verdict()
+
+    canonical = llm.to_ticker_verdict()
+
+    assert canonical.horizon_days == 60
+
+
+def test_horizon_days_is_required_on_llm_emit():
+    """Omitting horizon_days must fail validation loudly.
+
+    Required-by-schema (not defaulted) so the JSON Schema sent to Vertex
+    marks it mandatory — the constrained decoder cannot take the shortest
+    legal path that omits it (2026-05-25 audit failure mode).
+    """
+    import pytest
+    from pydantic import ValidationError
+
+    payload = _make_llm_verdict().model_dump()
+    payload.pop("horizon_days")
+
+    with pytest.raises(ValidationError):
+        LlmTickerVerdict.model_validate(payload)

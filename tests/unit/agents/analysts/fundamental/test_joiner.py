@@ -80,6 +80,7 @@ async def test_joiner_builds_canonical_keys_from_per_ticker_state():
             "lean":        "bullish",
             "magnitude":   0.7,
             "confidence":  0.8,
+            "horizon_days": 60,
             "rationale":   "Strong earnings and low debt",
             "key_factors": ["catalyst:earnings", "factor:low_debt"],
             "is_no_data":  False,
@@ -89,6 +90,7 @@ async def test_joiner_builds_canonical_keys_from_per_ticker_state():
             "lean":        "bullish",
             "magnitude":   0.5,
             "confidence":  0.6,
+            "horizon_days": 60,
             "rationale":   "Cloud segment growing fast",
             "key_factors": ["factor:cloud_growth"],
             "is_no_data":  False,
@@ -166,6 +168,10 @@ async def test_joiner_synthesises_no_data_for_missing_key():
     )
     assert msft_verdict["is_no_data"] is True
     assert msft_verdict["lean"]       == "neutral"
+
+    # Phase 14: a synthesised no-data verdict carries the canonical default
+    # horizon (1) — the long fundamental horizon applies only to real emits.
+    assert msft_verdict["horizon_days"] == 1
 
     # MSFT also appears as no-data in fundamental_evidence.
     msft_ev = next(row for row in delta["fundamental_evidence"] if row["ticker"] == "MSFT")

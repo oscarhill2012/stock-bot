@@ -32,6 +32,7 @@ from pydantic import ValidationError
 
 from contract.evidence import (
     AnalystReport,
+    AnalystVerdict,
     LlmTickerVerdict,
     ReportDriver,
     TickerVerdict,
@@ -71,6 +72,7 @@ def _valid_emit_payload(**overrides: object) -> dict[str, object]:
         "magnitude":   0.5,
         "confidence":  0.6,
         "is_no_data":  False,
+        "horizon_days": 5,
         "key_factors": ["catalyst:earnings_beat"],
         "report":      _valid_report().model_dump(),
     }
@@ -227,8 +229,6 @@ def test_analyst_verdict_accepts_payload_without_rationale() -> None:
     silently break LLM inflation.
     """
 
-    from contract.evidence import AnalystVerdict
-
     v = AnalystVerdict.model_validate(
         {
             "lean":        "neutral",
@@ -293,3 +293,46 @@ def test_to_ticker_verdict_is_sole_inflate_site() -> None:
         "LlmTickerVerdict.to_ticker_verdict(), not the raw model_validate "
         f"dict-unpacking pattern. Offenders: {offenders}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 14: horizon_days — shared drift-horizon field
+# ---------------------------------------------------------------------------
+
+
+def test_horizon_days_is_required_on_the_llm_emit():
+    """The news prompt must commit to a horizon — the schema enforces it."""
+    payload = _valid_emit_payload()
+    del payload["horizon_days"]
+
+    with pytest.raises(ValidationError):
+        LlmTickerVerdict.model_validate(payload)
+
+
+def test_horizon_days_must_be_at_least_one_trading_day():
+    """A zero or negative horizon is meaningless — ge=1 rejects it."""
+    payload = _valid_emit_payload()
+    payload["horizon_days"] = 0
+
+    with pytest.raises(ValidationError):
+        LlmTickerVerdict.model_validate(payload)
+
+
+def test_to_ticker_verdict_carries_horizon_days():
+    """Inflation to the full TickerVerdict must not drop the horizon."""
+    payload = _valid_emit_payload()
+    payload["horizon_days"] = 7
+
+    verdict = LlmTickerVerdict.model_validate(payload)
+
+    assert verdict.to_ticker_verdict().horizon_days == 7
+
+
+def test_analyst_verdict_defaults_horizon_to_one_day():
+    """Deterministic analysts never set a horizon — the base default is 1."""
+    verdict = AnalystVerdict(
+        lean="neutral", magnitude=0.0, confidence=0.0,
+        rationale="deterministic baseline",
+    )
+
+    assert verdict.horizon_days == 1
