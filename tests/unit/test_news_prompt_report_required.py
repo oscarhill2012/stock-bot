@@ -48,8 +48,28 @@ def test_legacy_conditional_wording_absent() -> None:
     whenever is_no_data=false``) — because either one would leave room for
     the LLM to omit ``report`` in the no-data branch and re-open the
     failure mode the schema split was designed to close.
+
+    A third regression closed here: a later rewrite paraphrased the legacy
+    wording (``is_no_data=false`` became ``is_no_data is false``) and slipped
+    past a substring-pinned test. Pinning exact substrings is fragile against
+    paraphrase, so this test also asserts the *invariant* directly — no
+    phrasing may instruct a null report on the no-data branch, and the
+    no-data branch must still positively emit a report.
     """
 
     rendered = build_news_instruction(_vocab())
     assert "omit only when is_no_data=true"    not in rendered
     assert "REQUIRED whenever is_no_data=false" not in rendered
+
+    # Paraphrase-proof guard: no phrasing anywhere may instruct a null
+    # report on the no-data branch, however it is worded.
+    assert "must then be null" not in rendered
+    assert "report must be null" not in rendered.lower()
+
+    # Positive guard: the no-data branch must still emit a report — a
+    # one-line "no news in window" summary — rather than nulling it out.
+    assert "no news in window" in rendered
+
+    # The two reasoning axes that make the 2-driver minimum meaningful must
+    # both be named in the OUTPUT CONTRACT prose.
+    assert "DRIFT-WINDOW POSITION" in rendered

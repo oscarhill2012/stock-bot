@@ -100,19 +100,28 @@ is_no_data=true — there is no shorter legal output. Field meanings:
 - confidence: 0.0–1.0 — how sure you are a genuine surprise (or live
   drift) exists. Noise-only ticks are LOW confidence neutrals.
 - is_no_data: true ONLY when the context shows "(no news available)" for
-  {ticker}; report must then be null and key_factors empty.
+  {ticker}; key_factors is then empty, but report is STILL REQUIRED — never
+  null — carrying a one-line "no news in window" summary plus the two
+  drivers described below, both noting the absence.
 - horizon_days: integer >= 1 — trading days the lean should hold (see
   STEP 3).
 - key_factors: 0–8 tags, EXCLUSIVELY from this closed vocabulary —
   catalyst:<one of {catalyst_options}>, novelty:<one of {novelty_options}>,
   direction:<one of {direction_options}>, plus the bare tag "material" when
   the surprise is company-moving. Never invent tags outside this list.
-- report: REQUIRED whenever is_no_data is false.
+- report: REQUIRED on EVERY call, never null — including when
+  is_no_data=true (see is_no_data above).
   - report.summary: <= {summary_max} characters — state the
     surprise (or its absence), the drift-window position, and the horizon.
-  - report.drivers: 2–4 entries; name <= {driver_name_max} characters;
-    body <= {driver_body_max} characters explaining how that article (or
-    the window position) feeds the lean.
+  - report.drivers: 2–4 entries. Give at least two, one per reasoning axis:
+    (1) the SURPRISE — the genuine fresh surprise and its direction, or
+    that none exists; (2) the DRIFT-WINDOW POSITION — where you are in a
+    live drift window, or that none is live. Each driver: name
+    <= {driver_name_max} characters; direction one of
+    {{bull | bear | neutral}}; weight in [0.0, 1.0]; body
+    <= {driver_body_max} characters explaining how that surprise (or the
+    window position) feeds the lean. On a no-surprise / no-data tick, both
+    drivers are neutral and simply record the absence.
 
 SHAPE EXAMPLE (illustrative values only — never copy them):
 {{
