@@ -77,19 +77,19 @@ import re as _re
 import unicodedata
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
+from hashlib import blake2b
 
-from config.analysts import NewsCaps, get_analysts_config
-from orchestrator.stock_picker import get_watchlist_with_names
+from agents.analysts.news.history import NewsHistoryStore
 
 # Classification helpers moved to ``agents.analysts.news.router`` (Phase 14
 # Plan 2) where they back the company/macro stream router.  Re-exported here
 # under their historical private names so ``_score_article_specificity`` and
 # the existing test suite keep working unchanged — Plan 3's rebuild owns any
 # further restructure of this module.
-from agents.analysts.news.router import (
-    build_company_terms as _build_company_terms,
-    count_roundup_companies as _count_roundup_companies,
-)
+from agents.analysts.news.router import build_company_terms as _build_company_terms
+from agents.analysts.news.router import count_roundup_companies as _count_roundup_companies
+from config.analysts import NewsCaps, get_analysts_config
+from orchestrator.stock_picker import get_watchlist_with_names
 
 _logger = logging.getLogger(__name__)
 
@@ -173,6 +173,171 @@ def _parse_published(raw: str | datetime | None) -> datetime | None:
     if parsed.tzinfo is not None:
         return parsed.astimezone(UTC).replace(tzinfo=None)
     return parsed
+
+
+# Sort anchor for articles whose publication time cannot be parsed — epoch
+# zero sorts them first so they can never displace a datable original.
+_EPOCH_ZERO = datetime(1970, 1, 1)
+
+
+def _article_fields(article: object) -> tuple[str, str, object]:
+    """Extract ``(headline, summary, raw_published)`` from an article.
+
+    Centralises the dual dict/model access pattern used throughout this
+    module so every consumer reads fields identically.  ``raw_published``
+    is returned unparsed (str, datetime, or None) — callers hand it to
+    ``_parse_published`` when they need a datetime.
+
+    Parameters
+    ----------
+    article:
+        Serialised dict or ``NewsArticle``-shaped object.
+
+    Returns
+    -------
+    tuple[str, str, object]
+        ``(headline, stripped_summary, raw_published)``.
+    """
+    if isinstance(article, dict):
+        headline = article.get("title") or article.get("headline") or ""
+        summary = (article.get("summary") or "").strip()
+        published = article.get("published_at") or article.get("date")
+    else:
+        headline = (
+            getattr(article, "title", None)
+            or getattr(article, "headline", None)
+            or ""
+        )
+        summary = (getattr(article, "summary", None) or "").strip()
+        published = (
+            getattr(article, "published_at", None)
+            or getattr(article, "date", None)
+        )
+
+    return str(headline), str(summary), published
+
+
+def article_key(article: object) -> str:
+    """Stable identity key for one article across ticks and re-fetches.
+
+    Prefers the provider URL (unique per story, stable across fetches).
+    URL-less articles fall back to a digest of headline + raw timestamp so
+    two same-headline stories on different days do not collide.
+
+    Parameters
+    ----------
+    article:
+        Serialised dict or ``NewsArticle``-shaped object.
+
+    Returns
+    -------
+    str
+        The URL, or ``"hash:<blake2b-digest>"`` when no URL is present.
+    """
+    headline, _summary, raw_published = _article_fields(article)
+
+    if isinstance(article, dict):
+        url = article.get("url") or ""
+    else:
+        url = getattr(article, "url", None) or ""
+
+    if url:
+        return str(url)
+
+    digest = blake2b(
+        f"{headline}|{raw_published}".encode(), digest_size=12,
+    ).hexdigest()
+    return f"hash:{digest}"
+
+
+async def partition_articles_by_staleness(
+    ticker: str,
+    articles: list,
+    *,
+    store: NewsHistoryStore,
+    threshold: float,
+) -> tuple[list, list]:
+    """Split ``articles`` into (fresh, stale) via the history store.
+
+    This is the deterministic staleness pre-filter that replaced the
+    heuristic specificity re-ranker (Phase 14): an article is STALE when it
+    was seen on an earlier tick (identity match) or when its text scores at
+    or above ``threshold`` cosine similarity against anything previously
+    recorded for the ticker (Tetlock rehash measure).  Everything else is
+    FRESH — a genuine-surprise candidate for the LLM.
+
+    Articles are processed oldest-first so that, within a single tick, the
+    first copy of a syndicated story is judged (and recorded) before its
+    rehashes — later copies then measure similar and land in the stale
+    bucket.  Every judged article is recorded, including stale ones, so
+    the next tick's re-fetch short-circuits on identity without a fresh
+    embedding call.
+
+    Parameters
+    ----------
+    ticker:
+        Namespace for the history store (the ticker symbol).
+    articles:
+        Serialised article dicts (or model objects) for one ticker.
+    store:
+        The per-run ``NewsHistoryStore``.
+    threshold:
+        Cosine-similarity cut-off from
+        ``config/analysts.json::staleness_similarity_threshold``.
+
+    Returns
+    -------
+    tuple[list, list]
+        ``(fresh, stale)`` — two lists in oldest-first order.
+
+    Raises
+    ------
+    Exception
+        Whatever the store's embedding function raises — failures are loud.
+    """
+    caps = _caps()
+
+    def _published_or_epoch(article: object) -> datetime:
+        """Sort key: parsed publication time, or epoch zero when unknown."""
+        _headline, _summary, raw_published = _article_fields(article)
+        return _parse_published(raw_published) or _EPOCH_ZERO
+
+    ordered = sorted(articles, key=_published_or_epoch)
+
+    fresh: list = []
+    stale: list = []
+
+    for article in ordered:
+        headline, summary, raw_published = _article_fields(article)
+        key = article_key(article)
+
+        # Exact-identity short-circuit: seen on an earlier tick means stale
+        # by definition — no embedding spend.
+        if store.has(ticker, key):
+            stale.append(article)
+            continue
+
+        # Tetlock measure: embed headline + capped summary, compare against
+        # everything previously recorded for this ticker.
+        text = f"{headline}. {summary[: caps.max_summary_chars]}".strip()
+        similarity = await store.staleness(ticker, text)
+
+        # Record BEFORE classifying so same-tick rehashes compare against
+        # this article too.  Stale articles are recorded as well — their
+        # key then short-circuits the next tick's re-fetch.
+        await store.record(
+            ticker,
+            key,
+            text,
+            published_at=_parse_published(raw_published) or _EPOCH_ZERO,
+        )
+
+        if similarity >= threshold:
+            stale.append(article)
+        else:
+            fresh.append(article)
+
+    return fresh, stale
 
 
 def _score_article_specificity(
