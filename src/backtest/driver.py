@@ -29,6 +29,7 @@ from typing import Any
 
 from google.genai import types as genai_types
 
+from agents.analysts.news.history import reset_news_history_store
 from backtest.schedule import Tick
 from data.timeguard import drain_wallclock_fallback_count
 from observability.drain import drain_tick
@@ -267,6 +268,13 @@ class Driver:
         schedule:
             Ordered list of ``Tick`` objects (``as_of`` + ``phase``).
         """
+        # Phase 14 (Plan 3): the news staleness pre-filter's embedding store
+        # is strictly per-run state.  Reset it before the first tick so this
+        # replay rebuilds it from the window's golden-cache news timeline in
+        # tick order — nothing may leak in from a previous window (or a
+        # previous run of the same window) executed in this process.
+        reset_news_history_store()
+
         total_ticks = len(schedule)
         for tick in schedule:
             self._total += 1
