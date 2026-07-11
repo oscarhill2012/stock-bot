@@ -143,20 +143,19 @@ class NewsCaps(BaseModel):
     Attributes
     ----------
     max_articles_per_ticker:
-        Hard ceiling on the total number of articles included per ticker in
-        the LLM prompt (after specificity re-ranking).
-    max_generic_articles_per_ticker:
-        Maximum number of generic (score 0) off-topic macro articles kept
-        after the specificity re-rank.  Specific articles (score 1 or 2)
-        fill the budget first; generic articles backfill up to this cap AND
-        the remaining total budget — whichever is smaller.  Ensures broad
-        market roundup pieces cannot crowd out genuine company news.
+        Hard ceiling on the number of FRESH (novel) articles rendered in
+        full per ticker, after the specificity router and the staleness
+        pre-filter have already run.
+    max_stale_headlines_per_ticker:
+        Cap on the headline-only PREVIOUSLY SEEN section of the per-ticker
+        context — stale drift-context lines are cheap but not free.
     max_summary_chars:
         Maximum characters of each article's summary kept in the prompt.
     roundup_company_threshold:
         Minimum number of distinct watchlist companies that must be named in
         a headline (or summary) for the article to be classified as a macro
-        roundup and demoted to score 0 (generic).  Default 3.
+        roundup and routed to the macro stream instead of any ticker's
+        company stream (Phase 14 Plan 2's ``route_articles``).  Default 3.
     dedup_title_similarity_threshold:
         Minimum normalised title similarity ratio [0.0–1.0] required for
         two articles to be treated as near-duplicates and collapsed into
@@ -172,7 +171,9 @@ class NewsCaps(BaseModel):
     """
 
     max_articles_per_ticker:            int   = Field(ge=1,   le=200)
-    max_generic_articles_per_ticker:    int   = Field(ge=0,   le=200)
+    # Cap on the headline-only PREVIOUSLY SEEN section of the per-ticker
+    # context — stale drift-context lines are cheap but not free.
+    max_stale_headlines_per_ticker:     int   = Field(ge=0,   le=100,   default=10)
     max_summary_chars:                  int   = Field(ge=1,   le=10_000)
     roundup_company_threshold:          int   = Field(ge=2,   le=50,    default=3)
     dedup_title_similarity_threshold:   float = Field(ge=0.0, le=1.0,   default=0.85)

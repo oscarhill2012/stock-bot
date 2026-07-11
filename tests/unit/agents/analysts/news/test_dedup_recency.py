@@ -89,11 +89,17 @@ def _make_fake_caps(
     max_articles:
         Value for ``max_articles_per_ticker``.
     max_generic:
-        Value for ``max_generic_articles_per_ticker``.
+        Value for ``max_stale_headlines_per_ticker`` (kept as ``max_generic``
+        for call-site brevity — the "generic articles" cap this once fed no
+        longer exists post-router; this mock's stale-headline cap is unused
+        by the dedup-only tests below and only matters for the renderer
+        tests that route through ``_build_context``).
     max_summary_chars:
         Value for ``max_summary_chars``.
     roundup_company_threshold:
-        Roundup-demotion threshold.
+        Roundup-demotion threshold (retained on the mock for parity with the
+        real ``NewsCaps`` shape; the router — not this module — consumes it
+        now).
     dedup_title_similarity_threshold:
         Similarity ratio [0–1] above which two titles are considered
         near-duplicates.  Default 0.85.
@@ -105,7 +111,7 @@ def _make_fake_caps(
     """
     caps = MagicMock()
     caps.max_articles_per_ticker            = max_articles
-    caps.max_generic_articles_per_ticker    = max_generic
+    caps.max_stale_headlines_per_ticker     = max_generic
     caps.max_summary_chars                  = max_summary_chars
     caps.roundup_company_threshold          = roundup_company_threshold
     caps.dedup_title_similarity_threshold   = dedup_title_similarity_threshold
@@ -122,9 +128,14 @@ def _build_context(
     max_generic: int = 10,
     dedup_threshold: float = 0.85,
 ) -> str:
-    """Call ``_build_ticker_news_context`` with config + universe patched.
+    """Dedup ``articles`` then render them as the FRESH section.
 
-    Isolates tests from the live watchlist + config files.
+    Phase 14 Plan 3 moved specificity routing out of this module entirely
+    (the router and the staleness pre-filter now own that), so this helper
+    exercises exactly the pipeline these tests care about: dedup + recency
+    sort, followed by the two-section renderer with an empty stale bucket —
+    every deduped article is treated as "fresh" for the purposes of these
+    dedup/recency-sort assertions.
 
     Parameters
     ----------
@@ -135,11 +146,12 @@ def _build_context(
     ticker:
         Ticker symbol; defaults to ``"AMD"``.
     company_name:
-        Optional company name for specificity matching.
+        Unused post-router (retained for call-site compatibility with
+        existing test call sites; the renderer no longer takes it).
     max_articles:
         Override for ``max_articles_per_ticker`` on the fake caps.
     max_generic:
-        Override for ``max_generic_articles_per_ticker`` on the fake caps.
+        Override for ``max_stale_headlines_per_ticker`` on the fake caps.
     dedup_threshold:
         Similarity threshold passed to the fake caps.
 
@@ -148,19 +160,17 @@ def _build_context(
     str
         The rendered context block.
     """
+    del company_name  # unused — specificity matching moved to the router.
+
     fake_caps = _make_fake_caps(
         max_articles=max_articles,
         max_generic=max_generic,
         dedup_title_similarity_threshold=dedup_threshold,
     )
 
-    with (
-        patch("agents.analysts.news.fetch._caps", return_value=fake_caps),
-        patch("agents.analysts.news.fetch._watchlist_universe", return_value=[]),
-    ):
-        return _build_ticker_news_context(
-            ticker, articles, as_of=as_of, company_name=company_name,
-        )
+    with patch("agents.analysts.news.fetch._caps", return_value=fake_caps):
+        deduped = _dedup_and_sort_articles(articles)
+        return _build_ticker_news_context(ticker, deduped, [], as_of=as_of)
 
 
 # ---------------------------------------------------------------------------
@@ -243,7 +253,6 @@ def test_dedup_collapses_rehash_cluster_to_one_article():
 
     with (
         patch("agents.analysts.news.fetch._caps", return_value=fake_caps),
-        patch("agents.analysts.news.fetch._watchlist_universe", return_value=[]),
     ):
         result = _dedup_and_sort_articles(all_articles)
 
@@ -271,7 +280,6 @@ def test_dedup_representative_is_freshest_in_cluster():
 
     with (
         patch("agents.analysts.news.fetch._caps", return_value=fake_caps),
-        patch("agents.analysts.news.fetch._watchlist_universe", return_value=[]),
     ):
         result = _dedup_and_sort_articles([old_version, stale_version, fresh_version])
 
@@ -557,13 +565,11 @@ def test_dedup_threshold_is_config_driven():
 
     with (
         patch("agents.analysts.news.fetch._caps", return_value=fake_caps_strict),
-        patch("agents.analysts.news.fetch._watchlist_universe", return_value=[]),
     ):
         result_strict = _dedup_and_sort_articles(articles)
 
     with (
         patch("agents.analysts.news.fetch._caps", return_value=fake_caps_lenient),
-        patch("agents.analysts.news.fetch._watchlist_universe", return_value=[]),
     ):
         result_lenient = _dedup_and_sort_articles(articles)
 
@@ -604,7 +610,6 @@ def test_all_unparseable_timestamps_with_titles_renders_age_unknown():
 
     with (
         patch("agents.analysts.news.fetch._caps", return_value=fake_caps),
-        patch("agents.analysts.news.fetch._watchlist_universe", return_value=[]),
     ):
         # Must NOT raise — should return the articles (or at least one cluster
         # representative) so the renderer can show "age unknown".
@@ -637,7 +642,6 @@ def test_all_unparseable_timestamps_and_no_titles_raises():
 
     with (
         patch("agents.analysts.news.fetch._caps", return_value=fake_caps),
-        patch("agents.analysts.news.fetch._watchlist_universe", return_value=[]),
         pytest.raises(ValueError, match="timestamp"),
     ):
         _dedup_and_sort_articles(broken_articles)
@@ -670,7 +674,6 @@ def test_representative_headline_text_is_kept_for_cluster():
 
     with (
         patch("agents.analysts.news.fetch._caps", return_value=fake_caps),
-        patch("agents.analysts.news.fetch._watchlist_universe", return_value=[]),
     ):
         result = _dedup_and_sort_articles([old_article, fresh_article])
 
@@ -706,7 +709,6 @@ def test_dedup_is_deterministic_on_equal_timestamps():
     for _ in range(5):
         with (
             patch("agents.analysts.news.fetch._caps", return_value=fake_caps),
-            patch("agents.analysts.news.fetch._watchlist_universe", return_value=[]),
         ):
             run_result = _dedup_and_sort_articles(list(articles))  # fresh copy each time
         results.append([a["title"] for a in run_result])

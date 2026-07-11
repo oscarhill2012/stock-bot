@@ -28,7 +28,7 @@ _MINIMAL_LLM_CAPS: dict = {
 _MINIMAL_CFG: dict = {
     "news": {
         "max_articles_per_ticker": 20,
-        "max_generic_articles_per_ticker": 5,
+        "max_stale_headlines_per_ticker": 5,
         "max_summary_chars":       500,
         "llm":                     _MINIMAL_LLM_CAPS,
     },
@@ -138,7 +138,7 @@ def test_load_analysts_config_exposes_news_llm_caps(tmp_path) -> None:
         "slack_percent": 15,
         "news": {
             "max_articles_per_ticker": 25,
-            "max_generic_articles_per_ticker": 10,
+            "max_stale_headlines_per_ticker": 10,
             "max_summary_chars":       1500,
             "llm": {
                 "timeout_seconds":   60,

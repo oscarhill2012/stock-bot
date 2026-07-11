@@ -102,7 +102,13 @@ def build_news_branch_for_ticker(
         verdicts_state_key = f"temp:news_verdict_{ticker}",
         ticker             = ticker,
         output_schema      = LlmTickerVerdict,
-        hash_inputs        = lambda d: news_hash_inputs((d or {}).get("news") or []),
+        # Cache key covers exactly what the LLM sees: the capped fresh list
+        # (rendered in full) plus the capped stale list (headline-only).
+        # The full routed set under "news" feeds only the deterministic
+        # feature extractor and must not bust the report cache.
+        hash_inputs        = lambda d: news_hash_inputs(
+            ((d or {}).get("fresh") or []) + ((d or {}).get("stale") or [])
+        ),
         trace_label        = f"03_news_llm_{ticker}",
     )
 

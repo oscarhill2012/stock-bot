@@ -25,7 +25,7 @@ def _write_config(tmp_path: Path, *, cap: int, headroom: int) -> Path:
         "slack_percent": 15,
         "news": {
             "max_articles_per_ticker": 50,
-            "max_generic_articles_per_ticker": 10,
+            "max_stale_headlines_per_ticker": 10,
             "max_summary_chars": 800,
             "llm": {
                 "timeout_seconds":   60,

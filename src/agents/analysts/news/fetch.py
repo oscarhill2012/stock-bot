@@ -9,39 +9,25 @@ retired in Phase 9 when the per-ticker fan-out design replaced the batched
 ``NewsFetchAgent`` can reuse the article-truncation and context-block logic
 without duplicating it.
 
-Specificity re-ranking
-----------------------
-Finnhub's ``/company-news`` endpoint staples broad market-roundup articles
-("How the Dow Got to 50,000", "Risk Is Back On") onto large-cap tickers.
-In logged backtest inputs, 56–80 % of the top-25 articles per ticker were
-off-topic macro stories, drowning the 5–10 genuinely company-specific pieces.
+Two-section rendering (Phase 14 Plan 3)
+----------------------------------------
+The heuristic specificity re-ranker that used to bin off-topic macro
+roundups has been deleted outright and replaced by two upstream stages
+that this module no longer owns:
 
-To address this, :func:`_rerank_articles` assigns a **specificity score** to
-every article based on whether the ticker symbol or the company name appears
-in the headline or summary:
+  * The specificity **router** (``agents.analysts.news.router``) now splits
+    pooled watchlist news into a per-ticker company stream and a macro
+    stream — see that module for the roundup-detection logic.
+  * The embedding **staleness pre-filter** (:func:`partition_articles_by_staleness`,
+    below) splits each ticker's company-stream articles into "fresh"
+    (novel — surprise candidates) and "stale" (previously seen — drift
+    context) buckets.
 
-  2 — company-specific, headline match (symbol or name in headline)
-  1 — company-specific, summary-only match (symbol or name in summary only)
-  0 — generic (neither headline nor summary mentions the company)
-
-Articles are re-ordered ``(score desc, published_at desc)`` so the LLM's
-context window is dominated by real company news.  Generic articles are
-admitted only up to ``max_generic_articles_per_ticker`` (config default 5)
-AND the remaining total-cap budget, whichever is smaller.  A ticker with
-zero specific articles receives up to the generic cap — it is never left
-empty when articles exist.
-
-Roundup demotion
-----------------
-A headline (or summary) that names **N or more distinct watchlist companies**
-is classified as a macro roundup and demoted to score 0 (generic), regardless
-of whether the target ticker appears.  The threshold N is configurable via
-``config/analysts.json`` → ``news.roundup_company_threshold`` (default 3).
-
-This addresses a known false-positive: "Nvidia, AMD, Tesla, Apple Are Big
-Movers" would previously score 2 ("company-specific") for every ticker it
-names, bypassing the generic cap entirely.  Name-dropping in a roundup is
-not company-specificity.
+:func:`_build_ticker_news_context` renders both buckets: fresh articles in
+full (headline, age, capped summary); stale articles as headline-only
+one-liners.  The caller (``NewsFetchAgent``) applies the COUNT caps before
+calling this function so the rendered block and the report-cache key hash
+match exactly.
 
 Dedup + recency sort
 --------------------
@@ -63,11 +49,11 @@ appear voluminous.  :func:`_dedup_and_sort_articles` addresses both defects:
    non-empty input fails to parse, a ``ValueError`` is raised rather than
    silently producing an empty block.
 
-The dedup pass runs **before** specificity re-ranking so that the raw article
-count that feeds into ``_rerank_articles`` is already de-duplicated.  Numeric
-features (mention counts etc.) that are derived elsewhere from the raw article
-list are **not** changed here — dedup applies only to the LLM-facing render
-path.  If a future feature needs dedup-aware counts, that should be wired
+This is a cheap exact/near-exact hygiene pass that runs **before** the
+staleness pre-filter spends any embedding calls; numeric features (mention
+counts etc.) that are derived elsewhere from the raw article list are
+**not** changed here — dedup applies only to the LLM-facing render path.
+If a future feature needs dedup-aware counts, that should be wired
 explicitly and flagged for review.
 """
 from __future__ import annotations
@@ -80,16 +66,7 @@ from difflib import SequenceMatcher
 from hashlib import blake2b
 
 from agents.analysts.news.history import NewsHistoryStore
-
-# Classification helpers moved to ``agents.analysts.news.router`` (Phase 14
-# Plan 2) where they back the company/macro stream router.  Re-exported here
-# under their historical private names so ``_score_article_specificity`` and
-# the existing test suite keep working unchanged — Plan 3's rebuild owns any
-# further restructure of this module.
-from agents.analysts.news.router import build_company_terms as _build_company_terms
-from agents.analysts.news.router import count_roundup_companies as _count_roundup_companies
 from config.analysts import NewsCaps, get_analysts_config
-from orchestrator.stock_picker import get_watchlist_with_names
 
 _logger = logging.getLogger(__name__)
 
@@ -110,22 +87,6 @@ def _caps() -> NewsCaps:
         ``max_summary_chars`` as configured in ``config/analysts.json``.
     """
     return get_analysts_config().news
-
-
-def _watchlist_universe() -> list[dict[str, str]]:
-    """Return the full watchlist as ``{"symbol": ..., "name": ...}`` dicts.
-
-    Delegates to :func:`orchestrator.stock_picker.get_watchlist_with_names`,
-    which already handles both the legacy (flat-string) and the extended
-    (``{symbol, name}``) watchlist formats.  Called lazily at scoring time so
-    that import-time side effects and test isolation are unaffected.
-
-    Returns
-    -------
-    list[dict[str, str]]
-        Each entry has ``"symbol"`` and ``"name"`` keys, in watchlist order.
-    """
-    return get_watchlist_with_names()
 
 
 def _parse_published(raw: object) -> datetime | None:
@@ -343,207 +304,6 @@ async def partition_articles_by_staleness(
     return fresh, stale
 
 
-def _score_article_specificity(
-    article: dict,
-    ticker: str,
-    company_name: str | None,
-    *,
-    watchlist_universe: list[dict[str, str]] | None = None,
-    roundup_threshold: int = 3,
-) -> int:
-    """Score how company-specific a single article is.
-
-    Assigns a score in {0, 1, 2} based on whether the ticker symbol or the
-    company name appears in the article's headline or summary:
-
-      2 — headline match  (symbol OR name found in headline)
-      1 — summary-only match  (symbol OR name found in summary, not headline)
-      0 — generic  (neither field mentions the company, OR the article is a
-                    macro roundup naming ≥ ``roundup_threshold`` distinct
-                    watchlist companies)
-
-    **Roundup demotion:** before assigning score 2 or 1, the scorer checks
-    whether the headline (and, as a fallback, the combined headline + summary)
-    names ``roundup_threshold`` or more distinct watchlist companies.  If so,
-    the article is demoted to score 0 regardless of the target ticker's
-    presence.  The rationale: listing a ticker alongside five peers in a
-    "Big Movers" roundup is not company-specificity — the story is about the
-    market, not the company.
-
-    Matching is case-insensitive.  For multi-word company names (e.g.
-    "Lockheed Martin") the first word alone is also treated as a match
-    ("Lockheed" in a headline is sufficient), reducing false negatives
-    from shortened references.  The ticker symbol itself is always searched
-    as a plain substring — short symbols (e.g. "AMD") can produce false
-    positives, but company-name matching provides the primary signal.
-
-    Parameters
-    ----------
-    article:
-        Article dict.  Supports both ``"title"``/``"headline"`` and
-        ``"summary"`` keys (same dual-key lookup used by the renderer).
-    ticker:
-        Upper-cased ticker symbol, e.g. ``"AAPL"``.
-    company_name:
-        Human-readable company name from the watchlist, e.g. ``"Apple"``.
-        ``None`` or empty string disables name matching (falls back to
-        symbol-only matching).
-    watchlist_universe:
-        Full list of ``{"symbol": ..., "name": ...}`` dicts used for roundup
-        detection.  When ``None``, roundup demotion is skipped (safe fallback
-        for callers that do not have the universe available, and for tests that
-        only exercise the basic score path).
-    roundup_threshold:
-        Minimum number of distinct watchlist companies that must be named in
-        the headline (or headline + summary) for the article to be classified
-        as a roundup.  Must be ≥ 2.  Default 3.
-
-    Returns
-    -------
-    int
-        Specificity score in {0, 1, 2}.
-    """
-    # Extract headline and summary strings, normalising to lower-case for
-    # case-insensitive matching throughout.
-    headline = (
-        article.get("title") or article.get("headline") or ""
-    ).lower()
-
-    summary = (article.get("summary") or "").lower()
-
-    # --- Roundup demotion ---------------------------------------------------
-    # If the headline alone names enough distinct watchlist companies, the
-    # article is a macro roundup — demote to generic regardless of whether
-    # the target ticker is among those named.  We also check headline + summary
-    # as a combined body in case a short teaser headline spreads its company
-    # list across the first sentence of the summary.
-    if watchlist_universe and roundup_threshold >= 2:
-        # Headline-only check first — most roundups are self-contained in
-        # the headline ("Nvidia, AMD, Tesla, Apple Are Big Movers").
-        if _count_roundup_companies(headline, watchlist_universe) >= roundup_threshold:
-            return 0
-
-        # Fallback: headline + summary combined — catches the pattern where
-        # the headline is a teaser ("These Stocks Are Today's Movers:") and
-        # the company list spills into the first line of the summary.
-        combined = headline + " " + summary
-        if _count_roundup_companies(combined, watchlist_universe) >= roundup_threshold:
-            return 0
-
-    # --- Standard specificity scoring ---------------------------------------
-    # Build the set of search terms to look for in each field.
-    # Always include the ticker symbol (e.g. "aapl").
-    terms = _build_company_terms(company_name, ticker)
-
-    # Check headline first — a match here earns the highest score.
-    if any(term in headline for term in terms):
-        return 2
-
-    # No headline match — check summary.
-    if any(term in summary for term in terms):
-        return 1
-
-    # Neither field contains any identifying term — generic article.
-    return 0
-
-
-def _rerank_articles(
-    articles: list,
-    ticker: str,
-    company_name: str | None,
-    *,
-    max_total: int,
-    max_generic: int,
-) -> list:
-    """Re-rank articles by specificity and apply the total + generic caps.
-
-    Scores each article via :func:`_score_article_specificity`, then fills
-    the output window with specific articles first (score ≥ 1), sorted by
-    (score desc, published_at desc), followed by generic articles (score 0)
-    sorted by published_at desc.
-
-    Budget rules:
-      - Total kept ≤ ``max_total``.
-      - Generic articles kept ≤ min(``max_generic``, remaining total budget).
-        This means if specific articles already fill the total cap, zero
-        generics are included — they do not push the list over the hard cap.
-      - A ticker with zero specific articles falls back to up to ``max_generic``
-        generics — it is never left empty when articles exist.
-
-    Parameters
-    ----------
-    articles:
-        Raw article list (any order); entries are plain dicts or Pydantic-
-        serialised dicts.
-    ticker:
-        Ticker symbol used for specificity scoring.
-    company_name:
-        Company name used for specificity scoring (may be ``None``).
-    max_total:
-        Hard ceiling on the total number of articles returned.
-    max_generic:
-        Maximum generic (score 0) articles permitted in the output.
-
-    Returns
-    -------
-    list
-        Re-ordered, capped article list.  Each entry is the same object
-        (no copies) from the input list.
-    """
-    # Load the roundup-detection universe and threshold once for the whole
-    # batch — avoids repeated config + file reads inside the per-article loop.
-    caps            = _caps()
-    universe        = _watchlist_universe()
-    roundup_thresh  = caps.roundup_company_threshold
-
-    # Score every article and attach the score for sorting.
-    scored: list[tuple[int, int, object]] = []
-
-    for article in articles:
-        score = _score_article_specificity(
-            article,
-            ticker,
-            company_name,
-            watchlist_universe=universe,
-            roundup_threshold=roundup_thresh,
-        )
-
-        # Extract published_at as a sortable key.  Missing timestamps sort to
-        # the oldest position (epoch zero) so they don't displace real articles.
-        raw_pub = (
-            article.get("published_at") or article.get("date") or ""
-            if isinstance(article, dict)
-            else getattr(article, "published_at", None) or getattr(article, "date", "") or ""
-        )
-        published_dt = _parse_published(raw_pub)
-        # Use a Unix-style integer timestamp for sorting — missing → 0 (oldest).
-        pub_sort = int(published_dt.timestamp()) if published_dt else 0
-
-        scored.append((score, pub_sort, article))
-
-    # Partition into specific (score ≥ 1) and generic (score == 0).
-    specific = [(sc, pub, art) for sc, pub, art in scored if sc >= 1]
-    generic  = [(sc, pub, art) for sc, pub, art in scored if sc == 0]
-
-    # Sort each partition: primary by score descending, secondary by
-    # published_at descending (most recent first).
-    specific.sort(key=lambda t: (t[0], t[1]), reverse=True)
-    generic.sort(key=lambda t: t[1], reverse=True)
-
-    # Fill the output: specific articles up to max_total.
-    chosen = [art for _, _, art in specific[:max_total]]
-
-    # Backfill with generics up to the smaller of the generic cap and the
-    # remaining total-cap budget.
-    remaining = max_total - len(chosen)
-    generic_slots = min(max_generic, remaining)
-
-    if generic_slots > 0:
-        chosen.extend(art for _, _, art in generic[:generic_slots])
-
-    return chosen
-
-
 def _normalise_title(title: str) -> str:
     """Produce a canonical form of an article title for similarity comparison.
 
@@ -663,9 +423,10 @@ def _dedup_and_sort_articles(articles: list) -> list:
 
     Design notes
     ------------
-    - This function deliberately does **not** apply the total or generic
-      article caps — those are the responsibility of :func:`_rerank_articles`
-      which runs after this pass.
+    - This function deliberately does **not** apply the fresh/stale count
+      caps — those are the responsibility of the caller (``NewsFetchAgent``),
+      which applies them after the staleness pre-filter partitions the
+      deduped list.
     - Numeric features derived from the raw article list elsewhere (e.g.
       ``mention_count`` in the extractor layer) are NOT affected by this
       function — it only touches the list that reaches the LLM renderer.
@@ -814,131 +575,147 @@ def _dedup_and_sort_articles(articles: list) -> list:
     return [article for article, _dt, _idx in survivors]
 
 
-def _build_ticker_news_context(
-    ticker: str,
-    articles: list,
-    *,
-    as_of: datetime,
-    company_name: str | None = None,
-) -> str:
-    """Build the LLM-readable context block for a single ticker's news.
+def _freshest_first(articles: list) -> list:
+    """Sort articles freshest-first by parsed publication time.
 
-    Formats headlines and article summaries into a text block suitable for
-    direct inclusion in an LLM prompt.  Before rendering, articles are
-    processed through two successive passes:
-
-    1. **Dedup + recency sort** (:func:`_dedup_and_sort_articles`) — collapses
-       near-identical syndication rehashes into one representative (keeping the
-       freshest), then sorts surviving articles freshest-first.  This prevents
-       a single story published by 100 outlets from dominating the context
-       window and making stale news look voluminous.
-
-    2. **Specificity re-ranking** (:func:`_rerank_articles`) — demotes generic
-       macro roundup articles so company-specific stories fill the context
-       window first.  The total and generic caps are applied here.
-
-    Only the most recent ``max_articles_per_ticker`` articles (after both
-    passes) are included; summaries are truncated to ``max_summary_chars``
-    characters to control token usage.  Both caps are read from
-    ``config/analysts.json`` via :func:`_caps`.
-
-    An ``As of:`` anchor line is rendered immediately after the ticker
-    header so the LLM knows the exact reference date.  Each article shows
-    its publication date *and* its age in whole days relative to ``as_of``
-    (e.g. ``[2025-10-10, 5d ago]``), enabling the model to reason about
-    whether a story is still fresh or has likely been priced in already.
+    Undated articles (epoch-zero sort anchor) sink to the end — they must
+    never displace a datable article under the render caps.
 
     Parameters
     ----------
-    ticker:
-        Ticker symbol label.
     articles:
-        List of article dicts (serialised ``NewsArticle`` instances) or raw
-        dict-like objects from the provider.
-    as_of:
-        The historical clock value for this tick.  Used as the reference
-        point for computing per-article age.  May be tz-aware or naive;
-        the helper normalises internally.
-    company_name:
-        Human-readable company name from the watchlist (e.g. ``"Apple"``).
-        Used by the specificity scorer to identify company-specific
-        articles; ``None`` falls back to symbol-only matching.
+        Serialised article dicts (or model objects).
+
+    Returns
+    -------
+    list
+        A new list, newest publication time first.
+    """
+    def _key(article: object) -> datetime:
+        """Sort key: parsed publication time, or epoch zero when unknown."""
+        _headline, _summary, raw_published = _article_fields(article)
+        return _parse_published(raw_published) or _EPOCH_ZERO
+
+    return sorted(articles, key=_key, reverse=True)
+
+
+def _age_label(raw_published: object, as_of_naive: datetime) -> str:
+    """Render the ``[YYYY-MM-DD, Nd ago]`` age suffix for one article.
+
+    Ages anchor the LLM's drift-window arithmetic ("how many days into the
+    drift window are we?"), so unparseable timestamps are labelled
+    explicitly rather than hidden.
+
+    Parameters
+    ----------
+    raw_published:
+        The article's raw publication value (str/datetime/None).
+    as_of_naive:
+        The tick's as_of, UTC-naive.
 
     Returns
     -------
     str
-        A formatted text block ready for concatenation into ``news_context``.
+        A bracketed suffix string, e.g. `` [2026-07-05, 1d ago]``.
     """
-    # Normalise as_of to naive UTC for consistent age arithmetic.
+    published_dt = _parse_published(raw_published)
+
+    if published_dt is not None:
+        # Clamp negative ages (dirty future-dated data) to 0 — all fetched
+        # articles are PIT-correct (<= as_of), so negatives only arise from
+        # data hygiene issues.
+        age_days = max(0, (as_of_naive - published_dt).days)
+        return f" [{str(raw_published)[:10]}, {age_days}d ago]"
+
+    if raw_published:
+        # We have a raw value but could not parse it — show it as-is so the
+        # LLM still sees some date information.
+        return f" [{raw_published}, age unknown]"
+
+    # No publication date at all.
+    return " [age unknown]"
+
+
+def _build_ticker_news_context(
+    ticker: str,
+    fresh: list,
+    stale: list,
+    *,
+    as_of: datetime,
+) -> str:
+    """Build the two-section LLM context block for one ticker.
+
+    The staleness pre-filter has already partitioned the articles:
+
+    - ``fresh`` articles (novel — surprise candidates) render IN FULL:
+      headline, age, and capped summary.
+    - ``stale`` articles (previously seen) render as headline-only
+      one-liners — drift-window context, deliberately cheap (spec D4).
+
+    The caller applies the COUNT caps before calling this function, so the
+    rendered lists match the report-cache key inputs exactly; only the
+    per-article summary character cap is applied here.
+
+    Parameters
+    ----------
+    ticker:
+        The ticker symbol this block describes.
+    fresh:
+        Capped list of novel articles (any order; re-sorted here).
+    stale:
+        Capped list of previously-seen articles (any order).
+    as_of:
+        The tick's as_of datetime (aware or naive).
+
+    Returns
+    -------
+    str
+        The formatted context block for ``temp:news_context_<TICKER>``.
+    """
+    # Normalise to UTC-naive so age arithmetic matches _parse_published output.
     as_of_naive = (
         as_of.astimezone(UTC).replace(tzinfo=None)
         if as_of.tzinfo is not None
         else as_of
     )
 
-    lines: list[str] = [f"=== {ticker} ==="]
+    lines: list[str] = [
+        f"=== {ticker} ===",
+        f"  As of: {as_of_naive.date().isoformat()}",
+    ]
 
-    # Render the reference anchor so the LLM knows what "now" is.
-    lines.append(f"  As of: {as_of_naive.date().isoformat()}")
-
-    if not articles:
+    if not fresh and not stale:
         lines.append("  (no news available)")
         return "\n".join(lines)
 
-    # Read caps from config — done once per call, not per article.
     caps = _caps()
 
-    # Pass 1: dedup near-identical syndication rehashes and recency-sort.
-    # This reduces a 100-article rehash flood to a single representative and
-    # surfaces the freshest stories first.  The ValueError from all-unparseable
-    # timestamps intentionally propagates — it should be loud.
-    deduped = _dedup_and_sort_articles(articles)
-
-    # Pass 2: re-rank by specificity, capping generic (macro) articles so
-    # they cannot crowd out company-specific stories.
-    selected = _rerank_articles(
-        deduped,
-        ticker,
-        company_name,
-        max_total=caps.max_articles_per_ticker,
-        max_generic=caps.max_generic_articles_per_ticker,
-    )
-
-    for i, article in enumerate(selected, start=1):
-        # Support both dict access and attribute access depending on how the
-        # provider serialised the NewsArticle.
-        if isinstance(article, dict):
-            headline  = article.get("title") or article.get("headline") or "(no title)"
-            summary   = (article.get("summary") or "").strip()
-            published = article.get("published_at") or article.get("date") or ""
-        else:
-            headline  = getattr(article, "title", None) or getattr(article, "headline", "(no title)")
-            summary   = (getattr(article, "summary", None) or "").strip()
-            published = getattr(article, "published_at", None) or getattr(article, "date", "") or ""
-
-        # Attempt to compute article age relative to the as_of reference point.
-        published_dt = _parse_published(published)
-
-        if published_dt is not None:
-            # Clamp negative ages (dirty future-dated data) to 0 — all
-            # fetched articles are PIT-correct (<= as_of), so negatives
-            # only arise from data hygiene issues.
-            age_days  = max(0, (as_of_naive - published_dt).days)
-            age_str   = f"{age_days}d ago"
-            date_part = str(published)[:10]  # ISO date prefix (YYYY-MM-DD)
-            date_str  = f" [{date_part}, {age_str}]"
-        elif published:
-            # We have a raw value but could not parse it — show it as-is
-            # so the LLM still sees some date information.
-            date_str = f" [{published}, age unknown]"
-        else:
-            # No publication date at all.
-            date_str = " [age unknown]"
-
-        lines.append(f"  [{i}]{date_str} {headline}")
-
+    lines.append("")
+    lines.append("  FRESH ARTICLES (not previously seen — surprise candidates):")
+    if not fresh:
+        lines.append("    (none — no novel articles this tick)")
+    for index, article in enumerate(_freshest_first(fresh), start=1):
+        headline, summary, raw_published = _article_fields(article)
+        lines.append(
+            f"  [{index}]{_age_label(raw_published, as_of_naive)}"
+            f" {headline or '(no title)'}"
+        )
         if summary:
             # Truncate to avoid token bloat while preserving the key content.
-            lines.append(f"       {summary[:caps.max_summary_chars]}")
+            lines.append(f"       {summary[: caps.max_summary_chars]}")
+
+    lines.append("")
+    lines.append(
+        "  PREVIOUSLY SEEN (already assessed on earlier ticks —"
+        " drift context, headlines only):"
+    )
+    if not stale:
+        lines.append("    (none)")
+    for index, article in enumerate(_freshest_first(stale), start=1):
+        headline, _summary, raw_published = _article_fields(article)
+        lines.append(
+            f"  [S{index}]{_age_label(raw_published, as_of_naive)}"
+            f" {headline or '(no title)'}"
+        )
 
     return "\n".join(lines)

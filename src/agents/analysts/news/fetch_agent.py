@@ -1,20 +1,32 @@
-"""NewsFetchAgent — BaseAgent that fetches news for every watchlist ticker.
+"""NewsFetchAgent — fetch, route, staleness-filter, and render per ticker.
 
-Phase 9 introduced the per-ticker fan-out design: each ``NewsAnalyst_<TICKER>``
-reads only its own ticker's context.  This agent writes one
-``temp:news_context_<TICKER>`` key per ticker so ADK's
-``inject_session_state`` fills each branch's ``{news_context}``
-placeholder with single-ticker text.
+Phase 14 (Plan 3) rebuild.  Per tick this agent:
 
-The legacy ``news_fetch_callback`` (a ``before_agent_callback`` on the batched
-``NewsAnalyst`` LlmAgent) was retired when this agent landed — see
-``agents.analysts.news.fetch`` for the retained formatting helpers.
+1. Fetches ``/company-news`` for every watchlist ticker (existing provider
+   path — cache-backed during backtests; D1: no new providers).
+2. Unions the feeds and de-duplicates exact re-fetches by ``article_key``
+   (the same story is stapled onto several tickers' feeds — judge it once).
+3. Routes the union through the specificity router (Plan 2):
+   company-specific articles come back keyed by ticker in
+   ``RoutedArticles.company``; roundup/macro articles land in ``.macro``,
+   which this agent does NOT consume — Plan 5's macro analyst owns that
+   stream.
+4. Per ticker: title-level dedup (cheap exact/near-exact hygiene), then the
+   deterministic embedding staleness pre-filter against the per-run
+   ``NewsHistoryStore``.  Only novel articles render in full; previously
+   seen articles render as headline-only drift context (D4).
 
-Yielded keys (one state_delta event):
-  - ``temp:news_data``  — dict[ticker, {"news": [serialised NewsArticle, ...]}]
-  - ``temp:news_context_<TICKER>`` — formatted text block for one ticker
-  - ``temp:news_context`` — aggregate joined block (all tickers); retained for
-    trace/debug surfaces per Phase 9 spec §1
+Yielded state keys (one state_delta event):
+    - ``temp:news_data`` — dict[ticker, {"news", "fresh", "stale"}] where
+      ``news`` is the full routed set (deterministic-extractor input) and
+      ``fresh``/``stale`` are the capped LLM-visible slices (report-cache
+      key inputs).
+    - ``temp:news_context_<TICKER>`` — the two-section context block.
+    - ``temp:news_context`` — aggregate block (trace/debug only).
+
+Failure policy: a per-ticker provider error degrades that ticker to an
+empty feed (branch isolation), but an embedding failure RAISES — silently
+mis-classifying staleness is the banned silent-degradation bug class.
 """
 from __future__ import annotations
 
@@ -26,9 +38,16 @@ from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event, EventActions
 
-# Reuse the per-ticker formatter from the shared helpers module.
-# This avoids duplicating the article-truncation and formatting logic.
-from agents.analysts.news.fetch import _build_ticker_news_context
+from agents.analysts.news.fetch import (
+    _build_ticker_news_context,
+    _dedup_and_sort_articles,
+    _freshest_first,
+    article_key,
+    partition_articles_by_staleness,
+)
+from agents.analysts.news.history import get_news_history_store
+from agents.analysts.news.router import route_articles
+from config.analysts import get_analysts_config
 from data import get_stock_news
 from data.timeguard import resolve_as_of
 from observability.trace import trace_maybe
@@ -38,93 +57,131 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class NewsFetchAgent(BaseAgent):
-    """Fetch news for every watchlist ticker; yield per-ticker context keys.
-
-    Reads ``state["tickers"]`` and ``state["as_of"]``; writes
-    ``temp:news_data`` and one ``temp:news_context_<TICKER>`` per ticker
-    via a single ``state_delta`` event.
-
-    The agent is idempotent for a given ``(tickers, as_of)`` input — re-
-    running yields identical keys (subject to provider determinism).
-    """
+    """Deterministic pre-LLM stage of the news branch (see module docstring)."""
 
     async def _run_async_impl(
-        self, ctx: InvocationContext,
+        self,
+        ctx: InvocationContext,
     ) -> AsyncGenerator[Event, None]:
-        """Fetch news for all watchlist tickers and yield a single state_delta event.
+        """Fetch, route, partition, and render news for every ticker.
 
-        Iterates over ``state["tickers"]``, calling the news provider for each
-        one.  Provider failures are caught per-ticker so a single bad provider
-        call degrades gracefully — that ticker gets an empty news list and an
-        ``(no news available)`` placeholder in its context block.
-
-        Args:
-            ctx: ADK invocation context carrying the session state.
+        Parameters:
+            ctx: the ADK invocation context carrying session state.
 
         Yields:
-            One ``Event`` whose ``actions.state_delta`` carries:
-              - ``temp:news_data`` — machine-readable dict keyed by ticker
-              - ``temp:news_context_<TICKER>`` — formatted single-ticker block
-              - ``temp:news_context`` — aggregate multi-ticker block for traces
+            One Event whose state_delta holds ``temp:news_data``, the
+            per-ticker ``temp:news_context_<TICKER>`` blocks, and the
+            aggregate ``temp:news_context``.
         """
         state = ctx.session.state
         tickers: list[str] = state.get("tickers", []) or []
 
-        # Resolve the historical clock (backtest) or wall-clock (live).
         as_of: datetime = resolve_as_of(
             state.get("as_of"), allow_wallclock=True, site="news/fetch_agent",
         )
 
-        # Build a symbol → company-name lookup from the watchlist so the
-        # specificity re-ranker can match headlines like "Apple …" for AAPL.
-        # Falls back gracefully — tickers absent from the watchlist get None.
-        watchlist_names: dict[str, str] = {
-            entry["symbol"]: entry["name"]
-            for entry in get_watchlist_with_names()
-        }
+        # Read caps/thresholds up front — the empty-watchlist short-circuit
+        # below still needs nothing from here, but every other path does.
+        cfg = get_analysts_config()
 
-        news_data: dict[str, dict] = {}
-        per_ticker_blocks: dict[str, str] = {}
+        # ── Empty-watchlist guard ────────────────────────────────────────
+        # route_articles() raises ValueError on an empty watchlist (a loud
+        # wiring guard for its normal callers); this agent's contract is to
+        # degrade gracefully instead, so short-circuit before routing ever
+        # runs.
+        if not tickers:
+            yield Event(
+                author=self.name,
+                invocation_id=ctx.invocation_id,
+                actions=EventActions(state_delta={
+                    "temp:news_data": {},
+                    "temp:news_context": "",
+                }),
+            )
+            return
 
+        # ── 1. Fetch every ticker's feed ─────────────────────────────────
+        all_articles: list = []
         for ticker in tickers:
             try:
                 articles = await get_stock_news(ticker, as_of=as_of)
-            except Exception as exc:  # noqa: BLE001 — degrade gracefully per ticker
+            except Exception as exc:  # noqa: BLE001 — per-ticker isolation
                 _LOGGER.warning("news fetch failed for %s: %s", ticker, exc)
                 articles = []
+            all_articles.extend(articles)
 
-            # Serialise so downstream consumers always see plain dicts,
-            # regardless of whether the provider returned Pydantic models.
+        # ── 2. Union-level identity dedup ────────────────────────────────
+        # The same story appears on several tickers' /company-news feeds;
+        # route each story once, not once per (story, feed) pair.
+        unique: dict[str, object] = {}
+        for article in all_articles:
+            unique.setdefault(article_key(article), article)
+
+        # ── 3. Specificity routing (Plan 2) ──────────────────────────────
+        # ``routed.macro`` is deliberately ignored here — Plan 5 consumes it.
+        # company_names is REQUIRED here: without it, matching degrades to
+        # bare ticker symbols, which almost never appear in prose, and the
+        # company streams would silently collapse to near-empty.
+        company_names = {
+            entry["symbol"]: entry["name"]
+            for entry in get_watchlist_with_names()
+        }
+        routed = route_articles(
+            list(unique.values()),
+            tickers,
+            company_names=company_names,
+            roundup_threshold=cfg.news.roundup_company_threshold,
+        )
+
+        # ── 4. Per-ticker partition + render ─────────────────────────────
+        store = get_news_history_store()
+        threshold = cfg.staleness_similarity_threshold
+
+        news_data: dict[str, dict] = {}
+        context_blocks: dict[str, str] = {}
+
+        for ticker in tickers:
+            routed_articles = routed.company.get(ticker, []) or []
+
+            # Serialise model objects so state stays JSON-safe end to end.
             serialised = [
-                a.model_dump() if hasattr(a, "model_dump") else a for a in articles
+                a.model_dump(mode="json") if hasattr(a, "model_dump") else a
+                for a in routed_articles
             ]
-            news_data[ticker] = {"news": serialised}
 
-            # Build the per-ticker formatted block.  ADK's instruction template
-            # will fill this into ``{news_context}`` for the ticker's LlmAgent.
-            # Pass the company name so the specificity re-ranker can match on
-            # "Apple" as well as "AAPL" — symbol-only matching misses most
-            # headlines since financial journalism rarely uses ticker symbols
-            # in prose.
-            company_name = watchlist_names.get(ticker)
-            per_ticker_blocks[ticker] = _build_ticker_news_context(
-                ticker, serialised, as_of=as_of, company_name=company_name,
+            # Cheap title-level dedup first — collapse exact syndication
+            # copies before any embedding is spent; the staleness filter
+            # then catches the paraphrased rehashes this pass misses.
+            deduped = _dedup_and_sort_articles(serialised)
+
+            fresh, stale = await partition_articles_by_staleness(
+                ticker, deduped, store=store, threshold=threshold,
             )
 
-        # Build the state_delta payload.  All keys are temp:-prefixed
-        # (Rule 2) so ADK strips them at the invocation boundary.
+            # Apply the count caps HERE (freshest survive) so the rendered
+            # block and the report-cache key hash byte-identical lists.
+            fresh_capped = _freshest_first(fresh)[
+                : cfg.news.max_articles_per_ticker
+            ]
+            stale_capped = _freshest_first(stale)[
+                : cfg.news.max_stale_headlines_per_ticker
+            ]
+
+            news_data[ticker] = {
+                "news": serialised,
+                "fresh": fresh_capped,
+                "stale": stale_capped,
+            }
+            context_blocks[ticker] = _build_ticker_news_context(
+                ticker, fresh_capped, stale_capped, as_of=as_of,
+            )
+
+        # ── 5. Emit one state_delta event ────────────────────────────────
         delta: dict[str, object] = {"temp:news_data": news_data}
-
-        # Write one per-ticker key — each ticker's LlmAgent reads ONLY its own.
-        for ticker, block in per_ticker_blocks.items():
+        for ticker, block in context_blocks.items():
             delta[f"temp:news_context_{ticker}"] = block
-
-        # Retain the aggregate ``temp:news_context`` key — the multi-ticker
-        # joined block — for trace/debug surfaces (Phase 9 spec §1).
-        # Each per-ticker LlmAgent reads its own ``temp:news_context_<TICKER>``;
-        # this key is only for human-readable traces.
         delta["temp:news_context"] = "\n\n".join(
-            f"=== {t} ===\n{per_ticker_blocks[t]}" for t in tickers
+            context_blocks[ticker] for ticker in tickers
         )
 
         # Surface trace — no-op unless state["temp:_trace"] is set.
