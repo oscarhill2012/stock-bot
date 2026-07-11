@@ -81,6 +81,16 @@ from difflib import SequenceMatcher
 from config.analysts import NewsCaps, get_analysts_config
 from orchestrator.stock_picker import get_watchlist_with_names
 
+# Classification helpers moved to ``agents.analysts.news.router`` (Phase 14
+# Plan 2) where they back the company/macro stream router.  Re-exported here
+# under their historical private names so ``_score_article_specificity`` and
+# the existing test suite keep working unchanged — Plan 3's rebuild owns any
+# further restructure of this module.
+from agents.analysts.news.router import (
+    build_company_terms as _build_company_terms,
+    count_roundup_companies as _count_roundup_companies,
+)
+
 _logger = logging.getLogger(__name__)
 
 # Sentinel value written by providers when no timestamp is available.
@@ -163,84 +173,6 @@ def _parse_published(raw: str | datetime | None) -> datetime | None:
     if parsed.tzinfo is not None:
         return parsed.astimezone(UTC).replace(tzinfo=None)
     return parsed
-
-
-def _build_company_terms(company_name: str | None, symbol: str) -> list[str]:
-    """Build the list of search terms for one watchlist company.
-
-    Replicates the same term-expansion logic used throughout the specificity
-    scorer so that roundup detection uses identical matching behaviour to the
-    existing headline/summary checks.
-
-    The terms produced for a given company are:
-      * The ticker symbol (lower-cased), e.g. ``"aapl"``.
-      * The full company name (lower-cased), e.g. ``"apple"``.
-      * The first word of a multi-word name (lower-cased), e.g. ``"lockheed"``
-        for ``"Lockheed Martin"`` — omitted for single-word names since it
-        would duplicate the full-name term.
-
-    Parameters
-    ----------
-    company_name:
-        Human-readable name from the watchlist, e.g. ``"Lockheed Martin"``.
-        ``None`` or empty string → only the symbol term is returned.
-    symbol:
-        Ticker symbol, e.g. ``"LMT"``.
-
-    Returns
-    -------
-    list[str]
-        Lower-cased search terms, deduplicated by order of insertion.
-    """
-    terms: list[str] = [symbol.lower()]
-
-    if company_name:
-        full_name = company_name.strip().lower()
-        terms.append(full_name)
-
-        # First word of a multi-word name only — single-word names are
-        # already fully covered by the full-name term above.
-        if " " in full_name:
-            first_word = full_name.split()[0]
-            if first_word not in terms:
-                terms.append(first_word)
-
-    return terms
-
-
-def _count_roundup_companies(
-    text: str,
-    watchlist_universe: list[dict[str, str]],
-) -> int:
-    """Count how many distinct watchlist companies are mentioned in ``text``.
-
-    Uses the same term-expansion logic as :func:`_build_company_terms` so
-    that matching behaviour is consistent across the whole scorer.  A company
-    is counted at most once regardless of how many of its terms appear.
-
-    Parameters
-    ----------
-    text:
-        Lower-cased text to search (typically a headline or headline + summary).
-    watchlist_universe:
-        Full list of ``{"symbol": ..., "name": ...}`` dicts from the watchlist,
-        as returned by :func:`_watchlist_universe`.
-
-    Returns
-    -------
-    int
-        Number of distinct watchlist companies whose terms appear in ``text``.
-    """
-    count = 0
-
-    for entry in watchlist_universe:
-        terms = _build_company_terms(entry.get("name"), entry["symbol"])
-
-        # A company is counted once if ANY of its terms appear in the text.
-        if any(term in text for term in terms):
-            count += 1
-
-    return count
 
 
 def _score_article_specificity(

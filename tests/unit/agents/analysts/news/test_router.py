@@ -292,3 +292,21 @@ def test_count_roundup_companies_counts_distinct():
     text = "apple and aapl and microsoft moved today"
 
     assert count_roundup_companies(text, universe) == 2
+
+
+# ---------------------------------------------------------------------------
+# (g) fetch.py delegation — historical names must be the router's objects
+# ---------------------------------------------------------------------------
+
+def test_fetch_aliases_delegate_to_router():
+    """fetch.py's historical private names must BE the router functions.
+
+    Guards against the two implementations drifting apart — there must be
+    exactly one copy of the classification logic (spec §6.2: the router owns
+    it; fetch.py merely delegates until Plan 3's rebuild).
+    """
+    from agents.analysts.news import fetch as fetch_mod
+    from agents.analysts.news import router as router_mod
+
+    assert fetch_mod._build_company_terms is router_mod.build_company_terms
+    assert fetch_mod._count_roundup_companies is router_mod.count_roundup_companies
