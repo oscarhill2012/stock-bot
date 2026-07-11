@@ -128,7 +128,7 @@ def _watchlist_universe() -> list[dict[str, str]]:
     return get_watchlist_with_names()
 
 
-def _parse_published(raw: str | datetime | None) -> datetime | None:
+def _parse_published(raw: object) -> datetime | None:
     """Attempt to parse an article's ``published_at`` value into a naive UTC datetime.
 
     Accepts ISO-format strings (with or without a ``Z`` suffix, with or
@@ -144,7 +144,10 @@ def _parse_published(raw: str | datetime | None) -> datetime | None:
     Parameters
     ----------
     raw:
-        The raw ``published_at`` field from the article dict/model.
+        The raw ``published_at`` field from the article dict/model — typed
+        ``object`` because callers may pass through an untyped value (e.g.
+        from ``_article_fields``); expected at runtime to be a ``str``,
+        ``datetime``, or ``None``.
 
     Returns
     -------
