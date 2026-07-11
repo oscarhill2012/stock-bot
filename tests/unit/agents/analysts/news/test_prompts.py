@@ -65,38 +65,44 @@ def test_instruction_describes_single_verdict_output():
 
 
 def test_instruction_contains_recency_priced_in_guidance():
-    """The rendered prompt must instruct the model to discount already-priced-in news.
+    """The rendered prompt must instruct the model to discount stale, already-
+    reflected news rather than treating every article as equally actionable.
 
-    The recency/priced-in block was added to address the anti-predictive
-    behaviour at the 1-day horizon — the model was reacting to news the
-    market had already absorbed.  The block must reference:
+    Phase 14 replaced the old ``As of:`` / per-article ``Nd ago`` recency
+    block with drift-window positioning (STEP 3): the model reasons about
+    an article's age via the PREVIOUSLY SEEN section's ages, and a stale,
+    re-circulating story without new facts is told to mildly predict
+    REVERSAL rather than continuation. The block must reference:
 
-    - The ``As of:`` anchor (so the LLM is told it has a reference date).
-    - The per-article age mechanism (``Nd ago`` labels).
-    - Explicit instruction to discount older / widely-reported stories.
-    - Guidance to lean neutral when the freshest article is stale.
+    - The PREVIOUSLY SEEN ages as the age-tracking mechanism.
+    - The per-article age framing (days-old / "ago").
+    - Explicit reversal guidance for late/exhausted drift windows.
+    - Guidance to lean neutral absent a genuine surprise or live drift.
     """
     instruction = build_news_instruction(_vocab())
 
-    # The anchor reference must be mentioned so the LLM knows to look for it.
-    assert "As of:" in instruction, (
-        "Expected 'As of:' anchor reference in prompt — recency block missing"
+    # The age-tracking mechanism must be named so the LLM knows where ages
+    # come from.
+    assert "PREVIOUSLY SEEN" in instruction, (
+        "Expected 'PREVIOUSLY SEEN' age-tracking reference in prompt — "
+        "drift-window recency block missing"
     )
 
-    # The per-article age format must be described.
+    # The per-article age framing must be described.
     assert "ago" in instruction, (
-        "Expected per-article age label reference (e.g. 'Nd ago') in prompt"
+        "Expected per-article age label reference (e.g. 'trading days ago') "
+        "in prompt"
     )
 
-    # The prompt must explicitly mention discounting already-priced-in news.
-    # The section heading uses "priced-in" (hyphenated) — check the lower-cased form.
-    assert "priced-in" in instruction.lower(), (
-        "Expected 'priced-in' wording in recency block"
+    # Stale, re-circulating news must be flagged as predicting reversal, not
+    # continuation — the new equivalent of the old "already priced in" discount.
+    assert "REVERSAL" in instruction, (
+        "Expected REVERSAL guidance for exhausted drift windows in prompt"
     )
 
-    # Staleness guidance — if the freshest article is old, lean neutral.
+    # Staleness / no-surprise guidance — lean neutral absent a live edge.
     assert "neutral" in instruction.lower(), (
-        "Expected neutral-lean guidance for stale news in prompt"
+        "Expected neutral-lean guidance for stale/no-surprise news in prompt"
     )
 
 
@@ -133,3 +139,30 @@ def test_instruction_honours_output_caps_from_config():
         "report_driver_body_max_chars value — the output_caps substitution "
         "path is broken in build_news_instruction()."
     )
+
+
+def test_instruction_demands_horizon_days():
+    """The drift prompt must require an explicit holding horizon."""
+    instruction = build_news_instruction(_vocab())
+
+    assert "horizon_days" in instruction
+    assert "trading days" in instruction
+
+
+def test_decision_rule_is_surprise_plus_drift_not_sentiment_reaction():
+    """The Phase 14 decision rule: classify the surprise, position for the
+    drift window — the old react-to-sentiment framing must be gone."""
+    instruction = build_news_instruction(_vocab())
+
+    assert "SURPRISE CLASSIFICATION" in instruction
+    assert "DRIFT POSITIONING" in instruction
+    assert "PREVIOUSLY SEEN" in instruction        # explains the stale section
+
+
+def test_instruction_explains_the_two_context_sections():
+    """The prompt must tell the model what FRESH vs PREVIOUSLY SEEN mean —
+    the sections only exist because the pre-filter builds them."""
+    instruction = build_news_instruction(_vocab())
+
+    assert "FRESH ARTICLES" in instruction
+    assert "headline" in instruction.lower()

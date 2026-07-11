@@ -123,16 +123,19 @@ def test_report_schema_instructions_present() -> None:
     """The report schema block is present in the rendered prompt.
 
     Asserts both the section heading and the driver count constraint so
-    the LLM receives the full shape specification (summary + 2-4 drivers).
-    The 2026-05-25 prompt rewrite reworded the driver-count phrasing as
-    ``list of 2-4 entries`` (lifted into a single sentence rather than a
-    table column); the constraint itself is unchanged.
+    the LLM receives the full shape specification (summary + drivers). The
+    Phase 14 surprise/drift rewrite folded the report schema into the
+    OUTPUT CONTRACT block (no longer a standalone "Report schema:" heading).
+    The driver count stays 2–4 to match the shared ``AnalystReport.drivers``
+    schema (``min_length=2``); the prompt and schema must agree, or a
+    single-driver verdict the prompt permitted would be rejected at
+    validation. The presence-of-schema-guidance intent is unchanged.
     """
     rendered = build_news_instruction(_vocab())
 
-    assert "Report schema:" in rendered, (
-        "'Report schema:' heading not found — LLM will not know to emit a report"
+    assert "OUTPUT CONTRACT" in rendered, (
+        "'OUTPUT CONTRACT' heading not found — LLM will not know to emit a report"
     )
-    assert "2-4 entries" in rendered, (
-        "'2-4 entries' constraint not found — driver count mandate missing"
+    assert "2–4 entries" in rendered, (
+        "'2–4 entries' constraint not found — driver count mandate missing"
     )
