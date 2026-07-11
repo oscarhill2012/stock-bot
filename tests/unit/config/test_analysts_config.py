@@ -365,3 +365,11 @@ def test_fundamental_risk_cap_raised_for_diffed_survivors() -> None:
     cfg = load_analysts_config()
 
     assert cfg.fundamental.max_filing_risk_chars == 4000
+
+
+def test_staleness_similarity_threshold_loads_from_config():
+    """The committed config file must carry the Phase 14 staleness threshold."""
+    cfg = load_analysts_config()
+
+    assert 0.0 <= cfg.staleness_similarity_threshold <= 1.0
+    assert cfg.staleness_similarity_threshold == 0.85

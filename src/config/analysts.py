@@ -334,6 +334,13 @@ class AnalystsConfig(BaseModel):
         LLM is told in the prompt.  Independent of the strategist's
         ``slack_percent`` so each LLM tier can be tuned separately.
         Bounded ``[0, 50]``.
+    staleness_similarity_threshold:
+        Minimum embedding cosine similarity at which a news article counts
+        as a stale rehash of previously-seen news (Tetlock textual-
+        similarity measure).  Shared by the per-ticker news filter and
+        Plan 5's macro-analyst filter — top-level, not nested under
+        ``news``, because both namespaces use the same threshold.
+        Bounded ``[0.0, 1.0]``.
     news:
         Input-side truncation caps for the News analyst.
     fundamental:
@@ -345,6 +352,12 @@ class AnalystsConfig(BaseModel):
     """
 
     slack_percent: int = Field(ge=0, le=50, default=10)
+
+    # Phase 14: minimum embedding cosine similarity at which an article is
+    # classed as a stale rehash of previously-seen news (Tetlock measure).
+    # Shared by the per-ticker news filter and the macro analyst's filter.
+    staleness_similarity_threshold: float = Field(ge=0.0, le=1.0, default=0.85)
+
     news:          NewsCaps
     fundamental:   FundamentalCaps
     output_caps:   OutputCaps

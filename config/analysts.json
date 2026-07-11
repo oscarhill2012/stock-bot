@@ -1,5 +1,6 @@
 {
   "slack_percent": 15,
+  "staleness_similarity_threshold": 0.85,
   "news": {
     "max_articles_per_ticker":            25,
     "max_generic_articles_per_ticker":    10,

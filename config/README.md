@@ -263,6 +263,7 @@ process restart is required after edits.
 | Setting | Type | Meaning |
 |---|---|---|
 | `slack_percent` | int [0–50] | Schema-side headroom on top of every value in `output_caps`. The values there are the **prompt-facing** caps the LLM is told (e.g. "≤160 chars"); the schema in `src/contract/evidence.py` accepts `ceil(prompt_cap × (1 + slack_percent / 100))`. Independent of the strategist's `slack_percent` so each LLM tier can be tuned separately. Default 10. |
+| `staleness_similarity_threshold` | float, `0.0`–`1.0` | Minimum embedding cosine similarity at which a news article counts as a stale rehash of previously-seen news (Tetlock textual-similarity measure). Applies to both per-ticker company news and the macro stream. Default `0.85`. |
 
 Same rationale as the strategist's `slack_percent` (see below) — LLMs tokenise
 on subword boundaries and overshoot any stated `≤N chars` cap by ~1–5%, so we
