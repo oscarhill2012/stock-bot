@@ -42,6 +42,22 @@ class FetchDefaults(BaseModel):
     # so the worst-case analyst pane stays small.
     filings_8k_staleness_days:    int  = 90
 
+    # Per-tick article cap for news reads — applied identically by the live
+    # dispatcher default (``data.get_stock_news``) and the backtest cache
+    # news provider, so both paths see the same newest-N list (backtest/live
+    # parity, Phase 14 spec D2).  Sized from the baseline-2025-09 cache: the
+    # busiest observed 7-day per-ticker volume was 318 articles (NVDA), so
+    # 400 leaves headroom and roundup articles are never truncated out
+    # before the specificity router runs.  The old hardcoded dispatcher
+    # default of 50 silently dropped ~85 % of a megacap's weekly feed.
+    news_per_tick_limit:          int  = 400
+
+    # Article cap for backtest cache-fill news pulls (scripts/backtest_fetch).
+    # Sized to absorb a full multi-week window for the noisiest names while
+    # still bounding memory in pathological cases (was hardcoded 9000 in the
+    # fill script; moved here per the config convention).
+    news_backfill_limit:          int  = 9000
+
 
 class DataConfig(BaseModel):
     providers: dict[str, str]

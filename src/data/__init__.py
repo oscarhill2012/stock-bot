@@ -157,7 +157,7 @@ async def get_stock_news(
     from_date=None,
     to_date=None,
     *,
-    limit: int | None = 50,
+    limit: int | None = None,
     as_of: datetime | None = None,
 ):
     """Fetch news articles for ``ticker`` via the active news provider.
@@ -171,7 +171,11 @@ async def get_stock_news(
     to_date:
         End of the news window.  Defaults to ``as_of.date()``.
     limit:
-        Maximum number of articles to return.
+        Maximum number of articles to return.  ``None`` (the default)
+        resolves to ``defaults.news_per_tick_limit`` from
+        ``config/data.json`` so live ticks and backtest cache reads share
+        one cap (parity).  Callers with special needs (e.g. the backtest
+        cache-fill) pass an explicit value.
     as_of:
         Historical clock timestamp.  Defaults to ``datetime.now(UTC)``.
     """
@@ -185,12 +189,21 @@ async def get_stock_news(
     # from_date is absent) both receive a consistent value sourced from
     # config/data.json — the single source of truth.
     lookback_days = get_config().defaults.news_lookback_days
+
+    # Per-tick cap: config-sourced when the caller does not specify one, so
+    # the live Finnhub provider and the backtest cache provider apply the
+    # identical newest-N cut (Phase 14 spec D2 — parity by construction).
+    resolved_limit = (
+        limit if limit is not None
+        else get_config().defaults.news_per_tick_limit
+    )
+
     return await _dispatch(
         "news",
         ticker.upper(),
         from_date=from_date or (as_of_date - _td(days=lookback_days)),
         to_date=to_date or as_of_date,
-        limit=limit,
+        limit=resolved_limit,
         lookback_days=lookback_days,
         as_of=as_of,
     )

@@ -268,27 +268,25 @@ def _build_provider_fns(warmup_days: int = 90, forward_tail_days: int = 0) -> di
         pane regardless of what was actually published in the run-up to the
         window.
 
-        ``limit`` is set explicitly to ``2000`` (rather than relying on the
-        dispatcher's default of ``50``) because the dispatcher's cap is sized
-        for live ticks — at backtest cache-fill time we want to preserve the
-        full chunked Finnhub pull across the whole window.  Without the
-        override, a high-volume ticker (MSFT, AAPL) whose per-week chunk
-        already returns 200+ articles would have its earliest weeks
-        discarded by the newest-first ``[:50]`` slice in the provider, and
-        replay ticks near the start of the window would see an effectively
-        empty news pane.  ``2000`` is generous enough to absorb six weeks of
-        even the noisiest names while still capping memory in pathological
-        cases; per-tick analysts still serve their usual 20-article slice
-        from the cache.
+        ``limit`` is set explicitly to ``defaults.news_backfill_limit``
+        (from ``config/data.json``) rather than relying on the dispatcher's
+        per-tick default — the per-tick cap is sized for live ticks, while
+        at cache-fill time we want to preserve the full chunked Finnhub
+        pull across the whole window (a high-volume ticker's earliest weeks
+        would otherwise be discarded by the newest-first slice). Per-tick
+        reads still serve their capped slice from the cache.
         """
         from data.config import get_config
-        pre_window_buffer = timedelta(days=get_config().defaults.news_lookback_days)
+
+        defaults          = get_config().defaults
+        pre_window_buffer = timedelta(days=defaults.news_lookback_days)
+
         return await get_stock_news(
             ticker,
             from_date=start - pre_window_buffer,
             to_date=end,
             as_of=_as_of_close(end),
-            limit=9000,
+            limit=defaults.news_backfill_limit,
         )
 
     async def _filings(ticker: str, *, start, end) -> list:
