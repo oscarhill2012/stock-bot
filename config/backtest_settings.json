@@ -1,14 +1,14 @@
 {
   "backtests_root":          "backtests",
-  "ticks_per_day":           ["open", "close"],
+  "ticks_per_day":           ["open"],
   "failed_tick_abort_ratio": 0.10,
   "fake_broker_starting_cash": 100000.0,
-  "forward_return_horizons_days": [1, 5, 20],
+  "forward_return_horizons_days": [1, 5, 20, 45, 90],
   "ohlcv_warmup_days": 90,
 
   "primary_horizon_by_analyst": {
-    "news":        1,
-    "fundamental": 20,
+    "news":        20,
+    "fundamental": 90,
     "technical":    5,
     "social":       1,
     "smart_money": 20

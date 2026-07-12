@@ -1258,9 +1258,27 @@ def render_scoreboard_md(result: ScoreboardResult) -> str:
     """Render a ``ScoreboardResult`` as a Markdown section.
 
     Produces a section suitable for appending to ``report/metrics.md``.
-    Layout: one sub-table per analyst, with rows for each
-    (horizon × subset) combination.  The primary horizon for each analyst
-    is marked with a ``★`` in the horizon label.
+
+    Layout (Phase 14 — horizon-across-columns grid).  One compact grid per
+    analyst.  Rows are the directional lean subsets — ``directional``
+    (bullish ∪ bearish) first as the headline, then its ``bullish`` and
+    ``bearish`` decomposition.  Columns are the forward horizons, so a
+    lean's signal reads left-to-right as the horizon lengthens — the drift
+    shape the analysts are aimed at.  Each grid cell packs three figures,
+    ``mean excess (bps) / hit rate / t-stat``; a leading ``n`` column gives
+    the observation count at fullest coverage, and each analyst's primary
+    scoring horizon column is marked with ``★``.
+
+    Neutral verdicts are abstentions with no directional score, so they
+    cannot occupy a grid row.  They are reported instead as a per-horizon
+    abstention rate on a line beneath each analyst's grid, honouring the
+    ``directional`` cell's coverage identity
+    (``n_neutral + directional.n == n_scoreable``).
+
+    A cell reads ``—`` when the combination has no scoreable observation
+    (no directional verdict, or a window-edge horizon with no forward bar);
+    the ``t-stat`` slot within a cell reads ``—`` when ``n < 2`` (a
+    t-statistic is undefined on a single observation).
 
     Parameters
     ----------
@@ -1278,8 +1296,11 @@ def render_scoreboard_md(result: ScoreboardResult) -> str:
             "Metric: mean excess return (bps) = analyst lean × "
             "(ticker fwd-return − per-tick peer-group mean).  "
             "Positive = lean predicted the relative outperformer.  "
-            "Coverage (n) excludes window-edge verdicts where no forward bar exists.  "
-            "★ marks each analyst's primary scoring horizon.\n"
+            "Each cell: **mean excess bps / hit rate / t-stat** across the "
+            "horizon columns; **n** is the directional count at fullest "
+            "coverage (window-edge verdicts with no forward bar are dropped "
+            "at longer horizons, shown as ``—``).  ★ marks each analyst's "
+            "primary scoring horizon.\n"
         ),
     ]
 
@@ -1287,34 +1308,92 @@ def render_scoreboard_md(result: ScoreboardResult) -> str:
         lines.append("_No analyst evidence rows found._\n")
         return "\n".join(lines)
 
+    def _cell_str(analyst: str, horizon: int, subset: str) -> str:
+        """Render one grid cell as ``mean / hit% / t``, or ``—`` when unscored.
+
+        Parameters
+        ----------
+        analyst, horizon, subset:
+            Identify the ``ScoreboardCell`` to render.
+
+        Returns
+        -------
+        str
+            The packed three-figure cell, or a single ``—`` when there is no
+            scoreable observation for the combination.
+        """
+        try:
+            c = result.cell(analyst=analyst, horizon=horizon, subset=subset)
+        except KeyError:
+            return "—"
+
+        # No directional observation → nothing to score in this cell.
+        if c.n == 0 or not math.isfinite(c.mean_excess_bps):
+            return "—"
+
+        mean_s = f"{c.mean_excess_bps:+.1f}"
+        hit_s  = f"{c.hit_rate:.0%}" if math.isfinite(c.hit_rate) else "—"
+        t_s    = f"{c.t_stat:+.2f}"  if math.isfinite(c.t_stat)   else "—"
+        return f"{mean_s} / {hit_s} / {t_s}"
+
+    def _row_n(analyst: str, subset: str) -> int:
+        """Return the observation count for ``subset`` at fullest coverage.
+
+        The count is the maximum ``n`` across the scored horizons, i.e. the
+        sample size before window-edge attrition thins the longer horizons.
+        This is the number a reader needs to judge how much to trust the
+        starred (primary-horizon) cell — e.g. a −444 bps bearish mean means
+        something very different on n=78 than on n=500.
+
+        Parameters
+        ----------
+        analyst, subset:
+            Identify the lean row.
+
+        Returns
+        -------
+        int
+            Maximum ``n`` across horizons, or ``0`` when the row is empty.
+        """
+        counts: list[int] = []
+        for h in result.horizons:
+            try:
+                counts.append(result.cell(analyst=analyst, horizon=h, subset=subset).n)
+            except KeyError:
+                continue
+        return max(counts) if counts else 0
+
     for analyst in result.analysts:
         ph = result.primary_horizon(analyst)
+
+        # Column headers: one per horizon, with ★ on the primary.
+        horizon_headers = [
+            f"+{h}d★" if h == ph else f"+{h}d" for h in result.horizons
+        ]
+
         lines.append(f"\n### {analyst}\n")
+        lines.append("| lean        | n | " + " | ".join(horizon_headers) + " |")
         lines.append(
-            "| horizon | subset   | n | mean excess (bps) | hit rate | t-stat | p-value |"
-        )
-        lines.append(
-            "|---------|----------|---|------------------:|----------|-------:|---------|"
+            "|-------------|---|" + "|".join(["-------------"] * len(result.horizons)) + "|"
         )
 
+        # Directional headline first, then its bullish / bearish split.
+        for subset in ("directional", "bullish", "bearish"):
+            cells = [_cell_str(analyst, h, subset) for h in result.horizons]
+            lines.append(
+                f"| {subset:<11} | {_row_n(analyst, subset)} | " + " | ".join(cells) + " |"
+            )
+
+        # Neutral verdicts have no directional score — report their
+        # per-horizon abstention rate on a separate line beneath the grid.
+        neutral_parts: list[str] = []
         for h in result.horizons:
-            for subset in ("directional", "bullish", "bearish"):
-                try:
-                    c = result.cell(analyst=analyst, horizon=h, subset=subset)
-                except KeyError:
-                    continue
-
-                mean_bps_str = f"{c.mean_excess_bps:+.1f}" if math.isfinite(c.mean_excess_bps) else "N/A"
-                hit_str      = f"{c.hit_rate:.1%}"  if math.isfinite(c.hit_rate) else "N/A"
-                t_str        = f"{c.t_stat:+.2f}"   if math.isfinite(c.t_stat)   else "N/A"
-                p_str        = f"{c.p_value:.3f}"   if math.isfinite(c.p_value)  else "N/A"
-
-                # Mark the primary horizon with ★ for easy identification.
-                horizon_label = f"+{h}d★  " if h == ph else f"+{h}d   "
-
-                lines.append(
-                    f"| {horizon_label} | {subset:<8} | {c.n} | {mean_bps_str:>17} | {hit_str:<8} | {t_str:>6} | {p_str:>7} |"
-                )
+            cov  = result.coverage(analyst=analyst, horizon=h)
+            rate = f"{cov.neutral_rate:.0%}" if math.isfinite(cov.neutral_rate) else "—"
+            neutral_parts.append(f"+{h}d {rate}")
+        lines.append(
+            "\n_neutral (abstention rate): " + " · ".join(neutral_parts) + "_\n"
+        )
 
     return "\n".join(lines) + "\n"
 
