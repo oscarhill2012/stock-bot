@@ -187,16 +187,14 @@ def test_news_branch_wires_llm_caps_from_config() -> None:
     assert cfg is not None
     assert cfg.max_output_tokens == 8000
 
-    # The News analyst runs on the Gemini 3 family (gemini-3.5-flash), which
-    # uses the coarse ``thinking_level`` effort enum rather than the Gemini 2.5
-    # integer ``thinking_budget``.  ``medium`` is wired through into a
-    # level-only thinking_config (budget must remain unset — the two knobs are
+    # The News analyst runs on the Gemini 2.5 family (gemini-2.5-flash), which
+    # uses the integer ``thinking_budget`` token ceiling rather than the Gemini
+    # 3 coarse ``thinking_level`` effort enum.  512 is wired through into a
+    # budget-only thinking_config (level must remain unset — the two knobs are
     # mutually exclusive and sending both is a Gemini 3 HTTP 400).
-    from google.genai import types as genai_types
-
     assert cfg.thinking_config is not None
-    assert cfg.thinking_config.thinking_level == genai_types.ThinkingLevel.MEDIUM
-    assert cfg.thinking_config.thinking_budget is None
+    assert cfg.thinking_config.thinking_budget == 512
+    assert cfg.thinking_config.thinking_level is None
 
     # Low sampling temperature flows into generate_content_config for
     # consistent run-to-run structured verdicts.
@@ -238,16 +236,14 @@ def test_fundamental_branch_wires_llm_caps_from_config() -> None:
     assert cfg is not None
     assert cfg.max_output_tokens == 8000
 
-    # The Fundamental analyst runs on the Gemini 3 family (gemini-3.5-flash),
-    # which uses the coarse ``thinking_level`` effort enum rather than the
-    # Gemini 2.5 integer ``thinking_budget``.  ``medium`` is wired through into
-    # a level-only thinking_config (budget must remain unset — the two knobs
-    # are mutually exclusive and sending both is a Gemini 3 HTTP 400).
-    from google.genai import types as genai_types
-
+    # The Fundamental analyst runs on the Gemini 2.5 family (gemini-2.5-flash),
+    # which uses the integer ``thinking_budget`` token ceiling rather than the
+    # Gemini 3 coarse ``thinking_level`` effort enum.  2048 is wired through
+    # into a budget-only thinking_config (level must remain unset — the two
+    # knobs are mutually exclusive and sending both is a Gemini 3 HTTP 400).
     assert cfg.thinking_config is not None
-    assert cfg.thinking_config.thinking_level == genai_types.ThinkingLevel.MEDIUM
-    assert cfg.thinking_config.thinking_budget is None
+    assert cfg.thinking_config.thinking_budget == 2048
+    assert cfg.thinking_config.thinking_level is None
 
     # Low sampling temperature flows into generate_content_config for
     # consistent run-to-run structured verdicts.
