@@ -43,6 +43,7 @@ from agents.analysts.fundamental.filing_diff import (
     filing_diff,
 )
 from agents.analysts.fundamental.filing_similarity import compute_similarity
+from agents.analysts.fundamental.scale_summary import build_scale_summary
 from config.analysts import FundamentalCaps, get_analysts_config
 from data.config import get_config
 from data.models import Filing, Form4Bundle, InsiderTrade
@@ -364,14 +365,22 @@ def _render_diffed_section(
         # filing_diff already emits the documented near-verbatim marker with no
         # body when every paragraph dedups, so no zero-survivor special-case is
         # needed here (unlike the Phase 13 deboilerplate path).
-        return filtered_text[:cap_chars]
+        #
+        # Append the self-relative scale line (Task 7) beneath the diffed
+        # body — it is independent of the diff outcome, since it is built
+        # from the persisted similarity-scoring cosine, not the paragraph diff.
+        scale = _scale_line(filing, section_field, baselines)
+        tail = f"\n   scale: {scale}" if scale else ""
+        return filtered_text[:cap_chars] + tail
 
     except Exception as exc:
         _logger.warning(
             "_render_diffed_section[%s]: diff failed for %s %s: %s — full text",
             section_field, form_type, current_period, exc,
         )
-        return "[no prior-year pair: diff error — full text]\n\n" + text[:cap_chars]
+        scale = _scale_line(filing, section_field, baselines)
+        tail = f"\n   scale: {scale}" if scale else ""
+        return "[no prior-year pair: diff error — full text]\n\n" + text[:cap_chars] + tail
 
 
 # Known on-disk formats for ``period_of_report``.  The live EDGAR provider
@@ -490,6 +499,80 @@ _SIMILARITY_FIELDS: dict[str, tuple[str, str]] = {
     "risk_factors_excerpt":("risk_cosine_vs_prior",       "risk_jaccard_vs_prior"),
     "litigation_excerpt":  ("litigation_cosine_vs_prior", "litigation_jaccard_vs_prior"),
 }
+
+# Human-readable labels for the scale-line prefix, keyed by section field.
+_SCALE_SECTION_LABELS: dict[str, str] = {
+    "mda_excerpt": "MD&A",
+    "risk_factors_excerpt": "Risk factors",
+    "litigation_excerpt": "Litigation",
+}
+
+
+def _scale_line(
+    filing: dict,
+    section_field: str,
+    baselines: list[dict],
+) -> str | None:
+    """Return the self-relative scale line for a section, or ``None``.
+
+    Builds the firm's OWN prior-cosine series for this section + form type
+    from the (as_of-sliced) baseline pool, and bands the current filing's
+    persisted cosine against it via ``build_scale_summary``.  This is
+    orthogonal to the paragraph-level diff above: the diff shows *what*
+    changed, this line tells the LLM whether the *amount* of change is
+    unusual for this specific firm.
+
+    Returns ``None`` when the current filing carries no persisted cosine for
+    this section (unpaired filing, or a section type — e.g. 8-K — for which
+    similarity scoring never ran).
+
+    Parameters
+    ----------
+    filing:
+        Current filing dict (carries the persisted ``*_cosine_vs_prior``
+        fields set by ``compute_filing_similarities``).
+    section_field:
+        One of the keys in ``_SIMILARITY_FIELDS``.
+    baselines:
+        The widened baseline pool (already ``filed_at <= as_of``).
+
+    Returns
+    -------
+    str | None
+        The scale summary sentence, or ``None`` if no current cosine exists.
+    """
+    cos_field, jac_field = _SIMILARITY_FIELDS[section_field]
+    current_cosine = filing.get(cos_field)
+
+    # No persisted cosine (e.g. no prior-year pair was found at similarity-
+    # compute time) — nothing self-relative to report.
+    if current_cosine is None:
+        return None
+
+    form_type = filing.get("form_type", "?")
+
+    # The firm's own prior-cosine series: same section + form type, excluding
+    # the current filing itself, only where a cosine was actually persisted.
+    history = [
+        b[cos_field]
+        for b in baselines
+        if b.get("form_type") == form_type
+        and b.get("accession_no") != filing.get("accession_no")
+        and b.get(cos_field) is not None
+    ]
+
+    caps = _caps()
+
+    return build_scale_summary(
+        section_label=_SCALE_SECTION_LABELS[section_field],
+        form_type=form_type,
+        current_cosine=current_cosine,
+        current_jaccard=filing.get(jac_field),
+        history_cosines=history,
+        high_pct=caps.filing_scale_high_pct,
+        low_pct=caps.filing_scale_low_pct,
+        min_history=caps.filing_scale_min_history,
+    )
 
 
 def compute_filing_similarities(filings: list[Filing]) -> list[Filing]:
