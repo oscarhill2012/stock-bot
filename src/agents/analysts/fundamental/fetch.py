@@ -367,8 +367,11 @@ def _render_diffed_section(
         # needed here (unlike the Phase 13 deboilerplate path).
         #
         # Append the self-relative scale line (Task 7) beneath the diffed
-        # body — it is independent of the diff outcome, since it is built
-        # from the persisted similarity-scoring cosine, not the paragraph diff.
+        # body. It accompanies ONLY this successful diff render — built from
+        # the persisted similarity-scoring cosine, not the paragraph diff,
+        # but deliberately withheld on every "comparison unavailable"
+        # fallback (no pair, stub, or diff error) so a magnitude cue never
+        # sits beside an unavailable-comparison marker.
         scale = _scale_line(filing, section_field, baselines)
         tail = f"\n   scale: {scale}" if scale else ""
         return filtered_text[:cap_chars] + tail
@@ -378,9 +381,12 @@ def _render_diffed_section(
             "_render_diffed_section[%s]: diff failed for %s %s: %s — full text",
             section_field, form_type, current_period, exc,
         )
-        scale = _scale_line(filing, section_field, baselines)
-        tail = f"\n   scale: {scale}" if scale else ""
-        return "[no prior-year pair: diff error — full text]\n\n" + text[:cap_chars] + tail
+        # No scale line here: the diff-error path is a "comparison unavailable"
+        # fallback (the I1 signal-absent invariant).  The magnitude scale cue
+        # must only accompany a performed diff (the success return above) —
+        # emitting it beside a "diff error" marker would reintroduce a
+        # change-magnitude signal on exactly the path I1 neutralises.
+        return "[no prior-year pair: diff error — full text]\n\n" + text[:cap_chars]
 
 
 # Known on-disk formats for ``period_of_report``.  The live EDGAR provider

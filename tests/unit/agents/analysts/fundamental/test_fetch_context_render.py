@@ -969,3 +969,57 @@ class TestDiffExceptionDegradesToSignalAbsent:
         assert rendered_section.startswith("[no prior-year pair:")
         # ...and NEVER with the filing-diff-header shape (bearish reading).
         assert not rendered_section.startswith("[filing-diff")
+
+    def test_diff_exception_suppresses_scale_line(self):
+        """The self-relative ``scale:`` line must NEVER be emitted on the
+        diff-error fallback, even when the current filing carries a
+        persisted ``mda_cosine_vs_prior`` and the baseline pool holds a
+        prior-year pair — i.e. exactly the inputs that WOULD make
+        ``_scale_line`` return a non-``None`` summary on the success path.
+
+        Emitting the scale line here would put a change-magnitude cue right
+        next to the "comparison unavailable" marker, contradicting the I1
+        signal-absent invariant (Task 7 review finding)."""
+        current_filing = self._payload()[0]
+        # Persisted cosine on the current filing — this is what makes
+        # ``_scale_line`` produce a summary rather than bailing out early.
+        current_filing["mda_cosine_vs_prior"] = 0.55
+
+        baseline_filing = self._baseline_pool()[0]
+        # A prior cosine in the same-form-type history so ``build_scale_
+        # summary`` would band a genuine verdict if the scale line were
+        # (wrongly) emitted on the error path.
+        baseline_filing["mda_cosine_vs_prior"] = 0.90
+
+        with (
+            patch(
+                "agents.analysts.fundamental.fetch._caps",
+                return_value=_deboilerplate_caps(),
+            ),
+            patch(
+                "agents.analysts.fundamental.fetch.filing_diff",
+                side_effect=RuntimeError("boom"),
+            ),
+        ):
+            result = _build_ticker_context(
+                ticker="AAPL",
+                filings_payload=[current_filing],
+                insider_bundle=_empty_bundle(),
+                insider_lookback_days=30,
+                ratios=None,
+                baseline_filings_payload=[baseline_filing],
+            )
+
+        mda_line = next(
+            (line for line in result.splitlines() if line.strip().startswith("MD&A:")),
+            None,
+        )
+        assert mda_line is not None, "MD&A: line not found in rendered context"
+
+        rendered_section = mda_line.split("MD&A: ", 1)[1]
+
+        # Degraded correctly to the signal-absent marker...
+        assert rendered_section.startswith("[no prior-year pair: diff error")
+        # ...and the magnitude scale cue must be entirely absent — it belongs
+        # only on the genuine diff-success return.
+        assert "scale:" not in result
