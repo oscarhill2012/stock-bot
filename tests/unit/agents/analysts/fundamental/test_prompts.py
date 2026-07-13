@@ -12,7 +12,7 @@ Verifies that ``build_fundamental_instruction`` produces a prompt that:
 from __future__ import annotations
 
 from agents.analysts.fundamental.prompts import build_fundamental_instruction
-from agents.analysts.heuristics import FundamentalVocabulary
+from agents.analysts.heuristics import FundamentalVocabulary, load_heuristics
 
 
 def _vocab() -> FundamentalVocabulary:
@@ -175,3 +175,24 @@ def test_prompt_describes_scale_and_diff_direction():
     # rewriting under similarity dedup).
     assert "Heavy survival across sections" not in instr
     assert "heavily rewritten filing = stronger bearish prior" not in instr
+
+
+def test_prompt_marker_prefix_matches_filing_diff_code():
+    """The prompt's marker descriptions must match the literal prefix that
+    ``filing_diff.py`` actually emits, not a stale synonym.
+
+    Final-review finding (Task 8): the prompt previously described the diff
+    markers with the old "[de-boilerplate vs <period>: ...]" wording, but
+    ``src/agents/analysts/fundamental/filing_diff.py`` emits
+    "[filing-diff vs <period>: ...]".  If the two drift apart again the LLM
+    is taught to recognise a prefix it never sees, which lands squarely on
+    the near-verbatim quiet-bullish marker the Phase 14 filing-similarity
+    rework exists to make reachable — so pin the coherence here.
+    """
+    instr = build_fundamental_instruction(load_heuristics().fundamental_vocabulary)
+
+    # The exact emitted marker prefix must appear in the LLM-facing prompt.
+    assert "[filing-diff vs" in instr
+
+    # The stale terminology must be fully gone — no partial drift allowed.
+    assert "de-boilerplate" not in instr.lower()

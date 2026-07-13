@@ -1,7 +1,7 @@
 """Fundamental analyst prompt — Phase 14 (diff-oriented filing-delta analyst, Lazy Prices).
 
 The narrowed Fundamental LLM is a FILING-DELTA analyst: it reads up to three
-de-boilerplated filing sections (MD&A, risk factors, litigation) diffed
+filing sections (MD&A, risk factors, litigation) diffed
 against the same section of the prior comparable filing, plus Form 4
 footnotes (prose), for ONE ticker per call.  Its sign convention follows
 Cohen, Malloy & Nguyen (2020, "Lazy Prices") — substantive year-over-year
@@ -75,10 +75,10 @@ The data block for {ticker} contains:
   -- COMPANY FILINGS (PROSE) --
     Up to three diffed sections per periodic filing (10-K / 10-Q):
       MD&A: ...          Risk factors: ...          Litigation: ...
-    Each section has been de-boilerplated against the SAME SECTION of the
+    Each section has been diffed against the SAME SECTION of the
     previous comparable filing (same form type, one fiscal year earlier):
     paragraphs that match the prior filing verbatim have been REMOVED.
-    Every paragraph you see under a "[de-boilerplate vs <period>: ...]"
+    Every paragraph you see under a "[filing-diff vs <period>: ...]"
     header is NEW or CHANGED year-over-year — that header also tells you
     how many paragraphs were dropped, i.e. how much of the document is
     unchanged boilerplate.
@@ -86,10 +86,10 @@ The data block for {ticker} contains:
     or an Item 5.02 officer departure/appointment).
 
     MARKER SEMANTICS — read carefully:
-      "[de-boilerplate vs <period>: N of M paragraphs removed as unchanged]"
+      "[filing-diff vs <period>: N of M paragraphs removed as unchanged]"
           → a comparison WAS performed.  What follows is the year-over-year
             delta.  Little surviving text = the filing barely changed.
-      "[de-boilerplate vs <period>: M of M paragraphs removed as unchanged
+      "[filing-diff vs <period>: M of M paragraphs removed as unchanged
        — filing is near-verbatim]"
           → the STRONGEST quiet-bullish form: a comparison WAS performed and
             EVERY paragraph matched last year, so NO body text follows the
