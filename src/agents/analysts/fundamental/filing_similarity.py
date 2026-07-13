@@ -25,7 +25,12 @@ from math import sqrt
 # Bump when the tokenisation / normalisation / scoring changes.  Feeds the
 # fundamental report-cache digest AND gates the persisted cosine columns so a
 # change forces recompute on refetch (never a silent stale read).
-FILING_SIMILARITY_ALGO_VERSION = "v1"
+# v1.1 (2026-07): added the stub guard in ``compute_filing_similarities`` —
+# a section shorter than ``mda_stub_char_threshold`` on either side of the
+# pair is no longer scored (was poisoning the self-relative history baseline
+# with cosines computed from incorporation-by-reference stubs). A targeted
+# guard, not a scoring-algorithm rework, hence a minor bump rather than v2.
+FILING_SIMILARITY_ALGO_VERSION = "v1.1"
 
 # A maximal run of digits with embedded separators / percent signs — collapsed
 # to one placeholder token so numeric drift does not dominate the vector.

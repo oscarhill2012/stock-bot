@@ -590,6 +590,14 @@ def compute_filing_similarities(filings: list[Filing]) -> list[Filing]:
     the shared ``compute_similarity``.  Filings with no prior pair (the oldest
     in the pool, 8-Ks) keep ``None`` scalars — a correct absence, not a failure.
 
+    Stub guard (v1.1): a section is skipped — and its scalar pair left
+    ``None`` — when either the current or prior text is shorter than
+    ``mda_stub_char_threshold`` chars.  Mirrors the render-time guard in
+    ``_render_diffed_section``: short sections are incorporation-by-reference
+    stubs (e.g. "Item 7. MD&A ... see page 59."), not real prose, and scoring
+    them produces a cosine that poisons the self-relative history baseline
+    other filings' scale lines rank against.
+
     Parameters
     ----------
     filings:
@@ -598,14 +606,36 @@ def compute_filing_similarities(filings: list[Filing]) -> list[Filing]:
     Returns
     -------
     list[Filing]
-        Copies with the six scalar fields set where a pair and both section
-        texts exist.
+        Copies with all six scalar fields authoritatively set — the score
+        where a pair exists and both texts clear the stub threshold, else
+        ``None``.  The output is a full reflection of the current algo on
+        every call (never a passthrough of stale input), so re-running this
+        function over already-scored filings (e.g. an operator recompute
+        after a scoring-rule fix) correctly clears stale values instead of
+        leaving them in place.
     """
     pool_dicts = [f.model_dump() for f in filings]
+
+    # Read the same threshold the render path uses, so precompute and render
+    # never disagree about what counts as a stub.
+    caps = _caps()
+    stub_threshold = getattr(caps, "mda_stub_char_threshold", _DEFAULT_MDA_STUB_THRESHOLD)
+
     out: list[Filing] = []
 
     for filing in filings:
-        updates: dict[str, float] = {}
+        # Always populate all six fields explicitly (score or None) so the
+        # subsequent model_copy is authoritative — a filing that previously
+        # persisted a (now guarded-out) stub cosine must have it cleared,
+        # not carried through untouched by an updates dict that simply
+        # omits the field.  This is what makes an operator recompute
+        # idempotent: re-running with a stricter guard clears stale values
+        # instead of leaving stale stub cosines in place forever.
+        updates: dict[str, float | None] = {}
+        for cos_field, jac_field in _SIMILARITY_FIELDS.values():
+            updates[cos_field] = None
+            updates[jac_field] = None
+
         period = filing.period_of_report or ""
 
         if period:
@@ -616,12 +646,19 @@ def compute_filing_similarities(filings: list[Filing]) -> list[Filing]:
                 for section, (cos_field, jac_field) in _SIMILARITY_FIELDS.items():
                     current_text = (getattr(filing, section) or "").strip()
                     prior_text   = (baseline.get(section) or "").strip()
-                    if current_text and prior_text:
+
+                    # Stub guard: skip scoring (leave the None already set
+                    # above) when either side is too short to be real prose.
+                    if (
+                        current_text and prior_text
+                        and len(current_text) >= stub_threshold
+                        and len(prior_text) >= stub_threshold
+                    ):
                         scores = compute_similarity(current_text, prior_text)
                         updates[cos_field] = scores.cosine
                         updates[jac_field] = scores.jaccard
 
-        out.append(filing.model_copy(update=updates) if updates else filing)
+        out.append(filing.model_copy(update=updates))
 
     return out
 

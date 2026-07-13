@@ -62,13 +62,29 @@ async def test_filings_fetch_persists_precomputed_cosine(tmp_path: Path) -> None
 
     # A near-verbatim (number-only change) prior/current pair — pairing must
     # find the prior, and the cosine must be high because only a figure moved.
+    # Both sides are deliberately full-length (> 400 chars, the stub
+    # threshold) so this exercises pairing + scoring, not the stub guard.
     prior = _q(
         "p", "2023-06-30", datetime(2023, 8, 1, tzinfo=UTC),
-        "Revenue was 12.1 billion this quarter with strong demand.",
+        "Revenue was 12.1 billion this quarter with strong demand across "
+        "every reportable segment, driven by continued expansion in our "
+        "core markets and disciplined cost management throughout the "
+        "period, partially offset by adverse currency translation effects "
+        "in our international operations and modestly higher input costs "
+        "across the supply chain, as well as incremental investment in "
+        "research and development intended to sustain our competitive "
+        "position over the medium term.",
     )
     current = _q(
         "c", "2024-06-30", datetime(2024, 8, 1, tzinfo=UTC),
-        "Revenue was 13.4 billion this quarter with strong demand.",
+        "Revenue was 13.4 billion this quarter with strong demand across "
+        "every reportable segment, driven by continued expansion in our "
+        "core markets and disciplined cost management throughout the "
+        "period, partially offset by adverse currency translation effects "
+        "in our international operations and modestly higher input costs "
+        "across the supply chain, as well as incremental investment in "
+        "research and development intended to sustain our competitive "
+        "position over the medium term.",
     )
 
     # Fake provider fn — the Fetcher calls it as fn(ticker, start=, end=); it
