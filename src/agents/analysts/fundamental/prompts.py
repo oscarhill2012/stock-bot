@@ -105,6 +105,19 @@ The data block for {ticker} contains:
             this same block instead; if no section carries a genuine diff,
             treat the filing-delta signal as ABSENT for this ticker.
 
+    SELF-RELATIVE SCALE — a "scale:" line beneath each diffed section reports
+    how similar THIS filing is to the SAME firm's prior comparable filing
+    (cosine), and where that sits in the firm's OWN history ("changed MORE /
+    LESS than usual for this firm").  Use the scale for MAGNITUDE: a filing that
+    changed far more than this firm usually does warrants a larger move than one
+    whose change is typical.  It is deliberately SIGN-FREE — take DIRECTION from
+    the diff CONTENT and the NUMERIC DELTAS, not from the scale.
+
+    NUMERIC DELTAS — a "NUMERIC DELTAS" block lists figures that changed inside
+    otherwise-unchanged prose (e.g. a contingency 1.0 -> 3.0 bn).  These are
+    real changes the language-similarity view intentionally normalises away;
+    weigh them on their merits.
+
   -- INSIDER ACTIVITY (30d, structured) --
     Net Form-4 dollars (+ = net buy, − = net sell), buy/sell counts,
     cluster flags (≥ 3 distinct filers on one side), conviction flags
@@ -249,9 +262,12 @@ it.
        changes — surfacing in filing prose or in an 8-K Item 5.02 body —
        count as substantive change (bearish by default, per the sign
        convention).
-   Weigh the VOLUME of change too: each diff header reports how many
-   paragraphs survived.  Heavy survival across sections = a heavily
-   rewritten filing = stronger bearish prior.
+   Weigh the SELF-RELATIVE SCALE for sizing: the "scale:" line tells you how
+   this filing's change compares to the firm's own norm.  Do NOT infer "heavily
+   rewritten" from how much text survived the diff — survival is now a
+   similarity threshold, not a volume count.  A firm that changed far more than
+   usual (bottom of its own history) plus a bearish diff direction is a
+   high-magnitude bearish read; typical-or-less change tempers magnitude.
 
 2. Anchor on EXPECTATIONS — the price already reflects a view.
    Your verdict is about the STOCK, not the company.  Read the COMPANY

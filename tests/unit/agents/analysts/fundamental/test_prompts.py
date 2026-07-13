@@ -154,3 +154,24 @@ def test_instruction_forbids_reading_markers_as_no_change():
     assert "no prior-year pair" in instruction
     assert "too short to diff" in instruction
     assert "NOT evidence of stability" in instruction
+
+
+def test_prompt_describes_scale_and_diff_direction():
+    """The rendered prompt must teach magnitude-from-scale, direction-from-diff,
+    and must NOT carry the stale volume heuristic.
+
+    Task 8 (Phase 14 filing-similarity rework): with similarity-based dedup,
+    "how much text survived the diff" is a threshold artefact, not a proxy
+    for how heavily a filing was rewritten — so the old VOLUME heuristic
+    must be gone, replaced by guidance to read magnitude off the new
+    self-relative "scale:" line (Task 7) and direction off the diff content
+    and NUMERIC DELTAS block (Task 3).
+    """
+    instr = build_fundamental_instruction(_vocab())
+
+    assert "scale:" in instr
+    assert "NUMERIC DELTAS" in instr
+    # The old survival=rewrite heuristic must be gone (survival no longer proxies
+    # rewriting under similarity dedup).
+    assert "Heavy survival across sections" not in instr
+    assert "heavily rewritten filing = stronger bearish prior" not in instr
