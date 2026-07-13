@@ -86,9 +86,15 @@ The data block for {ticker} contains:
     or an Item 5.02 officer departure/appointment).
 
     MARKER SEMANTICS — read carefully:
-      "[de-boilerplate vs <period>: N of M paragraphs removed]"
+      "[de-boilerplate vs <period>: N of M paragraphs removed as unchanged]"
           → a comparison WAS performed.  What follows is the year-over-year
             delta.  Little surviving text = the filing barely changed.
+      "[de-boilerplate vs <period>: M of M paragraphs removed as unchanged
+       — filing is near-verbatim]"
+          → the STRONGEST quiet-bullish form: a comparison WAS performed and
+            EVERY paragraph matched last year, so NO body text follows the
+            header.  That absence IS the signal, not missing data — this is
+            the "no news is good news" branch (see the sign convention below).
       "[no prior-year pair: ...]" or "[... too short to diff — full text]"
           → NO comparison was performed (missing pair, or the section is a
             cross-reference stub, e.g. an MD&A "incorporated by reference"

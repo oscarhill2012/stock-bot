@@ -1,4 +1,4 @@
-"""News analyst prompt — Phase 9 (single-ticker per-branch, closed-vocab mandate).
+"""News analyst prompt — Phase 14 (surprise-classification + post-news drift, single-ticker per-branch).
 
 The narrowed News LLM reads headlines and article summaries for ONE ticker
 per call.  Polarity statistics (positive_score, negative_score,
@@ -87,8 +87,9 @@ window exists → lean neutral with low magnitude. Do NOT manufacture a lean
 from noise volume.
 
 horizon_days is REQUIRED: the number of TRADING DAYS you expect your lean
-to remain valid. ~5 for a fresh surprise; longer (up to ~20) only for
-mid-window drift continuation; 1 for a neutral no-surprise verdict.
+to remain valid. ~5 for a fresh surprise; longer (up to ~15, matching the
+remaining-window range in STEP 3) only for mid-window drift continuation;
+1 for a neutral no-surprise verdict.
 
 OUTPUT CONTRACT — respond ONLY with a JSON object matching the schema.
 ``is_no_data`` and ``report`` are REQUIRED on every call, including when \
