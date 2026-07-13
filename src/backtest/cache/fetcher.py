@@ -295,6 +295,19 @@ class Fetcher:
                     for snapshot, as_of_date in results
                 )
             else:
+                if domain == "filings":
+                    # Phase 14 1b — precompute + persist section cosines/
+                    # Jaccards once, in the fetch phase.  The tick-time driver
+                    # only reads them (cache-backed provider parity).
+                    # Recompute is forced by the FILING_SIMILARITY_ALGO_VERSION
+                    # stamp in the fundamental digest, so a --refetch-domain
+                    # picks up an algo change (avoids the silent stale-column
+                    # trap).
+                    from agents.analysts.fundamental.fetch import (
+                        compute_filing_similarities,
+                    )
+                    results = compute_filing_similarities(results)
+
                 # Writer accepts the full list and returns total inserted.
                 rows_written = writer(ticker, results)
 

@@ -42,9 +42,10 @@ from agents.analysts.fundamental.filing_diff import (
     FILING_DIFF_ALGO_VERSION,
     filing_diff,
 )
+from agents.analysts.fundamental.filing_similarity import compute_similarity
 from config.analysts import FundamentalCaps, get_analysts_config
 from data.config import get_config
-from data.models import Form4Bundle, InsiderTrade
+from data.models import Filing, Form4Bundle, InsiderTrade
 from data.models.trades import InsiderDerivativeTrade
 
 _logger = logging.getLogger(__name__)
@@ -481,6 +482,59 @@ def _find_prior_year_baseline(
             best_date = prior_date
 
     return best
+
+
+# Section field -> (cosine field, jaccard field) on the Filing model.
+_SIMILARITY_FIELDS: dict[str, tuple[str, str]] = {
+    "mda_excerpt":         ("mda_cosine_vs_prior",        "mda_jaccard_vs_prior"),
+    "risk_factors_excerpt":("risk_cosine_vs_prior",       "risk_jaccard_vs_prior"),
+    "litigation_excerpt":  ("litigation_cosine_vs_prior", "litigation_jaccard_vs_prior"),
+}
+
+
+def compute_filing_similarities(filings: list[Filing]) -> list[Filing]:
+    """Populate each filing's section cosine/Jaccard vs its prior-year pair.
+
+    Fetch-phase pass (backtest: once per window; live: on filing ingestion).
+    Each filing is paired with the same-form-type filing ~one fiscal year
+    earlier from within ``filings`` itself, and each prose section is scored via
+    the shared ``compute_similarity``.  Filings with no prior pair (the oldest
+    in the pool, 8-Ks) keep ``None`` scalars — a correct absence, not a failure.
+
+    Parameters
+    ----------
+    filings:
+        The full pool of the ticker's filings (current window + history reach).
+
+    Returns
+    -------
+    list[Filing]
+        Copies with the six scalar fields set where a pair and both section
+        texts exist.
+    """
+    pool_dicts = [f.model_dump() for f in filings]
+    out: list[Filing] = []
+
+    for filing in filings:
+        updates: dict[str, float] = {}
+        period = filing.period_of_report or ""
+
+        if period:
+            baseline = _find_prior_year_baseline(
+                period, filing.form_type, pool_dicts,
+            )
+            if baseline is not None:
+                for section, (cos_field, jac_field) in _SIMILARITY_FIELDS.items():
+                    current_text = (getattr(filing, section) or "").strip()
+                    prior_text   = (baseline.get(section) or "").strip()
+                    if current_text and prior_text:
+                        scores = compute_similarity(current_text, prior_text)
+                        updates[cos_field] = scores.cosine
+                        updates[jac_field] = scores.jaccard
+
+        out.append(filing.model_copy(update=updates) if updates else filing)
+
+    return out
 
 
 def _build_ticker_context(

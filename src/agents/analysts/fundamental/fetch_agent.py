@@ -52,21 +52,13 @@ from google.adk.events import Event, EventActions
 # shared helpers module.  Keeping the formatter in one place ensures the
 # context text is consistent across all call sites.
 from agents.analysts.fundamental.fetch import _build_ticker_fundamental_context
+from config.analysts import get_analysts_config
 from data import get_company_filings, get_company_ratios, get_insider_trades
 from data.config import get_config
 from data.filing_selection import _PERIODIC_FORMS
 from data.models import Form4Bundle
 from data.timeguard import resolve_as_of
 from observability.trace import trace_maybe
-
-# How far back to reach for prior-year periodic baselines (Phase 13).
-# Mirrors _PERIODIC_BASELINE_REACH_DAYS in edgar.py.  This is a *pool* reach,
-# not a single anchor: the worst case is a current 10-K filed ~1 year after its
-# period end, whose prior-year 10-K sits ~2 years (730 days) before the tick.
-# 800 = 730 + a ~70-day guard band for late-filer extensions (Form 12b-25) and
-# irregular fiscal calendars.  The pairing layer then matches the correct
-# same-period-prior-year filing out of the pool on `period_of_report`.
-_BASELINE_REACH_DAYS = 800
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -175,7 +167,14 @@ class FundamentalFetchAgent(BaseAgent):
             # carry MD&A and are never used as de-boilerplate baselines.
             baseline_payload: list[dict] = []
             try:
-                baseline_from = as_of - timedelta(days=_BASELINE_REACH_DAYS)
+                # Reach derived from config (Phase 14 1b), mirroring
+                # ``_baseline_reach_days`` in edgar.py — the self-relative
+                # similarity series needs the full configured history horizon,
+                # not a fixed constant.
+                baseline_reach_days = (
+                    get_analysts_config().fundamental.filing_history_years + 1
+                ) * 366
+                baseline_from = as_of - timedelta(days=baseline_reach_days)
                 baseline_filings = await get_company_filings(
                     ticker,
                     as_of=as_of,

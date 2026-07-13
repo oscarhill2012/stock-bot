@@ -205,12 +205,21 @@ async def test_backfill_mode_returns_range_plus_anchors(
     )
 
     # Three range queries: the window body, the pre-window 8-K staleness reach,
-    # and the prior-year periodic baseline POOL (reaching 800 days back so a
-    # late-filed current 10-K still pools its ~2-year-prior counterpart).
+    # and the prior-year periodic baseline POOL (reaching back
+    # ``(filing_history_years + 1) * 366`` days — Phase 14 1b config-driven
+    # reach — so a late-filed current 10-K still pools its
+    # ~history-horizon-prior counterpart).
+    from config.analysts import get_analysts_config
+    baseline_reach_days = (
+        get_analysts_config().fundamental.filing_history_years + 1
+    ) * 366
+
     spans = [(forms, lower, upper) for _, forms, lower, upper in captured["range_calls"]]
     assert (("10-K", "10-Q", "8-K"), window_lower, AS_OF) in spans
     assert ((("8-K",)), window_lower - timedelta(days=90), window_lower) in spans
-    assert (("10-K", "10-Q"), window_lower - timedelta(days=800), window_lower) in spans
+    assert (
+        ("10-K", "10-Q"), window_lower - timedelta(days=baseline_reach_days), window_lower,
+    ) in spans
 
 
 @pytest.mark.asyncio
