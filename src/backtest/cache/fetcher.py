@@ -303,6 +303,15 @@ class Fetcher:
                     # stamp in the fundamental digest, so a --refetch-domain
                     # picks up an algo change (avoids the silent stale-column
                     # trap).
+                    #
+                    # Function-local import on purpose — do NOT hoist to module
+                    # level.  Importing ``agents.analysts.fundamental.fetch``
+                    # eagerly drags in the whole google-adk stack (~2.5k
+                    # modules) that ``backtest.cache`` otherwise never needs, and
+                    # couples this low-level cache layer to the heavy agents
+                    # package at import time.  Keeping it local preserves the
+                    # one-directional layering (cache -> agents only at the point
+                    # of use) and keeps the fetcher cheap to import.
                     from agents.analysts.fundamental.fetch import (
                         compute_filing_similarities,
                     )
