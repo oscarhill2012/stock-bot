@@ -311,6 +311,83 @@ def test_filings_round_trip_similarity_scalars(store: CachedDataStore) -> None:
     assert result[0].mda_jaccard_vs_prior == 0.74
 
 
+def test_update_filing_similarities_clears_stale_cosine_to_null(
+    store: CachedDataStore,
+) -> None:
+    """``update_filing_similarities`` must overwrite an existing row's cosine to NULL.
+
+    ``write_filings`` uses ``on_conflict_do_nothing`` and therefore can NEVER
+    clear a stale value on an existing row — that is exactly why the
+    dedicated update method exists (the recompute path needs to clear stale
+    stub cosines, not merely leave them in place). Assert the direction of
+    the fix: write a row WITH a cosine, update it to ``None``, and confirm
+    the persisted column is NULL afterwards.
+    """
+    filing = Filing(
+        ticker="AAPL", form_type="10-Q", accession_no="0001-clear",
+        filed_at=_dt(2024, 8, 1), url="https://sec/clear",
+        period_of_report="2024-06-30",
+        mda_cosine_vs_prior=0.99, mda_jaccard_vs_prior=0.98,
+    )
+    store.write_filings("AAPL", [filing])
+
+    cleared = filing.model_copy(update={
+        "mda_cosine_vs_prior": None, "mda_jaccard_vs_prior": None,
+    })
+    updated_count = store.update_filing_similarities([cleared])
+
+    result = store.read_filings("AAPL", as_of=_dt(2024, 9, 1))
+    assert updated_count == 1
+    assert len(result) == 1
+    assert result[0].mda_cosine_vs_prior is None
+    assert result[0].mda_jaccard_vs_prior is None
+
+
+def test_update_filing_similarities_round_trips_a_real_value(
+    store: CachedDataStore,
+) -> None:
+    """A real (non-None) value round-trips through ``update_filing_similarities``.
+
+    Write a row with no cosine, update it to a real value, and confirm the
+    read-back reflects it — the inverse direction of the clear-to-NULL test
+    above, covering the ordinary "refresh a cosine" case.
+    """
+    filing = Filing(
+        ticker="AAPL", form_type="10-Q", accession_no="0001-fill",
+        filed_at=_dt(2024, 8, 1), url="https://sec/fill",
+        period_of_report="2024-06-30",
+    )
+    store.write_filings("AAPL", [filing])
+    assert store.read_filings("AAPL", as_of=_dt(2024, 9, 1))[0].mda_cosine_vs_prior is None
+
+    scored = filing.model_copy(update={
+        "mda_cosine_vs_prior": 0.87, "mda_jaccard_vs_prior": 0.74,
+    })
+    updated_count = store.update_filing_similarities([scored])
+
+    result = store.read_filings("AAPL", as_of=_dt(2024, 9, 1))
+    assert updated_count == 1
+    assert result[0].mda_cosine_vs_prior == 0.87
+    assert result[0].mda_jaccard_vs_prior == 0.74
+
+
+def test_update_filing_similarities_skips_unknown_accession(
+    store: CachedDataStore,
+) -> None:
+    """An update targeting an ``accession_no`` absent from the table is a no-op.
+
+    Guards the "rows whose accession_no is not present are skipped" contract
+    documented on the method — the returned count must be 0, not raise.
+    """
+    ghost = Filing(
+        ticker="AAPL", form_type="10-Q", accession_no="does-not-exist",
+        filed_at=_dt(2024, 8, 1), period_of_report="2024-06-30",
+        mda_cosine_vs_prior=0.5,
+    )
+    updated_count = store.update_filing_similarities([ghost])
+    assert updated_count == 0
+
+
 # ── notable holders ───────────────────────────────────────────────────────────
 
 def test_notable_holders_pit_uses_filed_at(store: CachedDataStore) -> None:

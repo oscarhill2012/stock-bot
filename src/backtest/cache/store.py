@@ -13,6 +13,12 @@ fetch and *before* calling the writer.  This delete-first path is the only
 supported way to replace existing rows; the writers themselves keep
 ``on_conflict_do_nothing`` so re-running a plain fill is always idempotent.
 
+The one deliberate exception is ``update_filing_similarities`` (Phase 14 1b
+post-review fix): a targeted UPDATE on six similarity columns only, used by
+the no-network recompute path (``scripts/backtest_recompute_similarities.py``)
+to re-score already-cached filing text after a scoring-rule change, without
+deleting and re-fetching the whole filing row from EDGAR.
+
 PIT filter rules (enforced throughout):
 - News: filter on ``published_at`` (publication date).
 - Filings: filter on ``filed_at`` (SEC filing date).
@@ -43,7 +49,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import create_engine, delete, func, inspect, select, text
+from sqlalchemy import create_engine, delete, func, inspect, select, text, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
@@ -758,6 +764,60 @@ class CachedDataStore:
             s.commit()
 
         return total_inserted
+
+    def update_filing_similarities(self, filings: list[Filing]) -> int:
+        """Overwrite the six persisted similarity columns for existing rows.
+
+        Unlike ``write_filings`` (INSERT ... ON CONFLICT DO NOTHING, which
+        never touches an existing row), this issues a targeted UPDATE keyed
+        on ``accession_no`` so a recompute can both refresh cosines AND
+        clear stale ones to NULL.  Rows whose ``accession_no`` is not present
+        in the table are skipped (``result.rowcount`` is 0 for those).
+
+        This exists for the offline recompute path
+        (``scripts/backtest_recompute_similarities.py``): after a scoring-
+        rule change (e.g. the v1.1 stub guard), the cached filing TEXT is
+        still valid, but the persisted cosines need re-scoring without
+        re-hitting EDGAR.  ``compute_filing_similarities`` already produces
+        an authoritative six-field output (score or explicit ``None``) per
+        filing — this method is simply how that output gets written back.
+
+        Parameters
+        ----------
+        filings:
+            ``Filing`` instances carrying the six similarity fields to
+            persist (each may be a float score or ``None``).  Only
+            ``accession_no`` and the six similarity fields are used —
+            every other field on the row is left untouched.
+
+        Returns
+        -------
+        int
+            Number of rows *actually updated* across all filings (sum of
+            ``result.rowcount`` per statement; 0 for any ``accession_no``
+            absent from the table).
+        """
+        total_updated = 0
+
+        with Session(self._engine) as s:
+            for f in filings:
+                stmt = (
+                    update(FilingRow)
+                    .where(FilingRow.accession_no == f.accession_no)
+                    .values(
+                        mda_cosine_vs_prior=f.mda_cosine_vs_prior,
+                        mda_jaccard_vs_prior=f.mda_jaccard_vs_prior,
+                        risk_cosine_vs_prior=f.risk_cosine_vs_prior,
+                        risk_jaccard_vs_prior=f.risk_jaccard_vs_prior,
+                        litigation_cosine_vs_prior=f.litigation_cosine_vs_prior,
+                        litigation_jaccard_vs_prior=f.litigation_jaccard_vs_prior,
+                    )
+                )
+                result = s.execute(stmt)
+                total_updated += result.rowcount
+            s.commit()
+
+        return total_updated
 
     def read_filings(self, ticker: str, as_of: datetime) -> list[Filing]:
         """Return every filing with ``filed_at <= as_of`` — no lower bound.
