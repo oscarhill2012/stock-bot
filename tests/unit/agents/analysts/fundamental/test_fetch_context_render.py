@@ -465,10 +465,10 @@ class TestAdapterShimForwardsRatios:
 
 
 # ---------------------------------------------------------------------------
-# Tests — MD&A de-boilerplate firing from a prior-year pool (Phase 13)
+# Tests — MD&A filing-diff firing from a prior-year pool (Phase 13)
 # ---------------------------------------------------------------------------
 
-# Caps with a generous MD&A char budget so the de-boilerplate header and the
+# Caps with a generous MD&A char budget so the filing-diff header and the
 # surviving paragraph both fit (the class-default _minimal_caps clips at 500).
 def _deboilerplate_caps() -> FundamentalCaps:
     """Return caps with a 12k MD&A budget and a 50-char stub threshold."""
@@ -511,7 +511,7 @@ _PRIOR_UNIQUE_PARA = (
 
 
 class TestMdaDeboilerplateFiresFromPool:
-    """An AAPL-shaped 10-Q de-boilerplates against the correct prior-year 10-Q."""
+    """An AAPL-shaped 10-Q filing-diffs against the correct prior-year 10-Q."""
 
     def _current_filing(self) -> dict:
         """Return the current Q2 10-Q dict (period 20260328)."""
@@ -570,7 +570,7 @@ class TestMdaDeboilerplateFiresFromPool:
             )
 
         # De-boilerplate header names the matched prior period (20250329).
-        assert "[de-boilerplate vs 20250329:" in result
+        assert "[filing-diff vs 20250329:" in result
 
         # The shared boilerplate preamble was dropped...
         assert "forward-looking statements within the meaning" not in result
@@ -586,7 +586,7 @@ class TestMdaDeboilerplateFiresFromPool:
         """Pairing must NOT pick an out-of-window adjacent quarter's prose.
 
         If the pairing wrongly matched Q1 FY26 or Q3 FY25, the unrelated
-        narrative from those filings would not de-boilerplate the current
+        narrative from those filings would not filing-diff the current
         unique paragraph — but more tellingly, the header would name the wrong
         period.  Pin the period to guard against a recency-based mismatch.
         """
@@ -636,7 +636,7 @@ _LITIGATION_NEW = (
 
 
 class TestRiskAndLitigationDiffing:
-    """Risk factors and litigation de-boilerplate against the prior-year pair."""
+    """Risk factors and litigation filing-diff against the prior-year pair."""
 
     def _current_filing(self) -> dict:
         """Return a current 10-Q dict with all three prose sections."""
@@ -703,8 +703,8 @@ class TestRiskAndLitigationDiffing:
         """Every diffed section header names 20250329 — one pairing, three diffs."""
         result = self._render()
 
-        # One de-boilerplate header per section (MD&A + risk + litigation).
-        assert result.count("[de-boilerplate vs 20250329:") == 3
+        # One filing-diff header per section (MD&A + risk + litigation).
+        assert result.count("[filing-diff vs 20250329:") == 3
 
 
 # An XOM-shaped 10-K MD&A: a cross-reference stub incorporating Exhibit 13 by
@@ -786,7 +786,7 @@ class TestIncorporatedByReferenceStubFallback:
         """The stub is marked (no fake diff); the 10-Q carries the delta signal.
 
         This pins the established XOM fallback: an incorporated-by-reference
-        MD&A must surface as a NO-COMPARISON marker — never as a de-boilerplate
+        MD&A must surface as a NO-COMPARISON marker — never as a filing-diff
         header that the prompt would read as 'nothing changed' (quiet-bullish).
         """
         with patch(
@@ -808,19 +808,19 @@ class TestIncorporatedByReferenceStubFallback:
         assert "incorporated herein by reference" in result
 
         # Positive signal: the 10-Q pair diffed normally in the same context.
-        assert "[de-boilerplate vs 20250331:" in result
+        assert "[filing-diff vs 20250331:" in result
         assert "record March quarter for iPhone" in result
 
 
 # ---------------------------------------------------------------------------
 # Tests — C1 fix: zero-survivor case must render as documented near-verbatim
-# marker (quiet-bullish), never as a full-text dump under a de-boilerplate
+# marker (quiet-bullish), never as a full-text dump under a filing-diff
 # header (which the prompt's volume heuristic reads as heavily bearish).
 # ---------------------------------------------------------------------------
 
 # A litigation section that is byte-identical year-over-year — every
 # paragraph in the current filing matches a paragraph in the prior filing, so
-# ``deboilerplate_mda`` hits its zero-survivor fallback (all paragraphs
+# ``filing_diff`` hits its zero-survivor fallback (all paragraphs
 # dropped).  Two paragraphs so the "N of N" count is unambiguous.
 _LITIGATION_VERBATIM_PARA_1 = (
     "The company is subject to various legal proceedings arising in the "
@@ -886,7 +886,7 @@ class TestZeroSurvivorNearVerbatimMarker:
 
         # Positive signal 1: the documented near-verbatim marker fires, naming
         # the matched prior period and the all-removed "2 of 2" count.
-        assert "[de-boilerplate vs 20250329: 2 of 2 paragraphs removed as unchanged" in result
+        assert "[filing-diff vs 20250329: 2 of 2 paragraphs removed as unchanged" in result
 
         # Positive signal 2: the full section body is ABSENT — this is the
         # sign-inversion regression guard.  Before the fix, both verbatim
@@ -895,8 +895,10 @@ class TestZeroSurvivorNearVerbatimMarker:
         assert _LITIGATION_VERBATIM_PARA_1 not in result
         assert _LITIGATION_VERBATIM_PARA_2 not in result
 
-        # The undocumented deboilerplate.py fallback header must never reach
-        # the prompt — the render layer intercepts it via the stats dict.
+        # filing_diff emits the documented near-verbatim marker itself when every
+        # paragraph dedups (no render-layer interception), so the old
+        # deboilerplate "no unique paragraphs found" fallback header can never
+        # appear in the prompt.
         assert "no unique paragraphs found" not in result
 
 
@@ -932,15 +934,15 @@ class TestDiffExceptionDegradesToSignalAbsent:
         ]
 
     def test_diff_exception_renders_no_prior_year_pair_marker(self):
-        """A forced ``deboilerplate_mda`` crash renders the no-comparison
-        marker family, never the (bearish-reading) de-boilerplate-header shape."""
+        """A forced ``filing_diff`` crash renders the no-comparison
+        marker family, never the (bearish-reading) filing-diff-header shape."""
         with (
             patch(
                 "agents.analysts.fundamental.fetch._caps",
                 return_value=_deboilerplate_caps(),
             ),
             patch(
-                "agents.analysts.fundamental.fetch.deboilerplate_mda",
+                "agents.analysts.fundamental.fetch.filing_diff",
                 side_effect=RuntimeError("boom"),
             ),
         ):
@@ -965,5 +967,5 @@ class TestDiffExceptionDegradesToSignalAbsent:
 
         # Positive signal: starts with the documented no-comparison marker...
         assert rendered_section.startswith("[no prior-year pair:")
-        # ...and NEVER with the de-boilerplate-header shape (bearish reading).
-        assert not rendered_section.startswith("[de-boilerplate")
+        # ...and NEVER with the filing-diff-header shape (bearish reading).
+        assert not rendered_section.startswith("[filing-diff")

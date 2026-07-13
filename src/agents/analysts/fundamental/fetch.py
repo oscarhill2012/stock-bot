@@ -38,9 +38,9 @@ from datetime import date, datetime
 
 from pydantic import ValidationError
 
-from agents.analysts.fundamental.deboilerplate import (
-    MDA_DEBOILERPLATE_ALGO_VERSION,
-    deboilerplate_mda,
+from agents.analysts.fundamental.filing_diff import (
+    FILING_DIFF_ALGO_VERSION,
+    filing_diff,
 )
 from config.analysts import FundamentalCaps, get_analysts_config
 from data.config import get_config
@@ -342,48 +342,27 @@ def _render_diffed_section(
         )
         return "[prior-year pair found but text too short to diff — full text]\n\n" + text[:cap_chars]
 
-    # --- De-boilerplate diff (generic paragraph-fingerprint filter) ---
+    # --- Filing diff (similarity-threshold dedup + numeric-delta surfacing) ---
+    caps = _caps()
     try:
-        filtered_text, stats = deboilerplate_mda(
-            current_text=text,
-            prior_text=prior_text,
-            algo_version=MDA_DEBOILERPLATE_ALGO_VERSION,
+        filtered_text, stats = filing_diff(
+            text, prior_text,
+            dedup_cosine=caps.filing_dedup_cosine,
+            numeric_delta_pct=caps.filing_numeric_delta_pct,
+            algo_version=FILING_DIFF_ALGO_VERSION,
             prior_period_label=prior_period,
         )
         _logger.info(
             "_render_diffed_section[%s]: %s pair=%s→%s dropped=%d/%d "
-            "(%.1f%% retained) chars %d→%d",
-            section_field,
-            form_type,
-            prior_period,
-            current_period,
-            stats["paragraphs_dropped"],
-            stats["paragraphs_total"],
-            stats["coverage_pct"],
-            stats["chars_in"],
-            stats["chars_out"],
+            "(%.1f%% retained) deltas=%d chars %d→%d",
+            section_field, form_type, prior_period, current_period,
+            stats["paragraphs_dropped"], stats["paragraphs_total"],
+            stats["coverage_pct"], len(stats["numeric_deltas"]),
+            stats["chars_in"], stats["chars_out"],
         )
-
-        # C1 fix: zero-survivor case.  ``deboilerplate_mda`` falls back to
-        # dumping the FULL current text under an undocumented
-        # "[de-boilerplate: no unique paragraphs found ...]" header when every
-        # current-year paragraph matches the prior year exactly.  That shape —
-        # a "[de-boilerplate…]"-style header sitting over a wall of full
-        # text — is exactly what the prompt's VOLUME heuristic reads as a
-        # HEAVILY rewritten filing (strong bearish prior), inverting the sign
-        # on the genuinely near-verbatim / quiet-bullish case.  Detect the
-        # zero-survivor case from the STATS dict (not by string-matching the
-        # header, which is an implementation detail of deboilerplate.py) and
-        # emit the DOCUMENTED near-verbatim marker instead, with NO body text.
-        # This lands in the prompt's "little surviving text = barely changed"
-        # branch, restoring the correct quiet-bullish reading.
-        if stats["paragraphs_total"] > 0 and stats["paragraphs_dropped"] == stats["paragraphs_total"]:
-            n = stats["paragraphs_total"]
-            return (
-                f"[de-boilerplate vs {prior_period}: {n} of {n} paragraphs "
-                f"removed as unchanged — filing is near-verbatim]"
-            )
-
+        # filing_diff already emits the documented near-verbatim marker with no
+        # body when every paragraph dedups, so no zero-survivor special-case is
+        # needed here (unlike the Phase 13 deboilerplate path).
         return filtered_text[:cap_chars]
 
     except Exception as exc:
@@ -391,13 +370,6 @@ def _render_diffed_section(
             "_render_diffed_section[%s]: diff failed for %s %s: %s — full text",
             section_field, form_type, current_period, exc,
         )
-        # I1 fix: a diff CRASH means we have NO usable comparison — the
-        # correct degradation is signal-ABSENT/neutral, not bearish.  The
-        # previous "[de-boilerplate error — full text]" header shared the
-        # same inversion shape as C1 (a "[de-boilerplate…]" header over full
-        # text reads as a large bearish delta).  Mirror the documented
-        # no-comparison markers elsewhere in this function so the prompt's
-        # no-comparison branch (prefix "[no prior-year pair:") catches it.
         return "[no prior-year pair: diff error — full text]\n\n" + text[:cap_chars]
 
 
