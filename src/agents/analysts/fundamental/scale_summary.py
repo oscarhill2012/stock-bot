@@ -89,9 +89,9 @@ def build_scale_summary(
     n = len(history_cosines)
 
     if pct <= low_pct:
-        band = "changed more than usual for this firm"
+        band = "changed MORE than usual for this firm"
     elif pct >= high_pct:
-        band = "changed less than usual for this firm"
+        band = "changed LESS than usual for this firm"
     else:
         band = "typical amount of change for this firm"
 

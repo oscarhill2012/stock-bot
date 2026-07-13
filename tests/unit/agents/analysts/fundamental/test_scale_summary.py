@@ -16,14 +16,14 @@ def _summary(current: float, history: list[float]) -> str:
 def test_changed_more_than_usual_is_flagged_bottom() -> None:
     """A cosine below the firm's own history reads as 'changed more than usual'."""
     text = _summary(0.50, [0.90, 0.92, 0.88, 0.91, 0.89])
-    assert "more than usual" in text
+    assert "more than usual" in text.lower()
     assert "10-Q MD&A" in text
 
 
 def test_changed_less_than_usual_is_flagged_top() -> None:
     """A cosine above the firm's own history reads as 'changed less than usual'."""
     text = _summary(0.97, [0.70, 0.72, 0.68, 0.75, 0.71])
-    assert "less than usual" in text
+    assert "less than usual" in text.lower()
 
 
 def test_thin_history_hedges_instead_of_banding() -> None:
