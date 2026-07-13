@@ -288,6 +288,29 @@ def test_filings_round_trip_litigation_excerpt(store: CachedDataStore) -> None:
     assert "Apple Securities Litigation" in result[0].litigation_excerpt
 
 
+def test_filings_round_trip_similarity_scalars(store: CachedDataStore) -> None:
+    """Persisted section cosines/Jaccards must survive write -> read.
+
+    A column that silently dropped on write would starve the self-relative
+    scale for every backtest while live kept working — the live/replay drift the
+    golden cache exists to prevent.  Assert the value comes back, not merely no
+    error.
+    """
+    filing = Filing(
+        ticker="AAPL", form_type="10-Q", accession_no="0001-sim",
+        filed_at=_dt(2024, 8, 1), url="https://sec/sim",
+        period_of_report="2024-06-30",
+        mda_cosine_vs_prior=0.87, mda_jaccard_vs_prior=0.74,
+    )
+    store.write_filings("AAPL", [filing])
+
+    result = store.read_filings("AAPL", as_of=_dt(2024, 9, 1))
+
+    assert len(result) == 1
+    assert result[0].mda_cosine_vs_prior == 0.87
+    assert result[0].mda_jaccard_vs_prior == 0.74
+
+
 # ── notable holders ───────────────────────────────────────────────────────────
 
 def test_notable_holders_pit_uses_filed_at(store: CachedDataStore) -> None:

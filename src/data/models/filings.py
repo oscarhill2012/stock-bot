@@ -88,3 +88,14 @@ class Filing(BaseModel):
             "filing was read from a cache populated before Phase 13."
         ),
     )
+
+    # Phase 14 1b — persisted self-relative similarity scalars (cosine + Jaccard
+    # of each section against the prior-year comparable filing).  Computed once
+    # in the fetch phase (Task 5) and read back to build the firm's own history
+    # series.  Nullable: None for 8-Ks, unpaired filings, and pre-1b cache rows.
+    mda_cosine_vs_prior:         float | None = None
+    mda_jaccard_vs_prior:        float | None = None
+    risk_cosine_vs_prior:        float | None = None
+    risk_jaccard_vs_prior:       float | None = None
+    litigation_cosine_vs_prior:  float | None = None
+    litigation_jaccard_vs_prior: float | None = None

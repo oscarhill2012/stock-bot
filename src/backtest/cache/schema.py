@@ -144,6 +144,17 @@ class FilingRow(CacheBase):
     # above) — a refetch is only needed to populate the new column's values,
     # not to make the database itself openable.
     period_of_report:     str      = Column(Text,     nullable=True)
+    # Phase 14 1b — persisted similarity scalars (see Filing model).  Nullable
+    # Float; existing cache files self-heal via _migrate_additive_columns (a
+    # nullable ALTER TABLE ADD COLUMN on store open) — NO SCHEMA_VERSION bump.
+    # A refetch repopulates them; the FILING_SIMILARITY_ALGO_VERSION stamp in
+    # the fundamental digest is what forces that refetch when the algo changes.
+    mda_cosine_vs_prior:         float = Column(Float, nullable=True)
+    mda_jaccard_vs_prior:        float = Column(Float, nullable=True)
+    risk_cosine_vs_prior:        float = Column(Float, nullable=True)
+    risk_jaccard_vs_prior:       float = Column(Float, nullable=True)
+    litigation_cosine_vs_prior:  float = Column(Float, nullable=True)
+    litigation_jaccard_vs_prior: float = Column(Float, nullable=True)
 
     __table_args__ = (Index("ix_filings_ticker_filed", "ticker", "filed_at"),)
 

@@ -71,7 +71,9 @@ def _build_ddl_snapshot() -> list[tuple[str, str, str, bool, bool]]:
 # Pinned snapshot of the current schema (as of Phase 14, period_of_report and
 # litigation_excerpt included).  ``litigation_excerpt`` was added to the
 # ``filings`` table in Phase 14 (Plan 1, Task 3) as an additive nullable TEXT
-# column — no SCHEMA_VERSION bump was needed, as the runtime auto-migration in
+# column.  The six ``{mda,risk,litigation}_{cosine,jaccard}_vs_prior`` columns
+# were added in Phase 14 (Plan 1b, Task 4) as additive nullable FLOAT columns.
+# Neither change needed a SCHEMA_VERSION bump — the runtime auto-migration in
 # CachedDataStore._migrate_additive_columns backfills existing cache files.  If
 # this test fails after a DDL change, update this snapshot AND read the
 # assertion message to decide whether a SCHEMA_VERSION bump is also required.
@@ -107,16 +109,22 @@ _PINNED_DDL_SNAPSHOT: list[tuple[str, str, str, bool, bool]] = [
     ("company_ratios", "trailing_pe",             "FLOAT",   True,  False),
     ("company_ratios", "two_hundred_day_average", "FLOAT",   True,  False),
     # filings table
-    ("filings", "accession_no",         "VARCHAR", False, True),
-    ("filings", "filed_at",             "DATETIME", True,  False),
-    ("filings", "form_type",            "VARCHAR", True,  False),
-    ("filings", "litigation_excerpt",   "TEXT",    True,  False),
-    ("filings", "mda_excerpt",          "TEXT",    True,  False),
-    ("filings", "period_of_report",     "TEXT",    True,  False),
-    ("filings", "risk_factors_excerpt", "TEXT",    True,  False),
-    ("filings", "ticker",               "VARCHAR", True,  False),
-    ("filings", "title",                "VARCHAR", True,  False),
-    ("filings", "url",                  "VARCHAR", True,  False),
+    ("filings", "accession_no",              "VARCHAR", False, True),
+    ("filings", "filed_at",                  "DATETIME", True,  False),
+    ("filings", "form_type",                 "VARCHAR", True,  False),
+    ("filings", "litigation_cosine_vs_prior",  "FLOAT", True,  False),
+    ("filings", "litigation_excerpt",        "TEXT",    True,  False),
+    ("filings", "litigation_jaccard_vs_prior", "FLOAT", True,  False),
+    ("filings", "mda_cosine_vs_prior",         "FLOAT", True,  False),
+    ("filings", "mda_excerpt",               "TEXT",    True,  False),
+    ("filings", "mda_jaccard_vs_prior",        "FLOAT", True,  False),
+    ("filings", "period_of_report",          "TEXT",    True,  False),
+    ("filings", "risk_cosine_vs_prior",        "FLOAT", True,  False),
+    ("filings", "risk_factors_excerpt",      "TEXT",    True,  False),
+    ("filings", "risk_jaccard_vs_prior",       "FLOAT", True,  False),
+    ("filings", "ticker",                    "VARCHAR", True,  False),
+    ("filings", "title",                     "VARCHAR", True,  False),
+    ("filings", "url",                       "VARCHAR", True,  False),
     # insider_trades table
     ("insider_trades", "filed_at",         "DATETIME", True,  False),
     ("insider_trades", "footnote",         "TEXT",    True,  False),

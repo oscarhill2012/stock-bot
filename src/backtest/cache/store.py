@@ -745,6 +745,13 @@ class CachedDataStore:
                     # cache rows (pre-Phase 13 fetches); also None for form
                     # types where EDGAR doesn't populate this (some 8-Ks).
                     period_of_report=f.period_of_report,
+                    # Phase 14 1b — persisted similarity scalars.
+                    mda_cosine_vs_prior=f.mda_cosine_vs_prior,
+                    mda_jaccard_vs_prior=f.mda_jaccard_vs_prior,
+                    risk_cosine_vs_prior=f.risk_cosine_vs_prior,
+                    risk_jaccard_vs_prior=f.risk_jaccard_vs_prior,
+                    litigation_cosine_vs_prior=f.litigation_cosine_vs_prior,
+                    litigation_jaccard_vs_prior=f.litigation_jaccard_vs_prior,
                 ).on_conflict_do_nothing(index_elements=["accession_no"])
                 result = s.execute(stmt)
                 total_inserted += result.rowcount
