@@ -213,6 +213,26 @@ class FundamentalCaps(BaseModel):
     filing_delta_horizon_days:
         Trading-day horizon the prompt instructs the LLM to emit as
         ``horizon_days`` — the Lazy Prices drift window (Phase 14).
+    filing_dedup_cosine:
+        Number-normalised bag-of-words cosine threshold above which two
+        current-year paragraphs are treated as the "same" paragraph and
+        dropped from the diff body (Phase 14 Plan 1b).
+    filing_numeric_delta_pct:
+        Minimum fractional change (|Δ| / prior) in a figure that surfaces it
+        to the LLM even inside an otherwise-deduplicated paragraph.
+    filing_history_years:
+        Years of the firm's own prior filings forming the self-relative
+        similarity series used for the scale summariser's baseline pool.
+    filing_scale_high_pct:
+        Upper percentile band (of the current cosine within the firm's own
+        history) treated as "changed less than usual" (quiet-bullish tilt).
+    filing_scale_low_pct:
+        Lower percentile band treated as "changed more than usual"
+        (bearish tilt).
+    filing_scale_min_history:
+        Minimum number of prior similarity points required before the
+        percentile band is trusted; below this the summariser emits a
+        thin-history hedge instead.
     llm:
         Per-call LLM runtime caps (timeout, token limit, retry counts).
     """
@@ -235,6 +255,39 @@ class FundamentalCaps(BaseModel):
     # months; 60 trading days sits inside that window.  Bounded at one
     # trading year.
     filing_delta_horizon_days: int = Field(ge=1, le=250, default=60)
+
+    # ---------------------------------------------------------------------
+    # Phase 14 Plan 1b — filing-similarity (faithful "Lazy Prices")
+    # ---------------------------------------------------------------------
+    # Two current-year paragraphs count as the "same" paragraph (dropped from
+    # the diff body) when their number-normalised bag-of-words cosine meets or
+    # exceeds this.  0.92 keeps genuine rewrites while collapsing pure numeric
+    # roll-forwards — the exact defect behind the degenerate 18/20-bearish run.
+    filing_dedup_cosine: float = Field(ge=0.0, le=1.0, default=0.92)
+
+    # A figure inside an otherwise-deduplicated paragraph is surfaced to the LLM
+    # when |Δ| / prior meets or exceeds this fraction (10% => a 12.1 -> 13.4
+    # revenue change is flagged even though number-normalisation hid it from the
+    # similarity view).
+    filing_numeric_delta_pct: float = Field(gt=0.0, default=0.10)
+
+    # How many years of the firm's OWN prior filings form the self-relative
+    # similarity series.  Drives the baseline-pool reach (Task 5).  7 years of
+    # 10-Qs is ~28 points; of 10-Ks ~7 points.  Config-toggleable.
+    filing_history_years: int = Field(ge=1, le=15, default=7)
+
+    # Percentile bands (of the current cosine within the firm's own history)
+    # that the scale summariser turns into words.  A current cosine in the TOP
+    # band (>= high) means "this filing changed LESS than usual for this firm"
+    # (quiet-bullish tilt); BOTTOM band (<= low) means "changed MORE than usual"
+    # (bearish tilt).
+    filing_scale_high_pct: float = Field(ge=0.0, le=1.0, default=0.80)
+    filing_scale_low_pct:  float = Field(ge=0.0, le=1.0, default=0.20)
+
+    # Below this many prior points the percentile is not trustworthy — the
+    # summariser emits an honest thin-history hedge instead of a false-precision
+    # band.
+    filing_scale_min_history: int = Field(ge=1, default=3)
 
     # Conviction-buy/sell threshold — minimum gross dollar value (USD) of
     # open-market transactions by a *single* filer that triggers the

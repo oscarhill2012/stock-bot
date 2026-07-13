@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from config.analysts import AnalystsConfig, load_analysts_config
+from config.analysts import AnalystsConfig, get_analysts_config, load_analysts_config
 
 # ---------------------------------------------------------------------------
 # Shared minimal-config payload
@@ -373,3 +373,19 @@ def test_staleness_similarity_threshold_loads_from_config():
 
     assert 0.0 <= cfg.staleness_similarity_threshold <= 1.0
     assert cfg.staleness_similarity_threshold == 0.85
+
+
+def test_fundamental_filing_similarity_settings_load() -> None:
+    """The Phase 14 1b filing-similarity settings must load and validate.
+
+    A missing field must RAISE (loud) rather than silently defaulting — the
+    silent-degradation failure mode this project treats as its recurring bug
+    class.  We assert the concrete configured values, not just presence.
+    """
+    caps = get_analysts_config().fundamental
+
+    assert 0.0 <= caps.filing_dedup_cosine <= 1.0
+    assert caps.filing_numeric_delta_pct > 0.0
+    assert 1 <= caps.filing_history_years <= 15
+    assert 0.0 <= caps.filing_scale_low_pct < caps.filing_scale_high_pct <= 1.0
+    assert caps.filing_scale_min_history >= 1

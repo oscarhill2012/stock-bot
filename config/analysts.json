@@ -25,6 +25,12 @@
     "max_insider_footnote_chars": 400,
     "mda_stub_char_threshold":    400,
     "filing_delta_horizon_days":  60,
+    "filing_dedup_cosine":        0.92,
+    "filing_numeric_delta_pct":   0.10,
+    "filing_history_years":       7,
+    "filing_scale_high_pct":      0.80,
+    "filing_scale_low_pct":       0.20,
+    "filing_scale_min_history":   3,
     "insider_conviction_threshold_dollars":  50000000,
     "trailing_pe_implausibility_threshold":  200,
     "llm": {
