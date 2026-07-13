@@ -246,8 +246,8 @@ def fundamental_hash_inputs(
     #                                                every tick (pure metadata)
     #
     # Slower fundamentals (roe, revenue_growth_yoy, profit_margin,
-    # debt_to_equity, free_cash_flow, beta, analyst_rating_avg, …) stay in the
-    # key so a genuine quarterly change still busts the cache.
+    # debt_to_equity, free_cash_flow, analyst_rating_avg, …) stay in the key
+    # so a genuine quarterly change still busts the cache.
     _PRICE_VOLATILE_RATIO_FIELDS = frozenset({
         "last_price",
         "market_cap",
@@ -260,6 +260,13 @@ def fundamental_hash_inputs(
         "fifty_two_week_high",
         "fifty_two_week_low",
         "as_of",
+        # beta: an OLS slope of stock returns vs SPY over a TRAILING 252-day
+        # sliding window (see ``_compute_beta`` in
+        # ``src/data/providers/company_ratios/pit_composite.py``), recomputed
+        # at every ``as_of``.  It is price-derived and advances on essentially
+        # every trading day, not a slow-moving filing fundamental, so it is
+        # excluded from the key on the same rationale as ``last_price`` above.
+        "beta",
     })
 
     # Round all remaining float values to 4 dp so minor yfinance jitter does

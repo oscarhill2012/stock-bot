@@ -226,6 +226,24 @@ def test_fundamental_hash_ignores_as_of_retrieval_date() -> None:
     assert fundamental_hash_inputs(r1, [], bundle) == fundamental_hash_inputs(r2, [], bundle)
 
 
+def test_fundamental_hash_ignores_beta_drift() -> None:
+    """``beta`` is a trailing-252-day rolling OLS slope, not a slow fundamental.
+
+    ``_compute_beta`` (``src/data/providers/company_ratios/pit_composite.py``)
+    recomputes the regression against SPY at every ``as_of``, so the value
+    drifts on essentially every trading day even when no filing has changed.
+    Keeping it in the cache key busted the fundamental report-cache daily —
+    identical to the price-volatile fields already excluded above.  It must
+    stay excluded from the KEY while remaining in the LLM prompt.
+    """
+    bundle = Form4Bundle(trades=[], derivatives=[])
+
+    r1 = CompanyRatios(ticker="AAPL", roe=0.50, beta=1.20)
+    r2 = CompanyRatios(ticker="AAPL", roe=0.50, beta=1.35)
+
+    assert fundamental_hash_inputs(r1, [], bundle) == fundamental_hash_inputs(r2, [], bundle)
+
+
 def test_fundamental_hash_changes_on_fundamental_field() -> None:
     """A genuine fundamental change MUST still bust the cache.
 
