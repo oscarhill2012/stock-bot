@@ -1000,7 +1000,7 @@ async def test_pit_composite_populates_beta_and_sector(monkeypatch: pytest.Monke
     import data.providers.company_ratios.pit_composite as mod
 
     monkeypatch.setattr(mod, "_fetch_xbrl_facts", lambda s, d: SimpleNamespace(
-        long_name="Apple Inc.", sector=" should be overridden by static map ",
+        long_name="Monolithic Power Systems", sector=" should be overridden by static map ",
         shares_out=1.0, eps_ttm=1.0, dps_ttm=None,
     ))
 
@@ -1018,7 +1018,7 @@ async def test_pit_composite_populates_beta_and_sector(monkeypatch: pytest.Monke
         "revenue_growth_yoy": None, "free_cash_flow": None, "peg": None,
     })
 
-    out = await mod.fetch("AAPL", as_of=datetime(2024, 5, 1, tzinfo=UTC))
+    out = await mod.fetch("MPWR", as_of=datetime(2024, 5, 1, tzinfo=UTC))
 
     # Static watchlist sector wins over the XBRL sic_description.
     assert out.sector == "Technology"
