@@ -23,7 +23,8 @@ from functools import lru_cache
 
 from agents.analysts.fundamental.filing_similarity import (
     FILING_SIMILARITY_ALGO_VERSION,
-    compute_similarity,
+    _cosine_vectors,
+    _vectorise,
 )
 
 _logger = logging.getLogger(__name__)
@@ -164,12 +165,19 @@ def filing_diff(
     numeric_deltas: list[str] = []
     dropped = 0
 
-    for para in current_paragraphs:
+    # Pre-vectorise each side ONCE — tokenise + term-frequency Counter + squared
+    # norm — so the O(M×N) inner loop below scores from cached vectors via
+    # ``_cosine_vectors`` instead of re-tokenising both paragraphs on every one
+    # of the M×N comparisons (the perf regression Plan 1b introduced).
+    current_vectors = [_vectorise(p) for p in current_paragraphs]
+    prior_vectors   = [_vectorise(p) for p in prior_paragraphs]
+
+    for para, (a_counts, sq_a) in zip(current_paragraphs, current_vectors, strict=True):
         # Best prior match by cosine.
         best_prior = ""
         best_cos   = 0.0
-        for prior_para in prior_paragraphs:
-            cos = compute_similarity(para, prior_para).cosine
+        for prior_para, (b_counts, sq_b) in zip(prior_paragraphs, prior_vectors, strict=True):
+            cos = _cosine_vectors(a_counts, sq_a, b_counts, sq_b)
             if cos > best_cos:
                 best_cos, best_prior = cos, prior_para
 

@@ -89,8 +89,45 @@ def _tokenise(text: str) -> list[str]:
     return collapsed.split(" ") if collapsed else []
 
 
-def _cosine(a_counts: Counter[str], b_counts: Counter[str]) -> float:
-    """Cosine similarity of two term-frequency Counters.
+def _vectorise(text: str) -> tuple[Counter[str], int]:
+    """Tokenise ``text`` once into a reusable term-frequency vector.
+
+    Extracted so a caller comparing ONE side against MANY paragraphs (as
+    ``filing_diff``'s year-over-year matcher does) tokenises each side exactly
+    once and reuses the result across every comparison, instead of re-tokenising
+    on every one of the O(M×N) pair evaluations.
+
+    Parameters
+    ----------
+    text:
+        Raw section or paragraph prose.
+
+    Returns
+    -------
+    tuple[Counter[str], int]
+        The term-frequency ``Counter`` over normalised tokens, and its squared
+        magnitude (``sum(v*v for v in counts.values())``) — precomputed here so
+        ``_cosine_vectors`` never has to recompute it per comparison.
+    """
+    counts = Counter(_tokenise(text))
+    sq     = sum(v * v for v in counts.values())
+
+    return counts, sq
+
+
+def _cosine_vectors(
+    a_counts: Counter[str],
+    sq_a:     int,
+    b_counts: Counter[str],
+    sq_b:     int,
+) -> float:
+    """Cosine similarity of two PRE-BUILT term-frequency vectors.
+
+    This holds the exact scoring formula (empty-guard, shared-vocabulary dot
+    product, single-sqrt-of-product denominator, upper clamp) — ``_cosine``
+    delegates to this so there is only one copy of the formula to keep correct.
+    Callers that already hold a vector (e.g. from ``_vectorise``) should call
+    this directly to skip re-tokenising and re-summing the squared magnitude.
 
     Returns 0.0 when either vector is empty (one-sided emptiness), never NaN.
 
@@ -98,6 +135,9 @@ def _cosine(a_counts: Counter[str], b_counts: Counter[str]) -> float:
     ----------
     a_counts, b_counts:
         Term-frequency Counters over normalised tokens.
+    sq_a, sq_b:
+        Each vector's precomputed squared magnitude
+        (``sum(v*v for v in counts.values())``).
 
     Returns
     -------
@@ -111,10 +151,6 @@ def _cosine(a_counts: Counter[str], b_counts: Counter[str]) -> float:
     shared = set(a_counts) & set(b_counts)
     dot    = sum(a_counts[t] * b_counts[t] for t in shared)
 
-    # Sums of squared term frequencies (each vector's squared magnitude).
-    sq_a = sum(v * v for v in a_counts.values())
-    sq_b = sum(v * v for v in b_counts.values())
-
     # Denominator computed as a single sqrt of the product, NOT sqrt(a)*sqrt(b).
     # The naive product suffers an IEEE-754 roundtrip — sqrt(x) * sqrt(x) can
     # exceed x by one ulp — so identical vectors score 0.9999999999999998 (the
@@ -127,6 +163,31 @@ def _cosine(a_counts: Counter[str], b_counts: Counter[str]) -> float:
     # cap any residual above-1 float artefact and guarantee callers cosine in
     # [0.0, 1.0] at both endpoints.
     return min(1.0, dot / norm)
+
+
+def _cosine(a_counts: Counter[str], b_counts: Counter[str]) -> float:
+    """Cosine similarity of two term-frequency Counters.
+
+    Thin wrapper over ``_cosine_vectors`` that computes each vector's squared
+    magnitude on the fly — kept for callers (``compute_similarity``) that only
+    ever compare ONE pair and have no reason to pre-build/cache a vector.
+
+    Returns 0.0 when either vector is empty (one-sided emptiness), never NaN.
+
+    Parameters
+    ----------
+    a_counts, b_counts:
+        Term-frequency Counters over normalised tokens.
+
+    Returns
+    -------
+    float
+        Cosine similarity in [0.0, 1.0].
+    """
+    sq_a = sum(v * v for v in a_counts.values())
+    sq_b = sum(v * v for v in b_counts.values())
+
+    return _cosine_vectors(a_counts, sq_a, b_counts, sq_b)
 
 
 def _jaccard(a_tokens: set[str], b_tokens: set[str]) -> float:
