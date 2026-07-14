@@ -24,40 +24,46 @@ from __future__ import annotations
 # ``contract/extractors/_sector_map.py``) so the sector-ETF lookup resolves.
 WATCHLIST_SECTORS: dict[str, str] = {
     # Technology
-    "AAPL":  "Technology",
-    "MSFT":  "Technology",
-    "NVDA":  "Technology",
-    "AMD":   "Technology",
-    "AVGO":  "Technology",
-    "CRM":   "Technology",
+    "MPWR":  "Technology",             # Monolithic Power Systems — semiconductors
+    "FSLR":  "Technology",             # First Solar — solar / photovoltaics
 
     # Communication Services
-    "GOOGL": "Communication Services",
-    "META":  "Communication Services",
+    "OMC":   "Communication Services", # Omnicom Group — advertising
 
     # Consumer Cyclical
-    "AMZN":  "Consumer Cyclical",
-    "TSLA":  "Consumer Cyclical",
-
-    # Financial Services
-    "JPM":   "Financial Services",
-    "BAC":   "Financial Services",
-
-    # Energy
-    "XOM":   "Energy",
-    "CVX":   "Energy",
-
-    # Industrials
-    "LMT":   "Industrials",
-    "RTX":   "Industrials",
-
-    # Healthcare
-    "JNJ":   "Healthcare",
-    "UNH":   "Healthcare",
+    "DECK":  "Consumer Cyclical",      # Deckers Outdoor — footwear
+    "TSCO":  "Consumer Cyclical",      # Tractor Supply — specialty retail
 
     # Consumer Defensive
-    "PG":    "Consumer Defensive",
-    "WMT":   "Consumer Defensive",
+    "CLX":   "Consumer Defensive",     # Clorox — household products
+    "HRL":   "Consumer Defensive",     # Hormel Foods — packaged foods
+
+    # Financial Services
+    "FDS":   "Financial Services",     # FactSet Research Systems — financial data
+    "NDAQ":  "Financial Services",     # Nasdaq — exchange operator
+
+    # Healthcare
+    "RMD":   "Healthcare",             # ResMed — medical devices
+    "DGX":   "Healthcare",             # Quest Diagnostics — diagnostics
+
+    # Industrials
+    "DOV":   "Industrials",            # Dover — diversified industrials
+    "JBHT":  "Industrials",            # J.B. Hunt Transport — logistics
+
+    # Basic Materials
+    "CF":    "Basic Materials",        # CF Industries — nitrogen fertilisers
+    "STLD":  "Basic Materials",        # Steel Dynamics — steel
+
+    # Energy
+    "DVN":   "Energy",                 # Devon Energy — oil & gas E&P
+    "FANG":  "Energy",                 # Diamondback Energy — oil & gas E&P
+
+    # Utilities
+    "CMS":   "Utilities",              # CMS Energy — electric & gas utility
+    "ATO":   "Utilities",              # Atmos Energy — natural gas utility
+
+    # Real Estate
+    "INVH":  "Real Estate",            # Invitation Homes — residential REIT
 }
 
 
