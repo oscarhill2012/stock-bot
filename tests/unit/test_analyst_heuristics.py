@@ -27,14 +27,17 @@ def _valid_payload() -> dict:
     """Return a fully populated, valid heuristics payload."""
     return {
         "technical": {
-            "rsi_overbought": 75, "rsi_oversold": 25,
-            "rsi_mean_reversion": 35.0,
-            "momentum_neutral_band_pct": 0.02,
-            "pct_change_momentum_scale": 4.0,
-            "vol_ratio_breakout": 1.5, "vol_ratio_dry_up": 0.7,
-            "atr_high_volatility_pct": 5.0, "near_52w_extreme_pct": 5.0,
-            "confidence_base": 0.5, "confidence_boost_step": 0.2,
-            "confidence_penalty_step": 0.3, "magnitude_cap": 1.0,
+            "reversal_neutral_band_pct": 0.03,
+            "reversal_magnitude_scale": 8.0,
+            "reversal_confidence_base": 0.5,
+            "reversal_horizon_days": 7,
+            "vol_regime_window": 60,
+            "vol_regime_elevated_z": 1.5,
+            "vol_ratio_breakout": 1.3,
+            "vol_ratio_dry_up": 0.7,
+            "near_52w_extreme_pct": 5.0,
+            "magnitude_cap": 1.0,
+            "beta_confidence_damping_enabled": False,
         },
         "social": {
             "score_neutral_band": 0.05, "score_to_magnitude_scale": 2.0,
@@ -74,10 +77,10 @@ def test_valid_payload_parses() -> None:
     assert isinstance(h.news_vocabulary, NewsVocabulary)
 
 
-def test_rsi_overbought_out_of_range_rejected() -> None:
-    """RSI overbought above 100 must raise ValidationError."""
+def test_reversal_neutral_band_out_of_range_rejected() -> None:
+    """A reversal neutral band above 1.0 must raise ValidationError."""
     payload = _valid_payload()
-    payload["technical"]["rsi_overbought"] = 150
+    payload["technical"]["reversal_neutral_band_pct"] = 1.5
     with pytest.raises(ValidationError):
         AnalystHeuristics.model_validate(payload)
 
@@ -113,7 +116,7 @@ def test_load_heuristics_reads_config_file(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("ANALYST_HEURISTICS_PATH", str(cfg))
     load_heuristics.cache_clear()
     h = load_heuristics()
-    assert h.technical.rsi_overbought == 75
+    assert h.technical.reversal_horizon_days == 7
 
 
 def test_load_heuristics_is_cached(tmp_path: Path, monkeypatch) -> None:
@@ -144,3 +147,35 @@ def test_load_heuristics_missing_file_raises(tmp_path: Path, monkeypatch) -> Non
     load_heuristics.cache_clear()
     with pytest.raises(FileNotFoundError):
         load_heuristics()
+
+
+def test_technical_heuristics_new_three_reads_surface() -> None:
+    """The technical config exposes the three-reads knobs and drops the retired ones."""
+    h = load_heuristics().technical
+
+    # New reversal knobs.
+    assert 0.0 <= h.reversal_neutral_band_pct <= 1.0
+    assert h.reversal_magnitude_scale > 0.0
+    assert 0.0 <= h.reversal_confidence_base <= 1.0
+    assert 1 <= h.reversal_horizon_days <= 60
+
+    # New volatility-regime knobs.
+    assert 2 <= h.vol_regime_window <= 252
+    assert h.vol_regime_elevated_z > 0.0
+
+    # Retained context knobs.
+    assert h.vol_ratio_breakout > 1.0
+    assert 0.0 < h.vol_ratio_dry_up < 1.0
+    assert h.near_52w_extreme_pct > 0.0
+    assert 0.0 < h.magnitude_cap <= 1.0
+
+    # Retired knobs are gone (extra="forbid" would reject them in JSON anyway).
+    for dead in (
+        "rsi_overbought", "rsi_oversold", "rsi_mean_reversion",
+        "pct_change_momentum_scale", "momentum_neutral_band_pct",
+        "confidence_base", "confidence_boost_step", "confidence_penalty_step",
+        "atr_high_volatility_pct", "suppress_bearish_under_golden_cross",
+        "suppress_bullish_under_death_cross", "directional_52w_confidence",
+        "momentum_band_confidence_floor",
+    ):
+        assert not hasattr(h, dead), f"retired field still present: {dead}"
