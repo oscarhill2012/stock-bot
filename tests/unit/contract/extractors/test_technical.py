@@ -27,7 +27,13 @@ def test_extracts_required_keys(aapl_data):
     ``beta_confidence_damping`` (needs beta in ratios) will be absent.
     """
     # Keys conditionally absent when data is insufficient.
-    nullable_keys = {"vol_ratio_20d", "pct_change_20d", "beta_confidence_damping"}
+    nullable_keys = {
+        "vol_ratio_20d",
+        "pct_change_20d",
+        "beta_confidence_damping",
+        "vol_regime_z",
+        "trend_state",
+    }
 
     features = extract_technical_features(aapl_data, ticker="AAPL")
 
@@ -683,3 +689,58 @@ def test_rsi_mean_reversion_integration_disabled():
     )
     assert v.lean == "bearish"
     assert "rsi_moderate_oversold" not in v.key_factors
+
+
+# --- Phase 3b three-reads additions: vol_regime_z (Read 2) + trend_state (Read 3) ---
+
+import numpy as np  # noqa: E402 — after other imports
+
+
+def _ramp_bars(n: int, start: float = 100.0, step: float = 0.5) -> list[dict]:
+    """Build ``n`` synthetic OHLCV bars on a gentle linear ramp (oldest first)."""
+    bars = []
+    for i in range(n):
+        close = start + i * step
+        bars.append(
+            {
+                "timestamp": f"2025-01-{(i % 28) + 1:02d}",
+                "open": close - 0.2,
+                "high": close + 0.4,
+                "low": close - 0.4,
+                "close": close,
+                "volume": 1_000_000 + i,
+            }
+        )
+    return bars
+
+
+def test_trend_state_from_ma200():
+    """trend_state = last_price / two_hundred_day_average - 1 when ratios carry ma200."""
+    raw = {
+        "bars": _ramp_bars(30),
+        "ratios": {"last_price": 110.0, "two_hundred_day_average": 100.0},
+    }
+    feats = extract_technical_features(raw, "TEST")
+    assert feats["trend_state"] == float(110.0 / 100.0 - 1.0)
+
+
+def test_trend_state_absent_without_ma200():
+    """No ma200 → trend_state key is omitted (nullable convention), not 0.0."""
+    raw = {"bars": _ramp_bars(30), "ratios": {"last_price": 110.0}}
+    feats = extract_technical_features(raw, "TEST")
+    assert "trend_state" not in feats
+
+
+def test_vol_regime_z_emitted_with_enough_history():
+    """A long-enough bar series yields a finite vol_regime_z z-score."""
+    raw = {"bars": _ramp_bars(120)}
+    feats = extract_technical_features(raw, "TEST")
+    assert "vol_regime_z" in feats
+    assert np.isfinite(feats["vol_regime_z"])
+
+
+def test_vol_regime_z_absent_when_history_too_short():
+    """Fewer valid ATR% samples than the window → vol_regime_z omitted."""
+    raw = {"bars": _ramp_bars(20)}
+    feats = extract_technical_features(raw, "TEST")
+    assert "vol_regime_z" not in feats

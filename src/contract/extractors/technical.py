@@ -85,6 +85,9 @@ _KEYS = (
     # was blind to current price, causing hallucinated-gains close decisions).
     # ``0.0`` is the no-data sentinel (matches the other feature defaults).
     "last_close",
+    # Phase 3b three-reads additions (both nullable — omitted when not computable):
+    "vol_regime_z",   # z-score of ATR% vs its own trailing window (Read 2)
+    "trend_state",    # last_price / 200d MA - 1 (Read 3)
 )
 
 
@@ -226,7 +229,13 @@ def _zero_features() -> dict[str, float]:
     treat ``None`` as "(no data)".  ``0.0`` is always a genuine zero reading.
     """
     # Nullable keys excluded; they are inserted conditionally downstream.
-    _NULLABLE = {"vol_ratio_20d", "pct_change_20d", "beta_confidence_damping"}
+    _NULLABLE = {
+        "vol_ratio_20d",
+        "pct_change_20d",
+        "beta_confidence_damping",
+        "vol_regime_z",
+        "trend_state",
+    }
     return {k: 0.0 for k in _KEYS if k not in _NULLABLE}
 
 
@@ -290,6 +299,12 @@ def _emit_ratios_features(raw: dict) -> dict[str, float]:
         # Death cross: 50-day below 200-day AND price below 50-day MA.
         out["death_cross"]  = 1.0 if ma50 < ma200 and last < ma50 else 0.0
 
+    # Read 3 — trend state: continuous distance of price from the 200-day MA.
+    # A signed fraction (0.05 = 5 % above the 200-day MA).  Persistent regime
+    # context; surfaced as a number, not blended into the technical lean.
+    if last is not None and ma200 is not None and ma200 > 0:
+        out["trend_state"] = last / ma200 - 1.0
+
     # The beta-aware confidence-damping feature is gated INDEPENDENTLY of beta
     # presence by ``technical.beta_confidence_damping_enabled``.  This decouples
     # two concerns that used to be conflated: now that ``pit_composite``
@@ -335,6 +350,28 @@ def _beta_damping_enabled() -> bool:
         return load_heuristics().technical.beta_confidence_damping_enabled
     except Exception:  # noqa: BLE001 — config load is best-effort; degrade to OFF
         return False
+
+
+def _vol_regime_window() -> int:
+    """Trailing-window length for the volatility-regime z-score.
+
+    Reads ``technical.vol_regime_window`` from the validated heuristics config.
+    Imported lazily (mirroring ``_beta_damping_enabled``) to dodge the import
+    cycle between this module and ``agents.analysts.heuristics``.  Falls back to
+    60 if the config cannot be loaded — a safe default that simply widens the
+    minimum history needed before the z-score is emitted.
+
+    Returns
+    -------
+    int
+        The configured window length, or 60 on any config-load failure.
+    """
+    try:
+        from agents.analysts.heuristics import load_heuristics  # noqa: PLC0415
+
+        return load_heuristics().technical.vol_regime_window
+    except Exception:  # noqa: BLE001 — config load is best-effort; degrade to 60
+        return 60
 
 
 def _resolve_bars(raw: Mapping[str, Any]) -> list:
@@ -460,21 +497,43 @@ def extract_technical_features(
         if not np.isnan(last_rsi):
             out["rsi_14"] = float(last_rsi)
 
-    # --- ATR(14) as a percentage of last close ---
-    # ATR needs high, low, close arrays and at least 15 bars.
+    # --- ATR(14) as a percentage of last close (+ Read 2 volatility regime) --
+    # ATR needs high, low, close arrays and at least 15 bars.  We compute the
+    # ATR% as a full elementwise series (not just the last bar) so the
+    # volatility-regime z-score can measure the latest reading against the
+    # ticker's OWN recent ATR% history (self-relative — Moreira-Muir 2017).
     if len(df) >= 15:
-        atr_arr = talib.ATR(
-            df["high"].to_numpy(dtype=float),
-            df["low"].to_numpy(dtype=float),
-            df["close"].to_numpy(dtype=float),
-            timeperiod=14,
-        )
-        last_atr = atr_arr[-1] if atr_arr is not None and len(atr_arr) > 0 else np.nan
+        high_arr  = df["high"].to_numpy(dtype=float)
+        low_arr   = df["low"].to_numpy(dtype=float)
+        close_arr = df["close"].to_numpy(dtype=float)
 
-        if not np.isnan(last_atr):
-            last_close = float(close.iloc[-1])
-            if last_close > 0:
-                out["atr_pct_14"] = float(last_atr / last_close * 100.0)
+        atr_arr = talib.ATR(high_arr, low_arr, close_arr, timeperiod=14)
+
+        # ATR as a percentage of the contemporaneous close, elementwise.  Guard
+        # divide-by-zero (a genuinely zero close) by mapping it to NaN, which is
+        # then excluded from both the "last reading" and the z-score window.
+        with np.errstate(divide="ignore", invalid="ignore"):
+            atr_pct_arr = np.where(close_arr > 0, atr_arr / close_arr * 100.0, np.nan)
+
+        last_atr_pct = atr_pct_arr[-1] if len(atr_pct_arr) > 0 else np.nan
+
+        if not np.isnan(last_atr_pct):
+            out["atr_pct_14"] = float(last_atr_pct)
+
+            # Read 2 — volatility regime: z-score of the latest ATR% against its
+            # own trailing window.  Emitted only when enough VALID (non-NaN)
+            # samples exist and the window has non-zero dispersion; otherwise the
+            # key stays absent (nullable convention → renderer skips it).
+            window = _vol_regime_window()
+            valid  = atr_pct_arr[~np.isnan(atr_pct_arr)]
+
+            if len(valid) >= window:
+                recent = valid[-window:]
+                mu     = float(recent.mean())
+                sigma  = float(recent.std())
+
+                if sigma > 0:
+                    out["vol_regime_z"] = float((last_atr_pct - mu) / sigma)
 
     # --- Volume ratio: recent 20-bar average vs prior 50-bar average ---
     # Bug #20: requires at least 50 bars.  The feature starts as ``None`` (from
