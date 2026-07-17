@@ -92,3 +92,83 @@ def test_no_data_fingerprint_still_fires():
     """All three core indicators absent/zero → canonical no-data verdict."""
     v = derive_technical_verdict({"rsi_14": 0.0, "atr_pct_14": 0.0, "pct_change_5d": 0.0}, _tech())
     assert v.is_no_data is True
+
+
+# --- Corroborating context tags -------------------------------------------
+# These six tags are appended alongside the reversal read but never alter the
+# lean/magnitude/confidence — the assertions below focus purely on whether
+# each tag fires (or stays absent) as its underlying feature crosses the
+# configured threshold in ``_tech()`` (vol_ratio_breakout=1.3,
+# vol_ratio_dry_up=0.7, near_52w_extreme_pct=5.0).
+
+
+def test_vol_breakout_tag_fires_above_threshold():
+    """vol_ratio_20d strictly above vol_ratio_breakout (1.3) fires vol_breakout."""
+    v = derive_technical_verdict(_feats(vol_ratio_20d=1.5), _tech())
+    assert "vol_breakout" in v.key_factors
+
+
+def test_vol_breakout_tag_absent_below_threshold():
+    """vol_ratio_20d inside the normal band does not fire vol_breakout."""
+    v = derive_technical_verdict(_feats(vol_ratio_20d=1.0), _tech())
+    assert "vol_breakout" not in v.key_factors
+
+
+def test_vol_dry_up_tag_fires_below_threshold():
+    """vol_ratio_20d strictly below vol_ratio_dry_up (0.7) fires vol_dry_up."""
+    v = derive_technical_verdict(_feats(vol_ratio_20d=0.4), _tech())
+    assert "vol_dry_up" in v.key_factors
+
+
+def test_vol_dry_up_tag_absent_above_threshold():
+    """vol_ratio_20d inside the normal band does not fire vol_dry_up."""
+    v = derive_technical_verdict(_feats(vol_ratio_20d=1.0), _tech())
+    assert "vol_dry_up" not in v.key_factors
+
+
+def test_golden_cross_tag_fires_when_flagged():
+    """golden_cross feature >= 1.0 fires the golden_cross tag."""
+    v = derive_technical_verdict(_feats(golden_cross=1.0), _tech())
+    assert "golden_cross" in v.key_factors
+
+
+def test_golden_cross_tag_absent_when_not_flagged():
+    """golden_cross feature at 0.0 (no crossover) leaves the tag absent."""
+    v = derive_technical_verdict(_feats(golden_cross=0.0), _tech())
+    assert "golden_cross" not in v.key_factors
+
+
+def test_death_cross_tag_fires_when_flagged():
+    """death_cross feature >= 1.0 fires the death_cross tag."""
+    v = derive_technical_verdict(_feats(death_cross=1.0), _tech())
+    assert "death_cross" in v.key_factors
+
+
+def test_death_cross_tag_absent_when_not_flagged():
+    """death_cross feature at 0.0 (no crossover) leaves the tag absent."""
+    v = derive_technical_verdict(_feats(death_cross=0.0), _tech())
+    assert "death_cross" not in v.key_factors
+
+
+def test_near_52w_high_tag_fires_within_extreme_pct():
+    """dist_from_high_52w_pct within ±near_52w_extreme_pct (5.0) fires near_52w_high."""
+    v = derive_technical_verdict(_feats(dist_from_high_52w_pct=-2.0), _tech())
+    assert "near_52w_high" in v.key_factors
+
+
+def test_near_52w_high_tag_absent_far_from_high():
+    """dist_from_high_52w_pct well beyond the extreme band leaves the tag absent."""
+    v = derive_technical_verdict(_feats(dist_from_high_52w_pct=-50.0), _tech())
+    assert "near_52w_high" not in v.key_factors
+
+
+def test_near_52w_low_tag_fires_within_extreme_pct():
+    """dist_from_low_52w_pct at/below near_52w_extreme_pct (5.0) fires near_52w_low."""
+    v = derive_technical_verdict(_feats(dist_from_low_52w_pct=2.0), _tech())
+    assert "near_52w_low" in v.key_factors
+
+
+def test_near_52w_low_tag_absent_far_from_low():
+    """dist_from_low_52w_pct well above the extreme band leaves the tag absent."""
+    v = derive_technical_verdict(_feats(dist_from_low_52w_pct=50.0), _tech())
+    assert "near_52w_low" not in v.key_factors
