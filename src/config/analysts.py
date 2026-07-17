@@ -166,6 +166,10 @@ class NewsCaps(BaseModel):
         or minor punctuation differences while leaving genuinely distinct
         stories untouched.  Setting this below ~0.7 risks collapsing
         legitimately different stories that share a common sub-phrase.
+    drift_horizon_days:
+        Trading-day horizon the news verdict targets — injected onto
+        ``horizon_days`` at the joiner boundary (the LLM no longer self-reports
+        it).  Post-news drift operates over roughly a week.
     llm:
         Per-call LLM runtime caps (timeout, token limit, retry counts).
     """
@@ -177,6 +181,10 @@ class NewsCaps(BaseModel):
     max_summary_chars:                  int   = Field(ge=1,   le=10_000)
     roundup_company_threshold:          int   = Field(ge=2,   le=50,    default=3)
     dedup_title_similarity_threshold:   float = Field(ge=0.0, le=1.0,   default=0.85)
+    # Phase 3b — trading-day drift horizon the news analyst's verdict targets.
+    # Post-news drift (PEAD and analogues) plays out over ~1 week; the LLM no
+    # longer self-reports this — the joiner injects it at inflation time.
+    drift_horizon_days:                 int   = Field(ge=1,   le=60,    default=5)
     llm:                                LlmCaps                           # per-call runtime caps
 
 

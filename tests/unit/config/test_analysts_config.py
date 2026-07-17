@@ -389,3 +389,10 @@ def test_fundamental_filing_similarity_settings_load() -> None:
     assert 1 <= caps.filing_history_years <= 15
     assert 0.0 <= caps.filing_scale_low_pct < caps.filing_scale_high_pct <= 1.0
     assert caps.filing_scale_min_history >= 1
+
+
+def test_news_drift_horizon_days_default():
+    """News exposes a config-driven drift horizon (default 5 trading days)."""
+    from config.analysts import get_analysts_config
+
+    assert get_analysts_config().news.drift_horizon_days == 5
