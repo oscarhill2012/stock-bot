@@ -506,11 +506,15 @@ def test_deterministic_verdict_no_longer_fabricates_report() -> None:
     extractor synthesised an AnalystReport to satisfy the old
     report-required validator — that path is gone (the validator now
     enforces exactly one prose surface instead).
+
+    Task 3 rewrite: the verdict is now the contrarian reversal read, so the
+    heuristics fixture uses the ``reversal_*`` / ``vol_regime_*`` fields
+    (the old momentum/RSI knobs were retired in Task 1).
     """
     # All keys from _KEYS plus vol_ratio_20d (which is NaN when history is short,
     # but here we supply a real value so a directional verdict fires).
     features = {
-        "rsi_14": 55.0, "pct_change_20d": 0.04, "pct_change_5d": 0.01,
+        "rsi_14": 55.0, "pct_change_20d": 0.04, "pct_change_5d": 0.05,
         "vol_ratio_20d": 1.1, "atr_pct_14": 1.5,
         "dist_from_high_52w_pct": -5.0, "dist_from_low_52w_pct": 25.0,
         "golden_cross": 0.0, "death_cross": 0.0,
@@ -523,14 +527,11 @@ def test_deterministic_verdict_no_longer_fabricates_report() -> None:
     from contract.extractors.technical import derive_technical_verdict
 
     h = TechnicalHeuristics(
-        rsi_overbought=75.0, rsi_oversold=25.0,
-        pct_change_momentum_scale=4.0,
+        reversal_neutral_band_pct=0.03, reversal_magnitude_scale=8.0,
+        reversal_confidence_base=0.5, reversal_horizon_days=7,
+        vol_regime_window=60, vol_regime_elevated_z=1.5,
         vol_ratio_breakout=1.5, vol_ratio_dry_up=0.7,
-        atr_high_volatility_pct=5.0, near_52w_extreme_pct=5.0,
-        confidence_base=0.5, confidence_boost_step=0.2,
-        confidence_penalty_step=0.3, magnitude_cap=1.0,
-        momentum_neutral_band_pct=0.02,
-        rsi_mean_reversion=35.0,
+        near_52w_extreme_pct=5.0, magnitude_cap=1.0,
     )
 
     v = derive_technical_verdict(features, h)
@@ -548,6 +549,9 @@ def test_no_data_branch_uses_canonical_builder() -> None:
     - ``rsi_14 == 0``
     - ``pct_change_20d`` absent (Bug #23c: absent key = "not computable")
     - ``atr_pct_14 == 0``
+
+    Task 3 rewrite: the no-data fingerprint logic is unchanged, only the
+    heuristics fixture fields have moved to the new ``reversal_*`` surface.
     """
     # Omit pct_change_20d to trigger the no-data fingerprint.
     features: dict = {k: 0.0 for k in (
@@ -562,14 +566,11 @@ def test_no_data_branch_uses_canonical_builder() -> None:
     from contract.extractors.technical import derive_technical_verdict
 
     h = TechnicalHeuristics(
-        rsi_overbought=75.0, rsi_oversold=25.0,
-        pct_change_momentum_scale=4.0,
+        reversal_neutral_band_pct=0.03, reversal_magnitude_scale=8.0,
+        reversal_confidence_base=0.5, reversal_horizon_days=7,
+        vol_regime_window=60, vol_regime_elevated_z=1.5,
         vol_ratio_breakout=1.5, vol_ratio_dry_up=0.7,
-        atr_high_volatility_pct=5.0, near_52w_extreme_pct=5.0,
-        confidence_base=0.5, confidence_boost_step=0.2,
-        confidence_penalty_step=0.3, magnitude_cap=1.0,
-        momentum_neutral_band_pct=0.02,
-        rsi_mean_reversion=35.0,
+        near_52w_extreme_pct=5.0, magnitude_cap=1.0,
     )
 
     v = derive_technical_verdict(features, h)
@@ -577,118 +578,6 @@ def test_no_data_branch_uses_canonical_builder() -> None:
     assert v.is_no_data is True
     assert v.report is None
     assert v.rationale  # non-empty
-
-
-# ---------------------------------------------------------------------------
-# RSI mean-reversion neutralisation — integration tests
-# ---------------------------------------------------------------------------
-#
-# These tests verify the two-tier RSI rule via the full ``derive_technical_verdict``
-# path, exercising the same fixture builder used by the broader extractor tests.
-# The unit-level table-driven cases live in tests/unit/test_derive_technical_verdict.py.
-# ---------------------------------------------------------------------------
-
-def _verdict_h(rsi_mean_reversion: float = 35.0) -> "TechnicalHeuristics":
-    """Build a ``TechnicalHeuristics`` fixture with configurable mean-reversion threshold.
-
-    Parameters
-    ----------
-    rsi_mean_reversion:
-        RSI level below which a bearish 20d-trend call is downgraded to neutral.
-        Pass ``0.0`` to disable the rule.
-
-    Returns
-    -------
-    TechnicalHeuristics
-        Validated heuristics object ready for ``derive_technical_verdict``.
-    """
-    from agents.analysts.heuristics import TechnicalHeuristics
-    return TechnicalHeuristics(
-        rsi_overbought=75.0, rsi_oversold=25.0,
-        pct_change_momentum_scale=4.0,
-        vol_ratio_breakout=1.5, vol_ratio_dry_up=0.7,
-        atr_high_volatility_pct=5.0, near_52w_extreme_pct=5.0,
-        confidence_base=0.5, confidence_boost_step=0.2,
-        confidence_penalty_step=0.3, magnitude_cap=1.0,
-        momentum_neutral_band_pct=0.02,
-        rsi_mean_reversion=rsi_mean_reversion,
-    )
-
-
-def _verdict_features(**overrides) -> dict:
-    """Build a minimal valid technical feature dict for verdict tests.
-
-    Defaults represent a data-present, moderately-trending state.  Individual
-    values can be overridden via keyword arguments.
-    """
-    base = {
-        "rsi_14": 50.0,
-        "pct_change_5d": 0.0,
-        "pct_change_20d": 0.0,
-        "vol_ratio_20d": 1.0,
-        "atr_pct_14": 2.0,
-        "dist_from_high_52w_pct": -10.0,
-        "dist_from_low_52w_pct": 30.0,
-    }
-    base.update(overrides)
-    return base
-
-
-def test_rsi_mean_reversion_integration_bearish_rsi30_neutral():
-    """Integration path: bearish + RSI 30 → neutral with rsi_moderate_oversold factor.
-
-    Exercises the full verdict function to confirm the new branch composes
-    correctly with the surrounding conviction gate and confidence calculations.
-    """
-    from contract.extractors.technical import derive_technical_verdict
-
-    v = derive_technical_verdict(
-        _verdict_features(pct_change_20d=-0.08, pct_change_5d=-0.03, rsi_14=30.0),
-        _verdict_h(rsi_mean_reversion=35.0),
-    )
-    assert v.lean == "neutral"
-    assert "rsi_moderate_oversold" in v.key_factors
-
-
-def test_rsi_mean_reversion_integration_bearish_rsi45_stays_bearish():
-    """Integration path: bearish + RSI 45 (≥ threshold) → stays bearish."""
-    from contract.extractors.technical import derive_technical_verdict
-
-    v = derive_technical_verdict(
-        _verdict_features(pct_change_20d=-0.08, pct_change_5d=-0.03, rsi_14=45.0),
-        _verdict_h(rsi_mean_reversion=35.0),
-    )
-    assert v.lean == "bearish"
-    assert "rsi_moderate_oversold" not in v.key_factors
-
-
-def test_rsi_mean_reversion_integration_capitulation_wins():
-    """Integration path: bearish + RSI 20 + pct5 < 0 → bullish (capitulation wins).
-
-    Confirms that the two-tier composition is correct end-to-end: neutralisation
-    fires first, then the capitulation branch re-promotes to bullish.
-    """
-    from contract.extractors.technical import derive_technical_verdict
-
-    v = derive_technical_verdict(
-        _verdict_features(pct_change_20d=-0.08, pct_change_5d=-0.04, rsi_14=20.0),
-        _verdict_h(rsi_mean_reversion=35.0),
-    )
-    assert v.lean == "bullish"
-    assert "rsi_moderate_oversold" in v.key_factors
-    assert "rsi_oversold" in v.key_factors
-
-
-def test_rsi_mean_reversion_integration_disabled():
-    """Integration path: rule disabled (rsi_mean_reversion=0) → bearish preserved."""
-    from contract.extractors.technical import derive_technical_verdict
-
-    v = derive_technical_verdict(
-        _verdict_features(pct_change_20d=-0.08, pct_change_5d=-0.03, rsi_14=30.0),
-        _verdict_h(rsi_mean_reversion=0.0),
-    )
-    assert v.lean == "bearish"
-    assert "rsi_moderate_oversold" not in v.key_factors
 
 
 # --- Phase 3b three-reads additions: vol_regime_z (Read 2) + trend_state (Read 3) ---

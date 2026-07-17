@@ -44,7 +44,6 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping
 from datetime import date, datetime
-from math import copysign
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -634,213 +633,103 @@ def derive_technical_verdict(
     features: dict[str, float],
     h: TechnicalHeuristics,
 ) -> AnalystVerdict:
-    """Map the technical feature vector to an ``AnalystVerdict`` via Phase-5 heuristics.
+    """Map the technical feature vector to an ``AnalystVerdict`` — three reads.
 
     Pure function — no I/O, no globals.  Safe for table-driven unit tests.
 
-    Lean logic (in order of precedence):
-    1. Base lean = sign of ``pct_change_20d``.
-    2. RSI exhaustion / capitulation flips override the trend lean.
+    The verdict's lean/magnitude/confidence reflect ONLY the short-term
+    reversal read (Read 1).  The volatility-regime (Read 2) and trend-state
+    (Read 3) reads, plus the volume / 52-week / crossover context, are surfaced
+    as ``key_factors`` tags and rendered feature numbers — they are NEVER
+    blended into the lean.
 
-    Confidence modifiers (additive, clamped to ``[0, 1]``):
-    - ``+h.confidence_boost_step`` when 5d and 20d momentum agree (same sign).
-    - ``+h.confidence_boost_step`` when within ``h.near_52w_extreme_pct`` of
-      either the 52-week high *or* low.
-    - ``-h.confidence_penalty_step`` when ``atr_pct_14 > h.atr_high_volatility_pct``.
-
-    Note on 52-week distance keys:
-    - ``dist_from_high_52w_pct`` is **negative** (e.g. -3.0 = 3 % below high).
-      "Near" is tested as ``abs(value) <= h.near_52w_extreme_pct``.
-    - ``dist_from_low_52w_pct`` is **positive** (e.g. 5.0 = 5 % above low).
-      "Near" is tested as ``value <= h.near_52w_extreme_pct``.
+    Read 1 — short-term reversal (Jegadeesh 1990; Lehmann 1990): lean CONTRARIAN
+    to ``pct_change_5d`` (a recent up-move fades bearish; a recent down-move
+    bounces bullish), with a neutral band.  This deliberately inverts the old
+    trend-following sign.
 
     Parameters
     ----------
     features:
-        Output of ``extract_technical_features`` — all keys from ``_KEYS``
-        present as ``float``.
+        Output of ``extract_technical_features``.
     h:
         Validated ``TechnicalHeuristics`` config section.
 
     Returns
     -------
     AnalystVerdict
-        Fully populated verdict including ``lean``, ``magnitude``,
-        ``confidence``, ``rationale``, ``key_factors``, and ``is_no_data``.
+        Lean/magnitude/confidence from the reversal read, ``horizon_days`` from
+        ``h.reversal_horizon_days``, and context tags in ``key_factors``.
     """
     # Deferred runtime imports — avoids the circular import that arises when
-    # loading this module triggers agents.analysts.__init__ (which re-imports
-    # this module before it has finished initialising).
+    # loading this module triggers agents.analysts.__init__.
     from contract.evidence import AnalystVerdict  # noqa: PLC0415
 
-    # --- No-data fingerprint --------------------------------------------------
-    # The extractor omits ``pct_change_20d`` (and other nullable features) when
-    # bars are insufficient — use ``.get()`` so a missing key reads as ``None``.
-    # The fingerprint fires when all three core indicators are absent/zero,
-    # which is the reliable signal that no usable price history was available.
-    #
-    # - ``rsi_14 == 0``         — RSI defaults to 0.0 (needs ≥15 bars)
-    # - ``pct_change_20d`` absent (None from .get) — needs ≥21 bars
-    # - ``atr_pct_14 == 0``     — ATR defaults to 0.0 (needs ≥15 bars)
-    pct20_raw = features.get("pct_change_20d")   # float | None (absent = not computable)
-    pct20 = pct20_raw if pct20_raw is not None else 0.0  # coerce for downstream maths
+    # --- No-data fingerprint (unchanged) -------------------------------------
+    # rsi_14 and atr_pct_14 default to 0.0 (need >=15 bars); pct_change_20d is
+    # absent (None) below 21 bars.  All three absent/zero = no usable history.
+    pct20_raw = features.get("pct_change_20d")
 
     if (
         features["rsi_14"] == 0
-        and pct20_raw is None  # absent key = "not computable" — triggers no-data branch
+        and pct20_raw is None
         and features["atr_pct_14"] == 0
     ):
-        # Route through the canonical no-data builder so every synthesis site
-        # emits the same shape (A-015): is_no_data=True, report=None,
-        # non-empty rationale.
         from contract.evidence import _no_data_analyst_verdict  # noqa: PLC0415
 
         return _no_data_analyst_verdict(reason="no price data")
 
     factors: list[str] = []
 
-    # --- Base lean from 20-day momentum ---------------------------------------
-    # ``pct20`` is already coerced to 0.0 when the raw value was absent/None
-    # (i.e. insufficient bars).  That produces a neutral lean, which is the
-    # safest default when we lack the 21 bars needed for a meaningful 20d
-    # comparison.
-    pct5  = features["pct_change_5d"]
+    # === READ 1 — short-term reversal (the ONE directional lean) =============
+    # Contrarian on the 5-day return: lean AGAINST the recent short-term move.
+    pct5 = features["pct_change_5d"]
+    band = h.reversal_neutral_band_pct
 
-    sign20 = copysign(1.0, pct20) if pct20 != 0 else 0.0
-    sign5  = copysign(1.0, pct5)  if pct5  != 0 else 0.0
-
-    # Conviction gate — momentum neutral band.
-    # ``pct20`` is a fractional return (e.g. 0.05 = +5 %).
-    # ``h.momentum_neutral_band_pct`` is expressed in the same fractional units.
-    # If the absolute 20d return is inside the band, the analyst abstains:
-    # the momentum is too weak to commit to a direction.  This gate fires
-    # BEFORE the sign check so it takes precedence over both bullish and
-    # bearish branches.  Exact-zero and no-data cases fall naturally into the
-    # neutral branch even without the gate (abs(0.0) < any positive band),
-    # but they are preserved here for clarity.
-    #
-    # Provisional band value — pending a sweep against the eval scoreboard;
-    # tune via ``config/analyst_heuristics.json`` without a code change.
-    if abs(pct20) < h.momentum_neutral_band_pct:
-        lean = "neutral"
-    elif sign20 > 0:
-        lean = "bullish"
-        factors.append("trend_up_20d")
-    elif sign20 < 0:
+    if pct5 >= band:
+        # Recent up-move → fade DOWN.  (Boundary inclusive: pct5 == band is
+        # already a directional call, with confidence == reversal_confidence_base.)
         lean = "bearish"
-        factors.append("trend_down_20d")
+        factors.append("reversal_up_fade")
+    elif pct5 <= -band:
+        # Recent down-move → fade UP.
+        lean = "bullish"
+        factors.append("reversal_down_bounce")
     else:
         lean = "neutral"
+        factors.append("reversal_neutral")
 
-    # --- 5d / 20d momentum agreement -----------------------------------------
-    if sign5 == sign20 and sign20 != 0:
-        factors.append("momentum_agree")
-    elif sign5 != 0 and sign20 != 0:
-        # Both have data but point in opposite directions.
-        factors.append("momentum_disagree")
+    # Magnitude scales with the size of the move being faded, capped.
+    magnitude = min(abs(pct5) * h.reversal_magnitude_scale, h.magnitude_cap)
 
-    # --- RSI overbought / oversold flips -------------------------------------
-    rsi = features["rsi_14"]
+    # Confidence ramps from the base (at the band edge) to 1.0 (at 2x the band).
+    # A neutral read carries no directional confidence (and no magnitude).
+    if lean == "neutral":
+        confidence = 0.0
+        magnitude = 0.0
+    else:
+        excess     = min(max((abs(pct5) - band) / band, 0.0), 1.0) if band > 0 else 1.0
+        confidence = h.reversal_confidence_base + (1.0 - h.reversal_confidence_base) * excess
+        confidence = max(0.0, min(1.0, confidence))
 
-    if rsi > h.rsi_overbought:
-        # Informational tag only — persistent overbought RSI is a feature of
-        # strong trends, not an exit signal.  The lean stays whatever the trend
-        # score set.  (Bug #12 removed the unconditional bearish flip here —
-        # see docs/backtest-audits/baseline-window-2025-09-iter-2.md §Bug #12.)
-        factors.append("rsi_overbought")
+    # === READ 2 — volatility regime (risk tag; NOT blended into the lean) ====
+    vol_z = features.get("vol_regime_z")
+    if vol_z is not None and abs(vol_z) >= h.vol_regime_elevated_z:
+        factors.append("vol_regime_elevated")
 
-    # Moderate-oversold mean reversion: a bearish 20-day-trend call on a name
-    # that is already moderately oversold tends to mean-revert at the 20-day
-    # horizon, so downgrade it to neutral rather than leaning bearish.  The
-    # stronger RSI<rsi_oversold capitulation flip below can still promote a
-    # genuinely capitulating name to bullish.
-    #
-    # Composition note: because rsi_oversold (default 25) < rsi_mean_reversion
-    # (default 35), a name with RSI=20 will first be neutralised here, then
-    # (if pct5 < 0) re-promoted to bullish by the capitulation branch below —
-    # the two rules compose correctly without an explicit guard.
-    #
-    # Setting rsi_mean_reversion=0.0 disables the rule: ``rsi < 0.0`` is never
-    # true for a real RSI value, so the neutralisation branch is never entered.
-    if lean == "bearish" and rsi < h.rsi_mean_reversion:
-        lean = "neutral"
-        factors.append("rsi_moderate_oversold")
+    # === READ 3 — trend state (regime tag; NOT blended into the lean) ========
+    trend = features.get("trend_state")
+    if trend is not None:
+        factors.append("trend_above_ma200" if trend >= 0 else "trend_below_ma200")
 
-    if rsi < h.rsi_oversold:
-        factors.append("rsi_oversold")
-        # Capitulation: sharp recent sell-off at extreme RSI suggests bounce.
-        if pct5 < 0:
-            lean = "bullish"
+    # --- Corroborating context tags (do NOT alter the reversal lean) ---------
+    vol_ratio = features.get("vol_ratio_20d")
+    if vol_ratio is not None and not (isinstance(vol_ratio, float) and math.isnan(vol_ratio)):
+        if vol_ratio > h.vol_ratio_breakout:
+            factors.append("vol_breakout")
+        elif vol_ratio < h.vol_ratio_dry_up:
+            factors.append("vol_dry_up")
 
-    # --- Volume context -------------------------------------------------------
-    # Bug #20: ``vol_ratio_20d`` is absent from the feature dict (key missing)
-    # when the OHLCV series has fewer than 50 bars.  ``.get()`` returns ``None``
-    # for a missing key — treat that as "no signal" and append neither factor,
-    # so a missing-data state is not mistaken for a genuine low-volume dry-up.
-    # A defensive ``math.isnan`` check is also kept in case a stale NaN from
-    # old cached data escapes through — it should not produce a spurious factor.
-    vol_ratio = features.get("vol_ratio_20d")  # None if key absent (insufficient bars)
-
-    if vol_ratio is None or (isinstance(vol_ratio, float) and math.isnan(vol_ratio)):
-        pass  # no volume signal available — insufficient bar history
-    elif vol_ratio > h.vol_ratio_breakout:
-        factors.append("vol_breakout")
-    elif vol_ratio < h.vol_ratio_dry_up:
-        factors.append("vol_dry_up")
-
-    # --- Trend regime: golden / death cross (Bug #13) ------------------------
-    # The extractor populates these flags when ratios are available. Surface
-    # them as corroborating factors so the strategist can weigh the
-    # medium-term regime alongside the short-term RSI / momentum reads.
-    #
-    # ``.get(..., 0.0)`` guards the live behaviour where ratios are absent and
-    # the extractor omits the keys entirely (see ``_emit_ratios_features``).
-    golden = features.get("golden_cross", 0.0) >= 1.0
-    death  = features.get("death_cross",  0.0) >= 1.0
-
-    if golden:
-        factors.append("golden_cross")
-
-    if death:
-        factors.append("death_cross")
-
-    # Phase-13 fix: regime-aware lean suppression.
-    #
-    # The bearish lean is anti-predictive in this large-cap universe and worst
-    # of all when the name is simultaneously in a confirmed up-trend regime
-    # (``bearish + golden_cross`` posted a 21 % down-rate / +2.23 % mean +20d in
-    # the audit).  A modest negative 20-day blip inside a multi-month uptrend is
-    # noise, not a reversal — so when the golden cross holds we downgrade the
-    # bearish call to neutral rather than propagating it.
-    #
-    # The symmetric case is mirrored: a bullish lean against a confirmed
-    # down-trend (``bullish + death_cross``, n=24) replayed at a 46 % up-rate
-    # and −0.71 % mean +20d — a fading bounce.  Suppressing it lifted the overall
-    # bullish +20d hit rate (58.4 % → 59.5 %) with no downside, so it is gated on
-    # by default too.
-    #
-    # Placed AFTER the RSI capitulation block so a genuine capitulation flip
-    # (bearish → bullish) is never clobbered: if the lean has already moved there
-    # is nothing for the same-direction gate to suppress.  Both gates are config-
-    # toggled so the regime-blind behaviour can be restored without a code change.
-    if (
-        h.suppress_bearish_under_golden_cross
-        and lean == "bearish"
-        and golden
-    ):
-        lean = "neutral"
-        factors.append("bearish_suppressed_golden_cross")
-
-    if (
-        h.suppress_bullish_under_death_cross
-        and lean == "bullish"
-        and death
-    ):
-        lean = "neutral"
-        factors.append("bullish_suppressed_death_cross")
-
-    # --- 52-week proximity ---------------------------------------------------
-    # dist_from_high_52w_pct is negative — negate to get a positive "distance".
     dist_high = features.get("dist_from_high_52w_pct", -100.0)
     dist_low  = features.get("dist_from_low_52w_pct",   100.0)
 
@@ -850,79 +739,13 @@ def derive_technical_verdict(
     if dist_low <= h.near_52w_extreme_pct:
         factors.append("near_52w_low")
 
-    # --- High volatility flag ------------------------------------------------
-    if features["atr_pct_14"] > h.atr_high_volatility_pct:
-        factors.append("high_volatility")
+    if features.get("golden_cross", 0.0) >= 1.0:
+        factors.append("golden_cross")
 
-    # --- Magnitude -----------------------------------------------------------
-    # Base: scale the 20d momentum, then apply volume adjustments.
-    magnitude = min(abs(pct20) * h.pct_change_momentum_scale, h.magnitude_cap)
+    if features.get("death_cross", 0.0) >= 1.0:
+        factors.append("death_cross")
 
-    if "vol_breakout" in factors:
-        magnitude = min(magnitude + 0.15, h.magnitude_cap)
-
-    if "vol_dry_up" in factors:
-        magnitude = max(magnitude - 0.10, 0.0)
-
-    # --- Confidence ----------------------------------------------------------
-    confidence = h.confidence_base
-
-    if "momentum_agree" in factors:
-        confidence += h.confidence_boost_step
-
-    # 52-week proximity confidence boost.
-    #
-    # Phase-13 fix: the boost is now *directional* — it only fires when the
-    # proximity corroborates the lean, because the audit found the
-    # unconditional ``near_52w_low`` boost actively harmful on bearish names
-    # (35 % down-rate vs 51 % without it; it lifted confidence to 0.90 on the
-    # very names most likely to mean-revert up).  Proximity to the low is a
-    # bounce zone, so it only adds conviction to a *bullish* lean.  Proximity
-    # to the high corroborates a bullish (momentum-continuation) lean.
-    #
-    # The context factors themselves are still emitted (above) regardless of
-    # lean — only the confidence arithmetic is gated here.  Gated by config so
-    # the legacy unconditional boost can be restored without a code change.
-    if h.directional_52w_confidence:
-        # Boost only when 52-week proximity supports the (bullish) lean.
-        if lean == "bullish" and ("near_52w_high" in factors or "near_52w_low" in factors):
-            confidence += h.confidence_boost_step
-    else:
-        # Legacy behaviour: either extreme proximity boosts conviction.
-        if "near_52w_high" in factors or "near_52w_low" in factors:
-            confidence += h.confidence_boost_step
-
-    if "high_volatility" in factors:
-        confidence -= h.confidence_penalty_step
-
-    confidence = max(0.0, min(1.0, confidence))
-
-    # Phase-13 fix: damp confidence on borderline directional calls.
-    #
-    # The analyst is stateless per tick, so the ±band cliff cannot be smoothed
-    # with true hysteresis.  Instead we scale confidence by how far the 20-day
-    # return cleared the neutral band: a call that only just escaped the band
-    # is a likely whipsaw and should be low-confidence, whereas a call well
-    # beyond the band keeps full confidence.  The ramp runs linearly from
-    # ``momentum_band_confidence_floor`` at the band edge to 1.0 at twice the
-    # band width.  Neutral leans carry no directional confidence to damp, so
-    # they are left untouched.
-    if (
-        lean != "neutral"
-        and h.momentum_band_confidence_floor < 1.0
-        and h.momentum_neutral_band_pct > 0.0
-    ):
-        band = h.momentum_neutral_band_pct
-        # Distance beyond the band, normalised to one band-width; clamped [0, 1].
-        excess = max(0.0, min((abs(pct20) - band) / band, 1.0))
-        floor  = h.momentum_band_confidence_floor
-        ramp   = floor + (1.0 - floor) * excess
-        confidence = max(0.0, min(1.0, confidence * ramp))
-
-    # --- Rationale -----------------------------------------------------------
-    # Deterministic extractors carry their prose exclusively in ``rationale``
-    # (A-016): a compact ", "-joined factor list, capped at 160 chars.
-    # ``report`` is left None — LLM analysts own that surface.
+    # --- Rationale (A-016): compact ", "-joined factor list, capped 160 chars -
     rationale = (", ".join(factors) or "neutral")[:160]
 
     return AnalystVerdict(
@@ -932,4 +755,5 @@ def derive_technical_verdict(
         rationale=rationale,
         key_factors=factors,
         is_no_data=False,
+        horizon_days=h.reversal_horizon_days,
     )
