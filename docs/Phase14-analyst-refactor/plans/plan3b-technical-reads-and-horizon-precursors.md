@@ -915,13 +915,32 @@ bullet, and `trend_state` right after the golden/death-cross pair:
 (Both keys are nullable — absent bullets are silently skipped by `_render_features`, so
 tickers without ratios/history simply omit these lines.)
 
-- [ ] **Step 5: Run to verify it passes**
+- [ ] **Step 5: Sweep the stale rationale-tag comment**
+
+The reversal rewrite (Task 3) stops emitting the `rsi_overbought` rationale tag, so the
+example comment in `strategist_prompt.py` referring to it is now stale. Find the comment
+line reading:
+
+```python
+          -> Rationale tags: trend_up_20d, rsi_overbought
+```
+
+and update it to reference the tags the rewritten verdict actually emits:
+
+```python
+          -> Rationale tags: reversal_up_fade, vol_regime_elevated, trend_above_ma200
+```
+
+(This is documentation hygiene only — verified during planning as the sole remaining
+reference to a retired field outside the two rewrite targets; there is no live consumer.)
+
+- [ ] **Step 6: Run to verify it passes**
 
 Run: `PYTHONPATH=src .venv/bin/python -m pytest tests/unit/contract/test_strategist_prompt_layout.py -v`
 Expected: PASS. If a pre-existing layout test asserts an exact `TECHNICAL_BULLETS` length or
 an exact rendered-block snapshot, update its expected value to include the two new bullets.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add src/contract/strategist_prompt.py tests/unit/contract/test_strategist_prompt_layout.py
@@ -1033,14 +1052,40 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
   the sole inflation method, now horizon-injecting. `AnalystVerdict.horizon_days` stays
   (`default=1, ge=1`) for the deterministic/no-data/synthesised paths.
 
-- [ ] **Step 1: Confirm the cross-plan assumption (no cached LLM verdicts)**
+> **Assumption VERIFIED during planning (2026-07-17) — re-confirm only if the codebase has
+> moved on.** Three facts, checked before this plan was finalised, make the field removal
+> safe:
+> 1. **Golden cache stores provider data only.** Its tables (`src/backtest/cache/schema.py`)
+>    are `ohlcv_bars, company_ratios, filings, news_articles, insider_trades,
+>    politician_trades, notable_holders` (+ `cache_runs`, `meta`). There is **no** verdict or
+>    evidence table — no cached `LlmTickerVerdict` is ever re-validated on replay.
+> 2. **`AnalystEvidenceRow` is a run-artifact DB, not a replay source.** It lives in
+>    `src/orchestrator/persistence.py`, is written *live* during a run from the **canonical
+>    `AnalystVerdict`** (which *keeps* `horizon_days`), and is read post-hoc by
+>    `src/backtest/scoreboard.py` for scoring only. It is never fed back into the pipeline,
+>    so dropping the field from the *emit* schema does not touch it.
+> 3. **`raw_v` is a run-scoped ADK `temp:` key** (`temp:news_verdict_<TICKER>` /
+>    `temp:fundamental_verdict_<TICKER>`), written and consumed inside the *same* run — no
+>    payload carrying the old field survives into a future run.
+>
+> **Ordering caveat (do NOT run a live LLM pipeline mid-branch).** `LlmTickerVerdict` is
+> `extra="forbid"`, and until Tasks 7/8 strip the prompt the LLM still *emits* `horizon_days`.
+> So Task 6 (schema drops the field → forbidden) and Tasks 7/8 (prompt stops emitting it) are
+> **coupled**: between those commits a *live* LLM run would raise a `ValidationError` in one
+> direction or the other. This does not bite us — there is no live/paper instance
+> (pre-deployment), the eval runs only after everything merges, and every per-task test is
+> self-contained (each builds its own `raw_v` and stays green at its own commit boundary). The
+> executor must simply **not fire a live/paper analyst pipeline on a half-applied branch**;
+> per-task `pytest` runs are fine throughout.
 
-Run: `grep -rn "temp:news_verdict_\|temp:fundamental_verdict_\|LlmTickerVerdict" src/backtest/ src/agents/analysts/`
-Expected: the `temp:*_verdict_*` keys are written by the live analyst branches and read by
-the joiners **within the same run**; the backtest cache/providers do **not** persist
-`LlmTickerVerdict` payloads. If this is NOT the case (a cached/replayed verdict path
-exists), STOP — removing the field would break re-validation of stale payloads; raise it
-before proceeding.
+- [ ] **Step 1: Re-confirm the assumption (fast sanity check)**
+
+Run: `grep -rln "verdict\|evidence" src/backtest/cache/schema.py; grep -rn "temp:news_verdict_\|temp:fundamental_verdict_\|LlmTickerVerdict" src/backtest/ src/agents/analysts/`
+Expected: the first grep prints **nothing** (no verdict/evidence table in the golden-cache
+schema); the second shows the `temp:*_verdict_*` keys written by the live analyst branches
+and read by the joiners **within the same run**, with no backtest-cache persistence of
+`LlmTickerVerdict` payloads. If either expectation fails (a cached/replayed verdict path has
+appeared since planning), STOP and raise it before proceeding.
 
 - [ ] **Step 2: Write the failing tests**
 
