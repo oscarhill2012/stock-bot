@@ -252,6 +252,56 @@ def _death_cross_band(v: float) -> str:
     return "(death cross)" if v >= 1.0 else ""
 
 
+def _vol_regime_band(v: float) -> str:
+    """Prose annotation for the ATR%-vs-own-history volatility z-score.
+
+    Read 2 of the technical rebuild.  A positive z means the ticker is more
+    volatile than its own recent history (stressed regime); a negative z means
+    calmer than usual.  Qualitative only — the ``vol_regime_elevated`` verdict
+    tag carries the config-driven threshold; this annotation gives the
+    strategist a plain-language read of the number.
+
+    Parameters
+    ----------
+    v:
+        ``vol_regime_z`` feature value (standard deviations from the trailing
+        mean of ATR%).
+
+    Returns
+    -------
+    str
+        ``"(elevated vs own history)"`` at or above +1.5,
+        ``"(calm vs own history)"`` at or below -1.5, else ``"(normal)"``.
+    """
+    if v >= 1.5:
+        return "(elevated vs own history)"
+
+    if v <= -1.5:
+        return "(calm vs own history)"
+
+    return "(normal)"
+
+
+def _trend_state_band(v: float) -> str:
+    """Prose annotation for the continuous distance from the 200-day MA.
+
+    Read 3 of the technical rebuild.  Persistent regime context: price above
+    the 200-day MA is a structural up-trend, below is a structural down-trend.
+    Surfaced as context only — it does NOT drive the technical lean.
+
+    Parameters
+    ----------
+    v:
+        ``trend_state`` feature value (signed fraction; 0.05 = 5 % above MA200).
+
+    Returns
+    -------
+    str
+        ``"(above 200d MA)"`` when non-negative, else ``"(below 200d MA)"``.
+    """
+    return "(above 200d MA)" if v >= 0 else "(below 200d MA)"
+
+
 def _planned_sale_band(v: float) -> str:
     """Return a neutralisation annotation for 10b5-1 planned-sale ratios.
 
@@ -372,10 +422,14 @@ TECHNICAL_BULLETS: list[_BulletEntry] = [
     # other reads as a plain "0.0" the LLM can ignore.
     ("golden_cross",           "Trend regime (golden):",   _plain,              _golden_cross_band),
     ("death_cross",            "Trend regime (death):",    _plain,              _death_cross_band),
+    # Read 3 — trend state: continuous distance of price from the 200-day MA.
+    ("trend_state",            "Trend vs 200d MA:",        _pct_signed,         _trend_state_band),
     # Volume relative to 20-day average.
     ("vol_ratio_20d",          "Volume vs 20d avg:",       _ratio,              None),
     # ATR as % of close — volatility gauge.
     ("atr_pct_14",             "ATR%(14):",                _plain,              None),
+    # Read 2 — volatility regime: z-score of ATR% vs the ticker's own history.
+    ("vol_regime_z",           "Volatility regime (z):",   _plain,              _vol_regime_band),
     # Beta-aware confidence damping factor (Bug #15a). Emitted by the
     # extractor as ``1.0 / (1.0 + abs(beta - 1.0))`` — peaks at 1.0 for a
     # beta of exactly 1 and decays symmetrically as the ticker becomes more
@@ -702,7 +756,7 @@ def render_ticker_block(te: TickerEvidence) -> str:
           RSI(14):                  76.0   (overbought)
           20d momentum:             +12.3%
           ...
-          -> Rationale tags: trend_up_20d, rsi_overbought
+          -> Rationale tags: reversal_up_fade, vol_regime_elevated, trend_above_ma200
 
         [Fundamental]  lean: bearish  magnitude: 0.60  confidence: 0.70
           ...

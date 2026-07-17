@@ -999,6 +999,19 @@ def test_deployment_readout_placeholder_present_in_raw_template() -> None:
     )
 
 
+def test_technical_block_renders_vol_regime_and_trend_state():
+    """The technical bullets render the two new reads with prose interpreters."""
+    from contract.strategist_prompt import _render_features, TECHNICAL_BULLETS
+
+    feats = {"vol_regime_z": 2.4, "trend_state": 0.12}
+    lines = "\n".join(_render_features(feats, TECHNICAL_BULLETS))
+
+    assert "Volatility regime (z):" in lines
+    assert "(elevated vs own history)" in lines
+    assert "Trend vs 200d MA:" in lines
+    assert "(above 200d MA)" in lines
+
+
 def test_deployment_readout_placeholder_positioned_in_deployment_posture() -> None:
     """The ``{temp:deployment_readout}`` placeholder must sit inside ``## Deployment posture``.
 
