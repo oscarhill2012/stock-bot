@@ -23,6 +23,7 @@ from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event, EventActions
 
+from config.analysts import get_analysts_config
 from contract.evidence import (
     AnalystEvidence,
     AnalystVerdict,
@@ -98,7 +99,9 @@ class FundamentalJoinerAgent(BaseAgent):
                 # via the sole canonical-conversion method.  Raises loudly if the
                 # post-conversion canonical shape is invalid.
                 llm_v = LlmTickerVerdict.model_validate({**raw_v, "ticker": ticker})
-                ticker_verdict = llm_v.to_ticker_verdict()
+                ticker_verdict = llm_v.to_ticker_verdict(
+                    horizon_days=get_analysts_config().fundamental.filing_delta_horizon_days,
+                )
                 verdict = AnalystVerdict.model_validate(
                     {k: v for k, v in ticker_verdict.model_dump().items() if k != "ticker"}
                 )

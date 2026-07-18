@@ -321,8 +321,9 @@ async def test_news_joiner_verdict_evidence_consistency():
 
 
 @pytest.mark.asyncio
-async def test_joiner_propagates_horizon_days_into_the_verdict_batch():
-    """horizon_days must survive the joiner's validate→inflate→dump round trip.
+async def test_joiner_injects_config_horizon_days_into_the_verdict_batch():
+    """horizon_days is injected by the joiner from config — the LLM no longer
+    emits it (Phase 14 Task 6).
 
     ``InMemorySessionService`` strips every ``temp:``-prefixed key from the
     ``state=`` kwarg passed to ``create_session`` (see
@@ -330,6 +331,10 @@ async def test_joiner_propagates_horizon_days_into_the_verdict_batch():
     caveat) — so ``temp:news_verdict_AAPL`` has to be injected directly onto
     ``session.state`` *after* the session exists, not via the constructor.
     """
+    from config.analysts import get_analysts_config
+
+    expected_horizon = get_analysts_config().news.drift_horizon_days
+
     svc = InMemorySessionService()
     session = await svc.create_session(
         app_name="test",
@@ -349,7 +354,6 @@ async def test_joiner_propagates_horizon_days_into_the_verdict_batch():
         "magnitude": 0.4,
         "confidence": 0.6,
         "is_no_data": False,
-        "horizon_days": 5,
         "key_factors": ["catalyst:earnings"],
         "report": {
             "summary": "Genuine positive surprise; positioning for drift.",
@@ -370,4 +374,4 @@ async def test_joiner_propagates_horizon_days_into_the_verdict_batch():
     events = [ev async for ev in agent.run_async(ctx)]
 
     batch = events[-1].actions.state_delta["news_verdicts"]
-    assert batch["verdicts"][0]["horizon_days"] == 5
+    assert batch["verdicts"][0]["horizon_days"] == expected_horizon

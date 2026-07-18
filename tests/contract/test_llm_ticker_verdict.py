@@ -72,7 +72,6 @@ def _valid_emit_payload(**overrides: object) -> dict[str, object]:
         "magnitude":   0.5,
         "confidence":  0.6,
         "is_no_data":  False,
-        "horizon_days": 5,
         "key_factors": ["catalyst:earnings_beat"],
         "report":      _valid_report().model_dump(),
     }
@@ -214,8 +213,9 @@ def test_llm_emit_inflates_into_downstream_ticker_verdict() -> None:
 
     downstream = TickerVerdict.model_validate(emit.model_dump())
 
-    assert downstream.ticker    == "AAPL"
-    assert downstream.rationale == ""             # default — LLM no longer emits
+    assert downstream.ticker      == "AAPL"
+    assert downstream.rationale   == ""             # default — LLM no longer emits
+    assert downstream.horizon_days == 1             # default — LLM no longer emits; joiner injects it
     assert downstream.report is not None
     assert downstream.report.summary.startswith("Test summary")
 
@@ -296,36 +296,34 @@ def test_to_ticker_verdict_is_sole_inflate_site() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Phase 14: horizon_days — shared drift-horizon field
+# Phase 14: horizon_days — injected by the joiner, not emitted by the LLM
 # ---------------------------------------------------------------------------
 
 
-def test_horizon_days_is_required_on_the_llm_emit():
-    """The news prompt must commit to a horizon — the schema enforces it."""
-    payload = _valid_emit_payload()
-    del payload["horizon_days"]
+def test_horizon_days_is_rejected_on_the_llm_emit():
+    """The LLM emit schema no longer carries horizon_days — extra="forbid" rejects it."""
+    payload = _valid_emit_payload(horizon_days=5)
 
     with pytest.raises(ValidationError):
         LlmTickerVerdict.model_validate(payload)
 
 
-def test_horizon_days_must_be_at_least_one_trading_day():
-    """A zero or negative horizon is meaningless — ge=1 rejects it."""
+def test_to_ticker_verdict_carries_injected_horizon_days():
+    """Inflation stamps the caller-supplied horizon onto the canonical shape."""
     payload = _valid_emit_payload()
-    payload["horizon_days"] = 0
-
-    with pytest.raises(ValidationError):
-        LlmTickerVerdict.model_validate(payload)
-
-
-def test_to_ticker_verdict_carries_horizon_days():
-    """Inflation to the full TickerVerdict must not drop the horizon."""
-    payload = _valid_emit_payload()
-    payload["horizon_days"] = 7
 
     verdict = LlmTickerVerdict.model_validate(payload)
 
-    assert verdict.to_ticker_verdict().horizon_days == 7
+    assert verdict.to_ticker_verdict(horizon_days=7).horizon_days == 7
+
+
+def test_to_ticker_verdict_requires_horizon_days_keyword():
+    """Omitting the keyword must raise — the caller must always inject a config value."""
+    payload = _valid_emit_payload()
+    verdict = LlmTickerVerdict.model_validate(payload)
+
+    with pytest.raises(TypeError):
+        verdict.to_ticker_verdict()  # type: ignore[call-arg]
 
 
 def test_analyst_verdict_defaults_horizon_to_one_day():

@@ -128,10 +128,12 @@ class AnalystVerdict(BaseModel):
     key_factors: list[str] = Field(default_factory=list, max_length=8)
     is_no_data: bool = False
 
-    # Phase 14: how many TRADING DAYS the analyst expects this lean
-    # to remain valid.  Deterministic analysts recompute every tick and keep
-    # the default of 1; drift-aware analysts (news, macro) state it
-    # explicitly — ~5 for a fresh surprise, longer for drift continuation.
+    # How many TRADING DAYS the analyst expects this lean to remain valid.
+    # Populated deterministically: the technical extractor writes
+    # ``reversal_horizon_days``; the news and fundamental joiners inject their
+    # config horizons via ``LlmTickerVerdict.to_ticker_verdict(horizon_days=…)``.
+    # The default of 1 covers the no-data / synthesised-neutral branches only —
+    # the LLM no longer self-reports this field.
     horizon_days: int = Field(default=1, ge=1)
 
     # New in Phase 5 redesign: LLM analysts populate this; deterministic
@@ -330,17 +332,6 @@ class LlmTickerVerdict(BaseModel):
     # silently omitted the field.
     is_no_data: bool
 
-    # Trading days the lean should hold.  REQUIRED — the emit schema never
-    # lets the model lazily omit a structured commitment.  Inflation to
-    # TickerVerdict carries it across via model_dump()/model_validate().
-    # Vertex's constrained decoder omits optional fields, and an omitted
-    # horizon would silently collapse to the canonical default (1) and
-    # flatten every long-horizon signal — the exact silent-degradation class
-    # this codebase raises on.  The fundamental prompt (Task 6) instructs a
-    # fixed config-driven value (``filing_delta_horizon_days``); the news
-    # prompt emits 1 until Plan 3's rebuild reframes it.
-    horizon_days: int = Field(ge=1)
-
     # Closed-vocabulary tags — short, structured, list-bounded.  Declared
     # before ``report`` so the model commits the tags while still on-task.
     key_factors: list[str] = Field(default_factory=list, max_length=8)
@@ -363,44 +354,46 @@ class LlmTickerVerdict(BaseModel):
             raise ValueError("ticker must be a non-empty string")
         return self
 
-    def to_ticker_verdict(self) -> TickerVerdict:
+    def to_ticker_verdict(self, *, horizon_days: int) -> TickerVerdict:
         """Inflate this narrow LLM emit-schema into the canonical TickerVerdict.
 
         Sole conversion point between the LLM emit-shape and the downstream
-        canonical shape — every joiner and consumer goes through this method,
-        so the strict-shape boundary is named and singular.
+        canonical shape — every joiner and consumer goes through this method.
 
-        ``rationale`` defaults to ``""`` on the canonical side: LLM analysts no
-        longer emit it (the field's pad-toward-cap pressure was the root cause
-        of the 2026-05-25 repetition pathology — see this class's docstring).
-        Deterministic analysts populate ``rationale`` directly via
-        ``TickerVerdict(rationale=..., ...)`` and never traverse this method.
+        ``horizon_days`` is injected here as a REQUIRED keyword, sourced by the
+        caller from ``config/analysts.json`` (news → ``news.drift_horizon_days``;
+        fundamental → ``fundamental.filing_delta_horizon_days``).  The LLM no
+        longer self-reports it — a self-reported horizon was hallucinated and
+        silently collapsed long-horizon signals toward the default; making the
+        caller inject a config value keeps every analyst's horizon honest and
+        deterministic.
 
-        Returns:
-            TickerVerdict: the canonical downstream shape, with ``rationale``
-            defaulted to ``""`` and every LLM-emitted field carried across.
+        ``rationale`` defaults to ``""`` on the canonical side (LLM analysts do
+        not emit it).
 
-        Raises:
-            ValueError: if post-conversion the canonical shape would itself be
-                invalid (the ``AnalystVerdict._prose_surface_required_when_data_present``
-                validator fires) — re-raised so the failure site names the LLM,
-                not a downstream consumer. This is the loud-failure surface that
-                replaces the old silent
-                ``TickerVerdict.model_validate({**raw_v, "ticker": ticker})``
-                pattern duplicated across joiners.
+        Parameters
+        ----------
+        horizon_days:
+            Trading-day horizon to stamp on the canonical verdict.
+
+        Returns
+        -------
+        TickerVerdict
+            The canonical downstream shape.
+
+        Raises
+        ------
+        ValueError
+            If the post-conversion canonical shape is invalid (the
+            ``AnalystVerdict`` prose-surface validator fires) — re-raised so the
+            failure site names the LLM, not a downstream consumer.
         """
-
-        # ``model_dump`` strips Pydantic's runtime model and emits a plain dict;
-        # ``rationale`` is absent (the LLM never emitted it), so the canonical
-        # constructor takes the default "" — exactly the downstream contract.
-        #
-        # Schema-coupling invariant: this conversion relies on every field NAME
-        # on ``LlmTickerVerdict`` being a subset of ``TickerVerdict``'s field
-        # names.  ``TickerVerdict`` does not set ``extra="forbid"``, so a field
-        # renamed on one side without updating the other would silently default
-        # on the canonical side rather than raise — a future refactor must
-        # update both classes in lockstep.
+        # ``model_dump`` strips the runtime model to a plain dict; the LLM never
+        # emitted ``horizon_days`` (removed from this schema) so we set it from
+        # the injected keyword before validating the canonical shape.
         payload = self.model_dump()
+        payload["horizon_days"] = horizon_days
+
         return TickerVerdict.model_validate(payload)
 
 

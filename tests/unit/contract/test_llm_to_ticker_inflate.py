@@ -26,7 +26,6 @@ def _make_llm_verdict(*, is_no_data: bool = False, report=None) -> LlmTickerVerd
         lean        = "bullish",
         magnitude   = 0.5,
         confidence  = 0.5,
-        horizon_days = 60,
         is_no_data  = is_no_data,
         key_factors = ["x"],
         report      = report,
@@ -37,7 +36,7 @@ def test_to_ticker_verdict_returns_canonical_shape():
     """LlmTickerVerdict.to_ticker_verdict yields a TickerVerdict with the same ticker."""
 
     llm = _make_llm_verdict()
-    canonical = llm.to_ticker_verdict()
+    canonical = llm.to_ticker_verdict(horizon_days=1)
 
     assert isinstance(canonical, TickerVerdict)
     assert canonical.ticker     == "AAPL"
@@ -63,7 +62,7 @@ def test_to_ticker_verdict_propagates_is_no_data_branch():
     """
 
     llm = _make_llm_verdict(is_no_data=True)
-    canonical = llm.to_ticker_verdict()
+    canonical = llm.to_ticker_verdict(horizon_days=1)
 
     assert isinstance(canonical, TickerVerdict)
     assert canonical.is_no_data is True
@@ -75,7 +74,7 @@ def test_inflate_does_not_silently_drop_fields():
     """Round-trip via model_dump produces no field drift between LLM and canonical."""
 
     llm = _make_llm_verdict()
-    canonical = llm.to_ticker_verdict()
+    canonical = llm.to_ticker_verdict(horizon_days=1)
     dumped = canonical.model_dump()
 
     # The five LLM-emitted scalar fields must match by value.
@@ -85,33 +84,29 @@ def test_inflate_does_not_silently_drop_fields():
     assert dumped["report"]["summary"] == llm.report.summary
 
 
-def test_to_ticker_verdict_propagates_horizon_days():
-    """The emit-schema horizon must survive inflation to the canonical shape.
+def test_to_ticker_verdict_injects_horizon():
+    """horizon_days is injected as a keyword, not emitted by the LLM."""
 
-    Phase 14: the fundamental analyst emits horizon_days=60 (Lazy Prices
-    drift window); the strategist and scoreboard read it off TickerVerdict.
-    A silent drop here would flatten every long-horizon signal to the
-    canonical default of 1 — assert the positive value, not just presence.
-    """
     llm = _make_llm_verdict()
 
-    canonical = llm.to_ticker_verdict()
+    tv = llm.to_ticker_verdict(horizon_days=5)
+    assert tv.horizon_days == 5
 
-    assert canonical.horizon_days == 60
 
-
-def test_horizon_days_is_required_on_llm_emit():
-    """Omitting horizon_days must fail validation loudly.
-
-    Required-by-schema (not defaulted) so the JSON Schema sent to Vertex
-    marks it mandatory — the constrained decoder cannot take the shortest
-    legal path that omits it (2026-05-25 audit failure mode).
-    """
+def test_llm_ticker_verdict_rejects_horizon_days_field():
+    """horizon_days is no longer part of the emit schema (extra='forbid')."""
     import pytest
     from pydantic import ValidationError
 
-    payload = _make_llm_verdict().model_dump()
-    payload.pop("horizon_days")
-
     with pytest.raises(ValidationError):
-        LlmTickerVerdict.model_validate(payload)
+        LlmTickerVerdict(
+            ticker="AAPL", lean="bullish", magnitude=0.4, confidence=0.7,
+            is_no_data=False, horizon_days=5, key_factors=["x"],
+            report=AnalystReport(
+                summary="s",
+                drivers=[
+                    ReportDriver(name="d", direction="bull", weight=1.0, body="b"),
+                    ReportDriver(name="d2", direction="bear", weight=0.0, body="b2"),
+                ],
+            ),
+        )
