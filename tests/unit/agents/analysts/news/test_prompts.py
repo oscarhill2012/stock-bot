@@ -141,12 +141,14 @@ def test_instruction_honours_output_caps_from_config():
     )
 
 
-def test_instruction_demands_horizon_days():
-    """The drift prompt must require an explicit holding horizon."""
-    instruction = build_news_instruction(_vocab())
+def test_news_prompt_has_no_horizon_self_report():
+    """The news prompt no longer instructs the LLM to emit horizon_days."""
+    from agents.analysts.heuristics import load_heuristics
 
-    assert "horizon_days" in instruction
-    assert "trading days" in instruction
+    instr = build_news_instruction(load_heuristics().news_vocabulary)
+
+    assert "horizon_days" not in instr
+    assert "Set horizon_days to roughly 5" not in instr
 
 
 def test_decision_rule_is_surprise_plus_drift_not_sentiment_reaction():

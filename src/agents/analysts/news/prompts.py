@@ -71,11 +71,10 @@ expectations), not the headline's emotional tone.
 
 STEP 3 — DRIFT POSITIONING (use the PREVIOUSLY SEEN ages).
 - Fresh genuine surprise (0–1 days old): the drift window is just opening.
-  Lean WITH the surprise direction. Set horizon_days to roughly 5.
+  Lean WITH the surprise direction.
 - Existing drift, early/middle of the window (surprise 2–10 trading days
   ago per the PREVIOUSLY SEEN ages, no fresh contradiction): continuation
-  lean is justified at REDUCED magnitude and confidence; set horizon_days
-  to the remaining window (e.g. 3–15).
+  lean is justified at REDUCED magnitude and confidence.
 - Late or exhausted window (several weeks old, nothing fresh): the edge is
   gone — and stale news re-circulating without new facts mildly predicts
   REVERSAL, not continuation. Go neutral rather than chase.
@@ -85,11 +84,6 @@ STEP 3 — DRIFT POSITIONING (use the PREVIOUSLY SEEN ages).
 STEP 4 — NO SURPRISE AT ALL. Nothing fresh is genuine and no live drift
 window exists → lean neutral with low magnitude. Do NOT manufacture a lean
 from noise volume.
-
-horizon_days is REQUIRED: the number of TRADING DAYS you expect your lean
-to remain valid. ~5 for a fresh surprise; longer (up to ~15, matching the
-remaining-window range in STEP 3) only for mid-window drift continuation;
-1 for a neutral no-surprise verdict.
 
 OUTPUT CONTRACT — respond ONLY with a JSON object matching the schema.
 ``is_no_data`` and ``report`` are REQUIRED on every call, including when \
@@ -104,8 +98,6 @@ is_no_data=true — there is no shorter legal output. Field meanings:
   {ticker}; key_factors is then empty, but report is STILL REQUIRED — never
   null — carrying a one-line "no news in window" summary plus the two
   drivers described below, both noting the absence.
-- horizon_days: integer >= 1 — trading days the lean should hold (see
-  STEP 3).
 - key_factors: 0–8 tags, EXCLUSIVELY from this closed vocabulary —
   catalyst:<one of {catalyst_options}>, novelty:<one of {novelty_options}>,
   direction:<one of {direction_options}>, plus the bare tag "material" when
@@ -113,7 +105,7 @@ is_no_data=true — there is no shorter legal output. Field meanings:
 - report: REQUIRED on EVERY call, never null — including when
   is_no_data=true (see is_no_data above).
   - report.summary: <= {summary_max} characters — state the
-    surprise (or its absence), the drift-window position, and the horizon.
+    surprise (or its absence) and the drift-window position.
   - report.drivers: 2–4 entries. Give at least two, one per reasoning axis:
     (1) the SURPRISE — the genuine fresh surprise and its direction, or
     that none exists; (2) the DRIFT-WINDOW POSITION — where you are in a
@@ -131,7 +123,6 @@ SHAPE EXAMPLE (illustrative values only — never copy them):
   "magnitude": 0.45,
   "confidence": 0.7,
   "is_no_data": false,
-  "horizon_days": 5,
   "key_factors": ["catalyst:earnings", "novelty:high",
                   "direction:positive", "material"],
   "report": {{
