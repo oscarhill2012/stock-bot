@@ -39,9 +39,11 @@ class TechnicalHeuristics(_Frozen):
     """Neutral band for the contrarian 5-day reversal lean.
 
     ``pct_change_5d`` is a fractional return (0.03 = +3 %).  When
-    ``abs(pct_change_5d)`` is at or below this band the analyst abstains
+    ``abs(pct_change_5d)`` is strictly below this band the analyst abstains
     (``lean="neutral"``): the recent move is too small to be a mean-reversion
-    candidate.  Outside the band the lean is CONTRARIAN — it leans AGAINST the
+    candidate.  At or beyond the band edge (the edge is inclusive —
+    ``abs(pct5) == band`` already yields a directional lean at
+    ``reversal_confidence_base``) the lean is CONTRARIAN: it leans AGAINST the
     recent move (a recent up-move → bearish fade; a recent down-move → bullish
     bounce), inverting the old trend-following sign (Jegadeesh 1990; Lehmann
     1990).  Tune via ``config/analyst_heuristics.json`` without a code change.
