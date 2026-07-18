@@ -74,6 +74,9 @@ class PositionThesis(BaseModel):
     - ``thesis_last_updated_tick`` resets only on ``buy``/``update`` —
       never on ``no_action``, so the staleness counter measures real
       revisions, not passive confirmations.
+    - ``thesis_last_updated_at`` mirrors ``thesis_last_updated_tick`` in
+      lockstep — same reset sites, same ``as_of`` source — giving the
+      strategist a calendar date instead of a bare tick count.
 
     Note (iter-3)
     -------------
@@ -162,5 +165,19 @@ class PositionThesis(BaseModel):
             "measures real revisions, not passive confirmations or sizing "
             "changes.  Defaults to 0 for backward compatibility with existing "
             "fixtures that pre-date this field."
+        ),
+    )
+    thesis_last_updated_at: datetime | None = Field(
+        default=None,
+        description=(
+            "Calendar timestamp (UTC) of the tick at which the thesis was "
+            "last written or revised — the ``as_of`` companion to "
+            "``thesis_last_updated_tick``, giving the strategist a real date "
+            "rather than a bare tick count so it can reason about elapsed "
+            "calendar time.  Set at exactly the same reset sites as "
+            "``thesis_last_updated_tick``: ``buy`` (entry or add) and "
+            "``update`` stances only.  ``no_action`` and ``sell`` do NOT "
+            "reset this.  Defaults to ``None`` for backward compatibility "
+            "with fixtures that pre-date this field."
         ),
     )

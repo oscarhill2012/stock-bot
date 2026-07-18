@@ -100,6 +100,9 @@ def test_shim_yields_one_event_with_temp_prefixed_keys(populated_state: dict) ->
         # vs the 70–95% target band, injected into ## Deployment posture so the
         # model sees its actual exposure alongside the target guidance.
         "temp:deployment_readout",
+        # Change 1 (strategist now-anchor): the tick's as_of date, plain
+        # YYYY-MM-DD, printed near the top of ## Current State.
+        "temp:current_date",
     }
     assert set(delta.keys()) == expected_keys, (
         f"state_delta keys mismatch: {set(delta.keys())} vs {expected_keys}"
@@ -113,6 +116,37 @@ def test_shim_yields_one_event_with_temp_prefixed_keys(populated_state: dict) ->
     # recent-trades view is always a string — explicit empty-state copy when
     # no closes have happened yet.
     assert isinstance(delta["temp:recent_trades_view"], str)
+
+
+def test_shim_writes_current_date_from_tick_as_of(populated_state: dict) -> None:
+    """Change 1: the shim must inject ``temp:current_date`` from the tick's as_of.
+
+    The strategist prompt currently has no clock — today's date appears
+    nowhere in it, so it cannot reason about elapsed calendar time. The shim
+    must stamp a plain YYYY-MM-DD date string from ``state["as_of"]`` (the
+    same source already used for evidence recorded_at resolution) so the
+    prompt can print a "Date: YYYY-MM-DD" header.
+    """
+    shim = StrategistContextShim()
+
+    fake_session = MagicMock()
+    fake_session.state = populated_state  # as_of = 2026-05-20T13:30:00+00:00
+    fake_ctx = MagicMock()
+    fake_ctx.invocation_id = "inv-date"
+    fake_ctx.session = fake_ctx.session_service = fake_session
+
+    async def _drain() -> list:
+        events: list = []
+        async for ev in shim._run_async_impl(fake_ctx):
+            events.append(ev)
+        return events
+
+    events = asyncio.run(_drain())
+    delta = events[0].actions.state_delta
+
+    assert delta["temp:current_date"] == "2026-05-20", (
+        f"expected the tick's as_of date stamped plainly; got {delta.get('temp:current_date')!r}"
+    )
 
 
 def test_shim_accepts_iso_string_as_of(populated_state: dict) -> None:
@@ -286,12 +320,14 @@ def test_subsequent_tick_sets_flag_false() -> None:
     assert rendered["temp:first_tick_flag"] == "False"
 
 
-def test_held_view_shows_thesis_staleness() -> None:
-    """Held positions view shows ticks since the thesis last updated.
+def test_held_view_shows_thesis_updated_date_not_staleness_ticks() -> None:
+    """Held positions view shows a calendar date, not a tick-count staleness line.
 
-    The rendered ``temp:held_positions_view`` must contain the ticker symbol
-    and either an explicit "N ticks" staleness string or the word "stale".
-    Staleness is computed as ``current_tick_index - thesis_last_updated_tick``.
+    The strategist previously had no clock — "N ticks since last update" gives
+    it no way to reason about elapsed calendar time.  This replaces that line
+    with a concrete "Thesis updated: <date>" line sourced from
+    ``thesis_last_updated_at``, and removes the old ticks-since-update text
+    entirely (not both — the whole point is one clock, not two).
     """
     from agents.strategist.context_shim import StrategistContextShim
     from broker.portfolio import Portfolio
@@ -303,6 +339,7 @@ def test_held_view_shows_thesis_staleness() -> None:
                 "opened_price":             210.0,
                 "opened_at":                "2026-01-15T13:30:00+00:00",
                 "thesis_last_updated_tick": 1,
+                "thesis_last_updated_at":   "2026-05-04T13:30:00+00:00",
             }
         },
         "user:current_tick_index": 5,
@@ -311,8 +348,17 @@ def test_held_view_shows_thesis_staleness() -> None:
     shim = StrategistContextShim()
     rendered = shim.render(state)
     held = rendered["temp:held_positions_view"]
+
     assert "AAPL" in held
-    assert "4 ticks" in held or "stale" in held.lower()
+    assert "Thesis updated: 2026-05-04" in held, (
+        f"held view must render the calendar date the thesis was last updated; got: {held!r}"
+    )
+    assert "staleness" not in held.lower(), (
+        "the old tick-count staleness line must be removed, not kept alongside the date"
+    )
+    assert "ticks since last update" not in held.lower(), (
+        "the old tick-count staleness line must be removed, not kept alongside the date"
+    )
 
 
 def test_held_view_omits_horizon_target_stop() -> None:

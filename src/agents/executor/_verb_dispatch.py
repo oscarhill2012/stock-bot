@@ -27,9 +27,10 @@ Verb vocabulary (four-verb canonical form)
     no_action — explicit "considered, no change."  No broker call.
                 Refreshes the review trail on an existing row so the
                 audit shows the agent re-examined the ticker, but does
-                NOT reset ``thesis_last_updated_tick`` (staleness measures
-                real revisions, not passive confirmations).  No-op when
-                the agent has never written a thesis for the ticker.
+                NOT reset ``thesis_last_updated_tick`` / ``thesis_last_
+                updated_at`` (staleness measures real revisions, not
+                passive confirmations).  No-op when the agent has never
+                written a thesis for the ticker.
 
 Hallucinated stance handling
 ----------------------------
@@ -123,6 +124,9 @@ def apply_stance_to_thesis(
         ``thesis_last_updated_tick`` on ``buy`` and ``update`` stances so
         ``context_shim`` can render staleness.  Defaults to 0 for callers
         that do not yet carry the tick index (e.g. legacy tests).
+        ``as_of`` is written into the companion ``thesis_last_updated_at``
+        field at exactly the same reset sites, giving the strategist a
+        calendar date alongside the tick count.
 
     Returns
     -------
@@ -169,6 +173,7 @@ def apply_stance_to_thesis(
                     last_reviewed_at          = as_of,
                     last_reviewed_decision    = "buy",
                     thesis_last_updated_tick  = current_tick_index,
+                    thesis_last_updated_at    = as_of,
                 )
 
             else:
@@ -184,6 +189,7 @@ def apply_stance_to_thesis(
                     "last_reviewed_at":          as_of,
                     "last_reviewed_decision":    "buy",
                     "thesis_last_updated_tick":  current_tick_index,
+                    "thesis_last_updated_at":    as_of,
                 })
 
         case "sell":
@@ -242,6 +248,7 @@ def apply_stance_to_thesis(
                     last_reviewed_at          = as_of,
                     last_reviewed_decision    = "update",
                     thesis_last_updated_tick  = current_tick_index,
+                    thesis_last_updated_at    = as_of,
                 )
 
             else:
@@ -253,6 +260,7 @@ def apply_stance_to_thesis(
                     "last_reviewed_at":          as_of,
                     "last_reviewed_decision":    "update",
                     "thesis_last_updated_tick":  current_tick_index,
+                    "thesis_last_updated_at":    as_of,
                 })
 
         case "no_action":
@@ -276,7 +284,9 @@ def apply_stance_to_thesis(
             return prior_row.model_copy(update={
                 "last_reviewed_at":       as_of,
                 "last_reviewed_decision": "no_action",
-                # thesis_last_updated_tick deliberately NOT refreshed.
+                # thesis_last_updated_tick / thesis_last_updated_at deliberately
+                # NOT refreshed — no_action is a passive confirmation, not a
+                # revision of the thesis.
             })
 
         case _:

@@ -23,11 +23,20 @@ position from tick 2 onwards.  It asserts:
   (a) The Mode header text differs on ticks 2-5 vs tick 1 (cold-start
       vs incremental framing).
   (b) The Held Positions block is non-empty on ticks 2-5 — at minimum
-      it contains the seeded ticker symbol and the "Thesis staleness" line.
+      it contains the seeded ticker symbol and the "Thesis updated:" line.
 
 Together these prove the prompt is no longer tick-isomorphic; an LLM
 running against this surface cannot produce byte-identical rationale
 because the input itself differs.
+
+Strategist now-anchor update
+-----------------------------
+The per-thesis "Thesis staleness: N ticks since last update" line (driven
+by ``user:current_tick_index``) was replaced by a calendar-date line,
+"Thesis updated: YYYY-MM-DD" (sourced from ``thesis_last_updated_at``).
+This test now drives prompt diversity across ticks 2-5 via the new
+``temp:current_date`` header (Change 1's tick-date anchor) instead —
+``as_of`` advances a full day per tick so the header differs every time.
 """
 from __future__ import annotations
 
@@ -76,6 +85,9 @@ class _PromptRecorder:
             instruction
             .replace("{temp:strategist_mode}",          state.get("temp:strategist_mode", ""))
             .replace("{temp:held_positions_view}", state.get("temp:held_positions_view", ""))
+            # Change 1 — tick-date anchor; now the mechanism that defeats
+            # prompt isomorphism across ticks 2-5 (see module docstring).
+            .replace("{temp:current_date}",         state.get("temp:current_date", ""))
         )
         self.prompts.append(resolved)
 
@@ -151,9 +163,11 @@ async def test_multi_tick_backtest_produces_diverse_rationale() -> None:
         "smart_money_evidence": [],
     }
 
-    # Run 5 ticks at hourly cadence.
-    # ``user:current_tick_index`` increments per tick so the shim can compute
-    # thesis staleness (stale_ticks = current_tick_index - thesis_last_updated_tick).
+    # Run 5 ticks, one calendar day apart.
+    # ``as_of`` now drives prompt diversity via ``temp:current_date`` (Change
+    # 1's tick-date anchor) — a full-day step per tick guarantees the date
+    # header differs across every tick, replacing the old tick-count
+    # staleness mechanism.
     as_of_start = datetime(2026, 5, 1, 14, 0, tzinfo=UTC)
     for i in range(5):
         # Tick 1 — empty positions; ticks 2-5 — seeded.
@@ -163,7 +177,7 @@ async def test_multi_tick_backtest_produces_diverse_rationale() -> None:
             **base_state,
             "user:positions":        positions,
             "tick_id":               f"tick_{i + 1:03d}",
-            "as_of":                 as_of_start + timedelta(hours=i),
+            "as_of":                 as_of_start + timedelta(days=i),
             "user:current_tick_index": i,
         }
         await _run_one_tick(state=state, recorder=recorder)
@@ -207,13 +221,13 @@ async def test_multi_tick_backtest_produces_diverse_rationale() -> None:
             f"Tick {i} prompt does not render the seeded AVGO position"
         )
 
-        # Thesis-staleness line — proves the context_shim renderer
+        # Thesis-updated-date line — proves the context_shim renderer
         # was actually invoked and injected held-position data.
-        # (context_shim uses _render_positions_shim which shows
-        # "Thesis staleness: N ticks since last update" and splits held vs
-        # watched theses into two labelled sections.)
-        assert "Thesis staleness" in prompt, (
-            f"Tick {i} prompt is missing the Thesis staleness line"
+        # (context_shim's _render_positions_shim renders "Thesis updated:
+        # YYYY-MM-DD" — the calendar-date replacement for the old
+        # tick-count staleness line.)
+        assert "Thesis updated:" in prompt, (
+            f"Tick {i} prompt is missing the Thesis updated: line"
         )
 
         # And the flat-portfolio sentinel MUST NOT be present alongside
@@ -224,14 +238,14 @@ async def test_multi_tick_backtest_produces_diverse_rationale() -> None:
         )
 
     # ── Assertion 3 — prompts are not byte-identical across ticks 2-5 ────
-    # Thesis staleness (stale_ticks = user:current_tick_index -
-    # thesis_last_updated_tick) increments every tick because
-    # user:current_tick_index advances while thesis_last_updated_tick stays
-    # at 1.  This is sufficient to defeat byte-identical prompts and closes
-    # the "stuck on tick 1" pathology that Spec B was designed to fix.
+    # ``temp:current_date`` (Change 1's tick-date anchor) advances a full
+    # calendar day every tick, so the "Date:" header differs across all
+    # five ticks.  This is sufficient to defeat byte-identical prompts and
+    # closes the "stuck on tick 1" pathology that Spec B was designed to
+    # fix — the date anchor now does the job the tick-count staleness line
+    # used to do.
     unique_prompts = {p for p in ticks_n}
     assert len(unique_prompts) == len(ticks_n), (
         f"Ticks 2-5 produced only {len(unique_prompts)} unique prompts; "
-        f"expected {len(ticks_n)} — the Held-for evolution column "
-        f"should advance every tick"
+        f"expected {len(ticks_n)} — the Date header should advance every tick"
     )

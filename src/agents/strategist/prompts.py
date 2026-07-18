@@ -35,6 +35,14 @@ current invested fraction (e.g. "Capital deployed: 51% invested across
 the band — idle cash is bearish drag."), placed immediately inside the
 ``## Deployment posture`` section so the model sees its live exposure
 right next to the target guidance.
+
+The ``{temp:current_date}`` placeholder — also set by
+``StrategistContextShim`` — is the tick's ``as_of`` date as a plain
+``YYYY-MM-DD`` string (e.g. "2025-09-08"), printed at the top of
+``## Current State``.  Without it the model has no "now" anchor and
+cannot reason about elapsed calendar time (e.g. how many days are left
+on a drift opened N days ago).  Deliberately just the date substrate —
+no behavioural guidance is attached to it in this change.
 """
 from __future__ import annotations
 
@@ -161,6 +169,7 @@ per-ticker stance for the next trading hour.
 {temp:strategist_mode}
 
 ## Current State
+Date:         {temp:current_date}
 Portfolio:    {portfolio}
 {temp:memory_buffer}
 Day Digest:   {day_digest}

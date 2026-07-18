@@ -380,6 +380,111 @@ def test_update_stance_writes_thesis_last_updated_tick():
     )
 
 
+# ---------------------------------------------------------------------------
+# Strategist "now"-anchor: thesis_last_updated_at mirrors thesis_last_updated_tick
+# ---------------------------------------------------------------------------
+#
+# The strategist prompt has no clock — it cannot reason about elapsed calendar
+# time from a bare tick counter.  ``thesis_last_updated_at`` gives it a real
+# date, stamped from the tick's ``as_of`` at exactly the same reset sites as
+# ``thesis_last_updated_tick`` (buy + update only; never no_action).
+
+
+def test_buy_stance_writes_thesis_last_updated_at():
+    """A fresh ``buy`` (no prior row) must stamp thesis_last_updated_at to the tick's as_of."""
+
+    stance = TickerStance(ticker="AAPL", intent="buy", weight=0.03, rationale="x")
+    thesis = apply_stance_to_thesis(
+        stance,
+        prior_row          = None,
+        fill_price          = 100.0,
+        tick_id             = "tick-1",
+        as_of               = _TS,
+        current_tick_index  = 7,
+    )
+
+    assert thesis is not None
+    assert thesis.thesis_last_updated_at == _TS, (
+        "buy stance must stamp thesis_last_updated_at with the tick's as_of"
+    )
+
+
+def test_buy_add_stance_writes_thesis_last_updated_at():
+    """``buy`` on a live position (add) must also refresh thesis_last_updated_at."""
+
+    prior = _make_prior_row(weight=0.03)
+    new_ts = datetime(2026, 5, 24, tzinfo=UTC)
+    stance = TickerStance(
+        ticker="AAPL", intent="buy", weight=0.05, rationale="Adding on the dip",
+    )
+    thesis = apply_stance_to_thesis(
+        stance,
+        prior_row          = prior,
+        fill_price          = 145.0,
+        tick_id             = "tick-5",
+        as_of               = new_ts,
+        current_tick_index  = 12,
+    )
+
+    assert thesis is not None
+    assert thesis.thesis_last_updated_at == new_ts, (
+        "buy-add stance must bump thesis_last_updated_at to the tick's as_of"
+    )
+
+
+def test_update_stance_writes_thesis_last_updated_at():
+    """``update`` must stamp thesis_last_updated_at to the tick's as_of."""
+
+    prior = _make_prior_row(weight=0.08)
+    new_ts = datetime(2026, 5, 24, tzinfo=UTC)
+    stance = TickerStance(
+        ticker="AAPL", intent="update", rationale="Revised macro backdrop",
+    )
+    thesis = apply_stance_to_thesis(
+        stance,
+        prior_row          = prior,
+        fill_price          = None,
+        tick_id             = "tick-9",
+        as_of               = new_ts,
+        current_tick_index  = 9,
+    )
+
+    assert thesis is not None
+    assert thesis.thesis_last_updated_at == new_ts, (
+        "update stance must stamp thesis_last_updated_at with the tick's as_of"
+    )
+
+
+def test_no_action_does_not_change_thesis_last_updated_at():
+    """``no_action`` must NOT touch thesis_last_updated_at — only buy/update do.
+
+    Mirrors the existing thesis_last_updated_tick invariant: no_action is a
+    passive confirmation, not a revision, so both clocks must stay frozen.
+    """
+
+    original_ts = datetime(2026, 5, 1, tzinfo=UTC)
+    prior = _make_prior_row(
+        weight                    = 0.10,
+        thesis_last_updated_tick  = 3,
+        thesis_last_updated_at    = original_ts,
+    )
+
+    stance = TickerStance(ticker="AAPL", intent="no_action")
+    thesis = apply_stance_to_thesis(
+        stance,
+        prior_row          = prior,
+        fill_price          = None,
+        tick_id             = "tick-10",
+        as_of               = datetime(2026, 5, 10, tzinfo=UTC),
+        current_tick_index  = 10,
+    )
+
+    assert thesis is not None
+    assert thesis.thesis_last_updated_at == original_ts, (
+        "no_action must NOT change thesis_last_updated_at"
+    )
+
+
 def test_sell_trim_does_not_update_thesis_last_updated_tick():
     """apply_stance_to_thesis on a partial sell must NOT change thesis_last_updated_tick.
 

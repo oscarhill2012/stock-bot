@@ -25,9 +25,24 @@ Task 9 additions
   decide whether to emit one stance per watchlist ticker (first tick) or a
   focused incremental update.  Semantics: "True" = emit a full baseline.
 
-- The held-positions view now shows thesis staleness (ticks since the thesis
-  was last updated) and deliberately omits ``horizon``, ``target_price``, and
-  ``stop_price`` — those fields were removed in iter-3.
+- The held-positions view shows the calendar date the thesis was last
+  revised (``Thesis updated: YYYY-MM-DD``, sourced from
+  ``thesis_last_updated_at``) and deliberately omits ``horizon``,
+  ``target_price``, and ``stop_price`` — those fields were removed in
+  iter-3.  This replaced the earlier tick-count staleness line (see the
+  "now-anchor" note below) — the strategist gets one clock, not two.
+
+Strategist "now"-anchor
+-----------------------
+The strategist prompt previously had no clock: today's date appeared
+nowhere in it, and per-thesis freshness was shown only as a tick count.
+Two additions give it a real calendar anchor:
+
+- ``temp:current_date`` — the tick's ``as_of`` date (``YYYY-MM-DD``),
+  injected near the top of the prompt (``## Current State``) so the model
+  can reason about elapsed calendar time.
+- The per-thesis ``Thesis updated: YYYY-MM-DD`` line above, sourced from
+  ``PositionThesis.thesis_last_updated_at``.
 """
 from __future__ import annotations
 
@@ -216,9 +231,9 @@ class StrategistContextShim(BaseAgent):
           every subsequent tick so the placeholder renders to nothing and
           adds zero tokens.
         - ``temp:held_positions_view`` — the lightweight held-positions block
-          showing rationale, opened-at, current price/weight/P&L, and thesis
-          staleness in ticks.  Intentionally omits ``horizon``,
-          ``target_price``, ``stop_price`` (removed in iter-3).
+          showing rationale, opened-at, current price/weight/P&L, and the
+          calendar date the thesis was last updated.  Intentionally omits
+          ``horizon``, ``target_price``, ``stop_price`` (removed in iter-3).
         - ``temp:deployment_readout`` — a one-line live summary of the current
           invested fraction, positioned inside ``## Deployment posture`` so the
           model sees its actual exposure right next to the 70–95% target band.
@@ -259,13 +274,12 @@ class StrategistContextShim(BaseAgent):
             FIRST_TICK_PREAMBLE if first_tick_flag == "True" else INCREMENTAL_PREAMBLE
         )
 
-        # ── Lightweight held-positions view with staleness ────────────────
+        # ── Lightweight held-positions view with per-thesis last-updated date ──
         # A-014: read only the canonical user-namespaced key.  The
         # executor's bridge (temp:executor_positions_bridge) is
         # executor-internal and must never leak into the strategist's
         # held-view.
         positions = state.get("user:positions") or {}
-        current_tick_index: int = state.get("user:current_tick_index", 0) or 0
 
         # Portfolio carries live ``last_price`` per held ticker and the cash
         # balance — feed it through so the thesis-book renderer can compute
@@ -274,8 +288,7 @@ class StrategistContextShim(BaseAgent):
 
         held_view = _render_positions_shim(
             positions,
-            current_tick_index = current_tick_index,
-            portfolio          = portfolio,
+            portfolio = portfolio,
         )
 
         # ── Live deployment readout ────────────────────────────────────────
@@ -311,8 +324,12 @@ class StrategistContextShim(BaseAgent):
 
         The ``temp:held_positions_view`` value is produced by ``render()``
         via the ``_render_positions_shim`` helper below — the lightweight
-        thesis-book renderer that shows position state and rationale
-        and thesis staleness, and omits horizon/target/stop.
+        thesis-book renderer that shows position state, rationale, and
+        the thesis's last-updated calendar date, and omits horizon/target/stop.
+
+        Also writes ``temp:current_date`` — the tick's ``as_of`` date as a
+        plain ``YYYY-MM-DD`` string, giving the strategist prompt a "now"
+        anchor near the top (``## Current State``).
 
         Args:
             ctx: ADK invocation context; ``ctx.session.state`` is the
@@ -479,6 +496,13 @@ class StrategistContextShim(BaseAgent):
             invocation_id = ctx.invocation_id,
             actions       = EventActions(state_delta={
                 "temp:strategist_mode":         mode_text,
+                # Change 1 — "now"-anchor: the tick's as_of date, plain
+                # YYYY-MM-DD, injected near the top of the prompt (##
+                # Current State) so the strategist can reason about
+                # elapsed calendar time.  Reuses the same ``recorded_at``
+                # resolved above via resolve_as_of (backtest as_of >
+                # recorded_at > wall-clock) for a single source of truth.
+                "temp:current_date":            recorded_at.strftime("%Y-%m-%d"),
                 # Held-positions view, first-tick flag, and first-tick preamble
                 # from the pure render() helper — separated so unit tests can
                 # call render() directly without a fake InvocationContext.
@@ -579,7 +603,6 @@ def _render_deployment_readout(portfolio: Portfolio) -> str:
 def _render_positions_shim(
     positions: dict,
     *,
-    current_tick_index: int,
     portfolio: Portfolio | None = None,
 ) -> str:
     """Render the thesis book — one row per ticker the agent has a view on.
@@ -605,7 +628,9 @@ def _render_positions_shim(
       hallucination from iter-3 (the strategist had no way to know whether
       a position was up or down without manual arithmetic).
     - Rationale (the agent's current view; mutable)
-    - Thesis staleness in ticks
+    - Thesis last-updated date (calendar date the thesis was last
+      revised via ``buy``/``update`` — gives the strategist a real
+      clock instead of a bare tick count)
 
     Deliberately omits: ``horizon``, ``target_price``, ``stop_price`` —
     removed in iter-3.
@@ -614,9 +639,6 @@ def _render_positions_shim(
     ----------
     positions:
         Mapping of ticker → thesis dict (or PositionThesis instance).
-    current_tick_index:
-        The current backtest tick index, read from
-        ``state["user:current_tick_index"]``.  Used to compute staleness.
     portfolio:
         Optional live portfolio snapshot — when supplied, each
         ``[POSITION]`` row picks up its live price, current weight, and
@@ -646,6 +668,28 @@ def _render_positions_shim(
             return raw_val.strftime("%Y-%m-%d %H:%M")
         return "(unknown date)"
 
+    # ── Helper: format the thesis-last-updated date (date only, no time) ──
+    # Gives the strategist a real calendar anchor for "how long ago did I
+    # last revise this view" instead of a bare tick count — replaces the
+    # old "N ticks since last update" staleness line entirely.
+    def _fmt_updated_date(raw_val) -> str:
+        """Return a plain YYYY-MM-DD date string from a datetime or ISO string.
+
+        ``None`` covers thesis rows written before ``thesis_last_updated_at``
+        existed (backward-compat default) — rendered as an explicit sentinel
+        rather than a fabricated date.
+        """
+        if isinstance(raw_val, str):
+            try:
+                from datetime import datetime as _dt
+                raw_val = _dt.fromisoformat(raw_val)
+            except (TypeError, ValueError):
+                raw_val = None
+
+        if raw_val is not None and hasattr(raw_val, "strftime"):
+            return raw_val.strftime("%Y-%m-%d")
+        return "(unknown)"
+
     # ── Pre-compute NAV so per-ticker current weight is a single division.
     # NAV can be zero on cold-start fixtures — guard the division below.
     nav: float = portfolio.total_value if portfolio is not None else 0.0
@@ -669,8 +713,6 @@ def _render_positions_shim(
         state_tag    = "[POSITION]" if has_position else "[NO POSITION]"
 
         rationale    = data.get("rationale") or "(no rationale recorded)"
-        last_updated = data.get("thesis_last_updated_tick") or 0
-        stale_ticks  = max(current_tick_index - last_updated, 0)
 
         block_lines: list[str] = [f"{ticker} {state_tag}"]
 
@@ -714,9 +756,11 @@ def _render_positions_shim(
 
         block_lines.append(f"  Rationale:  {rationale}")
 
-        block_lines.append(
-            f"  Thesis staleness:  {stale_ticks} ticks since last update"
-        )
+        # Calendar date of the thesis's last revision (buy/update) — replaces
+        # the old tick-count staleness line so the strategist can reason
+        # about elapsed calendar time rather than an opaque tick counter.
+        updated_date = _fmt_updated_date(data.get("thesis_last_updated_at"))
+        block_lines.append(f"  Thesis updated: {updated_date}")
 
         # Blank line between ticker blocks for legibility.
         lines.append("\n".join(block_lines))

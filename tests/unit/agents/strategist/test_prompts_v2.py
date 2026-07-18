@@ -51,6 +51,30 @@ def test_template_has_first_tick_preamble_slot():
     )
 
 
+def test_template_has_current_date_slot():
+    """Change 1: the prompt must print the tick's date near ## Current State.
+
+    Without a date anchor the strategist cannot reason about elapsed calendar
+    time (e.g. "opened 4 days ago, ~16 days left on the drift"). The context
+    shim injects the tick's as_of as a plain YYYY-MM-DD string under
+    ``temp:current_date``; the template must reference it.
+    """
+    assert "{temp:current_date}" in STRATEGIST_INSTRUCTION, (
+        "Prompt must contain {temp:current_date} — the tick's date, near ## Current State"
+    )
+
+    # Must sit near the "## Current State" section (top of the prompt), not
+    # buried somewhere else — find the section header and check the date
+    # placeholder appears shortly after it.
+    idx_section = STRATEGIST_INSTRUCTION.index("## Current State")
+    idx_date    = STRATEGIST_INSTRUCTION.index("{temp:current_date}")
+    following   = STRATEGIST_INSTRUCTION[idx_section:idx_section + 200]
+    assert "{temp:current_date}" in following, (
+        "Date placeholder must appear near the top of ## Current State"
+    )
+    assert idx_date > idx_section
+
+
 def test_template_has_state_slots():
     """Every state slot resolved at ADK runtime is present in the template.
 
@@ -326,6 +350,7 @@ def test_template_renders_with_all_required_slots():
     # .format() can handle the remaining plain slots without colon confusion.
     template = (
         STRATEGIST_INSTRUCTION
+        .replace("{temp:current_date}",         "2026-05-20")
         .replace("{temp:strategist_mode}",      "Cold start — your portfolio is empty.")
         .replace("{temp:held_positions_view}",  "(No held positions — portfolio is flat.)")
         .replace("{temp:ticker_evidence}",      "AAPL\n  Aggregate: bullish (magnitude 0.42)")
