@@ -150,9 +150,6 @@ this exact order:
   is_no_data    boolean — true ONLY if BOTH the filings-prose block AND the
                 insider-activity block are empty for this ticker; false in
                 every other case (including ambiguous data).
-  horizon_days  integer — emit exactly {filing_horizon_days}.  This is the
-                trading-day drift window of the filing-delta signal
-                (3–6 months); it is fixed for this analyst.
   key_factors   list of closed-vocabulary tags — at least 1, at most 8.
   report        object with summary + drivers (schema below).  REQUIRED on
                 every emit, including when is_no_data=true (then summary is
@@ -183,7 +180,6 @@ SHAPE EXAMPLE (placeholders only — fill from the actual filings + insider data
   "magnitude": <0.0-1.0>,
   "confidence": <0.0-1.0>,
   "is_no_data": false,
-  "horizon_days": {filing_horizon_days},
   "key_factors": ["<closed-vocab tag>", "..."],
   "report": {{
     "summary": "<one short paragraph arguing the lean from the filing deltas>",

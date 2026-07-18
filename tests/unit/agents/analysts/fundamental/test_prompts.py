@@ -111,12 +111,17 @@ def test_instruction_honours_output_caps_from_config():
 
 
 def test_instruction_carries_filing_delta_horizon():
-    """The prompt must name horizon_days and the config-driven value (60).
+    """The prompt must name the config-driven drift-window value (60) in its
+    analytic prose, even though the LLM no longer self-reports it as an
+    emitted field.
 
-    Phase 14: the emit schema requires horizon_days; the prompt is where the
-    LLM learns WHAT to emit.  The value must come from config
-    (fundamental.filing_delta_horizon_days), never be hardcoded in the
-    template, so a config change re-tunes the horizon without a code edit.
+    Task 8 (Phase 14): ``horizon_days`` was removed from the emit schema
+    (``LlmTickerVerdict``) and from the OUTPUT CONTRACT / SHAPE EXAMPLE — the
+    horizon is now stamped onto the verdict in code, not self-reported by the
+    LLM.  The analytic drift-window prose (sign convention + "how to
+    analyse") still needs the config-driven trading-day figure so the LLM's
+    reasoning about ITS OWN horizon stays in sync with config, never
+    hardcoded in the template.
     """
     from config.analysts import get_analysts_config
 
@@ -124,7 +129,11 @@ def test_instruction_carries_filing_delta_horizon():
 
     horizon = get_analysts_config().fundamental.filing_delta_horizon_days
 
-    assert "horizon_days" in instruction
+    # The emit instruction is gone — the LLM is never told to output
+    # ``horizon_days`` as a field.
+    assert "horizon_days" not in instruction
+    # But the numeric drift-window value itself is still woven into the
+    # analytic prose (sign convention / "how to analyse" sections).
     assert str(horizon) in instruction
 
 
@@ -175,6 +184,20 @@ def test_prompt_describes_scale_and_diff_direction():
     # rewriting under similarity dedup).
     assert "Heavy survival across sections" not in instr
     assert "heavily rewritten filing = stronger bearish prior" not in instr
+
+
+def test_fundamental_prompt_has_no_horizon_emit_instruction():
+    """The fundamental prompt no longer tells the LLM to emit horizon_days."""
+    from agents.analysts.heuristics import load_heuristics
+    from agents.analysts.fundamental.prompts import build_fundamental_instruction
+
+    instr = build_fundamental_instruction(load_heuristics().fundamental_vocabulary)
+
+    # The emit field is gone from the OUTPUT CONTRACT and the shape example.
+    assert "horizon_days  integer" not in instr
+    assert '"horizon_days":' not in instr
+    # But the analytic drift-window prose (in trading days) is retained.
+    assert "trading days" in instr
 
 
 def test_prompt_marker_prefix_matches_filing_diff_code():
