@@ -529,7 +529,7 @@ def test_deterministic_verdict_no_longer_fabricates_report() -> None:
     h = TechnicalHeuristics(
         reversal_neutral_band_pct=0.03, reversal_magnitude_scale=8.0,
         reversal_confidence_base=0.5, reversal_horizon_days=7,
-        vol_regime_window=60, vol_regime_elevated_z=1.5,
+        vol_regime_window=60, vol_regime_extreme_z=1.5,
         vol_ratio_breakout=1.5, vol_ratio_dry_up=0.7,
         near_52w_extreme_pct=5.0, magnitude_cap=1.0,
     )
@@ -568,7 +568,7 @@ def test_no_data_branch_uses_canonical_builder() -> None:
     h = TechnicalHeuristics(
         reversal_neutral_band_pct=0.03, reversal_magnitude_scale=8.0,
         reversal_confidence_base=0.5, reversal_horizon_days=7,
-        vol_regime_window=60, vol_regime_elevated_z=1.5,
+        vol_regime_window=60, vol_regime_extreme_z=1.5,
         vol_ratio_breakout=1.5, vol_ratio_dry_up=0.7,
         near_52w_extreme_pct=5.0, magnitude_cap=1.0,
     )

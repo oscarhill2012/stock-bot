@@ -84,10 +84,13 @@ class TechnicalHeuristics(_Frozen):
     Engle 1982 / Bollerslev 1986).
     """
 
-    vol_regime_elevated_z: float = Field(gt=0.0)
-    """``abs(vol_regime_z)`` at or above which the ``vol_regime_elevated`` tag fires.
+    vol_regime_extreme_z: float = Field(gt=0.0)
+    """``abs(vol_regime_z)`` at or above which the ``vol_regime_extreme`` tag fires.
 
-    A risk flag only — it does NOT alter the reversal lean.
+    The threshold is applied to the *absolute* z, so the tag fires at either
+    tail — a stressed (high positive z) regime OR an unusually calm (large
+    negative z) one — hence "extreme" rather than "elevated".  A risk flag
+    only — it does NOT alter the reversal lean.
     """
 
     # ── Retained context knobs (drive corroborating TAGS only) ─────────────

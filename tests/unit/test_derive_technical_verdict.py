@@ -13,7 +13,7 @@ def _tech(**overrides) -> TechnicalHeuristics:
         reversal_confidence_base=0.5,
         reversal_horizon_days=7,
         vol_regime_window=60,
-        vol_regime_elevated_z=1.5,
+        vol_regime_extreme_z=1.5,
         vol_ratio_breakout=1.3,
         vol_ratio_dry_up=0.7,
         near_52w_extreme_pct=5.0,
@@ -84,7 +84,7 @@ def test_vol_regime_and_trend_are_tags_not_lean():
     )
     # Lean still driven ONLY by the reversal read.
     assert v.lean == "bearish"
-    assert "vol_regime_elevated" in v.key_factors
+    assert "vol_regime_extreme" in v.key_factors
     assert "trend_above_ma200" in v.key_factors
 
 

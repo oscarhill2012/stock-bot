@@ -257,7 +257,7 @@ def _vol_regime_band(v: float) -> str:
 
     Read 2 of the technical rebuild.  A positive z means the ticker is more
     volatile than its own recent history (stressed regime); a negative z means
-    calmer than usual.  Qualitative only — the ``vol_regime_elevated`` verdict
+    calmer than usual.  Qualitative only — the ``vol_regime_extreme`` verdict
     tag carries the config-driven threshold; this annotation gives the
     strategist a plain-language read of the number.
 
@@ -779,7 +779,7 @@ def render_ticker_block(te: TickerEvidence) -> str:
           RSI(14):                  76.0   (overbought)
           20d momentum:             +12.3%
           ...
-          -> Rationale tags: reversal_up_fade, vol_regime_elevated, trend_above_ma200
+          -> Rationale tags: reversal_up_fade, vol_regime_extreme, trend_above_ma200
 
         [Fundamental]  lean: bearish  magnitude: 0.60  confidence: 0.70
           ...

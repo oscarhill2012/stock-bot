@@ -32,7 +32,7 @@ def _valid_payload() -> dict:
             "reversal_confidence_base": 0.5,
             "reversal_horizon_days": 7,
             "vol_regime_window": 60,
-            "vol_regime_elevated_z": 1.5,
+            "vol_regime_extreme_z": 1.5,
             "vol_ratio_breakout": 1.3,
             "vol_ratio_dry_up": 0.7,
             "near_52w_extreme_pct": 5.0,
@@ -161,7 +161,7 @@ def test_technical_heuristics_new_three_reads_surface() -> None:
 
     # New volatility-regime knobs.
     assert 2 <= h.vol_regime_window <= 252
-    assert h.vol_regime_elevated_z > 0.0
+    assert h.vol_regime_extreme_z > 0.0
 
     # Retained context knobs.
     assert h.vol_ratio_breakout > 1.0

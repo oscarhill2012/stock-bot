@@ -125,7 +125,7 @@ Thresholds used by `derive_technical_verdict()`.
 | `technical.reversal_confidence_base` | float [0–1] | Confidence at the band edge for a directional reversal; ramps to 1.0 at twice the band width. Neutral leans carry 0.0. Default **0.5**. |
 | `technical.reversal_horizon_days` | int [1–60] | Trading-day horizon the reversal read targets (5–10d). Written onto `AnalystVerdict.horizon_days`. Default **7**. |
 | `technical.vol_regime_window` | int [2–252] | Trailing window (valid ATR% samples) for the volatility-regime z-score. Default **60**. |
-| `technical.vol_regime_elevated_z` | float > 0 | `abs(vol_regime_z)` at/above which the `vol_regime_elevated` risk tag fires. Default **1.5**. |
+| `technical.vol_regime_extreme_z` | float > 0 | `abs(vol_regime_z)` at/above which the `vol_regime_extreme` risk tag fires (either tail — stressed or unusually calm). Default **1.5**. |
 | `technical.vol_ratio_breakout` | float > 1 | Volume-ratio threshold for the `vol_breakout` context tag. Default **1.3**. |
 | `technical.vol_ratio_dry_up` | float (0–1) | Volume-ratio threshold for the `vol_dry_up` context tag. Default **0.7**. |
 | `technical.near_52w_extreme_pct` | float > 0 | Proximity (%) to the 52-week high/low for the `near_52w_high` / `near_52w_low` context tags. Default **5.0**. |

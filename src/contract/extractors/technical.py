@@ -713,9 +713,12 @@ def derive_technical_verdict(
         confidence = max(0.0, min(1.0, confidence))
 
     # === READ 2 — volatility regime (risk tag; NOT blended into the lean) ====
+    # Fires on the absolute z, so either tail trips it: a stressed (high
+    # positive z) regime OR an unusually calm (large negative z) one — hence
+    # the tag is named "extreme", not "elevated".
     vol_z = features.get("vol_regime_z")
-    if vol_z is not None and abs(vol_z) >= h.vol_regime_elevated_z:
-        factors.append("vol_regime_elevated")
+    if vol_z is not None and abs(vol_z) >= h.vol_regime_extreme_z:
+        factors.append("vol_regime_extreme")
 
     # === READ 3 — trend state (regime tag; NOT blended into the lean) ========
     trend = features.get("trend_state")
