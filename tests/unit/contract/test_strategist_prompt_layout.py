@@ -1035,3 +1035,38 @@ def test_deployment_readout_placeholder_positioned_in_deployment_posture() -> No
     assert readout_idx < holding_idx, (
         "{temp:deployment_readout} must appear before ### Holding discipline"
     )
+
+
+# ---------------------------------------------------------------------------
+# Tests — horizon precursor (churn root-cause fix)
+# ---------------------------------------------------------------------------
+#
+# The strategist was previously horizon-blind: a 3-6 month fundamental lean and
+# a ~1-week news lean read as equally urgent because neither analyst's horizon
+# was surfaced.  ``_render_analyst`` now renders a mechanistic, non-prescriptive
+# ``horizon:`` line straight after the header, sourced from the verdict's own
+# ``horizon_days`` (populated deterministically upstream — see evidence.py).
+# ---------------------------------------------------------------------------
+
+def test_analyst_block_renders_horizon_precursor():
+    """Each analyst header is followed by an honest, mechanistic horizon line."""
+    from contract.strategist_prompt import _render_analyst
+    from contract.evidence import AnalystEvidence, AnalystVerdict
+
+    ev = AnalystEvidence(
+        analyst="technical",
+        ticker="AAPL",
+        tick_id="t1",
+        recorded_at="2025-09-02T00:00:00",
+        verdict=AnalystVerdict(
+            lean="bearish", magnitude=0.4, confidence=0.7,
+            rationale="reversal_up_fade", key_factors=["reversal_up_fade"],
+            is_no_data=False, horizon_days=7,
+        ),
+        features={"rsi_14": 55.0},
+    )
+
+    block = _render_analyst("technical", ev)
+
+    assert "horizon: ~7d" in block
+    assert "mean-reversion" in block  # mechanistic prose, not a directive

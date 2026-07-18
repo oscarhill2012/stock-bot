@@ -533,6 +533,18 @@ _TAG_LINE_LABEL: dict[str, str] = {
 _ANALYST_ORDER = ("technical", "fundamental", "news")
 
 
+# Mechanistic, non-prescriptive prose describing what each analyst's horizon
+# MEANS — NOT a trust ranking and NOT an instruction to hold.  Rendered next to
+# the analyst's own ``horizon_days`` so the strategist can reason about how long
+# a lean is expected to stay live before its edge decays.  ``{h}`` is filled
+# with the verdict's ``horizon_days``.
+_HORIZON_PROSE: dict[str, str] = {
+    "technical":   "short-term mean-reversion read; its edge decays within ~{h} trading days",
+    "fundamental": "filing-delta drift; plays out over ~{h} trading days (3-6 months)",
+    "news":        "post-news drift; typically live for ~{h} trading days after the surprise",
+}
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -681,6 +693,17 @@ def _render_analyst(
     )
 
     lines: list[str] = [header]
+
+    # ── Horizon precursor ────────────────────────────────────────────────────
+    # Surface the analyst's OWN horizon as honest, mechanistic context.  This is
+    # the churn root-cause fix: the strategist was horizon-blind, so a 3-6 month
+    # fundamental lean and a ~1-week news lean read as equally urgent.  The prose
+    # is descriptive (how long the edge lasts), never prescriptive (it does not
+    # tell the strategist to hold).
+    prose_tmpl = _HORIZON_PROSE.get(name)
+    if prose_tmpl is not None:
+        prose = prose_tmpl.format(h=v.horizon_days)
+        lines.append(f"  horizon: ~{v.horizon_days}d — {prose}")
 
     # ── Feature bullets ───────────────────────────────────────────────────────
     bullets = _ANALYST_BULLETS.get(name, [])
