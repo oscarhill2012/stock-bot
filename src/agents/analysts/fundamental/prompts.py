@@ -372,8 +372,11 @@ def build_fundamental_instruction(vocab: FundamentalVocabulary) -> str:
         summary_max      = out_caps.report_summary_max_chars,
         driver_name_max  = out_caps.report_driver_name_max_chars,
         driver_body_max  = out_caps.report_driver_body_max_chars,
-        # Phase 14: the fixed trading-day drift horizon the LLM must emit as
-        # ``horizon_days``.  Config-driven so re-tuning needs no code change.
+        # Phase 14: the fixed trading-day drift horizon that frames the LLM's
+        # analytic drift-window reasoning (substituted into the prompt prose
+        # above) and is injected as the canonical ``horizon_days`` at the
+        # joiner — the LLM no longer emits it.  Config-driven so re-tuning
+        # needs no code change.
         filing_horizon_days = get_analysts_config().fundamental.filing_delta_horizon_days,
         # Protect the two runtime placeholders from str.format substitution
         # by passing them back as themselves.

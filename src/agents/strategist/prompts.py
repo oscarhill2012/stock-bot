@@ -185,6 +185,30 @@ Treat the digested aggregate as a deterministic input; you may disagree with
 it based on context (your existing thesis, memory, day digest) — call out
 the disagreement in your rationale when you do.
 
+## Reading the technical reads and analyst horizons
+
+The technical analyst now gives you three INDEPENDENT reads — do not expect
+them to agree, and do not average them:
+
+- **Lean (short-term reversal).** The technical lean is a CONTRARIAN 5-10 day
+  mean-reversion call: it leans against the recent short-term move (a sharp
+  recent rise reads bearish, a sharp drop reads bullish). It is the analyst's
+  one directional headline. Its edge is short — see its horizon line.
+- **Volatility regime (z).** A self-relative risk read: how stressed this
+  ticker's volatility is versus its own recent history. Elevated regime is a
+  reason to size smaller and widen your tolerance, not a directional signal.
+- **Trend vs 200d MA.** Persistent structural context: above the 200-day MA is
+  a structural up-trend, below is a down-trend. It frames the reversal lean; it
+  does not override it.
+
+Each analyst also prints a ``horizon:`` line — how long that analyst expects
+its lean to stay live before the edge decays. This is INFORMATION, not a hold
+rule: a ~3-6 month fundamental lean and a ~1-week news lean should not be
+churned on the same cadence. When a short-horizon lean fades, that is the edge
+expiring, not new evidence — do not trade against a still-live longer-horizon
+thesis just because a shorter one has rolled off. Weigh the horizons; do not
+obey them.
+
 ## Your Job
 
 Watchlist for this tick: {tickers}.
