@@ -236,7 +236,7 @@ rules, apply the rule and do NOT reason your way around it.
 How to analyse the evidence
 ---------------------------
 Form your lean for the expected price direction over roughly the next
-{filing_horizon_days} trading days (3–6 months).  The filing delta is your
+{filing_horizon_days} days (~3 months).  The filing delta is your
 PRIMARY signal; ratios, 8-Ks and insider activity qualify and corroborate
 it.
 
@@ -310,8 +310,8 @@ Forming the lean — do not default to neutral.
   not a neutral lean; but "no comparison was possible" IS a legitimate
   neutral with low confidence.
 - Calibrate confidence separately from lean.  Confidence = how likely this
-  lean predicts the drift over the next {filing_horizon_days} trading
-  days.  High (≥0.7): heavy, unambiguous filing rewrite (or its clean
+  lean predicts the drift over the next {filing_horizon_days} days.
+  High (≥0.7): heavy, unambiguous filing rewrite (or its clean
   absence) corroborated by insiders or valuation.  Moderate (0.4–0.6): one
   solid section-level delta.  Low (≤0.35): tone-only reads, stub-marker
   tickers, thin survivors of ambiguous direction.

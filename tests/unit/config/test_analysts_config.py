@@ -342,15 +342,16 @@ def test_fundamental_litigation_cap_loaded() -> None:
 def test_fundamental_filing_delta_horizon_loaded() -> None:
     """``filing_delta_horizon_days`` must load from config/analysts.json.
 
-    This is the trading-day horizon the fundamental prompt instructs the LLM
-    to emit as ``horizon_days`` — the Lazy Prices drift operates at 3–6
-    months, so the default is 60 trading days.
+    This is the calendar-day horizon injected as the fundamental verdict's
+    ``horizon_days`` — the Lazy Prices drift operates at 3–6 months, and the
+    scoreboard-measured horizon is ~90 calendar days (≈3 months).  Calendar
+    days so the rendered horizon composes with the strategist clock.
     """
     from config.analysts import load_analysts_config
 
     cfg = load_analysts_config()
 
-    assert cfg.fundamental.filing_delta_horizon_days == 60
+    assert cfg.fundamental.filing_delta_horizon_days == 90
 
 
 def test_fundamental_risk_cap_raised_for_diffed_survivors() -> None:
@@ -392,7 +393,11 @@ def test_fundamental_filing_similarity_settings_load() -> None:
 
 
 def test_news_drift_horizon_days_default():
-    """News exposes a config-driven drift horizon (default 5 trading days)."""
+    """News exposes a config-driven drift horizon (~20 calendar days).
+
+    Set to the scoreboard-measured post-news drift horizon, in calendar days
+    so the strategist's rendered horizon composes with its clock.
+    """
     from config.analysts import get_analysts_config
 
-    assert get_analysts_config().news.drift_horizon_days == 5
+    assert get_analysts_config().news.drift_horizon_days == 20

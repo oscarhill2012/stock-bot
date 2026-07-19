@@ -537,11 +537,13 @@ _ANALYST_ORDER = ("technical", "fundamental", "news")
 # MEANS — NOT a trust ranking and NOT an instruction to hold.  Rendered next to
 # the analyst's own ``horizon_days`` so the strategist can reason about how long
 # a lean is expected to stay live before its edge decays.  ``{h}`` is filled
-# with the verdict's ``horizon_days``.
+# with the verdict's ``horizon_days``, expressed in CALENDAR days — the same
+# unit as the strategist clock, so "days since thesis updated" composes cleanly
+# with the horizon.
 _HORIZON_PROSE: dict[str, str] = {
-    "technical":   "short-term mean-reversion read; its edge decays within ~{h} trading days",
-    "fundamental": "filing-delta drift; plays out over ~{h} trading days (3-6 months)",
-    "news":        "post-news drift; typically live for ~{h} trading days after the surprise",
+    "technical":   "short-term mean-reversion read; its edge decays within ~{h} days",
+    "fundamental": "filing-delta drift; plays out over ~{h} days (~3 months)",
+    "news":        "post-news drift; typically live for ~{h} days after the surprise",
 }
 
 

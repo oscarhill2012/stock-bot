@@ -7,7 +7,7 @@
     "max_summary_chars":                  1500,
     "roundup_company_threshold":          3,
     "dedup_title_similarity_threshold":   0.85,
-    "drift_horizon_days":                 5,
+    "drift_horizon_days":                 20,
     "llm": {
       "timeout_seconds":   60,
       "max_output_tokens": 8000,
@@ -25,7 +25,7 @@
     "max_insider_footnotes":      5,
     "max_insider_footnote_chars": 400,
     "mda_stub_char_threshold":    400,
-    "filing_delta_horizon_days":  60,
+    "filing_delta_horizon_days":  90,
     "filing_dedup_cosine":        0.92,
     "filing_numeric_delta_pct":   0.10,
     "filing_history_years":       7,

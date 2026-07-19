@@ -196,8 +196,8 @@ def test_fundamental_prompt_has_no_horizon_emit_instruction():
     # The emit field is gone from the OUTPUT CONTRACT and the shape example.
     assert "horizon_days  integer" not in instr
     assert '"horizon_days":' not in instr
-    # But the analytic drift-window prose (in trading days) is retained.
-    assert "trading days" in instr
+    # But the analytic drift-window prose (calendar-day horizon) is retained.
+    assert "days (~3 months)" in instr
 
 
 def test_prompt_marker_prefix_matches_filing_diff_code():

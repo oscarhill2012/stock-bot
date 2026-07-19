@@ -167,9 +167,11 @@ class NewsCaps(BaseModel):
         stories untouched.  Setting this below ~0.7 risks collapsing
         legitimately different stories that share a common sub-phrase.
     drift_horizon_days:
-        Trading-day horizon the news verdict targets — injected onto
+        Calendar-day horizon the news verdict targets — injected onto
         ``horizon_days`` at the joiner boundary (the LLM no longer self-reports
-        it).  Post-news drift operates over roughly a week.
+        it).  Set to the scoreboard-measured post-news drift horizon (~20
+        calendar days) so the strategist's rendered horizon matches where the
+        edge is actually realised, in the same calendar unit as its clock.
     llm:
         Per-call LLM runtime caps (timeout, token limit, retry counts).
     """
@@ -181,10 +183,11 @@ class NewsCaps(BaseModel):
     max_summary_chars:                  int   = Field(ge=1,   le=10_000)
     roundup_company_threshold:          int   = Field(ge=2,   le=50,    default=3)
     dedup_title_similarity_threshold:   float = Field(ge=0.0, le=1.0,   default=0.85)
-    # Phase 3b — trading-day drift horizon the news analyst's verdict targets.
-    # Post-news drift (PEAD and analogues) plays out over ~1 week; the LLM no
-    # longer self-reports this — the joiner injects it at inflation time.
-    drift_horizon_days:                 int   = Field(ge=1,   le=60,    default=5)
+    # Calendar-day drift horizon the news analyst's verdict targets.  Post-news
+    # drift (PEAD and analogues) is realised on the scoreboard at ~20 calendar
+    # days; the LLM no longer self-reports this — the joiner injects it at
+    # inflation time.  Calendar days so it composes with the strategist clock.
+    drift_horizon_days:                 int   = Field(ge=1,   le=60,    default=20)
     llm:                                LlmCaps                           # per-call runtime caps
 
 
@@ -257,12 +260,13 @@ class FundamentalCaps(BaseModel):
     # prior-year paragraph diff, so it bounds the year-over-year survivors.
     max_filing_litigation_chars: int = Field(ge=1, le=20_000, default=1_500)
 
-    # Phase 14 (Lazy Prices) — trading-day horizon the fundamental prompt
-    # instructs the LLM to emit as ``horizon_days``.  The filing-language
-    # drift documented by Cohen, Malloy & Nguyen (2020) operates over 3–6
-    # months; 60 trading days sits inside that window.  Bounded at one
-    # trading year.
-    filing_delta_horizon_days: int = Field(ge=1, le=250, default=60)
+    # Phase 14 (Lazy Prices) — calendar-day horizon injected as the fundamental
+    # verdict's ``horizon_days`` and surfaced in the fundamental prompt.  The
+    # filing-language drift documented by Cohen, Malloy & Nguyen (2020) operates
+    # over 3–6 months; ~90 calendar days (≈3 months) is the scoreboard-measured
+    # horizon and sits inside that window.  Calendar days so it composes with
+    # the strategist clock.
+    filing_delta_horizon_days: int = Field(ge=1, le=250, default=90)
 
     # ---------------------------------------------------------------------
     # Phase 14 Plan 1b — filing-similarity (faithful "Lazy Prices")
