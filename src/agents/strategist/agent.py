@@ -34,6 +34,71 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+# ── Module-level before-model callback ────────────────────────────────────────
+#
+# Deliberately module-level (not nested inside build_strategist(), unlike
+# probe_before/probe_after) so it is importable by unit tests directly.
+
+
+def _strip_forwarded_contents(callback_context, llm_request):                  # noqa: ANN001 — ADK callback signature
+    """Empty ``llm_request.contents`` before the strategist's LLM call fires.
+
+    Why this exists — ``include_contents="none"`` alone is insufficient
+    ---------------------------------------------------------------------
+    The Strategist ``LlmAgent`` sets ``include_contents="none"`` specifically
+    to stop upstream analyst outputs leaking into its prompt as conversation
+    history.  But ADK's ``google/adk/flows/llm_flows/contents.py::
+    _get_current_turn_contents`` (called regardless of ``include_contents``)
+    scans session events backwards for the latest "turn-starter" and, via
+    ``_is_other_agent_reply``, treats another agent's reply as a valid turn
+    start.  In the per-ticker analyst fan-out pipeline, the last analyst
+    branch to finish is exactly such a reply, so ``llm_request.contents``
+    ends up holding that one analyst's raw verdict — reformatted by
+    ``_present_other_agent_message`` as a ``role="user"`` Content whose parts
+    are ``[Part(text="For context:"), Part(text="[Analyst_<TICKER>] said:
+    {...raw JSON verdict...}")]``.  Exactly one such block leaks into the
+    strategist prompt every tick; the ticker varies with the parallel-branch
+    completion race.  This duplicates data the curated ``## Ticker Evidence``
+    section already renders and arbitrarily over-weights one random ticker's
+    analyst view.
+
+    Safety — this is a state ADK already produces on its own
+    ----------------------------------------------------------
+    ADK's own ``_get_current_turn_contents`` returns ``[]`` when there is no
+    turn-starter event, and the agent instruction reaches the model via the
+    separate system-instruction path — not via ``contents`` — so emptying
+    ``llm_request.contents`` here is safe: the strategist runs purely on its
+    instruction template plus the ``{temp:*}`` placeholders, exactly as
+    intended.  Schema-retry correction feedback is fed via the
+    ``{temp:_last_schema_error}`` instruction placeholder (seeded by
+    StrategistContextShim, overwritten by RetryingAgentWrapper before each
+    retry) — it does not depend on ``contents`` either, so this cannot
+    interfere with retries.
+
+    Parameters
+    ----------
+    callback_context:
+        ADK's invocation callback context.  Unused — the fix only needs the
+        request object.
+    llm_request:
+        The outgoing ``LlmRequest``.  Mutated in place: ``.contents`` is set
+        to ``[]``.  Defensively guarded in case the attribute is absent or
+        already ``None``.
+
+    Returns
+    -------
+    None
+        Always — a before-model callback returning non-``None`` short-
+        circuits the actual LLM call (see ``_chain_before`` semantics in
+        ``agents.analysts._common``); this callback only mutates the
+        request, it does not supply a response.
+    """
+    if getattr(llm_request, "contents", None):
+        llm_request.contents = []
+
+    return None
+
+
 # ── Agent factory ─────────────────────────────────────────────────────────────
 
 
@@ -241,8 +306,15 @@ def build_strategist():
             (_probe_path / f"call_{idx:02d}_response.txt").write_text(payload)
             return None
 
-    # Chain observability + trace + probe callbacks.
-    before_model = _chain_before(obs_before, trace_before, probe_before)
+    # Chain the content-strip callback FIRST, then observability + trace +
+    # probe.  Order is deliberate: obs_before/trace_before/probe_before all
+    # DUMP the prompt for diagnostics, and we want those dumps to reflect the
+    # real, cleaned request the model actually sees — not the pre-strip
+    # request still carrying the leaked foreign-agent Content.  Putting the
+    # strip last would mean every diagnostic dump captured the leak instead
+    # of auditing the fix; putting it first means the dumps double as
+    # confirmation the strip worked, tick after tick.
+    before_model = _chain_before(_strip_forwarded_contents, obs_before, trace_before, probe_before)
     after_model  = _chain_after(obs_after, trace_after, probe_after)
 
     # The inner LlmAgent — emits the *narrow* StrategistLLMDecision shape
@@ -263,6 +335,17 @@ def build_strategist():
         # the curated ``## Ticker Evidence`` section already renders.
         # The strategist runs purely on its instruction template plus the
         # ``{temp:*}`` placeholders hydrated by StrategistContextShim.
+        #
+        # IMPORTANT: ``include_contents='none'`` is necessary but NOT
+        # sufficient on its own.  ADK's ``_get_current_turn_contents`` still
+        # scans session events backwards for a "turn-starter" regardless of
+        # this setting, and treats another agent's reply as a valid one — so
+        # the LAST analyst branch to finish each tick leaks its raw verdict
+        # into ``llm_request.contents`` as a "For context: [Agent] said:
+        # {json}" user turn.  ``_strip_forwarded_contents`` (module-level,
+        # below) closes that gap by emptying ``llm_request.contents`` in the
+        # before-model callback chain — safe, because ADK itself emits ``[]``
+        # there whenever no turn-starter exists.
         #
         # Schema-retry safety: the RetryingAgentWrapper feeds correction
         # feedback via the ``{temp:_last_schema_error}`` instruction
