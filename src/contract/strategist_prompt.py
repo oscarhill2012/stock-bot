@@ -416,12 +416,13 @@ TECHNICAL_BULLETS: list[_BulletEntry] = [
     # 52-week distances — already stored as scaled %, e.g. -3.0 = 3% below high.
     ("dist_from_high_52w_pct", "Distance from 52w high:",  _pct_unscaled_signed, _position_band),
     ("dist_from_low_52w_pct",  "Distance from 52w low:",   _pct_unscaled_signed, None),
-    # Trend regime — MA50 vs MA200 crossover flags (Bug #13). Both keys are
-    # always emitted together by the extractor when ratios are available, so
-    # the strategist sees two rows: at most one carries an annotation, the
-    # other reads as a plain "0.0" the LLM can ignore.
-    ("golden_cross",           "Trend regime (golden):",   _plain,              _golden_cross_band),
-    ("death_cross",            "Trend regime (death):",    _plain,              _death_cross_band),
+    # Trend regime — MA50 vs MA200 crossover flags (Bug #13). ``golden_cross``
+    # and ``death_cross`` are mutually exclusive, so the two raw feature keys
+    # are collapsed into a single "Trend regime:" bullet (F9 prompt-hygiene
+    # cut) rather than rendering one meaningful row plus one always-noise
+    # "0.0" row. Handled as a special case in ``_render_features`` below —
+    # the sentinel key ``_trend_regime`` is not a real feature-dict key.
+    ("_trend_regime",          "Trend regime:",            _plain,              None),
     # Read 3 — trend state: continuous distance of price from the 200-day MA.
     ("trend_state",            "Trend vs 200d MA:",        _pct_signed,         _trend_state_band),
     # Volume relative to 20-day average.
@@ -430,12 +431,10 @@ TECHNICAL_BULLETS: list[_BulletEntry] = [
     ("atr_pct_14",             "ATR%(14):",                _plain,              None),
     # Read 2 — volatility regime: z-score of ATR% vs the ticker's own history.
     ("vol_regime_z",           "Volatility regime (z):",   _plain,              _vol_regime_band),
-    # Beta-aware confidence damping factor (Bug #15a). Emitted by the
-    # extractor as ``1.0 / (1.0 + abs(beta - 1.0))`` — peaks at 1.0 for a
-    # beta of exactly 1 and decays symmetrically as the ticker becomes more
-    # or less volatile than the market. Surfaced so the strategist can read
-    # the verdict-level confidence calibration directly.
-    ("beta_confidence_damping", "Beta confidence damping:", _plain,             None),
+    # NB: "Beta confidence damping" bullet was retired (F4-beta prompt-hygiene
+    # sweep) — ``beta_confidence_damping_enabled`` is permanently ``false`` in
+    # config/analyst_heuristics.json, so the feature can never fire and the
+    # bullet was dead weight in every rendered block.
 ]
 
 FUNDAMENTAL_BULLETS: list[_BulletEntry] = [
@@ -477,12 +476,13 @@ FUNDAMENTAL_BULLETS: list[_BulletEntry] = [
 NEWS_BULLETS: list[_BulletEntry] = [
     # Article count is the primary volume signal.
     ("news_count_7d",             "Article count 7d:",       _plain,    None),
-    # Sentiment breakdown.
-    ("pct_news_positive_7d",      "% positive:",             _plain,    None),
-    ("pct_news_negative_7d",      "% negative:",             _plain,    None),
-    ("headline_polarity_mean_7d", "Mean polarity:",          _plain,    None),
-    # Social volume (legacy / optional).
-    ("social_volume_z",           "Social volume z:",        _plain,    None),
+    # NB: "% positive", "% negative", "Mean polarity" and "Social volume z"
+    # bullets were retired (F2 prompt-hygiene sweep) — Finnhub supplies no
+    # sentiment, so these rendered as measured-neutral noise (0.0 / absent)
+    # across ~19/20 tickers, masquerading absent data as a real reading. The
+    # extractor still computes the underlying features (see
+    # contract/extractors/news.py) — only the render-layer bullets are cut
+    # here; see the sweep report for whether they are dead everywhere.
 ]
 
 SMART_MONEY_BULLETS: list[_BulletEntry] = [
@@ -585,6 +585,26 @@ def _render_features(
     lines: list[str] = []
 
     for key, label, formatter, interpreter in bullets:
+        # ── F9 special case: collapsed golden/death cross "Trend regime:" row.
+        # ``_trend_regime`` is a sentinel key, not a real feature-dict entry —
+        # it reads ``golden_cross``/``death_cross`` directly (mutually
+        # exclusive flags) and renders at most one annotated line, reusing the
+        # existing band helpers so the annotation text stays in sync with the
+        # standalone ``_golden_cross_band``/``_death_cross_band`` tests.
+        if key == "_trend_regime":
+            golden_v = features.get("golden_cross")
+            death_v  = features.get("death_cross")
+
+            annotation = _golden_cross_band(golden_v) if golden_v is not None else ""
+            if not annotation and death_v is not None:
+                annotation = _death_cross_band(death_v)
+
+            # Neither flag set (or both absent) — omit the row entirely
+            # rather than showing a meaningless plain "0.0".
+            if annotation:
+                lines.append(f"  {label:<30} {annotation}")
+            continue
+
         if key not in features:
             # Key absent — extractor didn't emit it for this tick; skip bullet.
             continue
@@ -702,8 +722,12 @@ def _render_analyst(
     # fundamental lean and a ~1-week news lean read as equally urgent.  The prose
     # is descriptive (how long the edge lasts), never prescriptive (it does not
     # tell the strategist to hold).
+    # F10: a neutral lean carries no directional edge, so its horizon (how
+    # long that edge would decay) is not meaningful information — gate the
+    # line on a genuine directional call to cut noise (~13-14 of every 20
+    # technical blocks in the 2025-09 baseline were neutral).
     prose_tmpl = _HORIZON_PROSE.get(name)
-    if prose_tmpl is not None:
+    if prose_tmpl is not None and v.lean != "neutral":
         prose = prose_tmpl.format(h=v.horizon_days)
         lines.append(f"  horizon: ~{v.horizon_days}d — {prose}")
 
@@ -733,7 +757,14 @@ def _render_analyst(
     if v.report is not None:
         lines.extend(_render_report(v.report))
     elif v.rationale:
-        lines.append(f'  -> Rationale: "{v.rationale}"')
+        # F1: for deterministic analysts (e.g. technical) the rationale is
+        # frequently byte-identical to the tag line just rendered above
+        # (``", ".join(v.key_factors)``) — skip the duplicate rather than
+        # showing the same content twice.  A rationale that genuinely differs
+        # from the tags still renders.
+        joined_tags = ", ".join(v.key_factors)
+        if v.rationale != joined_tags:
+            lines.append(f'  -> Rationale: "{v.rationale}"')
 
     return "\n".join(lines)
 

@@ -237,6 +237,9 @@ class StrategistContextShim(BaseAgent):
         - ``temp:deployment_readout`` — a one-line live summary of the current
           invested fraction, positioned inside ``## Deployment posture`` so the
           model sees its actual exposure right next to the 70–95% target band.
+        - ``temp:portfolio_summary`` — a one-line cash/NAV/position-count
+          summary rendered in ``## Current State``, replacing the old bare
+          ``{portfolio}`` placeholder that dumped a raw dict repr (F7).
 
         Separating the pure computation from the ADK plumbing in
         ``_run_async_impl`` lets unit tests call ``render()`` directly without
@@ -253,7 +256,8 @@ class StrategistContextShim(BaseAgent):
 
         Returns:
             dict with keys ``temp:first_tick_flag``, ``temp:first_tick_preamble``,
-            ``temp:held_positions_view``, and ``temp:deployment_readout``.
+            ``temp:held_positions_view``, ``temp:deployment_readout``, and
+            ``temp:portfolio_summary``.
         """
         # ── Selective-output flag ─────────────────────────────────────────
         # ``user:active_stances_initialised`` is False (or absent) on the
@@ -304,11 +308,20 @@ class StrategistContextShim(BaseAgent):
         # would add indirection without any operational benefit.
         deployment_readout = _render_deployment_readout(portfolio)
 
+        # ── Portfolio summary line (F7 prompt-hygiene cut) ────────────────
+        # Replaces the old bare ``{portfolio}`` ADK placeholder, which
+        # resolved to a raw ``Portfolio.model_dump()`` dict repr — 15-
+        # significant-figure floats and all — dumped straight into the
+        # prompt.  This one-line summary gives the model the plain cash/NAV/
+        # position-count numbers without ever exposing a dict repr.
+        portfolio_summary = _render_portfolio_summary(portfolio)
+
         return {
             "temp:first_tick_flag":      first_tick_flag,
             "temp:first_tick_preamble":  first_tick_preamble,
             "temp:held_positions_view":  held_view,
             "temp:deployment_readout":   deployment_readout,
+            "temp:portfolio_summary":    portfolio_summary,
         }
 
     async def _run_async_impl(
@@ -517,6 +530,9 @@ class StrategistContextShim(BaseAgent):
                 # posture so the model sees its actual exposure alongside the
                 # target guidance.
                 "temp:deployment_readout":      pure_keys["temp:deployment_readout"],
+                # F7: clean cash/NAV/position-count line replacing the raw
+                # {portfolio} dict dump in ## Current State.
+                "temp:portfolio_summary":       pure_keys["temp:portfolio_summary"],
                 "temp:ticker_evidence":         ticker_evidence_rendered,
                 "temp:ticker_evidence_objects": ticker_evidence_objects,
                 "temp:recent_trades_view":      recent_trades_view,
@@ -597,6 +613,38 @@ def _render_deployment_readout(portfolio: Portfolio) -> str:
         f"{n_positions} {pos_noun}, {cash_pct}% idle cash. "
         f"Target band: {_BAND_LOW_PCT}–{_BAND_HIGH_PCT}%. "
         f"{direction_cue}"
+    )
+
+
+def _render_portfolio_summary(portfolio: Portfolio) -> str:
+    """Produce a clean one-line cash/NAV/position-count summary (F7).
+
+    Replaces the old bare ``{portfolio}`` ADK placeholder, which resolved to
+    a raw ``Portfolio.model_dump()`` dict repr — 15-significant-figure floats
+    and all — dumped straight into the strategist prompt.  Per-position
+    weight/P&L detail already lives in the Thesis Book, and the invested
+    fraction vs the 70-95% target band already lives in
+    ``_render_deployment_readout``; this line only needs to give the model
+    the raw cash/NAV figures those percentages are computed from, rounded to
+    whole dollars so no long float tail can leak into the prompt.
+
+    Args:
+        portfolio:
+            Live ``Portfolio`` snapshot.  An empty (cash-only) portfolio
+            degrades gracefully — ``n_positions`` is simply 0.
+
+    Returns:
+        str
+            A single-line summary, e.g.
+            ``"Cash: $48,120 | NAV: $100,240 | 6 position(s)"``.
+    """
+    cash_rounded = round(portfolio.cash)
+    nav_rounded  = round(portfolio.total_value)
+    n_positions  = len(portfolio.positions)
+
+    return (
+        f"Cash: ${cash_rounded:,} | NAV: ${nav_rounded:,} | "
+        f"{n_positions} position(s)"
     )
 
 

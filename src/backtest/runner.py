@@ -556,13 +556,14 @@ class Runner:
                 )
 
             # Seed the same initial state keys that ``orchestrator/tick.py``
-            # provides on live runs.  The strategist prompt template references
-            # ``{portfolio}`` directly (resolved by ADK's instruction-variable
-            # machinery), and several before-callbacks read ``portfolio``,
+            # provides on live runs.  ``StrategistContextShim`` reads
+            # ``state["portfolio"]`` to render ``{temp:portfolio_summary}``
+            # and ``{temp:deployment_readout}`` (F7 — the prompt template no
+            # longer references the raw ``{portfolio}`` placeholder directly),
+            # and several before-callbacks read ``portfolio``,
             # ``memory_buffer``, and ``day_digest`` at the start of each tick.
-            # Without these keys the ADK runner raises
-            # ``KeyError: 'Context variable not found: portfolio'`` before the
-            # pipeline can execute even one agent.
+            # Without these keys the pipeline cannot render the strategist's
+            # portfolio context before the first agent runs.
             portfolio = await broker.get_portfolio()
 
             # Populate reference_prices from the cache so the technical extractor

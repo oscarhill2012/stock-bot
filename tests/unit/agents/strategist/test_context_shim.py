@@ -100,6 +100,9 @@ def test_shim_yields_one_event_with_temp_prefixed_keys(populated_state: dict) ->
         # vs the 70–95% target band, injected into ## Deployment posture so the
         # model sees its actual exposure alongside the target guidance.
         "temp:deployment_readout",
+        # F7: rendered cash/NAV/position-count summary replacing the raw
+        # {portfolio} dict dump in the prompt's ## Current State section.
+        "temp:portfolio_summary",
         # Change 1 (strategist now-anchor): the tick's as_of date, plain
         # YYYY-MM-DD, printed near the top of ## Current State.
         "temp:current_date",

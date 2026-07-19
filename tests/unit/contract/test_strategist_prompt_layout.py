@@ -703,16 +703,21 @@ def test_relative_strength_sector_20d_bullet_rendered():
     assert "+1.2%" in out
 
 
-def test_beta_confidence_damping_bullet_rendered():
-    """``beta_confidence_damping`` must render via the plain one-decimal formatter."""
+def test_beta_confidence_damping_bullet_never_rendered():
+    """``beta_confidence_damping`` must NEVER render (F4-beta prompt-hygiene cut).
+
+    The bullet was retired because ``beta_confidence_damping_enabled`` is
+    permanently ``false`` in ``config/analyst_heuristics.json`` — the feature
+    can never fire, so the bullet was pure dead weight in the strategist
+    prompt.  Even when the feature key is present in the feature dict (e.g. a
+    stale extractor still emitting it), the renderer must not surface it.
+    """
     te = _make_ticker_evidence()
     te.per_analyst["technical"].features["beta_confidence_damping"] = 0.83
 
     out = render_ticker_block(te)
 
-    assert "Beta confidence damping:" in out
-    # _plain renders to one decimal place.
-    assert "0.8" in out
+    assert "Beta confidence damping:" not in out
 
 
 def test_relative_strength_keys_omitted_when_absent():
@@ -1070,3 +1075,169 @@ def test_analyst_block_renders_horizon_precursor():
 
     assert "horizon: ~7d" in block
     assert "mean-reversion" in block  # mechanistic prose, not a directive
+
+
+def test_neutral_verdict_omits_horizon_precursor():
+    """F10 — a neutral-lean verdict has no directional edge, so no horizon line.
+
+    A neutral verdict carries no directional edge whose decay is meaningful,
+    so rendering a ``horizon:`` line under it is pure noise (roughly 13-14 of
+    every 20 technical blocks in the 2025-09 baseline were neutral).  Only
+    bullish/bearish (directional) verdicts should show the line.
+    """
+    from contract.strategist_prompt import _render_analyst
+    from contract.evidence import AnalystEvidence, AnalystVerdict
+
+    ev = AnalystEvidence(
+        analyst="technical",
+        ticker="AAPL",
+        tick_id="t1",
+        recorded_at="2025-09-02T00:00:00",
+        verdict=AnalystVerdict(
+            lean="neutral", magnitude=0.0, confidence=0.0,
+            rationale="no_edge", key_factors=["no_edge"],
+            is_no_data=False, horizon_days=7,
+        ),
+        features={"rsi_14": 50.0},
+    )
+
+    block = _render_analyst("technical", ev)
+
+    assert "horizon:" not in block
+
+
+# ---------------------------------------------------------------------------
+# Tests — F9: single "Trend regime:" line (golden/death cross collapse)
+# ---------------------------------------------------------------------------
+#
+# ``golden_cross`` and ``death_cross`` are mutually-exclusive flags emitted by
+# the extractor together, so the old two-row rendering ("Trend regime
+# (golden):" / "Trend regime (death):") always showed one meaningful row and
+# one pure-noise "0.0" row.  Collapsed to a single "Trend regime:" line that
+# reflects whichever flag (if either) is set.
+# ---------------------------------------------------------------------------
+
+def test_trend_regime_single_line_golden_set():
+    """golden_cross=1.0 renders exactly one 'Trend regime:' line, bullish text."""
+    te = _make_ticker_evidence()
+    te.per_analyst["technical"].features["golden_cross"] = 1.0
+    te.per_analyst["technical"].features["death_cross"] = 0.0
+
+    out = render_ticker_block(te)
+
+    assert out.count("Trend regime:") == 1
+    assert "(golden cross)" in out
+    assert "Trend regime (golden)" not in out
+    assert "Trend regime (death)" not in out
+
+
+def test_trend_regime_single_line_death_set():
+    """death_cross=1.0 renders exactly one 'Trend regime:' line, bearish text."""
+    te = _make_ticker_evidence()
+    te.per_analyst["technical"].features["golden_cross"] = 0.0
+    te.per_analyst["technical"].features["death_cross"] = 1.0
+
+    out = render_ticker_block(te)
+
+    assert out.count("Trend regime:") == 1
+    assert "(death cross)" in out
+
+
+def test_trend_regime_omitted_when_neither_set():
+    """Neither flag set — no 'Trend regime:' line at all."""
+    te = _make_ticker_evidence()
+    te.per_analyst["technical"].features["golden_cross"] = 0.0
+    te.per_analyst["technical"].features["death_cross"] = 0.0
+
+    out = render_ticker_block(te)
+
+    assert "Trend regime:" not in out
+
+
+# ---------------------------------------------------------------------------
+# Tests — F1: duplicate technical Rationale line suppressed
+# ---------------------------------------------------------------------------
+#
+# For deterministic analysts, ``v.rationale`` is often byte-identical to the
+# joined ``key_factors`` tag line — rendering both wastes tokens on repeated
+# content.  The rationale line is skipped only when it is exactly equal to
+# ``", ".join(v.key_factors)``; a genuinely different rationale still renders.
+# ---------------------------------------------------------------------------
+
+def test_rationale_line_suppressed_when_identical_to_tags():
+    """When rationale == joined key_factors, only ONE of the two lines renders."""
+    from contract.strategist_prompt import _render_analyst
+    from contract.evidence import AnalystEvidence, AnalystVerdict
+
+    tags = ["reversal_up_fade", "vol_regime_extreme"]
+    ev = AnalystEvidence(
+        analyst="technical",
+        ticker="AAPL",
+        tick_id="t1",
+        recorded_at="2025-09-02T00:00:00",
+        verdict=AnalystVerdict(
+            lean="bearish", magnitude=0.4, confidence=0.7,
+            rationale=", ".join(tags),   # byte-identical to the joined tags
+            key_factors=tags,
+            is_no_data=False, horizon_days=7,
+        ),
+        features={"rsi_14": 55.0},
+    )
+
+    block = _render_analyst("technical", ev)
+
+    assert "-> Rationale tags: reversal_up_fade, vol_regime_extreme" in block
+    assert '-> Rationale: "reversal_up_fade, vol_regime_extreme"' not in block
+
+
+def test_rationale_line_kept_when_it_differs_from_tags():
+    """When rationale genuinely differs from the joined tags, both lines render."""
+    from contract.strategist_prompt import _render_analyst
+    from contract.evidence import AnalystEvidence, AnalystVerdict
+
+    ev = AnalystEvidence(
+        analyst="technical",
+        ticker="AAPL",
+        tick_id="t1",
+        recorded_at="2025-09-02T00:00:00",
+        verdict=AnalystVerdict(
+            lean="bearish", magnitude=0.4, confidence=0.7,
+            rationale="a genuinely distinct explanation of the call",
+            key_factors=["reversal_up_fade", "vol_regime_extreme"],
+            is_no_data=False, horizon_days=7,
+        ),
+        features={"rsi_14": 55.0},
+    )
+
+    block = _render_analyst("technical", ev)
+
+    assert "-> Rationale tags: reversal_up_fade, vol_regime_extreme" in block
+    assert '-> Rationale: "a genuinely distinct explanation of the call"' in block
+
+
+# ---------------------------------------------------------------------------
+# Tests — F2: all-zero news sentiment bullets cut
+# ---------------------------------------------------------------------------
+#
+# Finnhub supplies no sentiment, so these four bullets rendered as measured-
+# neutral noise (0.0 / absent) on ~19/20 tickers.  ``Article count`` is the
+# only real signal and must remain.
+# ---------------------------------------------------------------------------
+
+def test_news_sentiment_bullets_cut():
+    """The four dead sentiment bullets must never render; article count must."""
+    te = _make_ticker_evidence()
+    te.per_analyst["news"].features.update({
+        "pct_news_positive_7d": 40.0,
+        "pct_news_negative_7d": 10.0,
+        "headline_polarity_mean_7d": 0.2,
+        "social_volume_z": 1.1,
+    })
+
+    out = render_ticker_block(te)
+
+    assert "% positive:" not in out
+    assert "% negative:" not in out
+    assert "Mean polarity:" not in out
+    assert "Social volume z:" not in out
+    assert "Article count 7d:" in out

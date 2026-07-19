@@ -43,6 +43,17 @@ The ``{temp:current_date}`` placeholder — also set by
 cannot reason about elapsed calendar time (e.g. how many days are left
 on a drift opened N days ago).  Deliberately just the date substrate —
 no behavioural guidance is attached to it in this change.
+
+The ``{temp:portfolio_summary}`` placeholder — also set by
+``StrategistContextShim`` — is a clean one-line summary of cash, NAV,
+and open-position count (e.g. "Cash: $48,120 | NAV: $100,240 | 6
+position(s)"). It replaces the old bare ``{portfolio}`` ADK placeholder,
+which resolved to a raw ``Portfolio.model_dump()`` dict repr — 15-
+significant-figure floats and all — dumped straight into the prompt
+(F7 prompt-hygiene cut). The per-position weight/P&L detail already
+lives in the Thesis Book and the 70-95% deployment band already lives
+in ``{temp:deployment_readout}``; this line only needs to give the
+model the raw cash/NAV numbers those percentages are computed from.
 """
 from __future__ import annotations
 
@@ -150,8 +161,8 @@ INCREMENTAL_MODE_TEMPLATE: str = (
 # Raw instruction template
 # ─────────────────────────────────────────────────────────────────────────────
 # Uses ``{{NAME}}`` markers for build-time cap substitution below so that
-# runtime ``{portfolio}``/``{tickers}``/``{temp:...}`` placeholders survive
-# untouched for ADK's ``.format()`` pass.
+# runtime ``{tickers}``/``{temp:...}`` placeholders survive untouched for
+# ADK's ``.format()`` pass.
 #
 # The ``{temp:_last_schema_error}`` placeholder sits at the very top of the
 # prompt by design.  On the first attempt it resolves to an empty string and
@@ -170,7 +181,7 @@ per-ticker stance for the next trading hour.
 
 ## Current State
 Date:         {temp:current_date}
-Portfolio:    {portfolio}
+Portfolio:    {temp:portfolio_summary}
 {temp:memory_buffer}
 Day Digest:   {day_digest}
 Thesis:       {user:thesis?}
@@ -254,7 +265,7 @@ relative to the target band shapes the bias of your stance mix:
   only trim when a name's own thesis weakens or a better one needs
   the capital.
 - **Sum > 0.95 — over-deployed.**  Trim the lowest-conviction
-  positions back via ``update`` or ``close``.
+  positions back via ``update`` or ``sell``.
 
 The target is what steady state looks like, not a per-tick quota.
 You should be moving toward the band over time — every tick where

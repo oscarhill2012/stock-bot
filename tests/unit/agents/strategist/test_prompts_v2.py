@@ -89,7 +89,18 @@ def test_template_has_state_slots():
     ``{user:thesis?}`` so ADK resolves it from ``state["user:thesis"]``
     directly.  The bare ``{thesis}`` placeholder must NOT appear.
     """
-    assert "{portfolio}" in STRATEGIST_INSTRUCTION
+    # F7: the raw `{portfolio}` ADK placeholder dumped a Python dict (with
+    # 15-significant-figure floats) straight into the prompt.  Replaced with
+    # `{temp:portfolio_summary}`, a clean one-line summary rendered by
+    # StrategistContextShim.
+    assert "{temp:portfolio_summary}" in STRATEGIST_INSTRUCTION, (
+        "Prompt must contain {temp:portfolio_summary} — the rendered "
+        "cash/NAV/position-count summary (F7)"
+    )
+    assert "{portfolio}" not in STRATEGIST_INSTRUCTION, (
+        "Bare {portfolio} placeholder must be gone — it dumped a raw dict "
+        "repr (with long float tails) into the prompt (F7)"
+    )
     # Memory buffer is now injected as a rendered temp key so the shim can
     # collapse repeat/no-op entries before prompt assembly.  The raw
     # ``{memory_buffer}`` bare key was replaced by ``{temp:memory_buffer}``.
@@ -367,9 +378,11 @@ def test_template_renders_with_all_required_slots():
         .replace("{temp:deployment_readout}",   "Capital deployed: 0% invested across 0 positions, 100% idle cash. Target band: 70–95%. You are 70pp BELOW the band — idle cash is bearish drag.")
         # A-086: optional user-scoped thesis — resolves to empty string on cold start.
         .replace("{user:thesis?}",              "(empty)")
+        # F7: rendered cash/NAV/position-count summary replacing the raw
+        # {portfolio} dict dump.
+        .replace("{temp:portfolio_summary}",    "Cash: $100,000 | NAV: $100,000 | 0 position(s)")
     )
     rendered = template.format(
-        portfolio="cash=100, positions={}",
         day_digest="(empty)",
         tickers="['AAPL','MSFT']",
     )
