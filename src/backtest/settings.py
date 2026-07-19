@@ -48,10 +48,14 @@ class BacktestSettings(BaseModel):
     times.  Only ``ticks_per_day`` is a real policy knob.
     ``ohlcv_warmup_days`` has a default because the SVB-2023 backfill
     landed it as a tactical add-on; legacy files without the field still
-    load.  90 calendar days (≈ 63 trading days) is the minimum needed so
-    50-bar features such as ``vol_ratio_20d`` are valid from the very first
-    replay tick — 50 trading bars ≈ 70 calendar days, so 90 gives a
-    comfortable margin while also covering RSI(14) and ATR(14).
+    load.  The binding constraint is the technical feature ``vol_regime_z``
+    (a z-score of ATR% over the ``vol_regime_window`` rolling window, 60
+    bars per ``config/analyst_heuristics.json``): it needs 60 + 14 = 74
+    trading bars before it can emit a value, since the underlying ATR(14)
+    series itself has 14 bars of NaN warmup before the 60-bar z-window can
+    even start filling.  120 calendar days ≈ 82 trading bars, clearing that
+    74-bar floor with margin, while still comfortably covering the
+    shallower 50-bar features, RSI(14), and ATR(14) on their own.
 
     ``backtests_root`` is the single root directory under which every
     window's cache and runs are nested.  Per-window paths are computed by
@@ -65,7 +69,7 @@ class BacktestSettings(BaseModel):
     failed_tick_abort_ratio:       float = Field(ge=0.0, le=1.0)
     fake_broker_starting_cash:     float
     forward_return_horizons_days:  list[int]
-    ohlcv_warmup_days:             int = 90
+    ohlcv_warmup_days:             int = 120
 
     # ── Scoreboard evaluation settings ────────────────────────────────────────
 

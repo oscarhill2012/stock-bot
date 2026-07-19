@@ -100,6 +100,62 @@ def test_reset_cache_forces_reload(monkeypatch) -> None:
     assert first is not second
 
 
+def test_production_ohlcv_warmup_covers_vol_regime_z_floor() -> None:
+    """Regression pin: production ``ohlcv_warmup_days`` must supply enough
+    trading bars for the ``vol_regime_z`` technical feature to be valid from
+    the very first replay tick.
+
+    ``vol_regime_z`` is a z-score of ATR% computed over a rolling window of
+    ``vol_regime_window`` bars (read from ``config/analyst_heuristics.json``,
+    currently 60).  Before that rolling window can be populated, the
+    underlying ATR(14) series itself needs ``ATR_PERIOD`` bars of NaN
+    warmup (a 14-period ATR has no value until 14 bars have accumulated).
+    So the true floor in trading bars is::
+
+        trading_bar_floor = vol_regime_window + ATR_PERIOD  # 60 + 14 = 74
+
+    The golden cache is warmed up in *calendar* days, not trading bars, and
+    a NYSE week only trades ~5 of every 7 calendar days.  Converting the
+    trading-bar floor to a calendar-day floor (rounding up, since partial
+    coverage still leaves the feature NaN) gives::
+
+        calendar_day_floor = ceil(trading_bar_floor * 7 / 5)  # ceil(74 * 1.4) = 104
+
+    If ``ohlcv_warmup_days`` ever shrinks below this floor again (e.g. back
+    to the old 90), ``vol_regime_z`` silently drops out of the strategist
+    prompt for the first ~13 replay ticks of every backtest window — this
+    test exists so that regression is loud instead of silent.
+    """
+    from backtest.settings import load_backtest_settings_from
+
+    # ATR(14) is the standard Average True Range period used by the
+    # technical analyst; it is not itself a config value, so it is pinned
+    # here as a named constant rather than a bare magic number.
+    ATR_PERIOD = 14
+
+    # Read the real vol_regime_window from the production heuristics config
+    # rather than hardcoding 60, so this test tracks the config if it moves.
+    heuristics_payload = json.loads(
+        Path("config/analyst_heuristics.json").read_text(encoding="utf-8")
+    )
+    vol_regime_window = heuristics_payload["technical"]["vol_regime_window"]
+
+    trading_bar_floor = vol_regime_window + ATR_PERIOD
+
+    # ceil(trading_bar_floor * 7 / 5) without importing math.ceil, via
+    # integer arithmetic: (numerator + denominator - 1) // denominator.
+    calendar_day_floor = (trading_bar_floor * 7 + 5 - 1) // 5
+
+    settings = load_backtest_settings_from(Path("config/backtest_settings.json"))
+
+    assert settings.ohlcv_warmup_days >= calendar_day_floor, (
+        f"ohlcv_warmup_days ({settings.ohlcv_warmup_days}) must be >= "
+        f"{calendar_day_floor} calendar days to guarantee {trading_bar_floor} "
+        f"trading bars ({vol_regime_window}-bar vol_regime_window + "
+        f"{ATR_PERIOD}-bar ATR warmup) for vol_regime_z from replay tick 1."
+    )
+
+
 def test_runner_accepts_backtest_settings_instance(tmp_path: Path, monkeypatch) -> None:
     """Runner.__init__ accepts an injected BacktestSettings instance."""
     from backtest.runner import Runner
