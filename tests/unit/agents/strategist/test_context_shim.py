@@ -392,6 +392,59 @@ def test_held_view_omits_horizon_target_stop() -> None:
     assert "stop" not in held.lower()
 
 
+def test_held_view_renderer_does_not_emit_thesis_book_header() -> None:
+    """C2: ``_render_positions_shim`` must NOT emit its own '## Thesis Book' header.
+
+    The strategist prompt template (prompts.py) already prints the
+    '## Thesis Book' section header immediately above
+    ``{temp:held_positions_view}``.  The renderer used to ALSO start its
+    non-empty output with a bare '## Thesis Book' line, doubling up the
+    header back-to-back in the assembled prompt.  The header belongs to
+    the template only.
+    """
+    from agents.strategist.context_shim import StrategistContextShim
+    from broker.portfolio import Portfolio
+
+    state = {
+        "user:positions": {
+            "AAPL": {
+                "rationale":    "iPhone launch",
+                "opened_price": 210.0,
+                "opened_at":    "2026-01-15T13:30:00+00:00",
+            }
+        },
+        "user:current_tick_index": 1,
+        "portfolio":               Portfolio(cash=0.0).model_dump(mode="json"),
+    }
+    shim = StrategistContextShim()
+    rendered = shim.render(state)
+    held = rendered["temp:held_positions_view"]
+
+    assert "## Thesis Book" not in held, (
+        "the renderer must not emit its own '## Thesis Book' header — "
+        "the template already owns that header"
+    )
+    # Positive companion: the empty-book sentinel path is unaffected.
+    assert "AAPL" in held
+
+
+def test_held_view_renderer_empty_book_sentinel_still_has_no_header() -> None:
+    """The empty-book sentinel path already omitted the header — still does."""
+    from agents.strategist.context_shim import StrategistContextShim
+    from broker.portfolio import Portfolio
+
+    state = {
+        "user:positions": {},
+        "portfolio":      Portfolio(cash=0.0).model_dump(mode="json"),
+    }
+    shim = StrategistContextShim()
+    rendered = shim.render(state)
+    held = rendered["temp:held_positions_view"]
+
+    assert "## Thesis Book" not in held
+    assert "empty" in held.lower()
+
+
 def test_context_shim_ignores_bare_positions_key() -> None:
     """The shim must read user:positions exclusively — no bare-key fallback.
 

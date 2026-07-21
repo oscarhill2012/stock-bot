@@ -784,7 +784,11 @@ def _render_positions_shim(
     nav: float = portfolio.total_value if portfolio is not None else 0.0
 
     # ── Render one block per ticker, sorted for stable prompt diffs ──────
-    lines: list[str] = ["## Thesis Book"]
+    # Header is NOT emitted here — the strategist template (prompts.py)
+    # already prints "## Thesis Book" immediately above
+    # {temp:held_positions_view}; emitting it here too would double it up
+    # back-to-back in the assembled prompt.
+    lines: list[str] = []
 
     for ticker in sorted(positions.keys()):
         raw = positions[ticker]
