@@ -35,8 +35,8 @@ class _StubCtx:
     """Minimal ADK InvocationContext stand-in — only exposes session.state.
 
     Also carries a real string ``invocation_id`` because Snapshotter / Executor
-    / MemoryWriter now yield an ``Event`` whose ``invocation_id`` field is
-    Pydantic-validated as ``str`` (state_delta cross-tick propagation, see
+    now yield an ``Event`` whose ``invocation_id`` field is Pydantic-validated
+    as ``str`` (state_delta cross-tick propagation, see
     ``docs/todo-fixes.md`` Group 2.5).
     """
 
@@ -314,37 +314,3 @@ def test_executor_closed_at_uses_as_of(db_session) -> None:
     assert row.closed_at == _HISTORICAL_TS.replace(tzinfo=None)
     # holding_hours must be deterministic (24 h) rather than wall-clock-derived.
     assert row.holding_period_hours == 24
-
-
-# ── MemoryWriter ──────────────────────────────────────────────────────────────
-
-def test_memory_writer_uses_as_of() -> None:
-    """MemoryWriter should stamp BufferEntry.timestamp from state["as_of"]."""
-    from agents.memory.writer import MemoryWriter
-
-    decision = {
-        "decision_tag": "hold_all",
-        "reasoning": "no clear catalyst",
-        "thesis": "neutral",
-    }
-    state = {
-        "as_of": _HISTORICAL_TS,
-        "strategist_decision": decision,
-        "memory_buffer": [],
-        "day_digest": "",
-        "executions": [],
-    }
-
-    writer = MemoryWriter()
-    _run(writer._run_async_impl(_StubCtx(state)))
-
-    # The updated buffer is written back to state as a list of dicts.
-    buffer = state.get("memory_buffer", [])
-    assert len(buffer) == 1, "Expected one entry in the memory buffer"
-    entry_ts = buffer[0]["timestamp"]
-
-    # Normalise: may be datetime or ISO string depending on model_dump mode.
-    if isinstance(entry_ts, str):
-        entry_ts = datetime.fromisoformat(entry_ts)
-
-    assert entry_ts == _HISTORICAL_TS

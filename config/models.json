@@ -3,7 +3,6 @@
   "strategist": "gemini-2.5-pro",
   "news_analyst": "gemini-2.5-flash",
   "fundamental_analyst": "gemini-2.5-flash",
-  "memory_compressor": "gemini-2.5-flash-lite",
   "memory_embedding": "text-embedding-005",
   "memory_embedding_location": "europe-west2"
 }

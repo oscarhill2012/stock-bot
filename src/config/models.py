@@ -63,18 +63,16 @@ class ModelsConfig(BaseModel):
     fundamental_analyst:
         Model ID for the Fundamental analyst ``LlmAgent`` (consumed by
         ``src/agents/analysts/fundamental/agent.py::build_fundamental_branch``).
-    memory_compressor:
-        Model ID for the day-digest LLM compressor (consumed by
-        ``src/agents/memory/compress.py::_default_llm_compress``).  Only
-        invoked when the concatenated digest exceeds ``DIGEST_BUDGET``.
     memory_embedding:
-        Embedding model ID for the memory-buffer dedup embedder (consumed by
-        ``src/agents/memory/embeddings.py::_default_embed``).  Distinct family
-        (text-embedding-005, not Gemini chat), but shares the same
-        "where does this live" problem so it belongs in the same config.
+        Embedding model ID for the news analyst's textual-staleness dedup
+        embedder (consumed by
+        ``src/agents/analysts/news/embeddings.py::_default_embed``).  Distinct
+        family (text-embedding-005, not Gemini chat).  The field name is a
+        historical holdover from the now-deleted memory subsystem this
+        embedder originally lived in; renaming it is out of scope here.
     memory_embedding_location:
         Vertex AI region the embedding client is pinned to (consumed by
-        ``src/agents/memory/embeddings.py::_default_embed``).  Kept separate
+        ``src/agents/analysts/news/embeddings.py::_default_embed``).  Kept separate
         from every generative model above because the ``global`` Vertex
         endpoint — which the rest of the pipeline's generative agents run on
         via the ambient ``GOOGLE_CLOUD_LOCATION`` env var — serves **no**
@@ -87,7 +85,6 @@ class ModelsConfig(BaseModel):
     strategist:                str = Field(min_length=1)
     news_analyst:              str = Field(min_length=1)
     fundamental_analyst:       str = Field(min_length=1)
-    memory_compressor:         str = Field(min_length=1)
     memory_embedding:          str = Field(min_length=1)
     memory_embedding_location: str = Field(min_length=1)
 

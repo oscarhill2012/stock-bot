@@ -30,7 +30,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 
-from agents.memory.embeddings import cosine_similarity, embed
+from agents.analysts.news.embeddings import cosine_similarity, embed
 
 # Type alias for the injectable embedding function (tests supply stubs).
 EmbedFn = Callable[[str], Awaitable[list[float]]]

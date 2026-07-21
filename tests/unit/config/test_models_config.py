@@ -18,7 +18,7 @@ from config.models import ModelsConfig, _reset_cache, load_models_config
 # ---------------------------------------------------------------------------
 # Shared minimal valid payload
 # ---------------------------------------------------------------------------
-# All five model ID fields are required (no defaults).  The ``_comment`` key
+# All four model ID fields are required (no defaults).  The ``_comment`` key
 # is stripped by the loader so it can be present or absent freely.
 # ---------------------------------------------------------------------------
 
@@ -26,7 +26,6 @@ _MINIMAL_CFG: dict = {
     "strategist":                 "gemini-2.5-pro",
     "news_analyst":               "gemini-2.5-flash-lite",
     "fundamental_analyst":        "gemini-2.5-flash-lite",
-    "memory_compressor":          "gemini-2.5-flash-lite",
     "memory_embedding":           "text-embedding-005",
     "memory_embedding_location":  "europe-west2",
 }
@@ -50,7 +49,6 @@ def test_load_models_config_valid_payload(tmp_path) -> None:
     assert cfg.strategist                 == "gemini-2.5-pro"
     assert cfg.news_analyst               == "gemini-2.5-flash-lite"
     assert cfg.fundamental_analyst        == "gemini-2.5-flash-lite"
-    assert cfg.memory_compressor          == "gemini-2.5-flash-lite"
     assert cfg.memory_embedding           == "text-embedding-005"
     assert cfg.memory_embedding_location  == "europe-west2"
 
@@ -58,7 +56,7 @@ def test_load_models_config_valid_payload(tmp_path) -> None:
 def test_load_models_config_rejects_missing_required_key(tmp_path) -> None:
     """A payload missing any required model ID must raise ``ValidationError``.
 
-    All five fields carry ``min_length=1`` and no defaults — omitting one is
+    All four fields carry ``min_length=1`` and no defaults — omitting one is
     a schema violation that should be caught at load time rather than surfacing
     later as a confusing attribute-access error.
     """
