@@ -418,7 +418,6 @@ def test_thesis_writer_callback_logs_assertion_through_logger(caplog):
         "as_of":   "2026-06-01T10:00:00+00:00",
         "strategist_decision": {
             "decision_tag": "assert_test",
-            "thesis":       "test thesis",
             "reasoning":    "test reasoning",
             "confidence":   0.5,
             "stances": [

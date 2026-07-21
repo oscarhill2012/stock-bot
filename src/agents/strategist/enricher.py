@@ -1,7 +1,7 @@
 """StrategistEnricher — turn the LLM's narrow output into the full StrategistDecision.
 
 The wrapped Strategist LlmAgent emits the *narrow* :class:`StrategistLLMDecision`
-shape (stances + decision_tag + reasoning + thesis + confidence) via ADK's
+shape (stances + decision_tag + reasoning + confidence) via ADK's
 ``output_key`` mechanism.  Downstream agents (RiskGate, Executor,
 StrategistDecisionWriter) need the *full* :class:`StrategistDecision` shape,
 which adds the derived ``target_weights`` dict.  This enricher runs that
@@ -77,17 +77,16 @@ def _log_offending_decision(
     that the LLM's own reasoning + decision_tag survive in the run log even
     when ``STOCKBOT_TRACE=1`` is not set — without this, the raised exception
     carries only the bad ticker(s) and the rest of the decision context
-    (decision_tag, reasoning, thesis) is lost when the tick aborts.
+    (decision_tag, reasoning) is lost when the tick aborts.
     """
 
     logger.error(
         "Strategist contract violation on tick=%s: %s | decision_tag=%r "
-        "reasoning=%r thesis=%r confidence=%s n_stances=%d",
+        "reasoning=%r confidence=%s n_stances=%d",
         tick_id,
         violation,
         decision.decision_tag,
         decision.reasoning,
-        decision.thesis,
         decision.confidence,
         len(decision.stances),
     )
@@ -141,7 +140,6 @@ def validate_and_enrich(state: dict) -> dict | None:
             stances      = raw.stances,
             decision_tag = raw.decision_tag,
             reasoning    = raw.reasoning,
-            thesis       = raw.thesis,
             confidence   = raw.confidence,
         )
     else:
@@ -199,7 +197,6 @@ def validate_and_enrich(state: dict) -> dict | None:
         stances        = llm_decision.stances,
         decision_tag   = llm_decision.decision_tag,
         reasoning      = llm_decision.reasoning,
-        thesis         = llm_decision.thesis,
         confidence     = llm_decision.confidence,
         target_weights = derived.target_weights,
     )

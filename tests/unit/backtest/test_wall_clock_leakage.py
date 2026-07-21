@@ -85,7 +85,6 @@ def test_decision_writer_uses_as_of(db_session) -> None:
         target_weights={"AAPL": 0.0},
         decision_tag="test_tag",
         reasoning="x",
-        thesis="y",
         confidence=0.5,
     )
     state = {

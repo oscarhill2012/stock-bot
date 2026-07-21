@@ -565,7 +565,7 @@ class Driver:
         Creates a fresh session per tick so ADK session IDs never collide
         across ticks.  The session service is backed by the per-run SQLite
         file (``runs/<run-id>/session.sqlite``) so user-scoped state
-        (``user:positions``, ``user:thesis``) persists across ticks within
+        (``user:positions``) persists across ticks within
         the same run.
 
         After the runner finishes, the updated session state is merged back
@@ -608,8 +608,8 @@ class Driver:
         from orchestrator.lifecycle_runner import build_runner, build_seed_state
 
         # One shared session service instance per tick — backed by the
-        # per-run SQLite file so user-scoped state (user:positions,
-        # user:thesis) persists across ticks within this run.
+        # per-run SQLite file so user-scoped state (user:positions)
+        # persists across ticks within this run.
         session_service = make_session_service(db_url=self._session_db_url)
 
         # Parity: build the runner through the shared helper.  The
@@ -695,7 +695,7 @@ class Driver:
 
             # ── State-carry decisions (Band 2 review) ─────────────────────
             #
-            # ``user:positions`` / ``user:thesis`` — DROPPED.
+            # ``user:positions`` — DROPPED.
             #   These are user-scoped keys written by the Executor's
             #   after_agent_callback (Band 4).  They persist in the
             #   DatabaseSessionService row and are re-hydrated by ADK's

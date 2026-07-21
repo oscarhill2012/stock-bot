@@ -48,7 +48,6 @@ class StrategistLLMDecision(BaseModel):
         decision_tag: Snake_case label naming this tick's decision.
         reasoning:    Overall narrative for the tick.
         confidence:   Float [0,1] over the whole decision.
-        thesis:       Optional standing-thesis update (null = carry forward).
 
     All other downstream fields live on ``StrategistDecision`` and are
     constructed by the strategist's after-callback once the model output has
@@ -57,14 +56,12 @@ class StrategistLLMDecision(BaseModel):
 
     stances: list[TickerStance] = Field(default_factory=list)
 
-    # decision_tag, reasoning, thesis: max_length intentionally NOT set —
+    # decision_tag, reasoning: max_length intentionally NOT set —
     # Vertex's constrained decoder pads string fields toward schema-level
     # maxLength.  The prompt states the upper bound in words; trust the
     # model to honour it.
     decision_tag: str
     reasoning: str
-
-    thesis: str | None = None
 
     confidence: float = Field(ge=0.0, le=1.0)
 
@@ -103,17 +100,5 @@ class StrategistDecision(BaseModel):
 
     decision_tag: str                                                                          # snake_case label for this tick
     reasoning: str = Field(max_length=_schema_cap(_DECISION.reasoning_max_chars))             # overall reasoning summary
-
-    thesis: str | None = Field(
-        None,
-        description=(
-            "Optional standing market thesis update.  When non-null, the "
-            "executor's after-agent callback persists the new text to the "
-            "user-scoped thesis key (``state['user:thesis']``).  "
-            "When None, the prior thesis is carried forward unchanged — "
-            "None is a carry-forward sentinel, not an explicit clear."
-        ),
-        max_length=_schema_cap(_DECISION.thesis_max_chars),
-    )
 
     confidence: float = Field(ge=0.0, le=1.0)

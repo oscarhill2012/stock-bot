@@ -411,7 +411,7 @@ class Runner:
             # When ``fresh=True``, delete the per-run ADK session database before
             # the run starts so the new run cannot inherit prior-run thesis.  A
             # ``--fresh`` re-run of a window MUST begin with an empty
-            # ``user_state`` row — otherwise ``user:positions`` / ``user:thesis``
+            # ``user_state`` row — otherwise ``user:positions``
             # from the previous run leak into tick 1.
             session_sqlite = run_dir / "session.sqlite"
             if fresh and session_sqlite.exists():
@@ -594,13 +594,10 @@ class Runner:
                 # ``user:positions`` from the DatabaseSessionService row on
                 # tick 2+ automatically.
                 #
-                # ``thesis`` is intentionally absent — it has migrated to
-                # ``user:thesis`` (Spec B, Band 2).  The strategist prompt
-                # template resolves the optional placeholder ``{user:thesis?}``
-                # directly from ``state["user:thesis"]`` (ADK's instruction-
-                # variable machinery), yielding an empty string on cold start
-                # when the key is absent — so no bare ``thesis`` seed is needed
-                # here and the prior context-shim bridge has been removed.
+                # ``thesis`` — the portfolio-level standing-thesis string
+                # (``user:thesis`` / ``StrategistDecision.thesis``) was cut
+                # entirely; there is no longer a prompt placeholder or schema
+                # field for it, so no seed is needed here.
                 "memory_buffer":    [],
                 "day_digest":       "",
                 # Dump each PriceHistory to a JSON-safe dict so the ADK

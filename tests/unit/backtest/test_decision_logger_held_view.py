@@ -91,7 +91,6 @@ def _make_held_view_state() -> dict:
             ],
             # sell_reasons / update_reasons removed (A-013 tail).
             "reasoning":      "Opening AAPL on technical momentum.",
-            "thesis":         "Momentum play on AAPL.",
             "decision_tag":   "open_aapl",
             "confidence":     0.70,
         },

@@ -46,7 +46,6 @@ _SECTION_A_REQUIRED_KEYS = frozenset({
     "portfolio",
     "reference_prices",
     "user:positions",
-    "user:thesis",
     "strategist_decision",
     "technical_verdicts",
     "fundamental_verdicts",

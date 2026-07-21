@@ -89,7 +89,6 @@ def _make_strategist_llm_response(tickers: list[str]):
         # from the fill price + stance via apply_stance_to_thesis.
         "decision_tag":   "smoke_test_open",
         "reasoning":      "Smoke test run — opening one position to exercise executor.",
-        "thesis":         "Smoke-test thesis: testing position persistence.",
         "confidence":     0.7,
     }
 

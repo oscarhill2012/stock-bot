@@ -34,7 +34,7 @@ class ExecutorAgent(BaseAgent):
     - Idempotency guard: skips execution if tick_id was already processed.
     - After the run loop completes, the after_agent_callback
       (_executor_thesis_writer_callback) assembles and writes
-      user:positions / user:thesis to persistent state.
+      user:positions to persistent state.
     """
 
     name: str = "Executor"
@@ -446,14 +446,14 @@ def _build_fill_prices(state: dict) -> dict[str, float]:
 
 
 def _executor_thesis_writer_callback(callback_context) -> None:
-    """Assemble user:positions / user:thesis from this tick's stances + fills.
+    """Assemble user:positions from this tick's stances + fills.
 
     Runs after Executor's ``_run_async_impl`` has yielded its
     broker-effect ``state_delta`` (``executions``,
     ``last_executed_tick_id``).  Reads the just-emitted executions,
     the strategist decision, and the prior ``user:positions`` already
     merged into session state at Phase 2.  Writes the new
-    ``user:positions`` and ``user:thesis`` via delta-tracked
+    ``user:positions`` via delta-tracked
     ``ctx.state[key] = value``; ADK's ``_handle_after_agent_callback``
     (base_agent.py:489–544) then auto-yields a state-delta Event from
     the accumulated delta, which the runner ingests through
@@ -632,23 +632,13 @@ def _executor_thesis_writer_callback(callback_context) -> None:
             state.get("tick_id", "unknown"),
         )
 
-    # ---- thesis carry-forward (explicit re-write) ----------------------
-    # ``decision.thesis is not None`` means the strategist is actively
-    # updating the standing thesis.  ``None`` is the carry-forward sentinel.
-    new_thesis: str = (
-        decision.thesis
-        if decision.thesis is not None
-        else state.get("user:thesis", "")
-    )
-
-    # ---- delta-tracked writes — ADK auto-yields the event --------------
+    # ---- delta-tracked write — ADK auto-yields the event ----------------
     # Writing via ``state[key] = value`` (where state is ADK's ``State``
     # object) records the delta in ``_event_actions.state_delta`` so the
     # runner's ``_handle_after_agent_callback`` auto-yields a state-delta
     # Event, which ``SessionService.append_event`` then persists.
 
     state["user:positions"] = updated_positions
-    state["user:thesis"]    = new_thesis
 
     return None
 

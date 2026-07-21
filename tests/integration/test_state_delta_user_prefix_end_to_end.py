@@ -4,12 +4,11 @@ Wires the real Executor (with its ``_executor_thesis_writer_callback``) against
 a real ``DatabaseSessionService`` backed by an in-memory sqlite.  After one
 tick the test fetches the session from the service and asserts that:
 - ``session.state["user:positions"]`` contains the expected position thesis.
-- ``session.state["user:thesis"]`` contains the expected standing thesis string.
 
 This test proves the auto-yield path:
   _run_async_impl yields broker-effect Event
     → ADK runs _executor_thesis_writer_callback
-      → callback writes user:positions + user:thesis via ctx.state[key] = val
+      → callback writes user:positions via ctx.state[key] = val
         → ADK auto-yields state-delta Event from accumulated delta
           → DatabaseSessionService.append_event persists user:-prefixed keys
             to user_state table
@@ -32,8 +31,8 @@ from broker.fake import FakeBroker
 
 
 @pytest.mark.asyncio
-async def test_user_positions_and_thesis_written_after_executor_tick():
-    """Running Executor via ADK Runner persists user:positions and user:thesis.
+async def test_user_positions_written_after_executor_tick():
+    """Running Executor via ADK Runner persists user:positions.
 
     Uses a real ``DatabaseSessionService`` (in-memory sqlite) so that the
     assertion is against the persisted session, not an in-process variable.
@@ -59,6 +58,8 @@ async def test_user_positions_and_thesis_written_after_executor_tick():
     # so both the executor BUY-path (assembling the bare-key bridge thesis)
     # and the after-callback's apply_stance_to_thesis (writing user:positions)
     # fire correctly.  iter-3: no horizon / target_price / stop_price.
+    # C4: the portfolio-level "thesis" string was cut from StrategistDecision
+    # (extra="forbid" now rejects it), so it is no longer seeded here.
     session = await svc.create_session(
         app_name = "test-e2e",
         user_id  = "stockbot",
@@ -66,7 +67,6 @@ async def test_user_positions_and_thesis_written_after_executor_tick():
             "tick_id":         "tick-1",
             "as_of":           open_ts,
             "user:positions":  {},
-            "user:thesis":     "",
             "final_orders": [
                 {"ticker": "AAPL", "action": "BUY", "quantity": 5.0, "est_price": 200.0},
             ],
@@ -74,7 +74,6 @@ async def test_user_positions_and_thesis_written_after_executor_tick():
                 "decision_tag": "buy_aapl",
                 "reasoning":    "Strong FCF + insider buying",
                 "confidence":   0.8,
-                "thesis":       "FCF-driven AI infrastructure thesis",
                 "stances": [
                     {
                         "ticker":    "AAPL",
@@ -133,8 +132,9 @@ async def test_user_positions_and_thesis_written_after_executor_tick():
     assert "target_price" not in aapl_thesis
     assert "stop_price"   not in aapl_thesis
 
-    # user:thesis must contain the standing thesis string from the decision.
-    user_thesis = reloaded.state.get("user:thesis")
-    assert user_thesis == "FCF-driven AI infrastructure thesis", (
-        f"user:thesis must be the decision.thesis string; got {user_thesis!r}"
+    # C4: the portfolio-level thesis field was cut entirely — user:thesis must
+    # never be written to state any more.
+    assert "user:thesis" not in reloaded.state, (
+        "user:thesis must NOT be present after C4 — the portfolio-level "
+        "thesis string was removed from the strategist/executor pipeline"
     )

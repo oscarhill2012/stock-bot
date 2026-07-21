@@ -182,7 +182,6 @@ per-ticker stance for the next trading hour.
 ## Current State
 Date:         {temp:current_date}
 Portfolio:    {temp:portfolio_summary}
-Thesis:       {user:thesis?}
 
 ## Thesis Book (your current view on every tracked ticker, with evolution since the last revision)
 {temp:held_positions_view}
@@ -197,8 +196,8 @@ may still override an analyst, but write down which signal you overweighted
 and why.
 
 Treat the digested aggregate as a deterministic input; you may disagree with
-it based on context (your existing thesis, memory, day digest) — call out
-the disagreement in your rationale when you do.
+it based on context (your thesis book) — call out the disagreement in your
+rationale when you do.
 
 ## Reading the technical reads and analyst horizons
 
@@ -383,8 +382,6 @@ on ``no_action``.
 - confidence (decision-level): float between 0.0 and 1.0 inclusive.
 - reasoning (decision-level): brief.  Hard upper limit of
   {{DECISION_REASONING_MAX}} characters.  No minimum.
-- thesis (decision-level, optional — null carries the prior thesis
-  forward): hard upper limit of {{DECISION_THESIS_MAX}} characters.
 - decision_tag (decision-level): snake_case label, hard upper limit of
   40 characters.
 - Off-watchlist tickers are rejected.
@@ -419,8 +416,7 @@ moved.
   ],
   "decision_tag": "<snake_case_label>",
   "confidence": <0.0-1.0>,
-  "reasoning": "<brief>",
-  "thesis": "<optional prose; null carries the prior thesis forward>"
+  "reasoning": "<brief>"
 }}
 
 Keep every text field short. One sentence is usually enough; two if
@@ -436,7 +432,6 @@ values inside its text. Stop writing as soon as the point is made.
 #
 # Markers resolved here:
 #   {{DECISION_REASONING_MAX}}  — from config/strategist.json
-#   {{DECISION_THESIS_MAX}}     — from config/strategist.json
 #   {{STANCE_RATIONALE_MAX}}    — from config/strategist.json (single
 #                                  ``rationale`` field — used by buy /
 #                                  sell / update)
@@ -449,7 +444,6 @@ values inside its text. Stop writing as soon as the point is made.
 STRATEGIST_INSTRUCTION = (
     _RAW_INSTRUCTION
     .replace("{{DECISION_REASONING_MAX}}",  str(_DECISION.reasoning_max_chars))
-    .replace("{{DECISION_THESIS_MAX}}",     str(_DECISION.thesis_max_chars))
     # Single prose field — ``rationale`` — governed by this cap.
     .replace("{{STANCE_RATIONALE_MAX}}",    str(_STANCE.rationale_max_chars))
     # Risk-gate buy-delta caps — injected from config/risk_gate.json.

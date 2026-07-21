@@ -351,14 +351,15 @@ class DecisionLogger:
             # Full strategist accountability payload — used by the future
             # persistent-memory loop to retrieve past decisions by reasoning /
             # decision_tag and compare against realised outcomes.  Keep the
-            # tick-level reasoning and thesis as full strings (not
-            # truncated excerpts): the RAG corpus needs the real text, and
-            # one decision per fill is the right granularity to pay that cost.
+            # tick-level reasoning as a full string (not a truncated excerpt):
+            # the RAG corpus needs the real text, and one decision per fill is
+            # the right granularity to pay that cost.  (C4: the portfolio-level
+            # "thesis" field was removed from StrategistDecision entirely, so
+            # it is no longer captured here either.)
             "strategist_decision": {
                 "stance":       _coerce(stance),
                 "sell_reason":  sell_reason,
                 "reasoning":    decision.get("reasoning", ""),
-                "thesis":       decision.get("thesis", ""),
                 "decision_tag": decision.get("decision_tag", ""),
                 "confidence":   decision.get("confidence"),
             },

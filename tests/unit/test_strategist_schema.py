@@ -29,7 +29,6 @@ def test_strategist_decision_rejects_long_reasoning():
             target_weights={"AAPL": 0.1},
             decision_tag="test",
             reasoning="x" * (schema_cap + 1),  # one char over the *schema* (slack-applied) cap
-            thesis="ok",
             confidence=0.7,
         )
 
@@ -40,7 +39,6 @@ def test_strategist_decision_rejects_bad_confidence():
             target_weights={},
             decision_tag="test",
             reasoning="ok",
-            thesis="ok",
             confidence=1.5,
         )
 

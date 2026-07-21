@@ -163,7 +163,6 @@ def _build_decision() -> dict:
         ],
         decision_tag = "smoke_sell_buy_update",
         reasoning    = "Smoke test tick: three-verb.",
-        thesis       = "Market regime neutral; selective entry.",
         confidence   = 0.65,
     ).model_dump(mode="json")
 
@@ -372,7 +371,8 @@ async def test_three_verb_single_tick_smoke(
     #
     # The callback reads ``user:positions`` (prior book from Phase 2 merge),
     # ``executions``, and ``strategist_decision``.  It writes ``user:positions``
-    # and ``user:thesis`` via delta-tracked state keys.
+    # via delta-tracked state keys (C4: the portfolio-level ``user:thesis``
+    # write was removed entirely).
 
     class _CallbackCtx:
         """Minimal CallbackContext shim — exposes a mutable state dict.

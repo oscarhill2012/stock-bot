@@ -201,7 +201,6 @@ async def test_strategist_v2_emits_per_ticker_stances_with_held_position(
         "user:positions": {"AAPL": aapl_thesis.model_dump(mode="json")},
         "memory_buffer": [],
         "day_digest": "",
-        "user:thesis": "",
         # Per-analyst evidence lists — each is a list[AnalystEvidence] dump.
         "technical_evidence":   _build_evidence_list("technical",   "bullish", 0.6),
         "fundamental_evidence": _build_evidence_list("fundamental",  "bullish", 0.5),

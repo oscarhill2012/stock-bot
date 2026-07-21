@@ -76,14 +76,9 @@ class DecisionCaps(BaseModel):
         Max length of ``StrategistDecision.reasoning`` — the overall summary
         the LLM emits across all stances.  Raised from the original 300 after
         live runs showed Gemini routinely wanted more headroom.
-    thesis_max_chars:
-        Max length of ``StrategistDecision.thesis`` — the optional standing
-        market thesis update.  When non-null, overwrites ``state['user:thesis']``;
-        when null/omitted, the prior thesis is carried forward unchanged.
     """
 
     reasoning_max_chars: int = Field(ge=50, le=2000)
-    thesis_max_chars:    int = Field(ge=50, le=2000)
 
 
 class StanceCaps(BaseModel):

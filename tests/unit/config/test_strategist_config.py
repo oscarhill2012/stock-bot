@@ -21,15 +21,13 @@ def _valid_strategist_json() -> dict:
     Used as the starting point for both happy-path and bad-value tests
     so each test only highlights the specific field it perturbs.
 
-    Note: field names mirror the real ``DecisionCaps`` model (``thesis_max_chars``,
-    not the plan's draft ``updated_thesis_max_chars``).
+    Note: field names mirror the real ``DecisionCaps`` model.
     """
 
     return {
         "slack_percent": 15,
         "decision_caps": {
             "reasoning_max_chars": 1000,
-            "thesis_max_chars":     800,
         },
         "stance_caps": {
             "rationale_max_chars":    250,

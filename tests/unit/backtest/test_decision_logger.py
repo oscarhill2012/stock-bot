@@ -20,9 +20,10 @@ def _make_state() -> dict:
 
     Includes:
     - Two filled executions (one BUY, one SELL).
-    - A ``strategist_decision`` carrying a ``stances`` list, plus the four
-      decision-level fields (``reasoning``, ``thesis``, ``decision_tag``,
-      ``confidence``) the snapshot now surfaces.
+    - A ``strategist_decision`` carrying a ``stances`` list, plus the
+      decision-level fields (``reasoning``, ``decision_tag``, ``confidence``)
+      the snapshot now surfaces.  (C4: the portfolio-level ``thesis`` field
+      was removed from ``StrategistDecision`` entirely.)
     - ``temp:ticker_evidence_objects`` — the list of per-ticker TickerEvidence
       dumps the strategist's context shim writes.
     - ``user:positions`` — the per-ticker PositionThesis dump book (A-014: the
@@ -107,7 +108,6 @@ def _make_state() -> dict:
             # sell_reasons / update_reasons removed (A-013 tail);
             # sell rationale lives on the stance itself.
             "reasoning":    "Rotating out of regional banks into mega-cap tech on the back of the SIVB blowup.",
-            "thesis":       "Regional bank stress is the dominant risk; rotate to balance-sheet-strong mega-caps.",
             "decision_tag": "rotate_to_megacap",
             "confidence":   0.78,
         },
@@ -175,7 +175,9 @@ def test_logs_one_file_per_filled_execution_with_populated_content(tmp_path: Pat
     assert sd["stance"]["rationale"]    == "Thesis broken"
     assert sd["sell_reason"]            == "Thesis broken"
     assert sd["reasoning"].startswith("Rotating out of regional banks")
-    assert sd["thesis"].startswith("Regional bank stress")
+    assert "thesis" not in sd, (
+        "C4: the portfolio-level thesis field was removed from the snapshot"
+    )
     assert sd["decision_tag"]           == "rotate_to_megacap"
     assert sd["confidence"]             == 0.78
 

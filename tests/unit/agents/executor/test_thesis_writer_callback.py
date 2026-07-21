@@ -1,15 +1,15 @@
 """Unit tests for ``_executor_thesis_writer_callback``.
 
-Eight scenarios from Spec B §'Testing':
+Scenarios from Spec B §'Testing' (post-C4: the portfolio-level
+``user:thesis`` string was removed — the callback now only ever writes
+``user:positions``, the per-ticker ``PositionThesis`` book):
 
 1. open stance + fill seeds a new PositionThesis row
-2. Writes register in state delta (both user:positions and user:thesis)
+2. Writes register in state delta (user:positions only)
 3. Returns None (Rule 3 conformance)
-4. Carry-forward thesis when decision.thesis is None
-5. Overwrite thesis when decision.thesis is non-null
-6. close stance deletes ticker
-7. hold stance touches review fields only (no commitment mutation)
-8. Fill price used as opened_price
+4. close stance deletes ticker
+5. hold stance touches review fields only (no commitment mutation)
+6. Fill price used as opened_price
 
 The callback touches ``callback_context.state``, which in ADK is a
 delta-tracked ``State`` object backed by ``EventActions.state_delta``.
@@ -59,8 +59,6 @@ def _minimal_state(
     stances: list[TickerStance],
     executions: list[dict] | None = None,
     user_positions: dict | None = None,
-    user_thesis: str = "",
-    thesis: str | None = None,
 ) -> dict:
     """Assemble the minimal state dict expected by the callback."""
 
@@ -73,11 +71,9 @@ def _minimal_state(
             decision_tag   = "test",
             reasoning      = "test run",
             confidence     = 0.5,
-            thesis         = thesis,
         ),
         "executions":          executions or [],
         "user:positions":      user_positions or {},
-        "user:thesis":         user_thesis,
     }
 
 
@@ -127,10 +123,13 @@ def test_callback_open_stance_seeds_position_thesis():
 
 
 def test_callback_writes_register_in_state_delta():
-    """Both user:positions and user:thesis must appear in the state delta.
+    """user:positions must appear in the state delta.
 
-    This proves ADK will auto-yield a state-delta Event for the writes.
+    This proves ADK will auto-yield a state-delta Event for the write.
     See contract-invariants.md §C-Rule 1 amendment.
+
+    C4: the callback no longer writes user:thesis at all — the portfolio-level
+    thesis string was removed, so it must NOT appear in the delta either.
     """
 
     state = _minimal_state(
@@ -143,7 +142,9 @@ def test_callback_writes_register_in_state_delta():
     assert ctx.state.has_delta(), "state must have a non-empty delta after callback"
     delta = ctx._event_actions.state_delta
     assert "user:positions" in delta, "user:positions must appear in state delta"
-    assert "user:thesis"    in delta, "user:thesis must appear in state delta"
+    assert "user:thesis" not in delta, (
+        "user:thesis must NOT appear in state delta post-C4"
+    )
 
 
 def test_callback_returns_none_no_reprompt():
@@ -154,36 +155,6 @@ def test_callback_returns_none_no_reprompt():
     result = _executor_thesis_writer_callback(ctx)
 
     assert result is None
-
-
-def test_callback_carry_forward_thesis_when_decision_thesis_is_none():
-    """When ``decision.thesis`` is None, the prior user:thesis is preserved."""
-
-    prior_thesis = "Bullish on AI infrastructure — unchanged since last week"
-    state = _minimal_state(
-        stances      = [],
-        user_thesis  = prior_thesis,
-        thesis       = None,     # explicit carry-forward sentinel
-    )
-    ctx = _make_callback_context(state)
-    _executor_thesis_writer_callback(ctx)
-
-    assert ctx.state["user:thesis"] == prior_thesis
-
-
-def test_callback_overwrites_thesis_when_decision_thesis_is_non_null():
-    """When ``decision.thesis`` is a non-null string, it replaces the prior thesis."""
-
-    new_thesis = "Rotating to defensive sectors ahead of Fed decision"
-    state = _minimal_state(
-        stances     = [],
-        user_thesis = "Old thesis",
-        thesis      = new_thesis,
-    )
-    ctx = _make_callback_context(state)
-    _executor_thesis_writer_callback(ctx)
-
-    assert ctx.state["user:thesis"] == new_thesis
 
 
 def test_callback_sell_stance_deletes_ticker():

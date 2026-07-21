@@ -400,14 +400,6 @@ class StrategistContextShim(BaseAgent):
         # Surface trace — no-op unless state["temp:_trace"] is set.
         trace_maybe(state, "04_digest", ticker_evidence_objects)
 
-        # ── Thesis placeholder ───────────────────────────────────────────
-        # The strategist instruction uses the optional ``{user:thesis?}``
-        # placeholder.  ADK's ``inject_session_state`` resolves it directly
-        # from ``state["user:thesis"]``; when the key is absent (first tick /
-        # cold start) the ``?`` suffix causes it to resolve to an empty string
-        # rather than raising ``KeyError``.  No bridge from this shim into a
-        # bare key is needed.
-
         # ── Yield exactly one Event carrying all required keys ────────────
         yield Event(
             author        = self.name,

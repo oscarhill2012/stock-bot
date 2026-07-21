@@ -25,7 +25,7 @@ def test_decision_with_stances():
             ),
         ],
         target_weights={},
-        decision_tag="x", reasoning="x", thesis="y",
+        decision_tag="x", reasoning="x",
         confidence=0.6,
     )
     assert len(d.stances) == 1
@@ -35,7 +35,7 @@ def test_iter3_fields_present():
     """target_weights is present; deleted legacy dicts are absent."""
     d = StrategistDecision(
         stances=[], target_weights={"AAPL": 0.04},
-        decision_tag="x", reasoning="x", thesis="y",
+        decision_tag="x", reasoning="x",
         confidence=0.7,
     )
     assert d.target_weights == {"AAPL": 0.04}
@@ -61,7 +61,6 @@ def test_legacy_json_without_stances_parses():
         "target_weights": {"AAPL": 0.04},
         "decision_tag": "legacy",
         "reasoning": "x",
-        "thesis": "y",
         "confidence": 0.6,
     }
     d = StrategistDecision.model_validate(payload)

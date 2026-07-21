@@ -98,7 +98,7 @@ async def _build_initial_state(broker, tick_id: str, tickers: list[str]) -> dict
     and seeds the Phase 2 lifecycle keys (``tick_id``, ``as_of``,
     ``tick_phase``) plus the per-tick pipeline fields the pipeline expects.
 
-    Cross-tick fields (``user:positions``, ``user:thesis``) are NOT seeded
+    Cross-tick fields (``user:positions``) are NOT seeded
     here — ADK's user_state merge populates them from the
     ``DatabaseSessionService`` row when the session is created.  See
     ``docs/Phase10-post-first-backtest/specs/foundational-thesis-memory.md``
@@ -283,7 +283,7 @@ async def run_once(broker, session=None, *, tick_label: str | None = None) -> di
     # Create a fresh session with the minimal state every tick needs.
     # Portfolio is seeded from the broker so the strategist's held-view
     # callback renders real holdings on the very first tick.
-    # Cross-tick state (user:positions, user:thesis) is NOT seeded here —
+    # Cross-tick state (user:positions) is NOT seeded here —
     # ADK's user_state merge hydrates it from the DB row on session create
     # (Spec B: docs/Phase10-post-first-backtest/specs/foundational-thesis-memory.md).
     initial_state = await _build_initial_state(broker, tick_id, tickers)

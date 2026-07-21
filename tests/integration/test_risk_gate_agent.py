@@ -50,7 +50,6 @@ async def test_risk_gate_applies_constraints_and_sets_orders():
             "target_weights": {"AAPL": 0.05, "MSFT": 0.0},
             "decision_tag":   "test",
             "reasoning":      "ok",
-            "thesis":         "ok",
             "confidence":     0.7,
         },
         # Portfolio with no open positions — matches the broker's starting state.
@@ -112,7 +111,6 @@ async def test_risk_gate_uses_state_portfolio_not_broker() -> None:
             "target_weights": {"AAPL": 0.05},
             "decision_tag":   "test",
             "reasoning":      "ok",
-            "thesis":         "ok",
             "confidence":     0.7,
         },
         # Canonical portfolio seed — the risk gate must read from here, not

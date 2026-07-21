@@ -190,23 +190,23 @@ def test_strategist_state_delta_carries_no_bare_thesis_key(_warm_state: dict) ->
 # 4. Positive proof — prompts.py uses {user:thesis?}, not {thesis}
 # ---------------------------------------------------------------------------
 
-def test_strategist_prompt_resolves_user_thesis_placeholder() -> None:
-    """A-086 positive proof: strategist prompt uses {user:thesis?}, not {thesis}.
+def test_strategist_prompt_has_no_thesis_placeholder() -> None:
+    """C4 positive proof: the portfolio-level thesis placeholder is fully gone.
 
-    After the rename:
-    - The bare ``{thesis}`` placeholder must NOT appear in the instruction.
-    - The optional ``{user:thesis?}`` placeholder MUST appear.
+    Neither the bare ``{thesis}`` nor the ``{user:thesis?}`` placeholder may
+    appear in the instruction — the portfolio-level thesis string was removed
+    entirely from the strategist prompt/schema/executor pipeline.
 
-    This guards against the placeholder being silently reverted in a future
-    prompt edit.
+    This guards against the placeholder being silently reintroduced in a
+    future prompt edit.
     """
     from agents.strategist.prompts import STRATEGIST_INSTRUCTION
 
     assert "{thesis}" not in STRATEGIST_INSTRUCTION, (
         "Bare {thesis} placeholder found in STRATEGIST_INSTRUCTION — "
-        "it should be {user:thesis?} so ADK resolves from state['user:thesis']"
+        "the portfolio-level thesis field was removed in C4"
     )
-    assert "{user:thesis?}" in STRATEGIST_INSTRUCTION, (
-        "Optional {user:thesis?} placeholder missing from STRATEGIST_INSTRUCTION — "
-        "the strategist prompt must read the user-scoped thesis via this placeholder"
+    assert "{user:thesis?}" not in STRATEGIST_INSTRUCTION, (
+        "{user:thesis?} placeholder found in STRATEGIST_INSTRUCTION — "
+        "the portfolio-level thesis field was removed in C4"
     )

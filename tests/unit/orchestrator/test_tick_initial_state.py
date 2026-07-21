@@ -24,10 +24,12 @@ def test_initial_state_seeds_portfolio_from_broker():
 def test_initial_state_retains_required_keys():
     """Seeding portfolio must not drop any of the keys the pipeline depends on.
 
-    NOTE (Spec B / Band 2): ``positions`` and ``thesis`` are intentionally
-    absent from the initial state dict — they have migrated to ADK user-scoped
-    state (``user:positions``, ``user:thesis``) and are hydrated by
-    ``DatabaseSessionService`` on session create rather than being seeded here.
+    NOTE (Spec B / Band 2): ``positions`` is intentionally absent from the
+    initial state dict — it has migrated to ADK user-scoped state
+    (``user:positions``) and is hydrated by ``DatabaseSessionService`` on
+    session create rather than being seeded here.  The portfolio-level
+    ``thesis`` string was removed entirely (C4) and is no longer part of the
+    pipeline at all.
     """
     broker = FakeBroker(starting_cash=500.0, prices={})
     state = asyncio.run(_build_initial_state(broker, "tick-Y", ["MSFT"]))
@@ -39,11 +41,13 @@ def test_initial_state_retains_required_keys():
     assert state["tick_id"] == "tick-Y"
     assert state["tickers"] == ["MSFT"]
 
-    # ``positions`` and ``thesis`` must NOT be seeded bare — they are user-scoped
-    # ADK state, not per-tick seeds.  Seeding them here would shadow the DB row.
+    # ``positions`` must NOT be seeded bare — it is user-scoped ADK state, not
+    # a per-tick seed.  Seeding it here would shadow the DB row.  ``thesis``
+    # must never appear at all — the portfolio-level thesis field was removed
+    # entirely in C4 (there is no user:thesis to bridge to any more).
     assert "positions" not in state, (
         "'positions' should not be seeded in initial state; use user:positions via ADK"
     )
     assert "thesis" not in state, (
-        "'thesis' should not be seeded in initial state; use user:thesis via ADK"
+        "'thesis' must never appear — the portfolio-level thesis field was removed (C4)"
     )

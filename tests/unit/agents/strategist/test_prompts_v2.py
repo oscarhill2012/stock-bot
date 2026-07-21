@@ -85,9 +85,9 @@ def test_template_has_state_slots():
     ``.format(...)`` call in ``test_template_renders_with_all_required_slots``
     which raises ``KeyError`` if any slot is missing.
 
-    A-086: the thesis placeholder was renamed from the bare ``{thesis}`` to
-    ``{user:thesis?}`` so ADK resolves it from ``state["user:thesis"]``
-    directly.  The bare ``{thesis}`` placeholder must NOT appear.
+    C4: the portfolio-level thesis placeholder (formerly ``{user:thesis?}``,
+    renamed from the bare ``{thesis}`` under A-086) was removed entirely —
+    neither form may appear any more.
     """
     # F7: the raw `{portfolio}` ADK placeholder dumped a Python dict (with
     # 15-significant-figure floats) straight into the prompt.  Replaced with
@@ -112,10 +112,13 @@ def test_template_has_state_slots():
     assert "{day_digest}" not in STRATEGIST_INSTRUCTION, (
         "{day_digest} must be gone — the day-digest context item was cut"
     )
-    # A-086: optional user-scoped placeholder — resolves to empty string on cold start.
-    assert "{user:thesis?}" in STRATEGIST_INSTRUCTION
+    # C4: the portfolio-level thesis field was removed entirely — neither the
+    # bare {thesis} nor the optional {user:thesis?} placeholder may appear.
+    assert "{user:thesis?}" not in STRATEGIST_INSTRUCTION, (
+        "{user:thesis?} must be gone — the portfolio-level thesis field was cut (C4)"
+    )
     assert "{thesis}" not in STRATEGIST_INSTRUCTION, (
-        "Bare {thesis} placeholder found — use {user:thesis?} instead (A-086)"
+        "Bare {thesis} placeholder found — the portfolio-level thesis field was cut (C4)"
     )
     assert "{tickers}" in STRATEGIST_INSTRUCTION
     # Recent Round-trips was an in-prompt echo of the rolling closed-trades
@@ -359,9 +362,8 @@ def test_template_renders_with_all_required_slots():
     first, then call ``.format()`` for the plain slots.  Any *missing* slot
     still raises ``KeyError`` before the assertions execute.
 
-    A-086: ``{thesis}`` was renamed to ``{user:thesis?}`` (ADK optional
-    user-scoped placeholder).  We pre-substitute it here along with the other
-    ADK-namespaced placeholders before calling ``.format()``.
+    C4: the portfolio-level thesis placeholder (formerly ``{user:thesis?}``,
+    A-086) was removed entirely, so it no longer needs pre-substitution here.
     """
     # Pre-substitute all ADK-namespaced slots (temp: and user:) so Python's
     # .format() can handle the remaining plain slots without colon confusion.
@@ -379,8 +381,6 @@ def test_template_renders_with_all_required_slots():
         .replace("{temp:first_tick_preamble}",  "This is your baseline tick — populate the thesis book.")
         # iter-3 deployment readout — live one-liner injected into ## Deployment posture.
         .replace("{temp:deployment_readout}",   "Capital deployed: 0% invested across 0 positions, 100% idle cash. Target band: 70–95%. You are 70pp BELOW the band — idle cash is bearish drag.")
-        # A-086: optional user-scoped thesis — resolves to empty string on cold start.
-        .replace("{user:thesis?}",              "(empty)")
         # F7: rendered cash/NAV/position-count summary replacing the raw
         # {portfolio} dict dump.
         .replace("{temp:portfolio_summary}",    "Cash: $100,000 | NAV: $100,000 | 0 position(s)")

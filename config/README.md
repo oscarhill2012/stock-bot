@@ -362,7 +362,6 @@ mechanism that keeps data clean without losing meaning. See the docstring of
 | Setting | Type | Meaning |
 |---|---|---|
 | `decision_caps.reasoning_max_chars` | int [50–2000] | Cap on `StrategistDecision.reasoning` — the overall summary across all stances. Raised from the original 300 after live runs showed Gemini routinely overflowed. Default 600. |
-| `decision_caps.updated_thesis_max_chars` | int [50–2000] | Cap on `StrategistDecision.updated_thesis` — the working hypothesis carried into the next tick. Default 500. |
 
 ### `stance_caps` — per-ticker `TickerStance` fields
 
