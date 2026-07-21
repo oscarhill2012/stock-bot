@@ -20,6 +20,49 @@ def test_prompt_has_no_duplicate_holding_discipline_header():
     assert STRATEGIST_INSTRUCTION.count("### Holding discipline") == 1
 
 
+# ---------------------------------------------------------------------------
+# C3 — horizon prose must match the rendered/config horizons.
+#
+# The hardcoded prose in the "Reading the technical reads and analyst
+# horizons" section previously disagreed with the horizons the model
+# actually sees on each analyst's `horizon:` line: technical is ~5
+# calendar days, fundamental filing_delta_horizon_days=90 (~3 months),
+# news drift_horizon_days=20 (~3 weeks). The stale "~1-week news" number
+# in particular fought the real 20-day news horizon.
+# ---------------------------------------------------------------------------
+
+def test_horizon_prose_matches_config_horizons():
+    """The rendered prompt must cite the current horizon numbers, not stale ones."""
+    instr = STRATEGIST_INSTRUCTION
+
+    assert "~5-day" in instr, (
+        "technical CONTRARIAN mean-reversion call must cite ~5-day, matching "
+        "the ~5-calendar-day technical horizon"
+    )
+    assert "~3-month" in instr, (
+        "fundamental lean must cite ~3-month (filing_delta_horizon_days=90)"
+    )
+    assert "~3-week" in instr, (
+        "news lean must cite ~3-week (drift_horizon_days=20)"
+    )
+
+
+def test_horizon_prose_no_longer_has_stale_numbers():
+    """The stale horizon numbers must not survive — they actively mislead the model."""
+    instr = STRATEGIST_INSTRUCTION
+
+    assert "5-10 day" not in instr, (
+        "stale '5-10 day' mean-reversion window must be gone"
+    )
+    assert "~3-6 month" not in instr, (
+        "stale '~3-6 month' fundamental horizon must be gone"
+    )
+    assert "~1-week" not in instr, (
+        "stale '~1-week' news horizon must be gone — it directly fought the "
+        "real 20-day (~3-week) news horizon"
+    )
+
+
 def test_assembled_prompt_has_thesis_book_header_exactly_once():
     """C2: '## Thesis Book' must appear exactly once in the assembled prompt.
 

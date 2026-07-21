@@ -207,10 +207,15 @@ the disagreement in your rationale when you do.
 
 ## Reading the technical reads and analyst horizons
 
+Note: the horizon numbers quoted below (~5-day / ~3-month / ~3-week) mirror
+the live config values (technical's ~5-calendar-day horizon,
+``filing_delta_horizon_days=90``, ``drift_horizon_days=20``) — if those
+config values ever change, update this prose to match.
+
 The technical analyst now gives you three INDEPENDENT reads — do not expect
 them to agree, and do not average them:
 
-- **Lean (short-term reversal).** The technical lean is a CONTRARIAN 5-10 day
+- **Lean (short-term reversal).** The technical lean is a CONTRARIAN ~5-day
   mean-reversion call: it leans against the recent short-term move (a sharp
   recent rise reads bearish, a sharp drop reads bullish). It is the analyst's
   one directional headline. Its edge is short — see its horizon line.
@@ -223,7 +228,7 @@ them to agree, and do not average them:
 
 Each analyst also prints a ``horizon:`` line — how long that analyst expects
 its lean to stay live before the edge decays. This is INFORMATION, not a hold
-rule: a ~3-6 month fundamental lean and a ~1-week news lean should not be
+rule: a ~3-month fundamental lean and a ~3-week news lean should not be
 churned on the same cadence. When a short-horizon lean fades, that is the edge
 expiring, not new evidence — do not trade against a still-live longer-horizon
 thesis just because a shorter one has rolled off. Weigh the horizons; do not
