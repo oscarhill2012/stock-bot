@@ -177,6 +177,43 @@ def collapse_repeat_buffer_entries(raw_buffer: list[dict]) -> str:
     return header + "\n" + "\n".join(lines)
 
 
+def _count_live_positions(positions: dict) -> int:
+    """Count thesis-book rows that describe a LIVE position, not the whole book.
+
+    ``state["user:positions"]`` holds one row per ticker the agent has a view
+    on — owned or not (see ``position_thesis.py``).  A row whose ``opened_at``
+    is populated describes a live position; a row whose ``opened_at`` is
+    ``None`` is a watched-only view with no capital behind it.  This mirrors
+    the exact discriminator ``_render_positions_shim`` uses for its
+    ``[POSITION]`` / ``[NO POSITION]`` tags, so the count returned here always
+    agrees with the number of ``[POSITION]`` tags the model sees in the
+    rendered Thesis Book.
+
+    Args:
+        positions: Mapping of ticker -> thesis dict OR ``PositionThesis``
+            instance.  Both are tolerated (dicts arrive from JSON-serialised
+            session state; instances arrive from in-process test fixtures).
+
+    Returns:
+        int: The number of rows with a live position (``opened_at is not
+            None``).  Zero for an empty or all-watched-only book.
+    """
+    count = 0
+
+    for raw in positions.values():
+        # Accept PositionThesis instances or plain dicts interchangeably —
+        # mirrors the normalisation done in _render_positions_shim below.
+        if hasattr(raw, "model_dump"):
+            data: dict = raw.model_dump(mode="json")
+        else:
+            data = dict(raw)
+
+        if data.get("opened_at") is not None:
+            count += 1
+
+    return count
+
+
 def _index_evidence(state, key: str) -> dict[str, AnalystEvidence]:
     """Index a per-analyst evidence list by ticker.
 
@@ -393,7 +430,11 @@ class StrategistContextShim(BaseAgent):
         if not positions:
             mode_text = COLD_START_MODE_TEMPLATE
         else:
-            mode_text = INCREMENTAL_MODE_TEMPLATE.format(N=len(positions))
+            # N must count only rows with a live position, not every row in
+            # the thesis book — the book also carries watched-only rows
+            # (opened_at is None), and INCREMENTAL_MODE_TEMPLATE explicitly
+            # says "you hold {N} live position(s)".  See _count_live_positions.
+            mode_text = INCREMENTAL_MODE_TEMPLATE.format(N=_count_live_positions(positions))
 
         # ── Ticker-evidence view ──────────────────────────────────────────
         tickers: list[str] = state.get("tickers", []) or []
