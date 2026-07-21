@@ -597,7 +597,7 @@ def _render_deployment_readout(portfolio: Portfolio) -> str:
 
     Computes the fraction of portfolio NAV currently invested in positions
     (i.e. sum of all position market values divided by total NAV) and
-    formats a plain-English readout that explicitly names the 70–80% target
+    formats a plain-English readout that explicitly names the 70–95% target
     band and whether the portfolio is below, within, or above it.
 
     The directional cue (BELOW / WITHIN / ABOVE) is on the same line so
