@@ -64,45 +64,68 @@ def test_instruction_describes_single_verdict_output():
     assert "report"     in instruction
 
 
-def test_instruction_contains_recency_priced_in_guidance():
-    """The rendered prompt must instruct the model to discount stale, already-
-    reflected news rather than treating every article as equally actionable.
+def test_instruction_is_a_pure_fresh_surprise_detector():
+    """The news analyst is a pure fresh-surprise detector — it must NOT try
+    to locate, decay, or exhaust a multi-day drift window itself.
 
-    Phase 14 replaced the old ``As of:`` / per-article ``Nd ago`` recency
-    block with drift-window positioning (STEP 3): the model reasons about
-    an article's age via the PREVIOUSLY SEEN section's ages, and a stale,
-    re-circulating story without new facts is told to mildly predict
-    REVERSAL rather than continuation. The block must reference:
+    That temporal-persistence job moved downstream to the strategist/thesis
+    layer (Phase 14 follow-up). The prompt must:
 
-    - The PREVIOUSLY SEEN ages as the age-tracking mechanism.
-    - The per-article age framing (days-old / "ago").
-    - Explicit reversal guidance for late/exhausted drift windows.
-    - Guidance to lean neutral absent a genuine surprise or live drift.
+    - Still use the PREVIOUSLY SEEN section — but only as a novelty check
+      (is a fresh article genuinely new vs a rehash), not as an age/window
+      tracker.
+    - Contain NO window-position bands, decay, exhaustion, or REVERSAL
+      language — that behaviour has been deleted outright.
+    - Explicitly distinguish "no fresh surprise today" (absence of new
+      information) from "a prior catalyst has faded" — the analyst holds
+      no state about prior catalysts to fade.
+    - Still lean neutral, with low confidence, absent a genuine surprise.
     """
     instruction = build_news_instruction(_vocab())
 
-    # The age-tracking mechanism must be named so the LLM knows where ages
-    # come from.
+    # The PREVIOUSLY SEEN section survives — but purely as a novelty check.
     assert "PREVIOUSLY SEEN" in instruction, (
-        "Expected 'PREVIOUSLY SEEN' age-tracking reference in prompt — "
-        "drift-window recency block missing"
+        "Expected 'PREVIOUSLY SEEN' novelty-check reference in prompt"
+    )
+    assert "novelty check" in instruction.lower(), (
+        "Expected the PREVIOUSLY SEEN section to be framed as a novelty "
+        "check, not a window-position tracker"
     )
 
-    # The per-article age framing must be described.
-    assert "ago" in instruction, (
-        "Expected per-article age label reference (e.g. 'trading days ago') "
-        "in prompt"
+    # Deleted window-position / decay / exhaustion / reversal language must
+    # be gone — this was the source of the dead-neutral bug (10/20 tickers
+    # reading neutral 0.00 mid-run once the 7-day fetch outran the 20-day
+    # window).
+    assert "REVERSAL" not in instruction, (
+        "Stale-news-predicts-REVERSAL language should have been deleted"
+    )
+    assert "exhausted" not in instruction.lower(), (
+        "Window-exhaustion language should have been deleted"
+    )
+    assert "trading days ago" not in instruction, (
+        "Window-position age band ('N trading days ago') should be gone"
+    )
+    assert "re-anchor" not in instruction.lower(), (
+        "Drift re-anchoring language should have been deleted — a pure "
+        "detector has no existing drift to re-anchor against"
     )
 
-    # Stale, re-circulating news must be flagged as predicting reversal, not
-    # continuation — the new equivalent of the old "already priced in" discount.
-    assert "REVERSAL" in instruction, (
-        "Expected REVERSAL guidance for exhausted drift windows in prompt"
+    # The absence-vs-fading distinction must be spelled out explicitly —
+    # this is the semantic contract the downstream consumer relies on.
+    assert "absence of new information" in instruction, (
+        "Expected the prompt to spell out that a neutral tick means "
+        "absence of new information, not a faded prior catalyst"
+    )
+    assert "not tracking prior catalysts" in instruction.lower() or \
+        "not tracking a window" in instruction.lower(), (
+        "Expected the prompt to state plainly that the analyst holds no "
+        "state about prior catalysts / drift windows"
     )
 
-    # Staleness / no-surprise guidance — lean neutral absent a live edge.
+    # Staleness / no-surprise guidance — lean neutral absent a genuine
+    # surprise.
     assert "neutral" in instruction.lower(), (
-        "Expected neutral-lean guidance for stale/no-surprise news in prompt"
+        "Expected neutral-lean guidance for no-surprise news in prompt"
     )
 
 
@@ -151,13 +174,14 @@ def test_news_prompt_has_no_horizon_self_report():
     assert "Set horizon_days to roughly 5" not in instr
 
 
-def test_decision_rule_is_surprise_plus_drift_not_sentiment_reaction():
-    """The Phase 14 decision rule: classify the surprise, position for the
-    drift window — the old react-to-sentiment framing must be gone."""
+def test_decision_rule_is_surprise_classification_not_sentiment_reaction():
+    """The decision rule classifies the surprise and judges its direction —
+    the old react-to-sentiment framing must be gone, and so must the STEP 3
+    drift-window-positioning step this analyst no longer owns."""
     instruction = build_news_instruction(_vocab())
 
     assert "SURPRISE CLASSIFICATION" in instruction
-    assert "DRIFT POSITIONING" in instruction
+    assert "DRIFT POSITIONING" not in instruction  # deleted — no longer this analyst's job
     assert "PREVIOUSLY SEEN" in instruction        # explains the stale section
 
 

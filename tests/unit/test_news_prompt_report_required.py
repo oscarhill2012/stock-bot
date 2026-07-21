@@ -71,5 +71,9 @@ def test_legacy_conditional_wording_absent() -> None:
     assert "no news in window" in rendered
 
     # The two reasoning axes that make the 2-driver minimum meaningful must
-    # both be named in the OUTPUT CONTRACT prose.
-    assert "DRIFT-WINDOW POSITION" in rendered
+    # both be named in the OUTPUT CONTRACT prose. The second axis used to be
+    # "DRIFT-WINDOW POSITION" (deleted along with STEP 3 — the analyst no
+    # longer tracks a drift window); it is now a NOVELTY CHECK, judging
+    # whether a fresh article is genuinely new vs a PREVIOUSLY SEEN rehash.
+    assert "NOVELTY CHECK" in rendered
+    assert "DRIFT-WINDOW POSITION" not in rendered
