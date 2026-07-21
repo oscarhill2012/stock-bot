@@ -1,6 +1,6 @@
 import asyncio
 
-from agents.memory.embeddings import _default_embed, cosine_similarity
+from agents.analysts.news.embeddings import _default_embed, cosine_similarity
 from config.models import _reset_cache
 
 
@@ -65,7 +65,6 @@ def test_default_embed_pins_client_to_configured_location(monkeypatch, tmp_path)
         "strategist":                "gemini-2.5-pro",
         "news_analyst":               "gemini-2.5-flash-lite",
         "fundamental_analyst":        "gemini-2.5-flash-lite",
-        "memory_compressor":          "gemini-2.5-flash-lite",
         "memory_embedding":           "text-embedding-005",
         "memory_embedding_location":  "europe-west2",
     }))

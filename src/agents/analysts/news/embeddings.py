@@ -1,4 +1,18 @@
-"""Embedding helper for the memory subsystem."""
+"""Embedding helper for the news analyst's textual-staleness pre-filter.
+
+Backs ``NewsHistoryStore`` (``agents.analysts.news.history``) — the
+Tetlock-style textual-similarity dedup that scores a new article's
+maximum cosine similarity against everything already seen this run,
+marking near-duplicates as stale rehashes rather than fresh surprises.
+
+Relocated 2026-07-21 from the (now-deleted) ``agents.memory`` subsystem,
+which this module was the sole live production dependency on — everything
+else in that package (buffer writer, compression, dedup-by-tag, schema)
+had no remaining consumer once the strategist's memory-buffer/day-digest
+prompt slots were cut.  The config key this module reads is still named
+``memory_embedding`` (``config/models.json``) — that rename is out of
+scope for this move.
+"""
 from __future__ import annotations
 
 import numpy as np
