@@ -193,12 +193,13 @@ class SnapshotterAgent(BaseAgent):
         # entirely and the driver aborts the whole run with
         # "pipeline did not reach snapshotter for tick ...".
         #
-        # The wider cross-tick state-propagation issue (MemoryWriter's
-        # ``memory_buffer`` / ``day_digest`` / ``thesis`` and Executor's
+        # The wider cross-tick state-propagation issue (Executor's
         # ``executions`` / ``last_executed_tick_id`` rely on direct
         # ``state[k]=v`` mutations that are silently lost between ticks)
         # is tracked in ``docs/todo-fixes.md`` under Group 2.5 —
-        # cross-tick ADK session state propagation.
+        # cross-tick ADK session state propagation.  (The MemoryWriter's
+        # ``memory_buffer`` / ``day_digest`` / ``thesis`` context items that
+        # used to be part of this issue have since been removed entirely.)
         state["last_snapshot"] = snap
 
         yield Event(

@@ -560,10 +560,9 @@ class Runner:
             # ``state["portfolio"]`` to render ``{temp:portfolio_summary}``
             # and ``{temp:deployment_readout}`` (F7 — the prompt template no
             # longer references the raw ``{portfolio}`` placeholder directly),
-            # and several before-callbacks read ``portfolio``,
-            # ``memory_buffer``, and ``day_digest`` at the start of each tick.
-            # Without these keys the pipeline cannot render the strategist's
-            # portfolio context before the first agent runs.
+            # and several before-callbacks read ``portfolio`` at the start of
+            # each tick.  Without these keys the pipeline cannot render the
+            # strategist's portfolio context before the first agent runs.
             portfolio = await broker.get_portfolio()
 
             # Populate reference_prices from the cache so the technical extractor
@@ -597,9 +596,9 @@ class Runner:
                 # ``thesis`` — the portfolio-level standing-thesis string
                 # (``user:thesis`` / ``StrategistDecision.thesis``) was cut
                 # entirely; there is no longer a prompt placeholder or schema
-                # field for it, so no seed is needed here.
-                "memory_buffer":    [],
-                "day_digest":       "",
+                # field for it, so no seed is needed here.  The old
+                # ``memory_buffer`` / ``day_digest`` seed keys were cut in the
+                # same sweep — nothing reads them any more.
                 # Dump each PriceHistory to a JSON-safe dict so the ADK
                 # SqlSessionService (plain json.dumps under the hood) doesn't
                 # choke on Pydantic objects.  Mirrors orchestrator.tick.  The

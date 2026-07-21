@@ -39,7 +39,8 @@ import pytest
 # ARE present in the session state after the tick completes.
 #
 # Keys deliberately excluded from the assertion:
-# - ``memory_buffer`` and ``day_digest`` — Spec C deferred; not yet implemented.
+# - ``memory_buffer`` and ``day_digest`` — these context items were removed
+#   entirely (C5); no seed or read remains anywhere in the pipeline.
 _SECTION_A_REQUIRED_KEYS = frozenset({
     "tick_id",
     "tickers",

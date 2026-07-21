@@ -148,8 +148,6 @@ async def _build_initial_state(broker, tick_id: str, tickers: list[str]) -> dict
         "as_of":      datetime.now(tz=UTC).isoformat(),
         "tick_phase": "live",
         "tickers": tickers,
-        "memory_buffer": [],
-        "day_digest": "",
         "portfolio": portfolio.model_dump(mode="json"),
         # Dump each PriceHistory to a JSON-safe dict so the ADK SqlSessionService
         # (which serialises state via plain json.dumps) doesn't choke on Pydantic

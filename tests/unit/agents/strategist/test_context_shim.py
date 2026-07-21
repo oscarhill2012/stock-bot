@@ -77,9 +77,6 @@ def test_shim_yields_one_event_with_temp_prefixed_keys(populated_state: dict) ->
         "temp:held_positions_view",
         "temp:ticker_evidence",
         "temp:ticker_evidence_objects",
-        # A-086: the bare "thesis" key is NOT emitted here — the strategist
-        # prompt uses {user:thesis?} which ADK resolves from state["user:thesis"]
-        # directly.  No bridge into a bare key is needed or permitted.
         # Seeded empty so the RetryingAgentWrapper's schema-error feedback
         # slot resolves on the first attempt (overwritten on schema retry).
         "temp:_last_schema_error",
@@ -170,100 +167,6 @@ def test_shim_accepts_iso_string_as_of(populated_state: dict) -> None:
     # wall-clock branch which raised under STOCKBOT_STRICT_AS_OF=1.
     events = asyncio.run(_drain())
     assert len(events) == 1, "Shim must still yield one event with an ISO-string as_of"
-
-
-def test_shim_does_not_bridge_thesis_into_state_delta(populated_state: dict) -> None:
-    """A-086: shim must NOT write a bare ``thesis`` key into state_delta.
-
-    After A-086, the strategist prompt template uses the ``{user:thesis?}``
-    placeholder.  ADK's ``inject_session_state`` resolves that directly from
-    ``state["user:thesis"]``; no bridge from the shim is needed or permitted.
-    Emitting a bare ``thesis`` key would be a regression to the old pattern.
-
-    This test covers the warm-start case: ``user:thesis`` is populated.  The
-    value must NOT appear under the bare ``thesis`` key in state_delta.
-    """
-    shim = StrategistContextShim()
-
-    populated_state["user:thesis"] = "AAPL momentum trade — target $225"
-
-    fake_session = MagicMock()
-    fake_session.state = populated_state
-    fake_ctx = MagicMock()
-    fake_ctx.invocation_id = "inv-thesis"
-    fake_ctx.session = fake_ctx.session_service = fake_session
-
-    async def _drain() -> list:
-        events: list = []
-        async for ev in shim._run_async_impl(fake_ctx):
-            events.append(ev)
-        return events
-
-    events = asyncio.run(_drain())
-
-    assert len(events) == 1, f"Shim must yield exactly one event; got {len(events)}"
-
-    delta = events[0].actions.state_delta
-
-    # The bare ``thesis`` key must NOT be present in state_delta — ADK resolves
-    # {user:thesis?} from state["user:thesis"] directly.
-    assert "thesis" not in delta, (
-        "state_delta must NOT carry bare 'thesis' key; the prompt uses {user:thesis?} "
-        "which ADK resolves from state['user:thesis'] without a shim bridge"
-    )
-
-    # Positive companion: the canonical user-scoped key remains readable from
-    # session state — ADK resolves the {user:thesis?} placeholder from there
-    # directly, so the warm-start value must still be present.
-    assert fake_session.state.get("user:thesis") == "AAPL momentum trade — target $225", (
-        "user:thesis must remain readable from session state after the shim runs"
-    )
-
-
-def test_shim_cold_start_does_not_bridge_thesis_key(populated_state: dict) -> None:
-    """A-086: on cold start (no ``user:thesis``), shim must NOT write a bare ``thesis`` key.
-
-    The optional ``{user:thesis?}`` placeholder in the strategist prompt resolves
-    to an empty string when ``state["user:thesis"]`` is absent — ADK handles the
-    cold-start case natively.  The shim must not emit a bare ``thesis`` key for
-    any reason; doing so would re-introduce the legacy bare-key pattern.
-    """
-    shim = StrategistContextShim()
-
-    # Ensure user:thesis is not present in the state (cold start / first tick).
-    populated_state.pop("user:thesis", None)
-
-    fake_session = MagicMock()
-    fake_session.state = populated_state
-    fake_ctx = MagicMock()
-    fake_ctx.invocation_id = "inv-cold"
-    fake_ctx.session = fake_ctx.session_service = fake_session
-
-    async def _drain() -> list:
-        events: list = []
-        async for ev in shim._run_async_impl(fake_ctx):
-            events.append(ev)
-        return events
-
-    events = asyncio.run(_drain())
-
-    assert len(events) == 1, f"Shim must yield exactly one event; got {len(events)}"
-
-    delta = events[0].actions.state_delta
-
-    # The bare ``thesis`` key must NOT appear — the optional {user:thesis?}
-    # placeholder handles the empty case at the ADK layer, not the shim layer.
-    assert "thesis" not in delta, (
-        "state_delta must NOT carry bare 'thesis' key on cold start; "
-        "the optional {user:thesis?} placeholder resolves to empty string natively"
-    )
-
-    # Positive companion: confirm the cold-start condition is real — user:thesis
-    # is absent, which is exactly the case the optional {user:thesis?} placeholder
-    # resolves to an empty string (no KeyError) at the ADK layer.
-    assert fake_session.state.get("user:thesis") is None, (
-        "cold-start test must actually exercise the missing-user:thesis path"
-    )
 
 
 # ---------------------------------------------------------------------------

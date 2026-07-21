@@ -80,7 +80,7 @@ def _plant_session_sqlite(run_dir: Path) -> Path:
     conn.execute(
         "INSERT INTO sessions VALUES (?, ?, ?, ?)",
         ("StockBot-backtest-baseline-2025-09", "stockbot", "prior-run-session",
-         '{"user:positions": {"AVGO": {"ticker": "AVGO"}}, "user:thesis": "AVGO is bullish"}'),
+         '{"user:positions": {"AVGO": {"ticker": "AVGO"}}}'),
     )
     conn.commit()
     conn.close()

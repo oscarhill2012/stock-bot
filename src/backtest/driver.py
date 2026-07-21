@@ -716,9 +716,10 @@ class Driver:
             #   Refreshed per-tick by ``_seed_reference_prices`` in
             #   ``driver.run()``.  Carrying the post-tick value is harmless.
             #
-            # ``memory_buffer`` / ``day_digest`` — KEPT.
-            #   These are ordinary cross-tick pipeline keys that survive in the
-            #   session state and must be visible to the next tick's agents.
+            # ``memory_buffer`` / ``day_digest`` — REMOVED (C-series sweep).
+            #   These keys were seeded for the strategist memory-buffer /
+            #   day-digest context items, which have been cut entirely; no
+            #   seed or read remains anywhere in the pipeline.
             #
             # ``temp:*`` — DROPPED implicitly.
             #   ADK strips temp:-prefixed keys from persisted deltas; they

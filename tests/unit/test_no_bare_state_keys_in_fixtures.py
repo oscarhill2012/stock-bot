@@ -1,18 +1,22 @@
-"""Regression guard against bare state-key residue in test fixtures (A-014 / A-086).
+"""Regression guard against bare state-key residue in test fixtures (A-014).
 
-Audit findings:
+Audit finding:
 - A-014: bare ``state["positions"]`` / ``state["cash"]`` accesses in test
   fixtures seed values the live pipeline never reads, turning those tests into
   silent-regression fixtures (they assert nothing real).
-- A-086: same problem with bare ``state["thesis"]``.
 
-This guard scans ``tests/`` for the subscript and ``.get(`` forms of these
-bare keys and asserts no un-allowlisted offenders remain.
+(The A-086 companion — bare ``state["thesis"]`` — was retired in the C5 sweep:
+the portfolio-level ``user:thesis`` field it guarded against migrating to was
+deleted entirely in C4, so there is no longer a canonical namespaced key for a
+bare ``thesis`` seed to be a regression *against*.)
+
+This guard scans ``tests/`` for the subscript and ``.get(`` forms of the bare
+keys and asserts no un-allowlisted offenders remain.
 
 Allowlist rationale (narrow, documented):
-- ``test_no_bare_thesis_keys.py``  — the guard that scans ``src/`` for bare-key
-  access; its own regex patterns and docstrings contain the bare-key literals
-  by design.
+- ``test_no_bare_positions_cash_keys_in_src.py``  — the guard that scans
+  ``src/`` for bare-key access; its own regex patterns and docstrings contain
+  the bare-key literals by design.
 - ``test_no_bare_state_keys_in_fixtures.py``  — THIS file; ``_PATTERN`` and this
   docstring contain the bare-key literals by design.
 - ``test_decision_logger_held_view.py``  — the A-014 negative-control test;
@@ -35,8 +39,8 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 _PATTERN = re.compile(
-    r"""state\[\s*["'](positions|cash|thesis)["']\s*\]"""
-    r"""|state\.get\(\s*["'](positions|cash|thesis)["']"""
+    r"""state\[\s*["'](positions|cash)["']\s*\]"""
+    r"""|state\.get\(\s*["'](positions|cash)["']"""
 )
 
 # ---------------------------------------------------------------------------
@@ -55,7 +59,7 @@ _ALLOWLIST: frozenset[Path] = frozenset(
     {
         # The guard that scans src/ for bare-key access — its own regex patterns
         # contain the bare-key literals by design, so it legitimately matches here.
-        _TESTS_ROOT / "unit" / "test_no_bare_thesis_keys.py",
+        _TESTS_ROOT / "unit" / "test_no_bare_positions_cash_keys_in_src.py",
 
         # This file itself — _PATTERN and the module docstring reference bare keys.
         _TESTS_ROOT / "unit" / "test_no_bare_state_keys_in_fixtures.py",
@@ -70,9 +74,9 @@ def test_no_bare_state_keys_in_test_fixtures() -> None:
     """A-014 / A-086: no un-allowlisted bare-key subscript / .get( in tests/.
 
     Scans every ``*.py`` under ``tests/`` for the subscript and ``.get(`` forms
-    of the bare ``positions``, ``cash``, and ``thesis`` state keys.  Excludes
-    the narrow allowlist of files that legitimately reference the patterns (the
-    guard that scans ``src/``, this file itself, and the A-014 negative-control).
+    of the bare ``positions`` and ``cash`` state keys.  Excludes the narrow
+    allowlist of files that legitimately reference the patterns (the guard that
+    scans ``src/``, this file itself, and the A-014 negative-control).
 
     A bare-key seed in a test fixture is a silent-regression fixture: the live
     pipeline reads the ``user:``-prefixed versions, so seeding the bare key
@@ -112,10 +116,10 @@ def test_no_bare_state_keys_in_test_fixtures() -> None:
                 offenders.append(f"{py_file}:{lineno}: {line.rstrip()}")
 
     assert offenders == [], (
-        "Bare state[\"positions\"] / state[\"cash\"] / state[\"thesis\"] "
+        "Bare state[\"positions\"] / state[\"cash\"] "
         "subscript or .get() found in tests/ outside the allowlist.\n"
         "These seeds are silent-regression fixtures — the live pipeline reads "
-        "user:positions / user:thesis instead.  Migrate them to the canonical "
+        "user:positions instead.  Migrate them to the canonical "
         "user:-prefixed keys, or (for genuine negative-controls) add to the "
         "allowlist with a documented reason.\n\nOffenders:\n"
         + "\n".join(offenders)

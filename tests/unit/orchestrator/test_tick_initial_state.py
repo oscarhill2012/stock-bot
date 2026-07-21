@@ -35,7 +35,7 @@ def test_initial_state_retains_required_keys():
     state = asyncio.run(_build_initial_state(broker, "tick-Y", ["MSFT"]))
 
     # Keys that must always be present in the initial state.
-    for key in ("tick_id", "tickers", "memory_buffer", "day_digest", "portfolio"):
+    for key in ("tick_id", "tickers", "portfolio"):
         assert key in state, f"Expected key {key!r} missing from initial state"
 
     assert state["tick_id"] == "tick-Y"

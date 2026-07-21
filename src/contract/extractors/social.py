@@ -143,14 +143,13 @@ def extract_social_features(
 
     # v1: score_velocity_24h held at 0.0 — Social analyst is dead in v1
     # (Row #13 / StockTwits deferred; see plan header + spec decision 9.3).
-    # Row #13 follow-up plan will add per-tick memory_buffer wiring to compute:
-    #   score_velocity_24h = aggregate_score - state["memory_buffer"].get(
-    #       f"previous_aggregate_score:{ticker}", 0.0)
-    # Wiring the memory_buffer access here would require extending the
-    # extractor signature, which we are deliberately deferring until the
-    # analyst is alive again.  Leaving 0.0 keeps the feature shape stable
-    # for the no-silent-zero-features test (Social is exempted from that
-    # assertion per Phase 7 Task 7.1).
+    # Computing a real velocity would need a per-tick source for the
+    # previous aggregate score (e.g. a small ticker-keyed store threaded
+    # through the extractor signature); no such source exists today, and
+    # the old ``state["memory_buffer"]`` mechanism this plan once assumed
+    # has since been removed entirely. Leaving 0.0 keeps the feature shape
+    # stable for the no-silent-zero-features test (Social is exempted from
+    # that assertion per Phase 7 Task 7.1).
     score_velocity_24h = 0.0
 
     return {

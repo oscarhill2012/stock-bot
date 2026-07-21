@@ -71,14 +71,15 @@ def _extract_seeded_keys(source: str) -> set[str]:
 # initial state dict by either builder — ADK's user_state merge hydrates it
 # from the DB row when the session is created.  ``thesis`` is excluded too,
 # but for a different reason: the portfolio-level thesis field was removed
-# entirely (C4) and no longer exists anywhere in the pipeline.
+# entirely (C4) and no longer exists anywhere in the pipeline.  ``memory_buffer``
+# and ``day_digest`` are excluded for the same reason as ``thesis`` — the
+# memory-buffer / day-digest context items were removed entirely (C5) and
+# are no longer seeded by either builder.
 # ---------------------------------------------------------------------------
 
 REQUIRED_KEYS: set[str] = {
     "tickers",
     "portfolio",
-    "memory_buffer",
-    "day_digest",
 }
 
 
