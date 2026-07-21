@@ -148,11 +148,10 @@ def build_pipeline(broker, db_session=None, *, tickers: list[str]) -> Sequential
     Returns:
         ``SequentialAgent`` named ``"HourlyTick"`` wiring the full
         analyst → evidence-writer → strategist → risk-gate → executor →
-        memory-writer → snapshotter pipeline.
+        snapshotter pipeline.
     """
     from agents.contract.evidence_writer import build_evidence_writer
     from agents.executor.agent import build_executor
-    from agents.memory.writer import MemoryWriter
     from agents.risk_gate.agent import RiskGateAgent
     from agents.snapshot.agent import build_snapshotter
     from agents.strategist.decision_writer import build_strategist_decision_writer
@@ -166,7 +165,6 @@ def build_pipeline(broker, db_session=None, *, tickers: list[str]) -> Sequential
             build_strategist_decision_writer(db_session),
             RiskGateAgent(broker=broker),
             build_executor(broker, db_session),
-            MemoryWriter(),  # fresh instance each pipeline build — must not be cached across ticks
             build_snapshotter(broker, db_session),
         ],
     )

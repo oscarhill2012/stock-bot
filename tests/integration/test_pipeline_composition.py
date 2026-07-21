@@ -17,23 +17,28 @@ def test_pipeline_name():
     assert pipeline.name == "HourlyTick"
 
 
-def test_pipeline_has_eight_stages():
-    """Plan C adds StrategistDecisionWriter between Strategist and RiskGate → 8 stages."""
+def test_pipeline_has_seven_stages():
+    """Plan C adds StrategistDecisionWriter between Strategist and RiskGate.
+
+    MemoryWriter was removed (2026-07-21) — the memory-buffer/day-digest
+    context items it fed the strategist prompt were dead weight — so the
+    pipeline now has 7 stages, not 8.
+    """
     broker = FakeBroker(starting_cash=10_000.0, prices={})
     pipeline = build_pipeline(broker, tickers=["AAPL"])
-    assert len(pipeline.sub_agents) == 8
+    assert len(pipeline.sub_agents) == 7
 
 
 def test_pipeline_stage_names():
     """Stage order: analyst pool → evidence writer → strategist branch → decision writer →
-    risk gate → executor → memory writer → snapshotter.
+    risk gate → executor → snapshotter.
 
     The strategist slot is a ``SequentialAgent`` named ``StrategistBranch``
     containing ``StrategistContextShim`` and a ``RetryingAgentWrapper``
     around the ``Strategist`` ``LlmAgent``.  The retry wrap lives *inside*
     the SequentialAgent so ContextShim's ``state_delta`` event reaches the
     ADK Runner before the LlmAgent reads it.  The outer pipeline still sees
-    eight top-level stages.
+    seven top-level stages.
     """
     broker = FakeBroker(starting_cash=10_000.0, prices={})
     pipeline = build_pipeline(broker, tickers=["AAPL"])
@@ -44,5 +49,5 @@ def test_pipeline_stage_names():
     assert names[3] == "StrategistDecisionWriter"
     assert names[4] == "RiskGate"
     assert names[5] == "Executor"
-    assert names[6] == "MemoryWriter"
-    assert names[7] == "Snapshotter"
+    assert names[6] == "Snapshotter"
+    assert "MemoryWriter" not in names

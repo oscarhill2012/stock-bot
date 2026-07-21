@@ -101,18 +101,17 @@ def test_template_has_state_slots():
         "Bare {portfolio} placeholder must be gone — it dumped a raw dict "
         "repr (with long float tails) into the prompt (F7)"
     )
-    # Memory buffer is now injected as a rendered temp key so the shim can
-    # collapse repeat/no-op entries before prompt assembly.  The raw
-    # ``{memory_buffer}`` bare key was replaced by ``{temp:memory_buffer}``.
-    assert "{temp:memory_buffer}" in STRATEGIST_INSTRUCTION, (
-        "Memory buffer must use {temp:memory_buffer} (rendered by StrategistContextShim) "
-        "not the bare {memory_buffer} (which ADK would stringify as a raw Python list)"
+    # Memory buffer + day digest were removed entirely — the strategist's
+    # own thesis book and ticker evidence already give it everything it
+    # needs; the buffer/digest slots were dead weight (and the buffer was
+    # an echo chamber that reinforced over-churn).
+    assert "{temp:memory_buffer}" not in STRATEGIST_INSTRUCTION, (
+        "{temp:memory_buffer} must be gone — the memory-buffer context item was cut"
     )
-    assert "{memory_buffer}" not in STRATEGIST_INSTRUCTION, (
-        "Bare {memory_buffer} placeholder removed — use {temp:memory_buffer} instead "
-        "so collapse_repeat_buffer_entries runs at injection time"
+    assert "{memory_buffer}" not in STRATEGIST_INSTRUCTION
+    assert "{day_digest}" not in STRATEGIST_INSTRUCTION, (
+        "{day_digest} must be gone — the day-digest context item was cut"
     )
-    assert "{day_digest}" in STRATEGIST_INSTRUCTION
     # A-086: optional user-scoped placeholder — resolves to empty string on cold start.
     assert "{user:thesis?}" in STRATEGIST_INSTRUCTION
     assert "{thesis}" not in STRATEGIST_INSTRUCTION, (
@@ -372,8 +371,6 @@ def test_template_renders_with_all_required_slots():
         # ticks it injects an empty string.  The smoke test exercises the
         # non-empty (first-tick) path.
         .replace("{temp:first_tick_preamble}",  "This is your baseline tick — populate the thesis book.")
-        # Memory buffer is now a temp key rendered by StrategistContextShim.
-        .replace("{temp:memory_buffer}",        "Memory Buffer (1 tick):\n  [01] no_action  executions=0  — (empty)")
         # iter-3 deployment readout — live one-liner injected into ## Deployment posture.
         .replace("{temp:deployment_readout}",   "Capital deployed: 0% invested across 0 positions, 100% idle cash. Target band: 70–95%. You are 70pp BELOW the band — idle cash is bearish drag.")
         # A-086: optional user-scoped thesis — resolves to empty string on cold start.
@@ -383,7 +380,6 @@ def test_template_renders_with_all_required_slots():
         .replace("{temp:portfolio_summary}",    "Cash: $100,000 | NAV: $100,000 | 0 position(s)")
     )
     rendered = template.format(
-        day_digest="(empty)",
         tickers="['AAPL','MSFT']",
     )
 
@@ -398,3 +394,12 @@ def test_template_renders_with_all_required_slots():
     assert "buy" in rendered
     assert "sell" in rendered
     assert "update" in rendered
+
+    # Memory buffer + day digest slots must be entirely absent from the
+    # rendered prompt — cut as dead-weight context items (2026-07-21).
+    assert "Day Digest" not in rendered, (
+        "Day Digest label must not appear in the rendered prompt — the slot was cut"
+    )
+    assert "Memory Buffer" not in rendered, (
+        "Memory Buffer label must not appear in the rendered prompt — the slot was cut"
+    )

@@ -35,12 +35,14 @@ def test_pipeline_includes_strategist_decision_writer():
 def test_pipeline_stage_count_increased_by_one():
     """The decision writer adds one stage.
 
-    Post-D5 pipeline has 8 sub_agents: AnalystPool, EvidenceWriter, Strategist,
-    StrategistDecisionWriter, RiskGate, Executor, MemoryWriter, Snapshotter.
+    Post-D5 pipeline has 7 sub_agents: AnalystPool, EvidenceWriter, Strategist,
+    StrategistDecisionWriter, RiskGate, Executor, Snapshotter.  MemoryWriter
+    was removed (2026-07-21) — the memory-buffer/day-digest context items it
+    fed were dead weight on the strategist prompt.
     """
     pipe = build_pipeline(
         broker=FakeBroker(starting_cash=1000.0, prices={}),
         db_session=None,
         tickers=["AAPL"],
     )
-    assert len(pipe.sub_agents) == 8
+    assert len(pipe.sub_agents) == 7

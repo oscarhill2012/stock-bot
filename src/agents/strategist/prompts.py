@@ -182,8 +182,6 @@ per-ticker stance for the next trading hour.
 ## Current State
 Date:         {temp:current_date}
 Portfolio:    {temp:portfolio_summary}
-{temp:memory_buffer}
-Day Digest:   {day_digest}
 Thesis:       {user:thesis?}
 
 ## Recent Round-trips (your last closed positions — outcomes you should weigh before re-entering the same tickers)
