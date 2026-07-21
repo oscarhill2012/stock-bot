@@ -15,8 +15,8 @@ re-hydrated by ADK at each tick start (audit A-014).  The removed bridge key
 test state or assertion.
 
 Note: these tests call ``_run_async_impl`` directly (not via the ADK Runner),
-so they assert against observable outcomes (TradeLogRow DB writes, executions,
-``user:closed_trades_log``) rather than internal state keys.  ``user:positions``
+so they assert against observable outcomes (TradeLogRow DB writes, executions)
+rather than internal state keys.  ``user:positions``
 (canonical key) is written by the after-callback
 (``_executor_thesis_writer_callback``) which only fires when the full ADK
 Runner lifecycle executes — not asserted here.
@@ -269,19 +269,18 @@ async def test_full_exit_writes_one_trade_log_row_and_deletes(session):
     )
 
 
-async def test_full_exit_appends_to_user_closed_trades_log(session):
-    """A full close must also populate the rolling ``user:closed_trades_log``.
+async def test_full_exit_does_not_write_user_closed_trades_log(session):
+    """A full close must NOT populate ``user:closed_trades_log`` any more.
 
-    The log is read by ``StrategistContextShim`` on the next tick to render
-    the "Recent round-trips" prompt block, so the strategist can see its own
-    outcome history (P&L, hold time, close reason) when deciding whether to
-    re-enter the same ticker.  Mirror of the DB ``trade_log`` row, but kept
-    in-memory so it works even without a DB session wired.
+    The in-prompt "Recent Round-trips" echo was cut — the strategist's own
+    thesis book already carries this history.  The canonical realised-P&L
+    record remains the ``trade_log`` DB row (see
+    ``test_full_exit_writes_exactly_one_trade_log_row``), which this
+    removal does not touch.
 
-    Scenario: TSLA opened at $100, closed at $110 → +10% gain.  Assert the
-    rolling-log entry carries the rounded P&L, the close reason copied from
-    the strategist decision, and that the same key rides on the state_delta
-    so it persists across ticks.
+    Scenario: TSLA opened at $100, closed at $110 → +10% gain.  Assert
+    neither the in-memory state key nor the state_delta carries a
+    ``user:closed_trades_log`` entry.
 
     The prior position thesis is seeded via ``state["user:positions"]`` — the
     canonical cross-tick recovery channel.  No bridge key.
@@ -315,24 +314,10 @@ async def test_full_exit_appends_to_user_closed_trades_log(session):
 
     events = await _run(executor, state)
 
-    # The rolling log was populated in-memory.
-    closed_log = state["user:closed_trades_log"]
-    assert len(closed_log) == 1, (
-        f"Close must append exactly one entry; got {len(closed_log)}"
+    # The removed feature must not resurface in state or the state_delta.
+    assert "user:closed_trades_log" not in state, (
+        "user:closed_trades_log must no longer be written — the "
+        "Recent Round-trips prompt echo was cut"
     )
-
-    entry = closed_log[0]
-    assert entry["ticker"]        == _TICKER
-    assert entry["pnl_pct"]       == pytest.approx(10.0)
-    assert entry["holding_hours"] == 28
-    assert entry["close_reason"]  == "target reached"
-    assert entry["closed_at"]     == "2026-04-02T14:00:00+00:00"
-
-    # The same key must ride on the state_delta so the value persists across
-    # ticks (DatabaseSessionService only merges what's in the delta).
     delta = events[0].actions.state_delta
-    assert delta.get("user:closed_trades_log") == closed_log, (
-        "Executor must include user:closed_trades_log in the state_delta "
-        "whenever it mutates the in-memory copy — otherwise the next tick "
-        "would see a stale value on storage rehydration."
-    )
+    assert "user:closed_trades_log" not in delta

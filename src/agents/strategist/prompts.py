@@ -184,9 +184,6 @@ Date:         {temp:current_date}
 Portfolio:    {temp:portfolio_summary}
 Thesis:       {user:thesis?}
 
-## Recent Round-trips (your last closed positions — outcomes you should weigh before re-entering the same tickers)
-{temp:recent_trades_view}
-
 ## Thesis Book (your current view on every tracked ticker, with evolution since the last revision)
 {temp:held_positions_view}
 

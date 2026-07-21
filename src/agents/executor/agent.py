@@ -297,26 +297,6 @@ class ExecutorAgent(BaseAgent):
                                     "closing_tick_id": state.get("tick_id"),
                                 })
 
-                            # ── Rolling closed-trades log ────────────────────
-                            # A compact in-memory mirror of the DB trade_log,
-                            # capped at the last 10 closes.  Read by
-                            # ``StrategistContextShim`` next tick to render a
-                            # "Recent round-trips" block in the strategist's
-                            # prompt — gives the LLM visibility of its own
-                            # outcome history (P&L, hold time, close reason)
-                            # without paying an extra DB round-trip per tick.
-                            # Lives under the ``user:`` namespace so it
-                            # persists across ticks via ADK's session service.
-                            closed_log = list(state.get("user:closed_trades_log") or [])
-                            closed_log.append({
-                                "ticker":        order.ticker,
-                                "closed_at":     closed_at.isoformat(),
-                                "pnl_pct":       round(pnl_pct, 2),
-                                "holding_hours": holding_hours,
-                                "close_reason":  close_reason or "",
-                            })
-                            state["user:closed_trades_log"] = closed_log[-10:]
-
                         # Remove from the live position book.
                         del positions[order.ticker]
 
@@ -401,18 +381,10 @@ class ExecutorAgent(BaseAgent):
         # SELL gate — it is NOT propagated to the state_delta.  The after-
         # callback re-derives the canonical ``user:positions`` from the stance
         # list + fill prices and is its sole writer-of-record.
-        #
-        # ``user:closed_trades_log`` is included in the delta only when this
-        # tick actually appended to it (i.e. at least one full close happened).
-        # Writing it unconditionally would clobber the persisted value on every
-        # tick even when nothing changed; conditional inclusion keeps the delta
-        # minimal while still guaranteeing the write survives to cross-tick state.
         delta: dict = {
             "executions":            executions,
             "last_executed_tick_id": tick_id,
         }
-        if "user:closed_trades_log" in state:
-            delta["user:closed_trades_log"] = state["user:closed_trades_log"]
 
         yield Event(
             author        = self.name,

@@ -19,9 +19,8 @@ Position state is encoded by the entry fields:
 - A row whose entry fields are ``None`` describes a ticker the agent holds
   a view on but does not own (yet).
 - A full close removes the row entirely — the trade is captured in the
-  ``trade_log`` DB row and the rolling ``user:closed_trades_log`` (rendered
-  to the strategist as "Recent round-trips").  The agent must re-form a
-  view next tick if it wants to re-engage.
+  ``trade_log`` DB row.  The agent must re-form a view next tick if it
+  wants to re-engage.
 
 Timestamps
 ----------

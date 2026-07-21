@@ -77,9 +77,6 @@ def test_shim_yields_one_event_with_temp_prefixed_keys(populated_state: dict) ->
         "temp:held_positions_view",
         "temp:ticker_evidence",
         "temp:ticker_evidence_objects",
-        # Past-trades memory addition — rendered from user:closed_trades_log
-        # (empty-state copy when no closes have happened yet this run).
-        "temp:recent_trades_view",
         # A-086: the bare "thesis" key is NOT emitted here — the strategist
         # prompt uses {user:thesis?} which ADK resolves from state["user:thesis"]
         # directly.  No bridge into a bare key is needed or permitted.
@@ -112,9 +109,6 @@ def test_shim_yields_one_event_with_temp_prefixed_keys(populated_state: dict) ->
     # still serialised as a list/string pair.
     assert isinstance(delta["temp:ticker_evidence"], str)
     assert isinstance(delta["temp:ticker_evidence_objects"], list)
-    # recent-trades view is always a string — explicit empty-state copy when
-    # no closes have happened yet.
-    assert isinstance(delta["temp:recent_trades_view"], str)
 
 
 def test_shim_writes_current_date_from_tick_as_of(populated_state: dict) -> None:

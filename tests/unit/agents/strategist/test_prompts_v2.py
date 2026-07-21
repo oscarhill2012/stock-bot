@@ -118,6 +118,13 @@ def test_template_has_state_slots():
         "Bare {thesis} placeholder found — use {user:thesis?} instead (A-086)"
     )
     assert "{tickers}" in STRATEGIST_INSTRUCTION
+    # Recent Round-trips was an in-prompt echo of the rolling closed-trades
+    # log; the thesis book already carries this history, so the block was
+    # dead weight. The canonical trade_log DB write is untouched.
+    assert "{temp:recent_trades_view}" not in STRATEGIST_INSTRUCTION, (
+        "{temp:recent_trades_view} must be gone — Recent Round-trips was cut"
+    )
+    assert "Recent Round-trips" not in STRATEGIST_INSTRUCTION
 
 
 def test_template_no_longer_has_legacy_signal_slots():
@@ -364,7 +371,6 @@ def test_template_renders_with_all_required_slots():
         .replace("{temp:strategist_mode}",      "Cold start — your portfolio is empty.")
         .replace("{temp:held_positions_view}",  "(No held positions — portfolio is flat.)")
         .replace("{temp:ticker_evidence}",      "AAPL\n  Aggregate: bullish (magnitude 0.42)")
-        .replace("{temp:recent_trades_view}",   "(No closed positions yet this run.)")
         .replace("{temp:_last_schema_error}",   "")
         # Change 3: first-tick preamble replaces the old first_tick_flag literal.
         # On the first tick the shim injects FIRST_TICK_PREAMBLE; on iterative
