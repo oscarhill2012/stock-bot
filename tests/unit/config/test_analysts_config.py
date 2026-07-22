@@ -401,3 +401,23 @@ def test_news_drift_horizon_days_default():
     from config.analysts import get_analysts_config
 
     assert get_analysts_config().news.drift_horizon_days == 20
+
+
+# ---------------------------------------------------------------------------
+# Task 6 — fundamental lean recalibration config (trigger/cap/decay/8-K anchor)
+# ---------------------------------------------------------------------------
+
+def test_fundamental_recalibration_config():
+    """The filing-delta trigger/cap/decay knobs and the 8-K anchor list must
+    load from ``config/analysts.json``, ready for Tasks 7/8 to consume.
+    """
+    from config.analysts import get_analysts_config
+
+    f = get_analysts_config().fundamental
+
+    assert 0.0 <= f.filing_delta_trigger_similarity <= 1.0
+    assert 0.0 < f.filing_delta_magnitude_cap <= 1.0
+    assert isinstance(f.thesis_breaking_8k_items, list)
+    assert f.thesis_breaking_8k_items                       # non-empty
+    # 8-K item codes look like "5.02" (departures), "2.06" (impairment), etc.
+    assert all(isinstance(x, str) for x in f.thesis_breaking_8k_items)
