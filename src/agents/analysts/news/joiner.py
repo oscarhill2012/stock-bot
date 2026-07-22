@@ -96,6 +96,12 @@ class NewsJoinerAgent(BaseAgent):
                     {k: v for k, v in ticker_verdict.model_dump().items() if k != "ticker"}
                 )
 
+                # A neutral, data-present news verdict is a STEP-3 abstain, not a
+                # vote — mark it so the digest excludes it from the aggregate
+                # instead of averaging it in as a neutral (spec P4).
+                if verdict.lean == "neutral" and not verdict.is_no_data:
+                    verdict = verdict.model_copy(update={"abstain": True})
+
                 # Persist the fire so subsequent abstain ticks can carry a
                 # decayed version of this catalyst (Task 10) instead of the
                 # signal self-zeroing next tick.  fired_at is ISO-stringified

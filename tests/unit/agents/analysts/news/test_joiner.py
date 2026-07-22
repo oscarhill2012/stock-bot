@@ -321,6 +321,60 @@ async def test_news_joiner_verdict_evidence_consistency():
 
 
 @pytest.mark.asyncio
+async def test_joiner_marks_neutral_data_present_verdict_as_abstain():
+    """STEP-3 'no fresh surprise today' (neutral, is_no_data=False) must be
+    marked ``abstain=True`` on the canonical evidence so the digest excludes
+    it from the aggregate instead of averaging it in as a neutral vote (P4).
+    """
+    # InMemorySessionService strips ``temp:``-prefixed keys from the state
+    # passed to create_session, so the news-verdict key is injected directly
+    # onto ``session.state`` afterwards (same pattern as the other joiner
+    # tests in this file).
+    state = {
+        "tickers":  ["AAPL"],
+        "tick_id":  "t-1",
+        "as_of":    "2026-05-21T14:00",
+    }
+
+    svc = InMemorySessionService()
+    session = await svc.create_session(
+        app_name="test", user_id="test", state=state, session_id="t1",
+    )
+
+    session.state["temp:news_data"] = {"AAPL": {"news": []}}
+    session.state["temp:news_verdict_AAPL"] = {
+        "ticker": "AAPL", "lean": "neutral", "magnitude": 0.05,
+        "confidence": 0.1, "key_factors": [],
+        "is_no_data": False,
+        "report": {
+            "summary": "No genuine surprise in fresh articles today.",
+            "drivers": [
+                {"name": "no_surprise", "direction": "neutral", "weight": 0.5,
+                 "body": "No fresh article met the surprise bar."},
+                {"name": "novelty_check", "direction": "neutral", "weight": 0.5,
+                 "body": "Nothing new to check against prior coverage."},
+            ],
+        },
+    }
+
+    agent = NewsJoinerAgent(name="NewsJoiner")
+    ctx = InvocationContext(
+        session_service=svc, session=session, invocation_id="inv-1", agent=agent,
+    )
+
+    events = [ev async for ev in agent.run_async(ctx)]
+    delta = events[0].actions.state_delta
+
+    ev_row = next(row for row in delta["news_evidence"] if row["ticker"] == "AAPL")
+    assert ev_row["verdict"]["lean"] == "neutral"
+    assert ev_row["verdict"]["is_no_data"] is False
+    assert ev_row["verdict"]["abstain"] is True, (
+        "a data-present neutral (STEP-3 'no fresh surprise') must be marked "
+        "abstain=True so the digest excludes it from the aggregate"
+    )
+
+
+@pytest.mark.asyncio
 async def test_joiner_injects_config_horizon_days_into_the_verdict_batch():
     """horizon_days is injected by the joiner from config — the LLM no longer
     emits it (Phase 14 Task 6).

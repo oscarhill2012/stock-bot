@@ -78,6 +78,28 @@ def _lean_sign(lean: str) -> int:
     return {"bullish": 1, "bearish": -1, "neutral": 0}[lean]
 
 
+def _excluded(ev: AnalystEvidence | None) -> bool:
+    """Whether an analyst's evidence is excluded from the aggregate.
+
+    No-data (never had input) and abstain (had input, formed no view — spec P4)
+    both count as "not a vote": excluded from the weighted sum, mean confidence,
+    disagreement, and the bullish/neutral/bearish summary counts.
+
+    Parameters
+    ----------
+    ev:
+        The analyst's evidence for this tick, or ``None`` if the analyst key
+        is absent from the (pre-fill) mapping.
+
+    Returns
+    -------
+    bool
+        ``True`` when the evidence should be excluded from every aggregate
+        computation below.
+    """
+    return ev is None or ev.verdict.is_no_data or ev.verdict.abstain
+
+
 def _fill_missing(
     per_analyst: Mapping[str, AnalystEvidence],
     ticker: str,
@@ -177,7 +199,7 @@ def _weighted_signed_confidences(
 
     for name in weights:
         ev = per_analyst.get(name)
-        if ev is None or ev.verdict.is_no_data:
+        if _excluded(ev):
             out.append(0.0)
             continue
 
@@ -213,7 +235,7 @@ def _disagreement(
 
     for name in weights:
         ev = per_analyst.get(name)
-        if ev is None or ev.verdict.is_no_data:
+        if _excluded(ev):
             continue
         signed.append(_lean_sign(ev.verdict.lean) * ev.verdict.confidence)
 
@@ -247,7 +269,7 @@ def _summary(per_analyst: Mapping[str, AnalystEvidence], weights: Mapping[str, f
 
     for name in weights:
         ev = per_analyst.get(name)
-        if ev is None or ev.verdict.is_no_data:
+        if _excluded(ev):
             continue
         counts[ev.verdict.lean] += 1
 
@@ -302,7 +324,7 @@ def _aggregate(
         ev.verdict.confidence
         for name in weights
         for ev in (per_analyst.get(name),)
-        if ev is not None and not ev.verdict.is_no_data
+        if not _excluded(ev)
     ]
     confidence = mean(contributing_confidences) if contributing_confidences else 0.0
 

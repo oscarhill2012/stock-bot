@@ -16,7 +16,8 @@ def _now():
 
 
 def _ev(
-    analyst: str, lean: str, conf: float, ticker: str = "AAPL", magnitude: float | None = None
+    analyst: str, lean: str, conf: float, ticker: str = "AAPL", magnitude: float | None = None,
+    abstain: bool = False,
 ) -> AnalystEvidence:
     """Build a deterministic-style AnalystEvidence for aggregation tests.
 
@@ -38,6 +39,9 @@ def _ev(
         Stock ticker symbol (default ``"AAPL"``).
     magnitude:
         Override for magnitude when it should differ from confidence.
+    abstain:
+        Whether this verdict is a data-present "no view" (P4) — excluded
+        from the digest aggregate the same way ``is_no_data`` is.
 
     Returns
     -------
@@ -58,6 +62,7 @@ def _ev(
             key_factors=[],
             is_no_data=False,
             report=None,
+            abstain=abstain,
         ),
     )
 
@@ -359,6 +364,24 @@ def test_normal_tick_no_missing_slot_warning(caplog):
 
 
 # ── Ticker / tick_id / recorded_at carry-through ──────────────────────────────
+
+
+# ── Abstain exclusion (P4) ─────────────────────────────────────────────────
+
+
+def test_abstain_excluded_from_aggregate():
+    """An abstaining analyst is not averaged in as a neutral vote (P4)."""
+    per_analyst = {
+        "technical":   _ev("technical", lean="bullish", conf=0.8),
+        "fundamental": _ev("fundamental", lean="bullish", conf=0.8),
+        "news":        _ev("news", lean="neutral", conf=0.2, abstain=True),
+    }
+    te = build_ticker_evidence(
+        per_analyst, "AAPL", "t1", _now(), {"technical": 1.0, "fundamental": 1.0, "news": 1.0},
+    )
+    # With news abstaining, the aggregate reflects only the two bullish analysts.
+    assert te.aggregate.lean == "bullish"
+    assert "1 neutral" not in te.aggregate.summary       # abstain not counted as neutral
 
 
 def test_metadata_propagated():

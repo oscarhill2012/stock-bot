@@ -85,7 +85,10 @@ STEP 3 — DEFAULT: NO FRESH SURPRISE TODAY. If STEP 1 found no genuine
 surprise among the fresh articles, emit lean: neutral with low magnitude
 and low confidence. This means "no NEW news event today — absence of new information" \
 — it does NOT mean a prior catalyst has faded; you are not tracking prior
-catalysts at all, so there is nothing to fade. Do NOT manufacture a lean from noise volume, \
+catalysts at all, so there is nothing to fade. This neutral is an ABSTAIN — a \
+"no view" that is excluded from the cross-analyst combine entirely, not a vote \
+for "neutral" (the decayed carry of a prior catalyst, if any, is handled numerically \
+downstream, outside what you report). Do NOT manufacture a lean from noise volume, \
 and do NOT use PREVIOUSLY SEEN articles — however numerous, recent, or
 still being talked about — as a source of a lean; they exist only for the
 STEP 1 novelty check.

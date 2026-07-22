@@ -128,6 +128,16 @@ class AnalystVerdict(BaseModel):
     key_factors: list[str] = Field(default_factory=list, max_length=8)
     is_no_data: bool = False
 
+    # Data-present "no view" — distinct from is_no_data (no data at all).  The
+    # news STEP-3 abstain sets this; the digest excludes it from the aggregate
+    # so an abstain is not averaged in as a neutral vote (spec P4).
+    abstain: bool = False
+
+    # Provenance flag: True on the synthetic decayed news verdict the strategist
+    # context shim substitutes for an abstain when a live last-fire record
+    # exists (spec Decision 2026-07-21).  Renders as a "carried" tag.
+    carried: bool = False
+
     # How many TRADING DAYS the analyst expects this lean to remain valid.
     # Populated deterministically: the technical extractor writes
     # ``horizon_days`` (sourced from ``TechnicalHeuristics.horizon_days`` and

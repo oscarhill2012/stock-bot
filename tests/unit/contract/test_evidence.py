@@ -238,6 +238,14 @@ def test_build_no_data_verdict_carries_ticker_and_reason():
     )
 
 
+def test_analyst_verdict_abstain_and_carried_default_false():
+    """New provenance flags must default to False so every existing verdict
+    construction site (which never mentions them) keeps its prior meaning —
+    additive-only schema change (P4 groundwork for Task 10)."""
+    v = AnalystVerdict(lean="neutral", magnitude=0.0, confidence=0.0, rationale="x")
+    assert v.abstain is False and v.carried is False
+
+
 def test_build_no_data_verdict_rejects_empty_reason():
     """``build_no_data_verdict`` must raise ``ValueError`` when called with an
     empty-or-whitespace reason string.
