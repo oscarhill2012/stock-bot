@@ -130,8 +130,10 @@ class AnalystVerdict(BaseModel):
 
     # How many TRADING DAYS the analyst expects this lean to remain valid.
     # Populated deterministically: the technical extractor writes
-    # ``reversal_horizon_days``; the news and fundamental joiners inject their
-    # config horizons via ``LlmTickerVerdict.to_ticker_verdict(horizon_days=…)``.
+    # ``horizon_days`` (sourced from ``TechnicalHeuristics.horizon_days`` and
+    # injected via ``derive_technical_verdict``); the news and fundamental
+    # joiners inject their config horizons via
+    # ``LlmTickerVerdict.to_ticker_verdict(horizon_days=…)``.
     # The default of 1 covers the no-data / synthesised-neutral branches only —
     # the LLM no longer self-reports this field.
     horizon_days: int = Field(default=1, ge=1)

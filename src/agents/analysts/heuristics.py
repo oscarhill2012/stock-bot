@@ -85,7 +85,8 @@ class TechnicalHeuristics(_Frozen):
     The threshold is applied to the *absolute* z, so the tag fires at either
     tail — a stressed (high positive z) regime OR an unusually calm (large
     negative z) one — hence "extreme" rather than "elevated".  A risk flag
-    only — it does NOT alter the reversal lean.
+    only — it damps confidence but does not alter the trend/momentum
+    composite lean.
     """
 
     # ── Retained context knobs (drive corroborating TAGS only) ─────────────
