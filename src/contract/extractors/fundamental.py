@@ -59,6 +59,12 @@ _KEYS = (
     # Filings-derived numerics.
     "days_since_last_filing",
     "n_filings_30d",
+    # Task 8: periodic-filing-only decay anchor (10-K/10-Q, ignores 8-Ks) —
+    # distinct from days_since_last_filing above, which counts every form
+    # type and must stay untouched (it feeds the strategist's "Days since
+    # filing" render).  Emits FILING_ANCHOR_ABSENT_SENTINEL when no periodic
+    # filing is present so the all-floats _KEYS contract holds unconditionally.
+    "filing_anchor_days",
     # 8-K item counters (Phase 7, Fix H).
     "n_item_502_30d",
     "n_item_202_30d",
@@ -99,6 +105,13 @@ _CLUSTER_THRESHOLD = 3
 
 # How many days back the window extends for "30d" metrics.
 _WINDOW_DAYS = 30
+
+# Sentinel emitted for filing_anchor_days when no periodic (10-K/10-Q) filing
+# is present in the payload.  Mirrors the existing 9999.0 "no filing" sentinel
+# used by days_since_last_filing above — large enough that any horizon-based
+# decay comparison in the joiner treats it as "no anchor, don't decay" rather
+# than as a huge, spurious overshoot.
+FILING_ANCHOR_ABSENT_SENTINEL: float = 9999.0
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +233,11 @@ def _extract_filings_features(
     Returns
     -------
     dict[str, float]
-        ``days_since_last_filing`` and ``n_filings_30d``.
+        ``days_since_last_filing`` and ``n_filings_30d``.  NB: the sibling
+        ``filing_anchor_days`` feature (periodic-filing-only decay anchor —
+        see ``_filing_anchor_days`` below) is deliberately computed
+        separately, not folded in here, so this all-form-types staleness
+        signal stays untouched by Task 8's decay-clock semantics.
     """
     if not filings:
         return {"days_since_last_filing": 9999.0, "n_filings_30d": 0.0}
@@ -258,6 +275,60 @@ def _extract_filings_features(
         "days_since_last_filing": max(0.0, days_since),
         "n_filings_30d": float(within_30d),
     }
+
+
+def _filing_anchor_days(filings: list[dict], now: datetime) -> dict[str, float]:
+    """Derive ``filing_anchor_days`` — the decay clock for the joiner's
+    filing-delta magnitude decay.
+
+    Anchors ONLY to the most recent *periodic* filing (form_type starting
+    with "10-K" or "10-Q" — so "10-K", "10-Q", "10-K/A" and "10-Q/A" all
+    qualify).  Interleaved 8-Ks must NOT reset this clock: a company that
+    files an unrelated 8-K the day after its 10-Q should still be treated as
+    90 days (say) into the drift window, not day zero again.
+
+    Calendar days (not trading sessions) are used deliberately, to stay
+    unit-consistent with ``days_since_last_filing`` and the joiner's
+    ``filing_delta_horizon_days`` config knob — both of those are calendar
+    days too, so mixing units here would silently miscalibrate the decay.
+
+    Parameters
+    ----------
+    filings:
+        List of ``Filing.model_dump()`` dicts.
+    now:
+        Current UTC datetime used as the decay-clock reference point.
+
+    Returns
+    -------
+    dict[str, float]
+        ``{"filing_anchor_days": <calendar days since the anchor filing>}``,
+        or the shared ``FILING_ANCHOR_ABSENT_SENTINEL`` when no periodic
+        filing is present — the ``_KEYS`` contract guarantees every key is a
+        float, so a nullable/omitted key is not an option here.
+    """
+    periodic_dts: list[datetime] = []
+
+    for f in filings:
+        form_type = f.get("form_type") or ""
+        if not (form_type.startswith("10-K") or form_type.startswith("10-Q")):
+            continue
+
+        # Prefer filed_at; fall back defensively to period_of_report (some
+        # legacy/alternate producers may only carry the latter).
+        anchor_dt = _parse_dt(f.get("filed_at"))
+        if anchor_dt is None:
+            anchor_dt = _parse_dt(f.get("period_of_report"))
+        if anchor_dt is not None:
+            periodic_dts.append(anchor_dt)
+
+    if not periodic_dts:
+        return {"filing_anchor_days": FILING_ANCHOR_ABSENT_SENTINEL}
+
+    most_recent = max(periodic_dts)
+    days = (now - most_recent).total_seconds() / 86400.0
+
+    return {"filing_anchor_days": max(0.0, days)}
 
 
 def _item_counters_30d(filings: list[dict], as_of: date) -> dict[str, float]:
@@ -602,6 +673,7 @@ def extract_fundamental_features(
     # --- filings ---
     filings_sub = raw.get("filings") or []
     out.update(_extract_filings_features(filings_sub, now))
+    out.update(_filing_anchor_days(filings_sub, now))
 
     # --- 8-K item counters (Fix H) ---
     out.update(_item_counters_30d(filings_sub, as_of_date))

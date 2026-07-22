@@ -290,3 +290,47 @@ def test_fundamental_counts_8k_items_in_30d_window():
     assert f["n_item_502_30d"] == pytest.approx(1)
     assert f["n_item_202_30d"] == pytest.approx(1)
     assert f["n_item_101_30d"] == pytest.approx(1)
+
+
+# ---------------------------------------------------------------------------
+# Task 8 — filing_anchor_days: periodic-filing-only decay anchor
+# ---------------------------------------------------------------------------
+
+def test_filing_anchor_days_emitted_from_filed_date():
+    """filing_anchor_days is the calendar-day gap between the most recent
+    periodic (10-K/10-Q) filing and the reference clock.
+
+    Distinct from days_since_last_filing (which counts every form type) —
+    this feature anchors the joiner's filing-delta decay clock, so interleaved
+    8-Ks must not reset it.
+    """
+    raw = {
+        "ratios": {},
+        "filings": [
+            {"filed_at": "2025-08-01T00:00:00+00:00", "form_type": "10-Q"},
+        ],
+        "insider_trades": [],
+        "insider_derivative_trades": [],
+    }
+    feats = extract_fundamental_features(raw, "TEST", as_of=datetime(2025, 9, 1, tzinfo=UTC))
+
+    assert feats["filing_anchor_days"] >= 0.0
+    # 31 calendar days between 2025-08-01 and 2025-09-01.
+    assert feats["filing_anchor_days"] == pytest.approx(31.0, abs=1.0)
+
+
+def test_filing_anchor_days_ignores_8k_filings_and_falls_back_to_sentinel():
+    """An 8-K-only filings list must NOT anchor the clock — the feature must
+    emit the shared absent-sentinel (9999.0) instead, proving the anchor is
+    periodic-filing-only (an interleaved 8-K cannot reset it)."""
+    raw = {
+        "ratios": {},
+        "filings": [
+            {"filed_at": "2025-08-30T00:00:00+00:00", "form_type": "8-K"},
+        ],
+        "insider_trades": [],
+        "insider_derivative_trades": [],
+    }
+    feats = extract_fundamental_features(raw, "TEST", as_of=datetime(2025, 9, 1, tzinfo=UTC))
+
+    assert feats["filing_anchor_days"] == pytest.approx(9999.0)

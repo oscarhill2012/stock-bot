@@ -464,3 +464,126 @@ async def test_joiner_injects_config_horizon_days_into_the_verdict_batch():
 
     batch = events[-1].actions.state_delta["fundamental_verdicts"]
     assert batch["verdicts"][0]["horizon_days"] == expected_horizon
+
+
+# ---------------------------------------------------------------------------
+# Task 8 — deterministic post-LLM magnitude clamp + decay
+# ---------------------------------------------------------------------------
+#
+# NB: ``InMemorySessionService.create_session`` strips every ``temp:``-prefixed
+# key from the ``state=`` kwarg (see the retries test above) — so
+# ``temp:fundamental_data`` and ``temp:fundamental_verdict_<TICKER>`` must be
+# injected directly onto ``session.state`` *after* the session exists, exactly
+# like the horizon-injection test above does, or the extractor never sees the
+# raw slice and silently degrades to zero-features.
+
+async def _run_joiner_with_llm_verdict(
+    *, lean: str, magnitude: float, key_factors: list[str], ticker_slice: dict,
+) -> dict:
+    """Drive FundamentalJoinerAgent for a single ticker with the given raw LLM
+    verdict fields and raw fundamental-data slice; return the resulting
+    fundamental_evidence verdict for that ticker.
+    """
+    state = {
+        "tickers": ["AAPL"],
+        "tick_id": "t-clamp",
+        "as_of": "2026-05-21T14:00",
+    }
+
+    svc = InMemorySessionService()
+    session = await svc.create_session(
+        app_name="test", user_id="test", state=state, session_id="t-clamp",
+    )
+
+    # Inject temp: keys directly onto session.state — create_session strips them.
+    # NB: the LLM emit-schema is LlmTickerVerdict, not a bare
+    # lean/magnitude/confidence/rationale dict — it requires a structured
+    # ``report`` (summary + 2-4 drivers), not a flat ``rationale`` string.
+    session.state["temp:fundamental_data"] = {"AAPL": ticker_slice}
+    session.state["temp:fundamental_verdict_AAPL"] = {
+        "ticker":      "AAPL",
+        "lean":        lean,
+        "magnitude":   magnitude,
+        "confidence":  0.8,
+        "key_factors": key_factors,
+        "is_no_data":  False,
+        "report": {
+            "summary": "Test rationale for the clamp/decay scenario.",
+            "drivers": [
+                {"name": "driver_one", "direction": "bear", "weight": 0.6,
+                 "body": "First driver body text."},
+                {"name": "driver_two", "direction": "bear", "weight": 0.4,
+                 "body": "Second driver body text."},
+            ],
+        },
+    }
+
+    agent = FundamentalJoinerAgent(name="FundamentalJoiner")
+    ctx   = InvocationContext(
+        session_service=svc, session=session, invocation_id="inv-clamp", agent=agent,
+    )
+
+    events = [ev async for ev in agent.run_async(ctx)]
+    delta  = events[0].actions.state_delta
+    ev_row = next(row for row in delta["fundamental_evidence"] if row["ticker"] == "AAPL")
+    return ev_row["verdict"]
+
+
+def _make_no_periodic_filing_slice(pe: float = 20.0) -> dict:
+    """A ticker slice with an 8-K only (no periodic filing) — filing_anchor_days
+    falls back to the sentinel, so the decay guard never fires regardless of
+    horizon config."""
+    return {
+        "ratios": _make_ratios(pe),
+        "filings": [
+            {"form_type": "8-K", "filed_at": "2026-05-20T00:00:00+00:00"},
+        ],
+        "insider_trades": [],
+        "insider_derivative_trades": [],
+    }
+
+
+def _make_fresh_periodic_filing_slice(pe: float = 20.0) -> dict:
+    """A ticker slice with a 10-Q filed the day before ``as_of`` — well inside
+    any sane ``filing_delta_horizon_days`` config, so the decay guard never
+    fires."""
+    return {
+        "ratios": _make_ratios(pe),
+        "filings": [
+            {"form_type": "10-Q", "filed_at": "2026-05-20T00:00:00+00:00"},
+        ],
+        "insider_trades": [],
+        "insider_derivative_trades": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_fundamental_magnitude_clamped_absent_going_concern():
+    """An LLM magnitude above the cap is clamped when no going-concern tag is
+    present (Task 8 — deterministic downstream clamp; Lazy Prices is a weak
+    per-name tilt, not a fresh material catalyst)."""
+    from config.analysts import get_analysts_config
+
+    cap = get_analysts_config().fundamental.filing_delta_magnitude_cap
+
+    verdict = await _run_joiner_with_llm_verdict(
+        lean="bearish", magnitude=0.9, key_factors=["guidance_change:true"],
+        ticker_slice=_make_no_periodic_filing_slice(),
+    )
+
+    assert verdict["magnitude"] <= cap
+
+
+@pytest.mark.asyncio
+async def test_going_concern_bypasses_the_clamp():
+    """Going-concern is a thesis-break catalyst — magnitude is NOT clamped."""
+    from config.analysts import get_analysts_config
+
+    cap = get_analysts_config().fundamental.filing_delta_magnitude_cap
+
+    verdict = await _run_joiner_with_llm_verdict(
+        lean="bearish", magnitude=0.9, key_factors=["going_concern:true"],
+        ticker_slice=_make_fresh_periodic_filing_slice(),
+    )
+
+    assert verdict["magnitude"] > cap

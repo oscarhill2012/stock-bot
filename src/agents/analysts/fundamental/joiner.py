@@ -31,7 +31,10 @@ from contract.evidence import (
     TickerVerdict,
     VerdictBatch,
 )
-from contract.extractors.fundamental import extract_fundamental_features
+from contract.extractors.fundamental import (
+    FILING_ANCHOR_ABSENT_SENTINEL,
+    extract_fundamental_features,
+)
 from data.timeguard import resolve_as_of
 from observability.terminal_log import emit_analyst_summary
 from observability.trace import trace_maybe
@@ -83,7 +86,7 @@ class FundamentalJoinerAgent(BaseAgent):
 
             if raw_v is None:
                 # Branch failed (or LlmAgent omitted output) — synthesise a safe default.
-                verdict = AnalystVerdict(
+                no_data_verdict = AnalystVerdict(
                     lean        = "neutral",
                     magnitude   = 0.0,
                     confidence  = 0.0,
@@ -91,7 +94,7 @@ class FundamentalJoinerAgent(BaseAgent):
                     key_factors = [],
                     is_no_data  = True,
                 )
-                ticker_verdict = TickerVerdict(ticker=ticker, **verdict.model_dump())
+                ticker_verdict = TickerVerdict(ticker=ticker, **no_data_verdict.model_dump())
             else:
                 # Validate against the strict LLM emit-schema first (re-validates
                 # what ADK's output_schema already enforced on write, so downstream
@@ -102,18 +105,71 @@ class FundamentalJoinerAgent(BaseAgent):
                 ticker_verdict = llm_v.to_ticker_verdict(
                     horizon_days=get_analysts_config().fundamental.filing_delta_horizon_days,
                 )
-                verdict = AnalystVerdict.model_validate(
-                    {k: v for k, v in ticker_verdict.model_dump().items() if k != "ticker"}
-                )
-
-            verdicts_list.append(ticker_verdict)
 
             # Deterministic feature extractor — operates on the per-ticker slice.
+            # Moved ahead of the clamp/decay block below (Task 8) so those steps
+            # can read filing_anchor_days off the same features dict that lands
+            # in AnalystEvidence — a single extraction, no duplicate work.
             raw_slice = data.get(ticker, {}) or {}
             features  = extract_fundamental_features(
                 raw_slice, ticker,
                 as_of=recorded_at,
                 state=state_snapshot,
+            )
+
+            # ── Task 8: deterministic post-LLM magnitude clamp + decay ───────
+            # The Fundamental prompt (Task 7) tells the LLM a downstream clamp
+            # exists — this is it.  Lazy Prices ("The Lazy Prices" — Cohen,
+            # Lou & Malloy) documents post-filing drift as a weak, gradual
+            # per-name tilt, not a fresh material catalyst on the scale of an
+            # earnings surprise or a thesis break.  An LLM asked to rate filing
+            # deltas will occasionally over-score them (recency bias on
+            # "interesting" prose); this bounds the blast radius deterministically
+            # rather than trusting the LLM's self-restraint.
+            fcfg = get_analysts_config().fundamental
+            tags = ticker_verdict.key_factors or []
+
+            # Going-concern is a genuine thesis-break catalyst (imminent
+            # solvency risk) — categorically different from an ordinary filing
+            # delta, so it re-anchors the thesis and bypasses the cap entirely.
+            going_concern = any(
+                t.startswith("going_concern") and t.endswith("true") for t in tags
+            )
+
+            if not going_concern and ticker_verdict.magnitude > fcfg.filing_delta_magnitude_cap:
+                ticker_verdict = ticker_verdict.model_copy(
+                    update={"magnitude": fcfg.filing_delta_magnitude_cap},
+                )
+
+            # Linear decay past horizon exhaustion, anchored to the most recent
+            # periodic filing via the extractor's filing_anchor_days feature.
+            # Applied AFTER the clamp — a decayed cap is still a cap, and this
+            # keeps the two adjustments composable rather than order-dependent.
+            # The decay guard runs regardless of going_concern: it is gated on
+            # whether a periodic filing exists at all (sentinel check below),
+            # not on the catalyst tag, so a stale going-concern verdict still
+            # decays even though it was never clamped.
+            if fcfg.filing_delta_decay:
+                anchor_days = features.get("filing_anchor_days")
+                horizon     = fcfg.filing_delta_horizon_days
+                if (
+                    anchor_days is not None
+                    and anchor_days < FILING_ANCHOR_ABSENT_SENTINEL
+                    and anchor_days > horizon
+                ):
+                    # Fully decayed once one full horizon has elapsed past exhaustion.
+                    overshoot = min((anchor_days - horizon) / horizon, 1.0)
+                    ticker_verdict = ticker_verdict.model_copy(
+                        update={"magnitude": ticker_verdict.magnitude * (1.0 - overshoot)},
+                    )
+
+            verdicts_list.append(ticker_verdict)
+
+            # Build the canonical AnalystVerdict from the FINAL (clamped and/or
+            # decayed) ticker_verdict, so fundamental_verdicts and
+            # fundamental_evidence can never diverge (F-analysts-016).
+            verdict = AnalystVerdict.model_validate(
+                {k: v for k, v in ticker_verdict.model_dump().items() if k != "ticker"}
             )
 
             ev = AnalystEvidence(
