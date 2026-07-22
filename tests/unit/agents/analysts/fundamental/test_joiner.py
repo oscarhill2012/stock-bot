@@ -571,7 +571,12 @@ async def test_fundamental_magnitude_clamped_absent_going_concern():
         ticker_slice=_make_no_periodic_filing_slice(),
     )
 
-    assert verdict["magnitude"] <= cap
+    # Exact-equality (not merely ``<= cap``) so this assertion cannot pass
+    # vacuously via the no-data branch (which would yield magnitude 0.0): the
+    # 0.9 LLM magnitude must genuinely traverse the clamp and land ON the cap.
+    # The slice has no periodic filing, so decay never fires — the clamp alone
+    # determines the result.
+    assert verdict["magnitude"] == pytest.approx(cap)
 
 
 @pytest.mark.asyncio
