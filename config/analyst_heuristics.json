@@ -1,9 +1,10 @@
 {
   "technical": {
-    "reversal_neutral_band_pct": 0.03,
-    "reversal_magnitude_scale": 8.0,
-    "reversal_confidence_base": 0.5,
-    "reversal_horizon_days": 5,
+    "trend_weight": 0.50,
+    "anchor_52w_weight": 0.25,
+    "rel_strength_weight": 0.25,
+    "composite_neutral_band": 0.10,
+    "horizon_days": 60,
     "vol_regime_window": 60,
     "vol_regime_extreme_z": 1.5,
     "vol_ratio_breakout": 1.3,

@@ -120,10 +120,11 @@ Thresholds used by `derive_technical_verdict()`.
 
 | Setting | Type | Meaning |
 |---|---|---|
-| `technical.reversal_neutral_band_pct` | float [0–1] | Neutral band for the **contrarian** 5-day reversal lean. `pct_change_5d` is fractional (0.03 = 3 %). Inside the band → `lean="neutral"`; outside → lean AGAINST the recent move (up-move ⇒ bearish fade, down-move ⇒ bullish bounce) — Jegadeesh 1990 / Lehmann 1990. Default **0.03**. |
-| `technical.reversal_magnitude_scale` | float > 0 | `magnitude = min(abs(pct_change_5d) * scale, magnitude_cap)`. Default **8.0** (a 5 % move ⇒ 0.40). |
-| `technical.reversal_confidence_base` | float [0–1] | Confidence at the band edge for a directional reversal; ramps to 1.0 at twice the band width. Neutral leans carry 0.0. Default **0.5**. |
-| `technical.reversal_horizon_days` | int [1–60] | Calendar-day horizon the reversal read targets — the scoreboard-measured technical horizon. Written onto `AnalystVerdict.horizon_days`. Calendar days so the rendered horizon composes with the strategist clock. Default **5**. |
+| `technical.trend_weight` | float [0–1] | Weight on the 200d-MA trend vote in the composite lean (+1 above / −1 below MA200; golden/death cross corroborates). With `anchor_52w_weight` + `rel_strength_weight` must sum to 1.0. **High-value tuning knob.** Default **0.50**. |
+| `technical.anchor_52w_weight` | float [0–1] | Weight on the 52-week-anchor vote (+1 within `near_52w_extreme_pct` of the high, −1 near the low, else 0) — George & Hwang 2004. Default **0.25**. |
+| `technical.rel_strength_weight` | float [0–1] | Weight on the 20d relative-strength-vs-SPY vote (sign; sector ETF as tiebreak). Default **0.25**. |
+| `technical.composite_neutral_band` | float [0–1] | `abs(weighted score)` at/below which the lean collapses to neutral. Default **0.10**. |
+| `technical.horizon_days` | int [1–252] | Trading-day horizon the composite targets, written onto `AnalystVerdict.horizon_days`. Literature-informed start; scoreboard sweep decides the final value. **High-value tuning knob.** Default **60**. |
 | `technical.vol_regime_window` | int [2–252] | Trailing window (valid ATR% samples) for the volatility-regime z-score. Default **60**. |
 | `technical.vol_regime_extreme_z` | float > 0 | `abs(vol_regime_z)` at/above which the `vol_regime_extreme` risk tag fires (either tail — stressed or unusually calm). Default **1.5**. |
 | `technical.vol_ratio_breakout` | float > 1 | Volume-ratio threshold for the `vol_breakout` context tag. Default **1.3**. |

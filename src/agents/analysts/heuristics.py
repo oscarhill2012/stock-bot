@@ -13,7 +13,7 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # Default path relative to repo root. Overridable via env var for tests.
 _DEFAULT_PATH = Path("config/analyst_heuristics.json")
@@ -26,53 +26,48 @@ class _Frozen(BaseModel):
 
 
 class TechnicalHeuristics(_Frozen):
-    """Thresholds for the deterministic technical verdict (three independent reads).
+    """Thresholds for the deterministic technical verdict (trend/momentum composite).
 
-    The verdict's lean/magnitude/confidence reflect ONLY the short-term reversal
-    read.  The volatility-regime and trend-state reads are surfaced as rendered
-    feature numbers with explanatory prose (see ``contract.strategist_prompt``);
-    they are deliberately NOT blended into the lean.
+    The verdict's lean/magnitude/confidence come from a config-weighted vote of
+    three literature-backed reads: the 200-day-MA trend state, 52-week-extreme
+    anchoring, and 20-day relative strength vs SPY.  The volatility-regime read
+    damps confidence but never votes on the lean (Barroso & Santa-Clara 2015).
     """
 
-    # ── Read 1: short-term reversal (the one directional lean) ──────────────
-    reversal_neutral_band_pct: float = Field(ge=0.0, le=1.0)
-    """Neutral band for the contrarian 5-day reversal lean.
+    # ── Composite vote weights (must sum to 1.0) ────────────────────────────
+    # HIGH-VALUE TUNING KNOB: these weights and horizon_days below are the
+    # primary lever on the technical lean.  Raising trend_weight makes the
+    # analyst more trend-following (slower, fewer flips); raising
+    # rel_strength_weight makes it more cross-sectional-momentum.  The
+    # scoreboard forward-return sweep is the intended tuner (spec Validation).
+    trend_weight: float        = Field(ge=0.0, le=1.0)
+    """Weight on the 200-day-MA trend vote (+1 above / -1 below; crosses corroborate)."""
 
-    ``pct_change_5d`` is a fractional return (0.03 = +3 %).  When
-    ``abs(pct_change_5d)`` is strictly below this band the analyst abstains
-    (``lean="neutral"``): the recent move is too small to be a mean-reversion
-    candidate.  At or beyond the band edge (the edge is inclusive —
-    ``abs(pct5) == band`` already yields a directional lean at
-    ``reversal_confidence_base``) the lean is CONTRARIAN: it leans AGAINST the
-    recent move (a recent up-move → bearish fade; a recent down-move → bullish
-    bounce), inverting the old trend-following sign (Jegadeesh 1990; Lehmann
-    1990).  Tune via ``config/analyst_heuristics.json`` without a code change.
+    anchor_52w_weight: float   = Field(ge=0.0, le=1.0)
+    """Weight on the 52-week-anchor vote (+1 near high / -1 near low / 0 otherwise)."""
+
+    rel_strength_weight: float = Field(ge=0.0, le=1.0)
+    """Weight on the 20-day relative-strength-vs-SPY vote (sign; sector tiebreak)."""
+
+    composite_neutral_band: float = Field(ge=0.0, le=1.0)
+    """|weighted score| at or below which the lean collapses to neutral."""
+
+    horizon_days: int = Field(ge=1, le=252)
+    """Trading-day horizon the composite trend read targets (literature-informed 60).
+
+    Written onto ``AnalystVerdict.horizon_days`` by ``derive_technical_verdict``.
+    The scoreboard forward-return sweep (20/40/60/90) sets the final value.
     """
 
-    reversal_magnitude_scale: float = Field(gt=0.0)
-    """Scales the size of the faded move into a magnitude.
-
-    ``magnitude = min(abs(pct_change_5d) * this, magnitude_cap)``.  With the
-    default 8.0 a 5 % 5-day move yields magnitude 0.40 and a 12.5 % move
-    saturates the cap.
-    """
-
-    reversal_confidence_base: float = Field(ge=0.0, le=1.0)
-    """Confidence at the neutral-band edge for a directional reversal lean.
-
-    Confidence ramps linearly from this base (at the band edge) to 1.0 (at
-    twice the band width), so a borderline fade is low-confidence and a large
-    dislocation is high-confidence.  A neutral lean carries confidence 0.0 (no
-    directional view to be confident about).
-    """
-
-    reversal_horizon_days: int = Field(ge=1, le=60)
-    """Trading-day horizon the reversal read targets (5–10 days).
-
-    Written onto ``AnalystVerdict.horizon_days`` by ``derive_technical_verdict``
-    so the strategist can read the technical analyst's own horizon.  Kept short
-    and deliberately away from the sub-24h overnight bounce.
-    """
+    @model_validator(mode="after")
+    def _weights_sum_to_one(self) -> TechnicalHeuristics:
+        """Reject a mis-specified vote so magnitudes stay interpretable in [0,1]."""
+        total = self.trend_weight + self.anchor_52w_weight + self.rel_strength_weight
+        if abs(total - 1.0) > 1e-9:
+            raise ValueError(
+                f"technical composite weights must sum to 1.0; got {total:.6f}"
+            )
+        return self
 
     # ── Read 2: volatility regime (risk number; NOT blended into the lean) ──
     vol_regime_window: int = Field(ge=2, le=252)
