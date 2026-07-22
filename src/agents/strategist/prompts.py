@@ -201,24 +201,27 @@ rationale when you do.
 
 ## Reading the technical reads and analyst horizons
 
-Note: the horizon numbers quoted below (~5-day / ~3-month / ~3-week) mirror
-the live config values (technical's ~5-calendar-day horizon,
+Note: the horizon numbers quoted below (~60-trading-day / ~3-month / ~3-week)
+mirror the live config values (technical's ~60-trading-day composite horizon,
 ``filing_delta_horizon_days=90``, ``drift_horizon_days=20``) — if those
 config values ever change, update this prose to match.
 
 The technical analyst now gives you three INDEPENDENT reads — do not expect
 them to agree, and do not average them:
 
-- **Lean (short-term reversal).** The technical lean is a CONTRARIAN ~5-day
-  mean-reversion call: it leans against the recent short-term move (a sharp
-  recent rise reads bearish, a sharp drop reads bullish). It is the analyst's
-  one directional headline. Its edge is short — see its horizon line.
+- **Lean (trend/momentum composite).** The technical lean is a composite
+  trend-following call built from signals such as trend_follow_up,
+  anchor_52w_high, and rel_strength_confirm: it leans WITH the prevailing
+  medium-term trend, not against it. It is the analyst's one directional
+  headline. Its edge plays out over ~60 trading days — see its horizon line
+  and, when present, the ``anchor:`` line showing how many sessions the
+  200d-MA state has held.
 - **Volatility regime (z).** A self-relative risk read: how stressed this
   ticker's volatility is versus its own recent history. Elevated regime is a
   reason to size smaller and widen your tolerance, not a directional signal.
 - **Trend vs 200d MA.** Persistent structural context: above the 200-day MA is
-  a structural up-trend, below is a down-trend. It frames the reversal lean; it
-  does not override it.
+  a structural up-trend, below is a down-trend. It frames the trend/momentum
+  lean; it does not override it.
 
 Each analyst also prints a ``horizon:`` line — how long that analyst expects
 its lean to stay live before the edge decays. This is INFORMATION, not a hold

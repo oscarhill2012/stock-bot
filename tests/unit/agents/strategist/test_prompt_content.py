@@ -7,8 +7,9 @@ def test_prompt_explains_the_three_technical_reads_and_horizons():
     instr = STRATEGIST_INSTRUCTION
 
     assert "Reading the technical reads and analyst horizons" in instr
-    # The three reads named.
-    assert "reversal" in instr.lower()
+    # The three reads named. Plan 3c retired the ~5-day CONTRARIAN reversal
+    # doctrine in favour of the composite trend/momentum lean.
+    assert "trend/momentum" in instr.lower()
     assert "Volatility regime" in instr
     assert "200d MA" in instr
     # Horizons framed as information, not a hold instruction.
@@ -24,20 +25,21 @@ def test_prompt_has_no_duplicate_holding_discipline_header():
 # C3 — horizon prose must match the rendered/config horizons.
 #
 # The hardcoded prose in the "Reading the technical reads and analyst
-# horizons" section previously disagreed with the horizons the model
-# actually sees on each analyst's `horizon:` line: technical is ~5
-# calendar days, fundamental filing_delta_horizon_days=90 (~3 months),
-# news drift_horizon_days=20 (~3 weeks). The stale "~1-week news" number
-# in particular fought the real 20-day news horizon.
+# horizons" section must agree with the horizons the model actually sees on
+# each analyst's `horizon:` line: technical is ~60 trading days (Plan 3c
+# composite trend/momentum horizon — retired the old ~5-calendar-day
+# CONTRARIAN reversal call), fundamental filing_delta_horizon_days=90
+# (~3 months), news drift_horizon_days=20 (~3 weeks). The stale "~1-week
+# news" number in particular fought the real 20-day news horizon.
 # ---------------------------------------------------------------------------
 
 def test_horizon_prose_matches_config_horizons():
     """The rendered prompt must cite the current horizon numbers, not stale ones."""
     instr = STRATEGIST_INSTRUCTION
 
-    assert "~5-day" in instr, (
-        "technical CONTRARIAN mean-reversion call must cite ~5-day, matching "
-        "the ~5-calendar-day technical horizon"
+    assert "~60-trading-day" in instr, (
+        "technical trend/momentum composite call must cite ~60-trading-day, "
+        "matching the composite's config horizon_days=60"
     )
     assert "~3-month" in instr, (
         "fundamental lean must cite ~3-month (filing_delta_horizon_days=90)"
@@ -60,6 +62,13 @@ def test_horizon_prose_no_longer_has_stale_numbers():
     assert "~1-week" not in instr, (
         "stale '~1-week' news horizon must be gone — it directly fought the "
         "real 20-day (~3-week) news horizon"
+    )
+    assert "~5-day" not in instr, (
+        "stale '~5-day' technical reversal horizon must be gone — Plan 3c "
+        "retired it for the ~60-trading-day composite horizon"
+    )
+    assert "5-calendar-day" not in instr, (
+        "stale '~5-calendar-day' technical horizon note must be gone"
     )
 
 

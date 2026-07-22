@@ -541,7 +541,11 @@ _ANALYST_ORDER = ("technical", "fundamental", "news")
 # unit as the strategist clock, so "days since thesis updated" composes cleanly
 # with the horizon.
 _HORIZON_PROSE: dict[str, str] = {
-    "technical":   "short-term mean-reversion read; its edge decays within ~{h} days",
+    # Plan 3c — the technical analyst is now a composite trend/momentum read
+    # (trend_follow_up / anchor_52w_high / rel_strength_confirm), not the
+    # retired ~5-day contrarian mean-reversion call; its edge decays over the
+    # composite's ~60-trading-day horizon.
+    "technical":   "trend/momentum read; its edge decays within ~{h} days",
     "fundamental": "filing-delta drift; plays out over ~{h} days (~3 months)",
     "news":        "post-news drift; typically live for ~{h} days after the surprise",
 }
@@ -731,6 +735,20 @@ def _render_analyst(
         prose = prose_tmpl.format(h=v.horizon_days)
         lines.append(f"  horizon: ~{v.horizon_days}d — {prose}")
 
+    # Plan 3c — P2 anchor: for a directional technical lean, show the 200d-MA
+    # state and how many sessions it has held, plus where we sit in the horizon
+    # window, so the strategist can tell "same signal, ageing" from "born today".
+    if name == "technical" and v.lean != "neutral" and ev.features:
+        flip_days = ev.features.get("ma200_flip_days")
+        ma_state  = ev.features.get("ma200_state")
+        if flip_days is not None and ma_state is not None:
+            side = "above" if ma_state >= 0 else "below"
+            sessions = int(flip_days)
+            lines.append(
+                f"  anchor: {side} 200d MA for {sessions} sessions "
+                f"(day {sessions} of ~{v.horizon_days})"
+            )
+
     # ── Feature bullets ───────────────────────────────────────────────────────
     bullets = _ANALYST_BULLETS.get(name, [])
     if bullets and ev.features:
@@ -812,7 +830,7 @@ def render_ticker_block(te: TickerEvidence) -> str:
           RSI(14):                  76.0   (overbought)
           20d momentum:             +12.3%
           ...
-          -> Rationale tags: reversal_up_fade, vol_regime_extreme, trend_above_ma200
+          -> Rationale tags: trend_follow_up, anchor_52w_high, rel_strength_confirm
 
         [Fundamental]  lean: bearish  magnitude: 0.60  confidence: 0.70
           ...

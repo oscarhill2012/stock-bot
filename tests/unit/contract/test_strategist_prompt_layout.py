@@ -1074,7 +1074,7 @@ def test_analyst_block_renders_horizon_precursor():
     block = _render_analyst("technical", ev)
 
     assert "horizon: ~7d" in block
-    assert "mean-reversion" in block  # mechanistic prose, not a directive
+    assert "trend" in block  # mechanistic prose, not a directive
 
 
 def test_neutral_verdict_omits_horizon_precursor():
@@ -1104,6 +1104,90 @@ def test_neutral_verdict_omits_horizon_precursor():
     block = _render_analyst("technical", ev)
 
     assert "horizon:" not in block
+
+
+# ---------------------------------------------------------------------------
+# Tests — Plan 3c Task 5: 200d-MA anchor line + composite horizon
+# ---------------------------------------------------------------------------
+#
+# Tasks 2-4 landed the technical composite (trend_follow_up / anchor_52w_high /
+# rel_strength_confirm vocabulary) plus the ma200_flip_days/ma200_state anchor
+# features.  This surfaces both in the rendered prompt: a P2 anchor line under
+# the technical block showing how long the 200d-MA state has held, and where
+# that sits inside the composite's ~60-trading-day horizon window.
+# ---------------------------------------------------------------------------
+
+def test_technical_block_renders_ma200_anchor_and_horizon():
+    """A directional technical lean renders the 200d-MA anchor with a session count."""
+    from contract.strategist_prompt import _render_analyst
+    from contract.evidence import AnalystEvidence, AnalystVerdict
+
+    ev = AnalystEvidence(
+        analyst="technical",
+        ticker="AAPL",
+        tick_id="t1",
+        recorded_at="2025-09-02T00:00:00",
+        verdict=AnalystVerdict(
+            lean="bullish", magnitude=0.4, confidence=0.7,
+            rationale="trend_follow_up, trend_above_ma200",
+            key_factors=["trend_follow_up", "trend_above_ma200"],
+            is_no_data=False, horizon_days=60,
+        ),
+        features={"ma200_state": 1.0, "ma200_flip_days": 30.0, "trend_state": 0.08},
+    )
+
+    block = _render_analyst("technical", ev)
+
+    assert "200d MA" in block
+    assert "30 sessions" in block
+    assert "day" in block and "~60" in block
+
+
+def test_ma200_anchor_omitted_when_flip_days_absent():
+    """No ``ma200_flip_days`` feature present — no anchor line rendered."""
+    from contract.strategist_prompt import _render_analyst
+    from contract.evidence import AnalystEvidence, AnalystVerdict
+
+    ev = AnalystEvidence(
+        analyst="technical",
+        ticker="AAPL",
+        tick_id="t1",
+        recorded_at="2025-09-02T00:00:00",
+        verdict=AnalystVerdict(
+            lean="bullish", magnitude=0.4, confidence=0.7,
+            rationale="trend_follow_up",
+            key_factors=["trend_follow_up"],
+            is_no_data=False, horizon_days=60,
+        ),
+        features={"trend_state": 0.08},
+    )
+
+    block = _render_analyst("technical", ev)
+
+    assert "anchor:" not in block
+
+
+def test_ma200_anchor_omitted_for_neutral_lean():
+    """A neutral technical lean carries no directional edge — anchor stays hidden."""
+    from contract.strategist_prompt import _render_analyst
+    from contract.evidence import AnalystEvidence, AnalystVerdict
+
+    ev = AnalystEvidence(
+        analyst="technical",
+        ticker="AAPL",
+        tick_id="t1",
+        recorded_at="2025-09-02T00:00:00",
+        verdict=AnalystVerdict(
+            lean="neutral", magnitude=0.0, confidence=0.0,
+            rationale="no_edge", key_factors=["no_edge"],
+            is_no_data=False, horizon_days=60,
+        ),
+        features={"ma200_state": 1.0, "ma200_flip_days": 30.0},
+    )
+
+    block = _render_analyst("technical", ev)
+
+    assert "anchor:" not in block
 
 
 # ---------------------------------------------------------------------------
