@@ -30,6 +30,7 @@ from typing import Any
 from google.genai import types as genai_types
 
 from agents.analysts.news.history import reset_news_history_store
+from agents.analysts.news.last_fire import reset_news_last_fire_store
 from backtest.schedule import Tick
 from data.timeguard import drain_wallclock_fallback_count
 from observability.drain import drain_tick
@@ -274,6 +275,11 @@ class Driver:
         # tick order — nothing may leak in from a previous window (or a
         # previous run of the same window) executed in this process.
         reset_news_history_store()
+
+        # Same reasoning for the last-fire store (Task 9): it clears per-run
+        # directional-fire memory so a window's decay logic (Task 10) never
+        # carries a prior window's catalyst.
+        reset_news_last_fire_store()
 
         total_ticks = len(schedule)
         for tick in schedule:

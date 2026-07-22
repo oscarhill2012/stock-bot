@@ -20,6 +20,7 @@ from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event, EventActions
 
+from agents.analysts.news.last_fire import get_news_last_fire_store
 from config.analysts import get_analysts_config
 from contract.evidence import (
     AnalystEvidence,
@@ -94,6 +95,19 @@ class NewsJoinerAgent(BaseAgent):
                 verdict = AnalystVerdict.model_validate(
                     {k: v for k, v in ticker_verdict.model_dump().items() if k != "ticker"}
                 )
+
+                # Persist the fire so subsequent abstain ticks can carry a
+                # decayed version of this catalyst (Task 10) instead of the
+                # signal self-zeroing next tick.  fired_at is ISO-stringified
+                # per the as_of state convention.
+                if ticker_verdict.lean in ("bullish", "bearish"):
+                    get_news_last_fire_store().record(
+                        ticker,
+                        lean=ticker_verdict.lean,
+                        magnitude=ticker_verdict.magnitude,
+                        confidence=ticker_verdict.confidence,
+                        fired_at=recorded_at.isoformat(),
+                    )
 
             verdicts_list.append(ticker_verdict)
 
