@@ -4,9 +4,12 @@ The narrowed Fundamental LLM is a FILING-DELTA analyst: it reads up to three
 filing sections (MD&A, risk factors, litigation) diffed
 against the same section of the prior comparable filing, plus Form 4
 footnotes (prose), for ONE ticker per call.  Its sign convention follows
-Cohen, Malloy & Nguyen (2020, "Lazy Prices") — substantive year-over-year
-filing change is bearish by default, and a genuinely near-verbatim filing is
-quiet-bullish — and its verdict targets a fixed drift horizon
+Cohen, Malloy & Nguyen (2020, "Lazy Prices") — a substantive year-over-year
+filing change is a SIGNAL whose direction follows the sentiment of what
+changed (sharpened risk / new litigation / commitment downgrades → bearish;
+removed risk bullets / resolved litigation / upgraded language → bullish),
+and a genuinely near-verbatim filing is quiet-bullish — and its verdict
+targets a fixed drift horizon
 (``horizon_days``) sourced from ``config/analysts.json::fundamental``, not
 the 1–4 week window used by the other analysts.  It also receives a
 structured block of insider numerics (10b5-1 ratio, cluster flags, role rank,
