@@ -509,18 +509,23 @@ def test_deterministic_verdict_no_longer_fabricates_report() -> None:
     report-required validator — that path is gone (the validator now
     enforces exactly one prose surface instead).
 
-    Task 3 rewrite: the verdict is now the contrarian reversal read, so the
-    heuristics fixture uses the ``reversal_*`` / ``vol_regime_*`` fields
-    (the old momentum/RSI knobs were retired in Task 1).
+    Plan 3c Task 4 rewrite: the verdict is now the config-weighted trend /
+    52w-anchor / relative-strength composite, so the heuristics fixture uses
+    the ``trend_weight`` / ``anchor_52w_weight`` / ``rel_strength_weight`` /
+    ``composite_neutral_band`` / ``horizon_days`` surface (the reversal knobs
+    from Task 3 were retired in Task 2/4).
     """
     # All keys from _KEYS plus vol_ratio_20d (which is NaN when history is short,
-    # but here we supply a real value so a directional verdict fires).
+    # but here we supply a real value so a directional verdict fires), plus the
+    # composite's trend/anchor/relative-strength inputs.
     features = {
         "rsi_14": 55.0, "pct_change_20d": 0.04, "pct_change_5d": 0.05,
         "vol_ratio_20d": 1.1, "atr_pct_14": 1.5,
         "dist_from_high_52w_pct": -5.0, "dist_from_low_52w_pct": 25.0,
         "golden_cross": 0.0, "death_cross": 0.0,
         "beta_confidence_damping": 1.0, "last_close": 100.0,
+        "trend_state": 0.06, "ma200_state": 1.0,
+        "relative_strength_vs_spy_20d": 0.02,
     }
 
     # NOTE: TechnicalHeuristics lives at agents.analysts.heuristics,
@@ -529,11 +534,12 @@ def test_deterministic_verdict_no_longer_fabricates_report() -> None:
     from contract.extractors.technical import derive_technical_verdict
 
     h = TechnicalHeuristics(
-        reversal_neutral_band_pct=0.03, reversal_magnitude_scale=8.0,
-        reversal_confidence_base=0.5, reversal_horizon_days=7,
+        trend_weight=0.50, anchor_52w_weight=0.25, rel_strength_weight=0.25,
+        composite_neutral_band=0.10, horizon_days=60,
         vol_regime_window=60, vol_regime_extreme_z=1.5,
         vol_ratio_breakout=1.5, vol_ratio_dry_up=0.7,
         near_52w_extreme_pct=5.0, magnitude_cap=1.0,
+        beta_confidence_damping_enabled=False,
     )
 
     v = derive_technical_verdict(features, h)
@@ -552,8 +558,8 @@ def test_no_data_branch_uses_canonical_builder() -> None:
     - ``pct_change_20d`` absent (Bug #23c: absent key = "not computable")
     - ``atr_pct_14 == 0``
 
-    Task 3 rewrite: the no-data fingerprint logic is unchanged, only the
-    heuristics fixture fields have moved to the new ``reversal_*`` surface.
+    Plan 3c Task 4 rewrite: the no-data fingerprint logic is unchanged, only
+    the heuristics fixture fields have moved to the new composite surface.
     """
     # Omit pct_change_20d to trigger the no-data fingerprint.
     features: dict = {k: 0.0 for k in (
@@ -568,11 +574,12 @@ def test_no_data_branch_uses_canonical_builder() -> None:
     from contract.extractors.technical import derive_technical_verdict
 
     h = TechnicalHeuristics(
-        reversal_neutral_band_pct=0.03, reversal_magnitude_scale=8.0,
-        reversal_confidence_base=0.5, reversal_horizon_days=7,
+        trend_weight=0.50, anchor_52w_weight=0.25, rel_strength_weight=0.25,
+        composite_neutral_band=0.10, horizon_days=60,
         vol_regime_window=60, vol_regime_extreme_z=1.5,
         vol_ratio_breakout=1.5, vol_ratio_dry_up=0.7,
         near_52w_extreme_pct=5.0, magnitude_cap=1.0,
+        beta_confidence_damping_enabled=False,
     )
 
     v = derive_technical_verdict(features, h)

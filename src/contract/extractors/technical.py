@@ -668,20 +668,21 @@ def derive_technical_verdict(
     features: dict[str, float],
     h: TechnicalHeuristics,
 ) -> AnalystVerdict:
-    """Map the technical feature vector to an ``AnalystVerdict`` — three reads.
+    """Map the technical feature vector to an ``AnalystVerdict`` — weighted composite.
 
     Pure function — no I/O, no globals.  Safe for table-driven unit tests.
 
-    The verdict's lean/magnitude/confidence reflect ONLY the short-term
-    reversal read (Read 1).  The volatility-regime (Read 2) and trend-state
-    (Read 3) reads, plus the volume / 52-week / crossover context, are surfaced
-    as ``key_factors`` tags and rendered feature numbers — they are NEVER
-    blended into the lean.
+    The verdict's lean/magnitude/confidence come from a config-weighted vote of
+    three literature-backed reads:
 
-    Read 1 — short-term reversal (Jegadeesh 1990; Lehmann 1990): lean CONTRARIAN
-    to ``pct_change_5d`` (a recent up-move fades bearish; a recent down-move
-    bounces bullish), with a neutral band.  This deliberately inverts the old
-    trend-following sign.
+    - Vote 1 — trend vs the 200-day MA (George & Hwang; Faber).
+    - Vote 2 — 52-week-extreme anchoring (George & Hwang 2004).
+    - Vote 3 — 20-day relative strength vs SPY (sector ETF as tiebreak).
+
+    The volatility-regime read damps confidence but never votes on the lean
+    (Barroso & Santa-Clara 2015).  Volume-ratio, 52-week-proximity, and
+    crossover context tags are also surfaced in ``key_factors`` without
+    affecting the lean.
 
     Parameters
     ----------
@@ -693,8 +694,8 @@ def derive_technical_verdict(
     Returns
     -------
     AnalystVerdict
-        Lean/magnitude/confidence from the reversal read, ``horizon_days`` from
-        ``h.reversal_horizon_days``, and context tags in ``key_factors``.
+        Lean/magnitude/confidence from the composite vote, ``horizon_days``
+        from ``h.horizon_days``, and context tags in ``key_factors``.
     """
     # Deferred runtime imports — avoids the circular import that arises when
     # loading this module triggers agents.analysts.__init__.
@@ -716,51 +717,103 @@ def derive_technical_verdict(
 
     factors: list[str] = []
 
-    # === READ 1 — short-term reversal (the ONE directional lean) =============
-    # Contrarian on the 5-day return: lean AGAINST the recent short-term move.
-    pct5 = features["pct_change_5d"]
-    band = h.reversal_neutral_band_pct
+    # === Composite lean — config-weighted vote of three literature reads ======
+    # HIGH-VALUE TUNING KNOB: the weights live in config (Task 2); this function
+    # only combines the votes.  Each vote is in {-1, 0, +1}; the weighted score
+    # is in [-1, +1]; the lean is its sign outside composite_neutral_band.
 
-    if pct5 >= band:
-        # Recent up-move → fade DOWN.  (Boundary inclusive: pct5 == band is
-        # already a directional call, with confidence == reversal_confidence_base.)
-        lean = "bearish"
-        factors.append("reversal_up_fade")
-    elif pct5 <= -band:
-        # Recent down-move → fade UP.
+    # Vote 1 — trend vs the 200-day MA (George & Hwang / Faber).  Prefer the
+    # discrete ma200_state anchor when present; fall back to the continuous
+    # trend_state sign.  Golden/death cross corroborates (does not add a vote).
+    trend = features.get("trend_state")
+    ma_state = features.get("ma200_state")
+    if ma_state is not None:
+        trend_vote = 1.0 if ma_state >= 0 else -1.0
+    elif trend is not None:
+        trend_vote = 1.0 if trend >= 0 else -1.0
+    else:
+        trend_vote = 0.0
+
+    if trend_vote > 0:
+        factors.append("trend_follow_up")
+    elif trend_vote < 0:
+        factors.append("trend_follow_down")
+
+    # Vote 2 — 52-week anchoring.  Near the high is bullish, near the low bearish
+    # (George & Hwang 2004: the 52w-high anchor dominates past-return momentum).
+    dist_high = features.get("dist_from_high_52w_pct")
+    dist_low  = features.get("dist_from_low_52w_pct")
+    anchor_vote = 0.0
+    if dist_high is not None and abs(dist_high) <= h.near_52w_extreme_pct:
+        anchor_vote = 1.0
+        factors.append("anchor_52w_high")
+    elif dist_low is not None and dist_low <= h.near_52w_extreme_pct:
+        anchor_vote = -1.0
+        factors.append("anchor_52w_low")
+
+    # Vote 3 — 20-day relative strength vs SPY; sector ETF breaks a zero.
+    rel = features.get("relative_strength_vs_spy_20d")
+    if rel is None or rel == 0.0:
+        rel = features.get("relative_strength_vs_sector_20d")
+    if rel is not None and rel != 0.0:
+        rel_vote = 1.0 if rel > 0 else -1.0
+        # "confirm" when it agrees with the trend vote, "diverge" otherwise —
+        # gives the strategist a one-glance read of internal agreement.
+        if trend_vote != 0.0 and rel_vote == trend_vote:
+            factors.append("rel_strength_confirm")
+        else:
+            factors.append("rel_strength_diverge")
+    else:
+        rel_vote = 0.0
+
+    score = (
+        h.trend_weight * trend_vote
+        + h.anchor_52w_weight * anchor_vote
+        + h.rel_strength_weight * rel_vote
+    )
+
+    if score > h.composite_neutral_band:
         lean = "bullish"
-        factors.append("reversal_down_bounce")
+    elif score < -h.composite_neutral_band:
+        lean = "bearish"
     else:
         lean = "neutral"
-        factors.append("reversal_neutral")
 
-    # Magnitude scales with the size of the move being faded, capped.
-    magnitude = min(abs(pct5) * h.reversal_magnitude_scale, h.magnitude_cap)
-
-    # Confidence ramps from the base (at the band edge) to 1.0 (at 2x the band).
-    # A neutral read carries no directional confidence (and no magnitude).
+    # Magnitude scales with |score| and the strength of the continuous trend /
+    # relative-strength inputs, capped.  A neutral read carries no magnitude.
     if lean == "neutral":
-        confidence = 0.0
         magnitude = 0.0
+        confidence = 0.0
     else:
-        excess     = min(max((abs(pct5) - band) / band, 0.0), 1.0) if band > 0 else 1.0
-        confidence = h.reversal_confidence_base + (1.0 - h.reversal_confidence_base) * excess
-        confidence = max(0.0, min(1.0, confidence))
+        strength = abs(score)
+        # Blend in continuous input strength so a 3/3 vote on a large dislocation
+        # reads bigger than a 3/3 vote on a marginal one.
+        cont = min(abs(trend or 0.0) * 2.0, 0.5) + min(abs(rel or 0.0) * 5.0, 0.5)
+        magnitude = min((strength + cont) / 2.0, h.magnitude_cap)
 
-    # === READ 2 — volatility regime (risk tag; NOT blended into the lean) ====
-    # Fires on the absolute z, so either tail trips it: a stressed (high
-    # positive z) regime OR an unusually calm (large negative z) one — hence
-    # the tag is named "extreme", not "elevated".
+        # Confidence = component agreement × volatility damping (Barroso &
+        # Santa-Clara 2015).  Agreement counts how many non-zero votes share the
+        # lean's sign; 3/3 → 1.0, 2/3 → ~0.67, 1/1 → 1.0 of the votes cast.
+        votes = [v for v in (trend_vote, anchor_vote, rel_vote) if v != 0.0]
+        lean_sign = 1.0 if lean == "bullish" else -1.0
+        agreeing = sum(1 for v in votes if (v > 0) == (lean_sign > 0))
+        agreement = agreeing / len(votes) if votes else 0.0
+
+        vol_z = features.get("vol_regime_z")
+        damping = 1.0 / (1.0 + max(0.0, vol_z)) if vol_z is not None else 1.0
+
+        confidence = max(0.0, min(1.0, agreement * damping))
+
+    # Volatility-regime risk tag (fires at either tail; does NOT vote).
     vol_z = features.get("vol_regime_z")
     if vol_z is not None and abs(vol_z) >= h.vol_regime_extreme_z:
         factors.append("vol_regime_extreme")
 
-    # === READ 3 — trend state (regime tag; NOT blended into the lean) ========
-    trend = features.get("trend_state")
+    # Trend-state regime tag (context; the vote above already used it).
     if trend is not None:
         factors.append("trend_above_ma200" if trend >= 0 else "trend_below_ma200")
 
-    # --- Corroborating context tags (do NOT alter the reversal lean) ---------
+    # --- Corroborating context tags (do NOT alter the composite lean) --------
     vol_ratio = features.get("vol_ratio_20d")
     if vol_ratio is not None and not (isinstance(vol_ratio, float) and math.isnan(vol_ratio)):
         if vol_ratio > h.vol_ratio_breakout:
@@ -768,13 +821,12 @@ def derive_technical_verdict(
         elif vol_ratio < h.vol_ratio_dry_up:
             factors.append("vol_dry_up")
 
-    dist_high = features.get("dist_from_high_52w_pct", -100.0)
-    dist_low  = features.get("dist_from_low_52w_pct",   100.0)
-
-    if abs(dist_high) <= h.near_52w_extreme_pct:
+    # dist_high/dist_low are now fetched via .get() (may be None) — guard
+    # before comparison rather than relying on a sentinel default.
+    if dist_high is not None and abs(dist_high) <= h.near_52w_extreme_pct:
         factors.append("near_52w_high")
 
-    if dist_low <= h.near_52w_extreme_pct:
+    if dist_low is not None and dist_low <= h.near_52w_extreme_pct:
         factors.append("near_52w_low")
 
     if features.get("golden_cross", 0.0) >= 1.0:
@@ -793,5 +845,5 @@ def derive_technical_verdict(
         rationale=rationale,
         key_factors=factors,
         is_no_data=False,
-        horizon_days=h.reversal_horizon_days,
+        horizon_days=h.horizon_days,
     )
