@@ -194,14 +194,21 @@ SHAPE EXAMPLE (placeholders only — fill from the actual filings + insider data
 
 THE SIGN CONVENTION (Lazy Prices) — this is the core doctrine
 -------------------------------------------------------------
-  Substantive year-over-year CHANGE is BEARISH by default.
-  Companies add and sharpen language when something is wrong: a new risk
-  bullet, an intensified hedge, a new legal proceeding, a recharacterised
-  demand outlook, an executive departure.  They rarely add prose to
-  celebrate.  Unless the surviving paragraphs are unambiguously positive
-  (e.g. a removed risk bullet, litigation resolved in the company's
-  favour, a concrete upgrade in commitment language), score substantive
-  change as bearish over the {filing_horizon_days}-day horizon.
+  Substantive year-over-year CHANGE is a SIGNAL whose direction follows
+  the SENTIMENT of what changed — there is no default direction.
+  Sharpened risk language, a new legal proceeding, a commitment downgrade
+  ("we are confident" → "we may"), or an executive departure → bearish.
+  Removed risk bullets, litigation resolved in the company's favour,
+  upgraded commitment language, or genuinely positive-tone additions →
+  bullish.  This bullish branch is not a rare exception: Cohen, Malloy &
+  Nguyen find that roughly 14% of changers carry positive-sentiment
+  language changes, and those changers go on to earn significantly
+  positive subsequent returns — treat a positive-sentiment change with
+  the same conviction you would give a negative one.  Only when the
+  sentiment of a substantive change is genuinely ambiguous — you cannot
+  tell whether the surviving language reads better or worse than last
+  year's — does it default toward caution (weak or neutral lean, reduced
+  confidence) over the {filing_horizon_days}-day horizon.
 
   Genuine ABSENCE of change is quiet-bullish.
   A performed diff whose header shows nearly all paragraphs removed as
@@ -256,14 +263,33 @@ it.
        de-scoped matter is bullish.
      - Executive-team language: departures of the CEO/CFO or auditor
        changes — surfacing in filing prose or in an 8-K Item 5.02 body —
-       count as substantive change (bearish by default, per the sign
-       convention).
+       count as substantive change; sign it per the sentiment of the
+       departure (an abrupt or unplanned departure, or an auditor
+       resignation for cause, is bearish; a planned, orderly succession
+       disclosed in confident language is closer to neutral), per the sign
+       convention above.
    Weigh the SELF-RELATIVE SCALE for sizing: the "scale:" line tells you how
    this filing's change compares to the firm's own norm.  Do NOT infer "heavily
    rewritten" from how much text survived the diff — survival is now a
    similarity threshold, not a volume count.  A firm that changed far more than
    usual (bottom of its own history) plus a bearish diff direction is a
    high-magnitude bearish read; typical-or-less change tempers magnitude.
+
+   TRIGGER RARITY — the filing-delta lean only fires on a genuinely large
+   change.  The "scale:" line flags this via the firm's own
+   filing_delta_trigger_similarity threshold: only when it reports the
+   filing changed far more than this firm usually does should the
+   filing-delta read drive the lean.  Mid-range deltas — a typical-or-less
+   change for this firm — are NOT a filing-delta signal: lean on ratios,
+   insiders, or 8-Ks alone, or neutral, rather than manufacturing a
+   filing-delta call out of routine year-over-year drift.
+
+   MAGNITUDE CAP — filing-delta-driven magnitude is a WEAK per-name tilt;
+   at the portfolio level the Lazy Prices long/short alpha runs roughly
+   18-58bps/month, not a licence for a large single-name bet.  Cap
+   filing-delta magnitude at ~0.4 unless a going-concern-tier catalyst is
+   present (rule 4 below).  A deterministic clamp enforces this cap
+   downstream — do not try to exceed it.
 
 2. Anchor on EXPECTATIONS — the price already reflects a view.
    Your verdict is about the STOCK, not the company.  Read the COMPANY
@@ -298,11 +324,21 @@ Forming the lean — do not default to neutral.
 ---------------------------------------------
 - The right question is "what is the dominant delta here?", not "do all
   signals agree?".
-- Substantive change in ANY diffed section → bearish lean unless the
-  surviving text is unambiguously positive.  Acknowledge counters (e.g.
-  insider buying) in the summary rather than washing to neutral.
+- Substantive change in ANY diffed section → lean signed by the SENTIMENT
+  of that change (bearish for sharpened risk / new legal proceedings /
+  commitment downgrades / executive departures; bullish for removed risk
+  bullets / resolved litigation / upgraded commitment language /
+  positive-tone additions).  Acknowledge counters (e.g. insider buying
+  against a bearish delta) in the summary rather than washing to neutral.
 - Performed diff, trivial survivors, no contrary insider signal →
   quiet-bullish: lean bullish, magnitude ≤ 0.4, moderate confidence.
+- LONG-ONLY HONESTY: in a long-only book the durable Lazy Prices edge is
+  the SHORT leg — this signal's main job is to help you AVOID or
+  underweight changers, not to hunt for big bullish winners among them.
+  Its bullish side (non-changers, and the minority of changers whose
+  sentiment genuinely reads positive) is weaker and faster-reverting:
+  keep bullish filing-delta calls low-magnitude even when the sentiment
+  read is clear.
 - Only use ``lean=neutral`` when the comparison machinery gave you nothing
   to stand on: no performed diff in any section (markers only), no 8-K
   catalyst, and no insider signal — OR when truly equal-and-opposite

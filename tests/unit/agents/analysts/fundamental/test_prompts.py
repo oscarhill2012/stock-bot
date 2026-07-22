@@ -140,14 +140,50 @@ def test_instruction_carries_filing_delta_horizon():
 def test_instruction_states_lazy_prices_sign_convention():
     """The diff-oriented sign convention must be stated, both branches.
 
-    Substantive year-over-year change → bearish by default; a performed diff
-    that found essentially nothing → quiet-bullish.  Greppable phrases pin
-    the doctrine so a future prompt edit cannot silently drop it.
+    Substantive year-over-year change is signed by the SENTIMENT of what
+    changed (Task 7 recalibration — no longer bearish by default); a
+    performed diff that found essentially nothing → quiet-bullish.
+    Greppable phrases pin the doctrine so a future prompt edit cannot
+    silently drop it.
     """
     instruction = build_fundamental_instruction(_vocab())
 
-    assert "BEARISH by default" in instruction
+    assert "SENTIMENT of what changed" in instruction
+    assert "bearish by default" not in instruction.lower()
     assert "quiet-bullish" in instruction
+
+
+def test_fundamental_prompt_is_sentiment_signed_not_bearish_default():
+    """New Lazy-Prices doctrine: sign follows sentiment, trigger is rare,
+    magnitude is capped, and the long-only book's durable edge is the short
+    leg.
+
+    Task 7 (Phase 14 recalibration): the analyst previously treated ANY
+    substantive filing change as bearish by default.  That over-fires on
+    positive-sentiment changers (Cohen, Malloy & Nguyen find ~14% of
+    changers carry positive sentiment and predict significantly positive
+    returns) and ignores that the signal is only reliable when the change
+    is genuinely large.  Pin the four rewritten doctrinal points with
+    greppable phrases so a future edit cannot silently regress to the old
+    blanket-bearish rule.
+    """
+    instruction = build_fundamental_instruction(_vocab())
+
+    # (1) Sentiment-signed, not bearish-by-default.
+    assert "sentiment" in instruction.lower()
+    assert "bearish by default" not in instruction.lower()
+
+    # (2) Trigger rarity — the filing-delta lean only fires on a genuinely
+    # large change, gated on the scale line's trigger-similarity flag.
+    assert "filing_delta_trigger_similarity" in instruction
+    assert "mid-range delta" in instruction.lower()
+
+    # (3) Magnitude cap — a deterministic clamp enforces ~0.4 downstream.
+    assert "cap" in instruction.lower() and "0.4" in instruction
+
+    # (4) Long-only honesty — the durable edge is the short leg.
+    assert "short leg" in instruction.lower()
+    assert "low-magnitude" in instruction.lower()
 
 
 def test_instruction_forbids_reading_markers_as_no_change():
