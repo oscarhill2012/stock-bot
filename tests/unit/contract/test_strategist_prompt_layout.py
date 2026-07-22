@@ -58,6 +58,7 @@ def _make_verdict(
     key_factors: list[str] | None = None,
     is_no_data: bool = False,
     report: AnalystReport | None = None,
+    carried: bool = False,
 ) -> AnalystVerdict:
     """Build an AnalystVerdict respecting the exactly-one-prose-surface invariant.
 
@@ -86,6 +87,9 @@ def _make_verdict(
         When True the verdict represents an absent/empty analyst.
     report:
         Optional ``AnalystReport`` (LLM analysts only).
+    carried:
+        When True, marks this verdict as a synthetic decayed ("carried")
+        stand-in rather than a freshly-computed one (see Task 11).
 
     Returns
     -------
@@ -114,6 +118,7 @@ def _make_verdict(
         key_factors=key_factors or [],
         is_no_data=is_no_data,
         report=effective_report,
+        carried=carried,
     )
 
 
@@ -125,6 +130,7 @@ def _make_evidence(
     is_no_data: bool = False,
     report: AnalystReport | None = None,
     ticker: str = "AAPL",
+    carried: bool = False,
 ) -> AnalystEvidence:
     """Build an AnalystEvidence object for test fixtures.
 
@@ -144,6 +150,9 @@ def _make_evidence(
         Optional AnalystReport populated by LLM analysts.
     ticker:
         Stock ticker symbol.
+    carried:
+        When True, threads a "carried" (synthetic decayed) verdict flag
+        through to the underlying ``AnalystVerdict``.
 
     Returns
     -------
@@ -161,6 +170,7 @@ def _make_evidence(
             key_factors=key_factors,
             is_no_data=is_no_data,
             report=report,
+            carried=carried,
         ),
     )
 
@@ -201,6 +211,8 @@ def _make_ticker_evidence(
     ticker: str = "AAPL",
     news_report: AnalystReport | None = None,
     news_no_data: bool = False,
+    aggregate: AggregateVerdict | None = None,
+    news_carried: bool = False,
 ) -> TickerEvidence:
     """Build a fully-populated TickerEvidence for AAPL.
 
@@ -219,6 +231,13 @@ def _make_ticker_evidence(
     news_no_data:
         When ``True`` the news analyst is marked as no-data (report=None is
         then valid).  Used by tests that assert no Drivers block is rendered.
+    aggregate:
+        Optional override for the cross-analyst ``AggregateVerdict``. When
+        ``None`` the previous hardcoded default (bearish/0.55/0.80/0.10) is
+        kept, so existing callers are unaffected.
+    news_carried:
+        When ``True`` marks the news verdict as "carried" (a synthetic
+        decayed stand-in) — used to test the aggregate line's carried flag.
 
     Returns
     -------
@@ -274,6 +293,7 @@ def _make_ticker_evidence(
                 key_factors=["catalyst:legal", "direction:mixed"],
                 is_no_data=news_no_data,
                 report=news_report,
+                carried=news_carried,
             ),
             "smart_money": _make_evidence(
                 "smart_money",
@@ -288,7 +308,8 @@ def _make_ticker_evidence(
                 is_no_data=True,
             ),
         },
-        aggregate=AggregateVerdict(
+        aggregate=aggregate
+        or AggregateVerdict(
             lean="bearish",
             magnitude=0.55,
             confidence=0.80,
@@ -1325,3 +1346,43 @@ def test_news_sentiment_bullets_cut():
     assert "Mean polarity:" not in out
     assert "Social volume z:" not in out
     assert "Article count 7d:" in out
+
+
+# ---------------------------------------------------------------------------
+# Tests — Task 12: render the cross-analyst aggregate per ticker
+# ---------------------------------------------------------------------------
+#
+# The strategist prompt tells the model to "treat the digested aggregate as a
+# deterministic input" — but until now the per-ticker block never printed
+# that aggregate. These tests assert the [Aggregate] line renders the four
+# scalar fields, and flags when a carried (synthetic decayed) news verdict
+# contributed to it.
+# ---------------------------------------------------------------------------
+
+def test_ticker_block_renders_aggregate_line():
+    """The [Aggregate] line must render lean, magnitude, confidence and disagreement."""
+    te = _make_ticker_evidence(
+        aggregate=AggregateVerdict(
+            lean="bullish",
+            magnitude=0.42,
+            confidence=0.66,
+            disagreement=0.10,
+            summary="4 bullish / 1 no_data",
+        ),
+    )
+
+    block = render_ticker_block(te)
+
+    assert "Aggregate" in block
+    assert "bullish" in block
+    assert "0.42" in block
+    assert "disagreement" in block.lower()
+
+
+def test_aggregate_line_flags_carried_news():
+    """The [Aggregate] line must flag when a carried news verdict contributed."""
+    te = _make_ticker_evidence(news_carried=True)
+
+    block = render_ticker_block(te)
+
+    assert "carried" in block.lower()

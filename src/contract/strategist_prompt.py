@@ -876,6 +876,24 @@ def render_ticker_block(te: TickerEvidence) -> str:
         parts.append(block)
         parts.append("")
 
+    # ── Aggregate line ────────────────────────────────────────────────────────
+    # Prints the cross-analyst digest (lean/magnitude/confidence/disagreement)
+    # so the strategist prompt's "treat the digested aggregate as a
+    # deterministic input" instruction references a number the template
+    # actually renders. Flagged when a carried (synthetic decayed) verdict —
+    # e.g. a stale news read stood in for a fresh one — contributed to it, so
+    # the strategist can weigh the aggregate's freshness accordingly.
+    agg = te.aggregate
+    carried = any(ev.verdict.carried for ev in te.per_analyst.values())
+    carried_note = "  [news carried]" if carried else ""
+    parts.append(
+        f"[Aggregate]  lean: {agg.lean}  magnitude: {agg.magnitude:.2f}  "
+        f"confidence: {agg.confidence:.2f}  disagreement: {agg.disagreement:.2f}"
+        f"{carried_note}"
+    )
+    if agg.summary:
+        parts.append(f"  {agg.summary}")
+
     # Remove trailing blank line for a clean join.
     while parts and parts[-1] == "":
         parts.pop()
