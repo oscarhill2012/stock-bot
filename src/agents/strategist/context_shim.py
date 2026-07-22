@@ -53,6 +53,7 @@ from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event, EventActions
 
+from agents.analysts.news.last_fire import get_news_last_fire_store
 from agents.strategist.prompts import (
     COLD_START_MODE_TEMPLATE,
     FIRST_TICK_PREAMBLE,
@@ -60,8 +61,9 @@ from agents.strategist.prompts import (
     INCREMENTAL_PREAMBLE,
 )
 from broker.portfolio import Portfolio
+from config.analysts import get_analysts_config
 from contract.digest import DEFAULT_ANALYST_WEIGHTS, build_ticker_evidence
-from contract.evidence import AnalystEvidence
+from contract.evidence import AnalystEvidence, AnalystVerdict
 from contract.strategist_prompt import render_ticker_block
 from contract.ticker_evidence import TickerEvidence
 from data.timeguard import resolve_as_of
@@ -124,6 +126,65 @@ def _index_evidence(state, key: str) -> dict[str, AnalystEvidence]:
         ev = AnalystEvidence.model_validate(item) if isinstance(item, dict) else item
         out[ev.ticker] = ev
     return out
+
+
+def _carried_news_evidence(
+    abstain_ev: AnalystEvidence, recorded_at: datetime, tick_id: str,
+) -> AnalystEvidence | None:
+    """Build a decayed, carried news AnalystEvidence from the last-fire record.
+
+    HIGH-VALUE TUNING KNOB: the decay is linear over ``drift_horizon_days``. A
+    slower decay holds catalysts longer (fewer re-entries); a faster one reverts
+    to abstain sooner.  Returns ``None`` when no live fire exists for the
+    ticker or the fire has fully decayed (past the horizon), in which case the
+    original abstain stands and news simply is not a vote this tick (P4).
+
+    Args:
+        abstain_ev: The news ``AnalystEvidence`` marked abstain this tick
+            (carries the ticker).
+        recorded_at: The tick's resolved ``as_of`` datetime.
+        tick_id: The current tick id, stamped onto the synthetic evidence.
+
+    Returns:
+        AnalystEvidence | None: A carried, decayed news evidence, or ``None``
+        to leave the abstain in place.
+    """
+    rec = get_news_last_fire_store().get(abstain_ev.ticker)
+    if rec is None:
+        return None
+
+    # ``fired_at`` is always ISO-stringified from a ``recorded_at`` whose
+    # awareness matches this tick's ``recorded_at`` (module PIT discipline in
+    # last_fire.py) — no explicit tz coercion needed on either side.
+    fired_at = datetime.fromisoformat(rec.fired_at)
+    horizon = get_analysts_config().news.drift_horizon_days
+    elapsed_days = max(0, (recorded_at - fired_at).days)
+
+    if elapsed_days >= horizon:
+        return None                                   # fully decayed → not a vote
+
+    decay = 1.0 - (elapsed_days / horizon)             # linear over the window
+    magnitude = rec.magnitude * decay
+    confidence = rec.confidence * decay
+
+    verdict = AnalystVerdict(
+        lean=rec.lean,
+        magnitude=magnitude,
+        confidence=confidence,
+        rationale=(f"carried catalyst from {rec.fired_at[:10]} "
+                   f"(day {elapsed_days}/{horizon}, decayed)"),
+        key_factors=["carried"],
+        is_no_data=False,
+        carried=True,
+    )
+    return AnalystEvidence(
+        analyst="news",
+        ticker=abstain_ev.ticker,
+        tick_id=tick_id,
+        recorded_at=recorded_at,
+        verdict=verdict,
+        features=abstain_ev.features,
+    )
 
 
 class StrategistContextShim(BaseAgent):
@@ -355,6 +416,17 @@ class StrategistContextShim(BaseAgent):
                 per_analyst["news"]        = news[t]
             if t in sm:
                 per_analyst["smart_money"] = sm[t]
+
+            # Numeric news carry (spec Decision 2026-07-21): a fired catalyst
+            # must decay smoothly across the drift window, not cliff to neutral
+            # the tick after it fired (the STLD one-tick round-trip).  We
+            # substitute the abstain with a synthetic decayed verdict BEFORE
+            # digesting so digest.py stays a pure function of its inputs.
+            news_ev = per_analyst.get("news")
+            if news_ev is not None and getattr(news_ev.verdict, "abstain", False):
+                carried = _carried_news_evidence(news_ev, recorded_at, tick_id)
+                if carried is not None:
+                    per_analyst["news"] = carried
 
             # Resolve live price.  Held positions win (broker updates each tick);
             # otherwise read the technical analyst's ``last_close`` feature

@@ -612,3 +612,107 @@ def test_deployment_readout_above_band() -> None:
     assert "trim" in readout.lower(), (
         f"Above-band readout must advise trimming; got: {readout!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Task 10 — numeric carried-signal synthesis (spec Decision 2026-07-21)
+# ---------------------------------------------------------------------------
+
+def _shim_state_with_abstain_news(ticker: str, *, as_of: str) -> dict:
+    """Build a session-state dict with one abstaining news evidence for ``ticker``.
+
+    Mirrors the shape of the ``populated_state`` fixture above but carries a
+    single directional-but-abstained news ``AnalystEvidence`` so the shim's
+    carried-signal synthesis has something to substitute.
+    """
+    from contract.evidence import AnalystEvidence, AnalystVerdict
+
+    abstain_verdict = AnalystVerdict(
+        lean="neutral",
+        magnitude=0.0,
+        confidence=0.0,
+        rationale="no fresh news this tick",
+        is_no_data=False,
+        abstain=True,
+    )
+    abstain_evidence = AnalystEvidence(
+        analyst="news",
+        ticker=ticker,
+        tick_id="test-tick-carry",
+        recorded_at=as_of,
+        features={},
+        verdict=abstain_verdict,
+    )
+
+    return {
+        "tickers":              [ticker],
+        "tick_id":              "test-tick-carry",
+        "as_of":                as_of,
+        "user:positions":       {},
+        "portfolio":            {"cash": 100_000.0, "positions": {}},
+        "technical_evidence":   [],
+        "fundamental_evidence": [],
+        "news_evidence":        [abstain_evidence],
+        "smart_money_evidence": [],
+    }
+
+
+async def _collect_delta(shim: StrategistContextShim, state: dict) -> dict:
+    """Drive the shim's ``_run_async_impl`` against ``state`` and return the delta.
+
+    Mirrors the fake-``InvocationContext`` plumbing used throughout this file
+    (MagicMock session/ctx + inner ``_drain`` coroutine).
+    """
+    fake_session = MagicMock()
+    fake_session.state = state
+    fake_ctx = MagicMock()
+    fake_ctx.invocation_id = "inv-carry"
+    fake_ctx.session = fake_ctx.session_service = fake_session
+
+    events: list = []
+    async for ev in shim._run_async_impl(fake_ctx):
+        events.append(ev)
+
+    assert len(events) == 1
+    return events[0].actions.state_delta
+
+
+def _find_ticker_evidence(delta: dict, ticker: str) -> dict:
+    """Locate the serialised ``TickerEvidence`` dict for ``ticker`` in the delta."""
+    objects = delta["temp:ticker_evidence_objects"]
+    for entry in objects:
+        if entry["ticker"] == ticker:
+            return entry
+    raise AssertionError(f"no ticker evidence found for {ticker!r} in {objects!r}")
+
+
+@pytest.mark.asyncio
+async def test_abstain_news_carries_decayed_last_fire() -> None:
+    """When news abstains but a live fire exists, the shim substitutes a decayed
+    carried verdict before digesting — the aggregate does not cliff to neutral.
+    """
+    from agents.analysts.news.last_fire import (
+        get_news_last_fire_store,
+        reset_news_last_fire_store,
+    )
+
+    reset_news_last_fire_store()
+    try:
+        # Fired 7 calendar days ago, drift_horizon_days=20 → ~65% decay factor,
+        # so magnitude 0.80 * 0.65 = 0.52 survives (inside 0.5..0.80).
+        get_news_last_fire_store().record(
+            "STLD", lean="bullish", magnitude=0.80, confidence=0.80,
+            fired_at="2025-09-17T14:00:00",
+        )
+        state = _shim_state_with_abstain_news("STLD", as_of="2025-09-24T14:00:00")
+
+        shim = StrategistContextShim()
+        delta = await _collect_delta(shim, state)
+
+        te = _find_ticker_evidence(delta, "STLD")
+        news = te["per_analyst"]["news"]
+        assert news["verdict"]["carried"] is True
+        assert news["verdict"]["lean"] == "bullish"
+        assert 0.5 < news["verdict"]["magnitude"] < 0.80        # decayed, not zeroed
+    finally:
+        reset_news_last_fire_store()
