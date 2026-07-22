@@ -342,7 +342,11 @@ def _append_scoreboard_section(
         cluster-robust SE clustered by ticker; corrects for the autocorrelated,
         non-independent observations) or ``"naive"`` (original ``ttest_1samp``).
     """
-    from backtest.scoreboard import build_analyst_scoreboard, render_scoreboard_md
+    from backtest.scoreboard import (
+        build_analyst_scoreboard,
+        render_scoreboard_md,
+        stance_vs_aggregate_agreement,
+    )
 
     db_path    = run_dir / "db.sqlite"
     report_dir = run_dir / "report"
@@ -365,12 +369,28 @@ def _append_scoreboard_section(
         logger.exception("scoreboard: failed to build scoreboard for %s", run_dir)
         return
 
+    # Stance-vs-aggregate agreement rate: what fraction of the strategist's
+    # per-ticker stances matched the deterministic aggregate's lean.  Guarded
+    # separately from the scoreboard build above — ``stance_vs_aggregate_agreement``
+    # raises loudly (rather than returning a misleading 0.0) when there are no
+    # directional joinable pairs, so we render "N/A" in that case instead of
+    # letting the whole report_progress call fail.
+    try:
+        agreement_rate = stance_vs_aggregate_agreement(db_path)
+        agreement_line = f"**Stance–aggregate agreement:** {agreement_rate:.1%}\n\n"
+    except Exception:
+        logger.exception(
+            "scoreboard: failed to compute stance-vs-aggregate agreement for %s", run_dir,
+        )
+        agreement_line = "**Stance–aggregate agreement:** N/A\n\n"
+
     # Append the section to the existing metrics.md.  This runs inside
     # ``report_progress`` after ``_write_metrics`` has (re)written the file, so
     # it always exists by this point.
     metrics_path = report_dir / "metrics.md"
     with metrics_path.open("a", encoding="utf-8") as f:
         f.write(section)
+        f.write(agreement_line)
 
     logger.info("scoreboard: appended scoreboard section to %s", metrics_path)
 

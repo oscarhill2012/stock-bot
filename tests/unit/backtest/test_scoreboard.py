@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 from data.models import OHLCBar
 
 # The models that must exist in the production code.
-from orchestrator.persistence import AnalystEvidenceRow
+from orchestrator.persistence import AnalystEvidenceRow, TickerEvidenceRow, TickerStanceRow
 from orchestrator.persistence import Base as PersistenceBase
 
 # ── Fixture helpers ───────────────────────────────────────────────────────────
@@ -57,6 +57,58 @@ def _make_evidence_row(
     )
 
 
+def _make_ticker_evidence_row(
+    *,
+    ticker: str,
+    tick_id: str,
+    recorded_at: datetime,
+    lean: str,
+    magnitude: float = 0.5,
+    confidence: float = 0.7,
+) -> TickerEvidenceRow:
+    """Build a ``TickerEvidenceRow`` (cross-analyst aggregate) without persisting it.
+
+    Mirrors the columns the scoreboard's aggregate-injection path reads
+    directly (lean/magnitude/confidence); the remaining columns are given
+    plausible defaults since the scoreboard/agreement code does not read them.
+    """
+    return TickerEvidenceRow(
+        tick_id=tick_id,
+        recorded_at=recorded_at,
+        ticker=ticker,
+        lean=lean,
+        magnitude=magnitude,
+        confidence=confidence,
+        disagreement=0.0,
+        summary="",
+        weights_json="{}",
+        analyst_count=3,
+    )
+
+
+def _make_stance_row(
+    *,
+    ticker: str,
+    tick_id: str,
+    recorded_at: datetime,
+    lifecycle_action: str,
+) -> TickerStanceRow:
+    """Build a ``TickerStanceRow`` without persisting it.
+
+    ``lifecycle_action`` is the three-verb canonical form (``"buy" | "sell" |
+    "update"``) consumed by ``stance_vs_aggregate_agreement`` to derive a
+    directional label.
+    """
+    return TickerStanceRow(
+        tick_id=tick_id,
+        recorded_at=recorded_at,
+        ticker=ticker,
+        rationale="",
+        lifecycle_action=lifecycle_action,
+        decision_tag="test",
+    )
+
+
 def _make_ohlcbar(
     *,
     ticker: str,
@@ -76,11 +128,15 @@ def _make_ohlcbar(
     return bar
 
 
-def _build_fixture_db(tmp_path, rows: list[AnalystEvidenceRow]):
+def _build_fixture_db(tmp_path, rows: list[PersistenceBase]):
     """Persist ``rows`` to a fresh SQLite fixture and return the path.
 
     Creates all tables (from the ORM Base used by persistence.py), inserts
     the supplied rows, and returns the Path to the SQLite file.
+
+    ``rows`` may be a MIXED list of any ORM row type sharing ``PersistenceBase``
+    (e.g. ``AnalystEvidenceRow``, ``TickerEvidenceRow``, ``TickerStanceRow``) —
+    each is simply ``session.add``-ed in turn.
     """
     db_path = tmp_path / "db.sqlite"
     engine  = create_engine(f"sqlite:///{db_path}", future=True)
@@ -2951,3 +3007,201 @@ class TestConfidenceGradient:
 
         with pytest.raises(KeyError):
             result.confidence_gradient(analyst="nonexistent_analyst", horizon=1, n_buckets=3)
+
+
+# ── Tests: the digest aggregate scored as a pseudo-analyst (Task 14) ─────────
+
+class TestAggregatePseudoAnalyst:
+    """The cross-analyst aggregate (``ticker_evidence``) must join the
+    scoreboard as its own synthetic ``"aggregate"`` analyst, scored on
+    forward returns exactly like a real analyst.
+    """
+
+    def _import(self):
+        """Lazy import so tests fail clearly if the symbol doesn't exist yet."""
+        from backtest.scoreboard import build_analyst_scoreboard
+        return build_analyst_scoreboard
+
+    def test_aggregate_scored_as_pseudo_analyst(
+        self, tmp_path: pytest.TempPathFactory,
+    ) -> None:
+        """The aggregate joins the scoreboard as its own analyst row, and is
+        actually SCORED (n >= 1 in the directional cell) — not merely listed
+        in ``analysts_seen`` with zero scored observations.
+        """
+        build = self._import()
+
+        rows: list[PersistenceBase] = [
+            # A real analyst's verdict on the same tick, so the run is not
+            # degenerately aggregate-only.
+            _make_evidence_row(
+                analyst="technical",
+                ticker="AAPL",
+                tick_id=TICK_A,
+                recorded_at=OPEN_TICK,
+                lean="neutral",
+            ),
+            # A directional (non-neutral) aggregate for AAPL on the same tick.
+            _make_ticker_evidence_row(
+                ticker="AAPL",
+                tick_id=TICK_A,
+                recorded_at=OPEN_TICK,
+                lean="bullish",
+            ),
+        ]
+
+        db_path = _build_fixture_db(tmp_path, rows)
+
+        # AAPL: base 100, fwd 105 (+5 %) — a real move for the aggregate to score.
+        def _mock_read(ticker, start, end):
+            if ticker == "AAPL":
+                if start == date(2025, 9, 5):
+                    return [_make_ohlcbar(ticker="AAPL", ts=OPEN_TICK, open=100.0, close=100.0)]
+                return [_make_ohlcbar(ticker="AAPL", ts=OPEN_TICK, open=105.0, close=105.0)]
+            return []
+
+        mock_cache = MagicMock()
+        mock_cache.read_ohlcv.side_effect = _mock_read
+
+        result = build(db_path=db_path, cache=mock_cache, horizons=[1, 20])
+
+        assert "aggregate" in result.analysts, (
+            f"Expected 'aggregate' pseudo-analyst in result.analysts; got {result.analysts}"
+        )
+
+        # Proof of actual scoring, not just appearing in analysts_seen: the
+        # directional cell at the primary horizon (defaults to max(horizons)
+        # per ScoreboardResult.primary_horizon) must have n >= 1.
+        cell = result.cell(analyst="aggregate", horizon=20, subset="directional")
+        assert cell.n >= 1, (
+            f"Expected the aggregate's directional cell to be scored (n >= 1); got n={cell.n}"
+        )
+
+    def test_aggregate_injection_is_backward_compatible_with_empty_ticker_evidence(
+        self, tmp_path: pytest.TempPathFactory,
+    ) -> None:
+        """When ``ticker_evidence`` is empty (every existing scoreboard fixture),
+        zero synthetic rows are injected and real-analyst scoring is unaffected —
+        ``"aggregate"`` must not appear at all.
+        """
+        build = self._import()
+
+        rows = [
+            _make_evidence_row(
+                analyst="technical",
+                ticker="AAPL",
+                tick_id=TICK_A,
+                recorded_at=OPEN_TICK,
+                lean="bullish",
+            ),
+        ]
+        db_path = _build_fixture_db(tmp_path, rows)
+
+        def _mock_read(ticker, start, end):
+            if start == date(2025, 9, 5):
+                return [_make_ohlcbar(ticker=ticker, ts=OPEN_TICK, open=100.0, close=100.0)]
+            return [_make_ohlcbar(ticker=ticker, ts=OPEN_TICK, open=105.0, close=105.0)]
+
+        mock_cache = MagicMock()
+        mock_cache.read_ohlcv.side_effect = _mock_read
+
+        result = build(db_path=db_path, cache=mock_cache, horizons=[1])
+
+        assert "aggregate" not in result.analysts
+        assert list(result.analysts) == ["technical"]
+
+
+# ── Tests: stance-vs-aggregate agreement rate (Task 14) ──────────────────────
+
+class TestStanceVsAggregateAgreement:
+    """Unit tests for ``stance_vs_aggregate_agreement`` — the pure function
+    measuring how often the strategist's per-ticker stance matched the
+    deterministic aggregate's lean.
+    """
+
+    def _import(self):
+        """Lazy import so tests fail clearly if the symbol doesn't exist yet."""
+        from backtest.scoreboard import stance_vs_aggregate_agreement
+        return stance_vs_aggregate_agreement
+
+    def test_stance_vs_aggregate_agreement_rate(
+        self, tmp_path: pytest.TempPathFactory,
+    ) -> None:
+        """4 directional stances (buy/sell), 3 of which agree with the
+        aggregate lean on the same ``(tick_id, ticker)`` key, must yield a
+        rate of 0.75.  A 5th 'update' stance with a joinable aggregate must
+        NOT change the denominator (proving the non-directional exclusion).
+        """
+        fn = self._import()
+
+        rows: list[PersistenceBase] = [
+            # 1. buy vs bullish aggregate → agree.
+            _make_stance_row(
+                ticker="AAPL", tick_id="t1", recorded_at=OPEN_TICK, lifecycle_action="buy",
+            ),
+            _make_ticker_evidence_row(
+                ticker="AAPL", tick_id="t1", recorded_at=OPEN_TICK, lean="bullish",
+            ),
+            # 2. sell vs bearish aggregate → agree.
+            _make_stance_row(
+                ticker="MSFT", tick_id="t2", recorded_at=OPEN_TICK, lifecycle_action="sell",
+            ),
+            _make_ticker_evidence_row(
+                ticker="MSFT", tick_id="t2", recorded_at=OPEN_TICK, lean="bearish",
+            ),
+            # 3. buy vs bullish aggregate → agree.
+            _make_stance_row(
+                ticker="GOOG", tick_id="t3", recorded_at=OPEN_TICK, lifecycle_action="buy",
+            ),
+            _make_ticker_evidence_row(
+                ticker="GOOG", tick_id="t3", recorded_at=OPEN_TICK, lean="bullish",
+            ),
+            # 4. sell vs bullish aggregate → DISAGREE (the one mismatch).
+            _make_stance_row(
+                ticker="AMZN", tick_id="t4", recorded_at=OPEN_TICK, lifecycle_action="sell",
+            ),
+            _make_ticker_evidence_row(
+                ticker="AMZN", tick_id="t4", recorded_at=OPEN_TICK, lean="bullish",
+            ),
+            # 5. 'update' stance with a joinable aggregate — non-directional,
+            #    must be excluded from BOTH numerator and denominator.
+            _make_stance_row(
+                ticker="NFLX", tick_id="t5", recorded_at=OPEN_TICK, lifecycle_action="update",
+            ),
+            _make_ticker_evidence_row(
+                ticker="NFLX", tick_id="t5", recorded_at=OPEN_TICK, lean="bearish",
+            ),
+        ]
+
+        db_path = _build_fixture_db(tmp_path, rows)
+
+        rate = fn(db_path)
+
+        assert abs(rate - 0.75) < 1e-9, (
+            f"Expected agreement rate of exactly 0.75 (3 of 4 directional "
+            f"stances agree; 'update' excluded); got {rate}"
+        )
+
+    def test_stance_vs_aggregate_agreement_raises_when_no_directional_pairs(
+        self, tmp_path: pytest.TempPathFactory,
+    ) -> None:
+        """With zero directional joinable (stance, aggregate) pairs, the
+        function must RAISE rather than silently return 0.0 (which would
+        masquerade as a real '0 % agreement' result).
+        """
+        fn = self._import()
+
+        rows: list[PersistenceBase] = [
+            # Only an 'update' stance is present — non-directional, so there
+            # are no directional pairs to score.
+            _make_stance_row(
+                ticker="AAPL", tick_id="t1", recorded_at=OPEN_TICK, lifecycle_action="update",
+            ),
+            _make_ticker_evidence_row(
+                ticker="AAPL", tick_id="t1", recorded_at=OPEN_TICK, lean="bullish",
+            ),
+        ]
+        db_path = _build_fixture_db(tmp_path, rows)
+
+        with pytest.raises(ValueError):
+            fn(db_path)

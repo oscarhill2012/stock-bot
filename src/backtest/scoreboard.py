@@ -138,7 +138,7 @@ from sqlalchemy.orm import Session
 
 from backtest.cache.store import CachedDataStore
 from backtest.reporting import _forward_close
-from orchestrator.persistence import AnalystEvidenceRow
+from orchestrator.persistence import AnalystEvidenceRow, TickerEvidenceRow, TickerStanceRow
 
 logger = logging.getLogger(__name__)
 
@@ -704,6 +704,93 @@ def build_analyst_scoreboard(
     )
 
 
+def stance_vs_aggregate_agreement(db_path: Path) -> float:
+    """Fraction of the strategist's directional stances that matched the aggregate's lean.
+
+    Joins ``ticker_stances`` to ``ticker_evidence`` on ``(tick_id, ticker)`` and
+    measures agreement between the strategist's per-ticker decision and the
+    deterministic digest aggregate that was available to it at that same tick.
+    A rate near 1.0 means the LLM strategist layer is largely redundant above
+    the deterministic combine; a lower rate means the strategist is exercising
+    independent judgement (overriding the aggregate) at least some of the time.
+
+    Direction mapping (``TickerStanceRow.lifecycle_action`` → direction):
+      - ``"buy"``    → ``"bullish"``
+      - ``"sell"``   → ``"bearish"``
+      - ``"update"`` → excluded — a position adjustment carries no unambiguous
+        directional sign (it may be a trim, an add, or a rebalance), so it
+        cannot meaningfully agree or disagree with a bullish/bearish aggregate
+        lean.  ``"update"`` rows are dropped from BOTH the numerator and the
+        denominator.
+
+    Parameters
+    ----------
+    db_path:
+        Path to the run's ``db.sqlite`` (contains ``ticker_stances`` and
+        ``ticker_evidence``).
+
+    Returns
+    -------
+    float
+        Fraction (0.0–1.0) of directional joined (stance, aggregate) pairs
+        whose mapped direction equals the aggregate's ``lean``.
+
+    Raises
+    ------
+    ValueError
+        If there are zero directional joinable (stance, aggregate) pairs.
+        Silently returning ``0.0`` here would be indistinguishable from a
+        genuine "the strategist never agreed with the aggregate" result —
+        exactly the silent-degradation trap this project forbids — so the
+        no-data case is surfaced loudly instead.
+    """
+    # Only these two lifecycle verbs carry an unambiguous directional sign;
+    # "update" is intentionally absent from this mapping (see docstring).
+    _DIRECTION_BY_ACTION = {"buy": "bullish", "sell": "bearish"}
+
+    engine = create_engine(f"sqlite:///{db_path}", future=True)
+    with Session(engine) as s:
+        stance_rows: list[TickerStanceRow] = (
+            s.execute(select(TickerStanceRow)).scalars().all()
+        )
+        aggregate_rows: list[TickerEvidenceRow] = (
+            s.execute(select(TickerEvidenceRow)).scalars().all()
+        )
+
+    # Index the aggregate rows by (tick_id, ticker) for the join.
+    aggregate_by_key: dict[tuple[str, str], TickerEvidenceRow] = {
+        (row.tick_id, row.ticker): row for row in aggregate_rows
+    }
+
+    agreements = 0
+    directional_pairs = 0
+
+    for stance in stance_rows:
+        direction = _DIRECTION_BY_ACTION.get(stance.lifecycle_action)
+        if direction is None:
+            # Non-directional ("update") — excluded from numerator and denominator.
+            continue
+
+        aggregate = aggregate_by_key.get((stance.tick_id, stance.ticker))
+        if aggregate is None:
+            # No joinable aggregate for this (tick_id, ticker) — cannot score.
+            continue
+
+        directional_pairs += 1
+        if direction == aggregate.lean:
+            agreements += 1
+
+    if directional_pairs == 0:
+        raise ValueError(
+            "stance_vs_aggregate_agreement: zero directional joinable "
+            f"(stance, aggregate) pairs found in {db_path} — cannot compute "
+            "an agreement rate (see docstring: returning 0.0 here would "
+            "misleadingly read as '0 % agreement')."
+        )
+
+    return agreements / directional_pairs
+
+
 def build_pooled_analyst_scoreboard(
     *,
     runs: list[tuple[Path, CachedDataStore, str]],
@@ -873,8 +960,46 @@ def _score_window_observations(
             s.execute(select(AnalystEvidenceRow)).scalars().all()
         )
 
+        # ── Pseudo-analyst injection: score the digest aggregate ────────────
+        # ``ticker_evidence`` holds one row per ticker per tick — the
+        # cross-analyst aggregate lean/magnitude/confidence produced by the
+        # digest (Phase 14 Plan 3c, Task 1).  To answer "is the aggregator
+        # adding value?" it must be scored on forward returns EXACTLY like a
+        # real analyst — so we map each ``TickerEvidenceRow`` into an
+        # in-memory (never persisted) synthetic ``AnalystEvidenceRow`` with
+        # ``analyst="aggregate"``.  This is safe rather than a hack because
+        # ``TickerEvidenceRow`` and ``AnalystEvidenceRow`` share the exact
+        # columns the scorer below reads (``analyst``/``ticker``/
+        # ``recorded_at``/``lean``/``magnitude``/``confidence``) — the two
+        # tables were deliberately given a compatible shape for this reason.
+        # The synthetic rows are extended into ``rows`` BEFORE the emptiness
+        # check and the dedup pass, so they flow through the identical
+        # dedup → base-price/forward-close → scoring path as any other
+        # analyst, and the aggregate's primary horizon needs no special
+        # handling — ``ScoreboardResult.primary_horizon`` already defaults
+        # unconfigured analysts to ``max(horizons)``.
+        ticker_evidence_rows: list[TickerEvidenceRow] = (
+            s.execute(select(TickerEvidenceRow)).scalars().all()
+        )
+
+    aggregate_rows: list[AnalystEvidenceRow] = [
+        AnalystEvidenceRow(
+            tick_id=tev.tick_id,
+            recorded_at=tev.recorded_at,
+            analyst="aggregate",
+            ticker=tev.ticker,
+            lean=tev.lean,
+            magnitude=tev.magnitude,
+            confidence=tev.confidence,
+        )
+        for tev in ticker_evidence_rows
+    ]
+    rows = rows + aggregate_rows
+
     if not rows:
-        logger.warning("scoreboard: no analyst_evidence rows found in %s", db_path)
+        logger.warning(
+            "scoreboard: no analyst_evidence or ticker_evidence rows found in %s", db_path,
+        )
         return _WindowScoringResult(records=[], analysts_seen=set())
 
     # Sort by (analyst, ticker, recorded_at) so consecutive ticks are adjacent
