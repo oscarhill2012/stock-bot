@@ -33,6 +33,8 @@ def test_extracts_required_keys(aapl_data):
         "beta_confidence_damping",
         "vol_regime_z",
         "trend_state",
+        "ma200_state",
+        "ma200_flip_days",
     }
 
     features = extract_technical_features(aapl_data, ticker="AAPL")
@@ -633,3 +635,40 @@ def test_vol_regime_z_absent_when_history_too_short():
     raw = {"bars": _ramp_bars(20)}
     feats = extract_technical_features(raw, "TEST")
     assert "vol_regime_z" not in feats
+
+
+# --- Plan 3c Task 3: ma200_state + ma200_flip_days anchor -------------------
+
+
+def test_ma200_state_positive_on_uptrend():
+    """A price above its rolling 200d SMA yields ma200_state = +1.0."""
+    raw = {"bars": _ramp_bars(260, start=50.0, step=0.5)}   # steady climb → last > MA200
+    feats = extract_technical_features(raw, "TEST")
+    assert feats["ma200_state"] == 1.0
+    assert "ma200_flip_days" in feats
+    assert feats["ma200_flip_days"] >= 0.0
+
+
+def test_ma200_state_absent_without_enough_history():
+    """Fewer than 200 bars → both MA200 anchor keys are omitted (nullable convention)."""
+    raw = {"bars": _ramp_bars(120)}
+    feats = extract_technical_features(raw, "TEST")
+    assert "ma200_state" not in feats
+    assert "ma200_flip_days" not in feats
+
+
+def test_ma200_flip_days_counts_sessions_since_the_last_cross():
+    """A series that dips below then recovers above MA200 reports a small flip age."""
+    # 220 rising bars, then a sharp late dip that pushes the last close under MA200,
+    # then a 3-session recovery back above — flip age should be the recovery length.
+    # NOTE: a 220-bar linear ramp means the 200-bar SMA lags well behind the
+    # current price (roughly half the ramp's slope-span behind), so the dip
+    # must clear that lag margin (~-60) rather than a smaller offset (~-40)
+    # to actually cross below the rolling MA200.
+    bars = _ramp_bars(220, start=50.0, step=0.5)
+    dip = [dict(b, close=b["close"] - 60.0, high=b["high"] - 60.0, low=b["low"] - 60.0)
+           for b in _ramp_bars(6, start=155.0, step=0.0)]
+    recover = [dict(b, close=200.0, high=200.5, low=199.5) for b in _ramp_bars(3)]
+    feats = extract_technical_features({"bars": bars + dip + recover}, "TEST")
+    assert feats["ma200_state"] == 1.0
+    assert 0.0 <= feats["ma200_flip_days"] <= 5.0

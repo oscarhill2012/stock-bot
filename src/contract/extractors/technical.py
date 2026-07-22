@@ -87,6 +87,9 @@ _KEYS = (
     # Phase 3b three-reads additions (both nullable — omitted when not computable):
     "vol_regime_z",   # z-score of ATR% vs its own trailing window (Read 2)
     "trend_state",    # last_price / 200d MA - 1 (Read 3)
+    # Plan 3c composite-anchor additions (nullable — need >=200 bars):
+    "ma200_state",       # +1.0 above / -1.0 below the 200-day SMA (trend vote corroborator)
+    "ma200_flip_days",   # sessions since the last ma200_state crossing (P2 anchor)
 )
 
 
@@ -234,6 +237,8 @@ def _zero_features() -> dict[str, float]:
         "beta_confidence_damping",
         "vol_regime_z",
         "trend_state",
+        "ma200_state",
+        "ma200_flip_days",
     }
     return {k: 0.0 for k in _KEYS if k not in _NULLABLE}
 
@@ -486,6 +491,36 @@ def extract_technical_features(
     # The None sentinel propagates to the renderer as "(no data)" instead.
     if len(close) >= 21:
         out["pct_change_20d"] = float((close.iloc[-1] / close.iloc[-21]) - 1.0)
+
+    # --- 200-day MA state + flip anchor (Plan 3c) ---------------------------
+    # A boolean above/below series over a rolling 200-bar simple MA; the anchor
+    # is the number of sessions since that above/below state last changed.  Both
+    # keys stay absent below 200 bars (nullable convention → renderer skips).
+    if len(close) >= 200:
+        sma200 = close.rolling(window=200).mean()
+
+        # Elementwise sign of (close - MA200) over the valid (non-NaN) tail.
+        # +1 at/above the MA, -1 below.  numpy where keeps it branch-free.
+        valid_mask = sma200.notna().to_numpy()
+        above = np.where(
+            close.to_numpy(dtype=float)[valid_mask]
+            >= sma200.to_numpy(dtype=float)[valid_mask],
+            1.0, -1.0,
+        )
+
+        if len(above) > 0:
+            out["ma200_state"] = float(above[-1])
+
+            # Walk back from the last session while the state is unchanged; the
+            # count of unchanged prior sessions is the flip age (0 on the flip
+            # session itself).
+            flip_age = 0
+            for prev in reversed(above[:-1]):
+                if prev == above[-1]:
+                    flip_age += 1
+                else:
+                    break
+            out["ma200_flip_days"] = float(flip_age)
 
     # --- RSI(14) ---
     # TA-Lib needs at least 15 bars (14 periods + 1 seed bar).
