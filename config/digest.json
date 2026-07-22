@@ -1,0 +1,7 @@
+{
+  "analyst_weights": {
+    "technical": 1.0,
+    "fundamental": 1.0,
+    "news": 1.0
+  }
+}

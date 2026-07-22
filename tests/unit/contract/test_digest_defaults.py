@@ -1,7 +1,7 @@
 """Digest defaults tests — Tier 1, no LLM."""
 from __future__ import annotations
 
-from contract.digest import DEFAULT_ANALYST_WEIGHTS, DIRECTION_DEAD_ZONE
+from contract.digest import DIRECTION_DEAD_ZONE, load_analyst_weights
 from contract.evidence import AnalystName  # noqa: F401  (used in type-checks)
 
 
@@ -11,13 +11,13 @@ def test_default_weights_cover_expected_analysts():
     # — adding phantom entries causes false-positive missing_analyst_slot
     # WARNINGs and deflates aggregate magnitude (~40 % dilution with 5 slots
     # but only 3 contributors).
-    assert set(DEFAULT_ANALYST_WEIGHTS.keys()) == {
+    assert set(load_analyst_weights().keys()) == {
         "technical", "fundamental", "news",
     }
 
 
 def test_default_weights_are_all_one():
-    for w in DEFAULT_ANALYST_WEIGHTS.values():
+    for w in load_analyst_weights().values():
         assert w == 1.0
 
 

@@ -6,10 +6,13 @@ for the math + design rationale.
 """
 from __future__ import annotations
 
+import json
 import logging
 from collections import Counter
 from collections.abc import Mapping
 from datetime import datetime
+from functools import lru_cache
+from pathlib import Path
 from statistics import mean, variance
 
 from contract.evidence import AnalystEvidence, AnalystVerdict
@@ -18,46 +21,49 @@ from contract.ticker_evidence import AggregateVerdict, TickerEvidence
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Tunable defaults for the analyst → strategist digest aggregator.
-#
-# These were previously in ``contract.digest_defaults`` (folded in by
-# A-097.v).  Per-key nested weighting (e.g. ``smart_money.n_politicians > 2``
-# ⇒ +x) is deferred to a future spec; weights are per-analyst-family only for
-# now.  If a future spec needs these tunable without code changes, promote to
-# ``config/digest.json`` and add a loader.
-#
-# IMPORTANT — only analysts that are BOTH wired into the pipeline AND consumed
-# by the strategist context shim belong here.  Phantom entries cause two bugs:
-#
-#   1. False-positive ``missing_analyst_slot`` WARNINGs every tick (A-050
-#      noise that erodes the value of a genuine pipeline gap warning).
-#   2. ~40 % aggregate-magnitude dilution — the denominator is
-#      ``sum(weights.values())`` so phantom entries deflate every magnitude
-#      proportionally (e.g. 3/5 = 0.6 instead of 3/3 = 1.0 when only three
-#      analysts ever contribute).
-#
-# Shelved analysts and what is needed to revive them:
-#
-#   smart_money (shelved 2026-05-19):
-#       Re-add ``"smart_money": 1.0`` here AND uncomment
-#       ``_build_smart_money_analyst`` in ``orchestrator.pipeline._build_analyst_pool``
-#       once notable_holders / politician-trades providers are PIT-correct.
-#
-#   social (shelved 2026-06-13):
-#       Re-add ``"social": 1.0`` here AND ALSO wire ``social_evidence`` into
-#       ``agents.strategist.context_shim`` (the shim currently indexes only
-#       technical / fundamental / news / smart_money — it never reads
-#       ``social_evidence``).  BOTH changes are required, not just one.
-#       Additionally, uncomment ``_build_social_analyst`` in
-#       ``orchestrator.pipeline._build_analyst_pool``.
-# ---------------------------------------------------------------------------
+@lru_cache(maxsize=1)
+def load_analyst_weights() -> dict[str, float]:
+    """Per-analyst digest weights, read from ``config/digest.json``.
 
-DEFAULT_ANALYST_WEIGHTS: dict[str, float] = {
-    "technical":   1.0,
-    "fundamental": 1.0,
-    "news":        1.0,
-}
+    HIGH-VALUE TUNING KNOB: these are the natural target of scoreboard-driven
+    tuning (spec P6).  Only analysts BOTH wired into the pipeline AND consumed
+    by the strategist context shim belong here — a phantom entry both spams
+    missing_analyst_slot WARNINGs and dilutes every aggregate magnitude
+    (denominator is sum of weights).  Shelved: smart_money, social (see git
+    history for revival steps).
+
+    Shelved analysts and what is needed to revive them:
+
+      smart_money (shelved 2026-05-19):
+          Re-add ``"smart_money": 1.0`` to ``config/digest.json``'s
+          ``analyst_weights`` block AND uncomment
+          ``_build_smart_money_analyst`` in
+          ``orchestrator.pipeline._build_analyst_pool`` once
+          notable_holders / politician-trades providers are PIT-correct.
+
+      social (shelved 2026-06-13):
+          Re-add ``"social": 1.0`` to ``config/digest.json``'s
+          ``analyst_weights`` block AND ALSO wire ``social_evidence`` into
+          ``agents.strategist.context_shim`` (the shim currently indexes only
+          technical / fundamental / news / smart_money — it never reads
+          ``social_evidence``).  BOTH changes are required, not just one.
+          Additionally, uncomment ``_build_social_analyst`` in
+          ``orchestrator.pipeline._build_analyst_pool``.
+
+    Cached via ``lru_cache`` — the JSON file is only read once per process,
+    mirroring the ``config/analysts.json`` loader convention
+    (``config.analysts.get_analysts_config``).  A process restart is
+    required after editing ``config/digest.json`` to pick up changes.
+
+    Returns
+    -------
+    dict[str, float]
+        Mapping of analyst name → weight factor, taken verbatim from the
+        ``analyst_weights`` key of ``config/digest.json``.
+    """
+    raw = json.loads(Path("config/digest.json").read_text())
+    return dict(raw["analyst_weights"])
+
 
 DIRECTION_DEAD_ZONE: float = 0.15
 

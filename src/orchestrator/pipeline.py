@@ -34,8 +34,9 @@ def _build_analyst_pool(tickers: list[str]):
     - SmartMoney (shelved 2026-05-19): revive once notable_holders /
       politician-trades providers are PIT-correct.
     - Social (shelved 2026-06-13): revive once ``context_shim`` is updated
-      to index ``social_evidence`` AND ``DEFAULT_ANALYST_WEIGHTS`` is
-      updated in ``contract.digest``.
+      to index ``social_evidence`` AND ``config/digest.json``'s
+      ``analyst_weights`` block (loaded by
+      ``contract.digest.load_analyst_weights``) is updated.
 
     Args:
         tickers: The current watchlist.  Drives the number of per-ticker
@@ -57,8 +58,10 @@ def _build_analyst_pool(tickers: list[str]):
     # _build_social_analyst here and appending it to the DeterministicAnalysts
     # sub_agents list below, AND wiring ``social_evidence`` into
     # ``agents.strategist.context_shim`` (which currently never reads it),
-    # AND re-adding ``"social": 1.0`` to ``DEFAULT_ANALYST_WEIGHTS`` in
-    # ``contract.digest``.  All three changes are required together.
+    # AND re-adding ``"social": 1.0`` to the ``analyst_weights`` block in
+    # ``config/digest.json`` (loaded by
+    # ``contract.digest.load_analyst_weights``).  All three changes are
+    # required together.
 
     # Load heuristics once so all deterministic analysts share the same
     # cached config object — consumed by the technical BaseAgent analyst.

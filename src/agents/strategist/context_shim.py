@@ -62,7 +62,7 @@ from agents.strategist.prompts import (
 )
 from broker.portfolio import Portfolio
 from config.analysts import get_analysts_config
-from contract.digest import DEFAULT_ANALYST_WEIGHTS, build_ticker_evidence
+from contract.digest import build_ticker_evidence, load_analyst_weights
 from contract.evidence import AnalystEvidence, AnalystVerdict
 from contract.strategist_prompt import render_ticker_block
 from contract.ticker_evidence import TickerEvidence
@@ -452,7 +452,7 @@ class StrategistContextShim(BaseAgent):
                 ticker      = t,
                 tick_id     = tick_id,
                 recorded_at = recorded_at,
-                weights     = DEFAULT_ANALYST_WEIGHTS,
+                weights     = load_analyst_weights(),
                 last_price  = last_price,
             )
             ticker_evidence.append(te)

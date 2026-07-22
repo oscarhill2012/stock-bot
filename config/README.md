@@ -9,6 +9,7 @@ and reference these files by relative path (resolved from the project root).
 | `watchlist.json` | The list of tickers the bot trades | `src/orchestrator/stock_picker.py` (`get_watchlist()`) |
 | `analyst_heuristics.json` | Thresholds + closed-vocabulary tag lists for all five analysts | `src/agents/analysts/heuristics.py` (`load_heuristics()`) |
 | `analysts.json` | Per-analyst input caps + LLM output caps + report cache toggle | `src/config/analysts.py` (`get_analysts_config()`) |
+| `digest.json` | Per-analyst weights for the analyst → strategist digest aggregator | `src/contract/digest.py` (`load_analyst_weights()`) |
 | `schedule.json` | Tick cadence — how many ticks per day and their ET times | `src/config/schedule.py` (`get_schedule_config()`) |
 | `strategist.json` | Character caps on strategist LLM free-text fields | `src/config/strategist.py` (`get_strategist_config()`) |
 | `risk_gate.json` | Five position-sizing constraints for the risk gate | `src/config/risk_gate.py` (`get_risk_gate_config()`) |
@@ -298,6 +299,34 @@ their `Field(max_length=...)` via `AnalystsConfig.schema_cap()`.
 |---|---|---|
 | `cache.enabled` | bool | Toggle the hash-based LLM report cache. When `false`, every tick re-prompts the LLM (matches pre-redesign behaviour). Default `true`. |
 | `cache.directory` | string | On-disk root for cached report files. Must be under the gitignored `cache/` tree. Default `cache/reports`. |
+
+---
+
+## `digest.json` — analyst → strategist digest weights
+
+Per-analyst weights consumed by the deterministic digest aggregator
+(`src/contract/digest.py::build_ticker_evidence`), which collapses each
+tick's per-analyst evidence into one `TickerEvidence` for the strategist.
+Loaded via `load_analyst_weights()` (`lru_cache(maxsize=1)`); a process
+restart is required after edits.
+
+| Setting | Type | Meaning |
+|---|---|---|
+| `analyst_weights` | dict[str, float] | Per-analyst weight factor used in the weighted signed-confidence sum (`magnitude = |Σ weight × sign(lean) × confidence| / Σ weight`). **High-value tuning knob** — the natural target of scoreboard-driven tuning (spec P6). Current: `{"technical": 1.0, "fundamental": 1.0, "news": 1.0}`. |
+
+**Constraint — no phantom entries.** Only analysts that are BOTH wired into
+the pipeline (`orchestrator.pipeline._build_analyst_pool`) AND consumed by
+the strategist context shim (`agents.strategist.context_shim`) belong in
+this map. A phantom entry (an analyst named here that never actually
+produces evidence) causes two bugs at once: (1) a false-positive
+`missing_analyst_slot` WARNING every tick, eroding the value of a genuine
+pipeline-gap signal, and (2) aggregate-magnitude dilution — the denominator
+is `sum(analyst_weights.values())`, so a phantom entry deflates every
+magnitude proportionally (e.g. 3/5 = 0.6 instead of 3/3 = 1.0 when only
+three analysts ever contribute). `smart_money` and `social` are currently
+shelved for exactly this reason — see the revival steps in
+`load_analyst_weights()`'s docstring and the comments in
+`orchestrator.pipeline._build_analyst_pool` before re-adding either.
 
 ---
 
