@@ -68,7 +68,11 @@ def db_session(tmp_path):
 # ── StrategistDecisionWriter ──────────────────────────────────────────────────
 
 def test_decision_writer_uses_as_of(db_session) -> None:
-    """StrategistDecisionWriter should stamp recorded_at from state["as_of"]."""
+    """StrategistDecisionWriter should stamp TickerStanceRow and TickerEvidenceRow
+    with state["as_of"] — the latter moved here (Plan 3c, Task 1) from the
+    pre-strategist EvidenceWriter, which ran before the aggregate existed in
+    state and so never wrote a row to stamp.
+    """
     from agents.strategist.decision_writer import StrategistDecisionWriter
     from agents.strategist.schema import StrategistDecision
     from agents.strategist.stance_schema import TickerStance
@@ -87,9 +91,23 @@ def test_decision_writer_uses_as_of(db_session) -> None:
         reasoning="x",
         confidence=0.5,
     )
+    ticker_ev_obj = {
+        "ticker": "AAPL",
+        "aggregate": {
+            "lean": "bullish",
+            "magnitude": 0.6,
+            "confidence": 0.7,
+            "disagreement": 0.0,
+            "summary": "",
+        },
+        "weights": {"technical": 1.0},
+        "per_analyst": {},
+    }
     state = {
         "tick_id": "tick_1",
         "as_of": _HISTORICAL_TS,
+        "tickers": ["AAPL"],
+        "temp:ticker_evidence_objects": [ticker_ev_obj],
         "strategist_decision": decision.model_dump(mode="json"),
         "portfolio": Portfolio(cash=1000.0).model_dump(mode="json"),
     }
@@ -98,9 +116,14 @@ def test_decision_writer_uses_as_of(db_session) -> None:
     _run(writer._run_async_impl(_StubCtx(state)))
     db_session.commit()
 
-    row = db_session.query(TickerStanceRow).one()
+    naive_ts = _HISTORICAL_TS.replace(tzinfo=None)
+
+    stance_row = db_session.query(TickerStanceRow).one()
     # SQLite's DateTime column strips tzinfo on round-trip; compare naive UTC values.
-    assert row.recorded_at == _HISTORICAL_TS.replace(tzinfo=None)
+    assert stance_row.recorded_at == naive_ts
+
+    ticker_row = db_session.query(TickerEvidenceRow).one()
+    assert ticker_row.recorded_at == naive_ts
 
 
 # ── SnapshotterAgent ──────────────────────────────────────────────────────────
@@ -212,7 +235,11 @@ def test_snapshotter_raises_on_nonfinite_spy_close(db_session) -> None:
 # ── EvidenceWriter ────────────────────────────────────────────────────────────
 
 def test_evidence_writer_uses_as_of(db_session) -> None:
-    """EvidenceWriter should stamp AnalystEvidenceRow and TickerEvidenceRow with as_of."""
+    """EvidenceWriter should stamp AnalystEvidenceRow with as_of.
+
+    TickerEvidence persistence (and its as_of stamping) moved to
+    StrategistDecisionWriter — see test_decision_writer_uses_as_of above.
+    """
     from agents.contract.evidence_writer import EvidenceWriter
 
     verdict = {
@@ -229,25 +256,11 @@ def test_evidence_writer_uses_as_of(db_session) -> None:
         "verdict": verdict,
         "features": {},
     }
-    ticker_ev_obj = {
-        "ticker": "AAPL",
-        "aggregate": {
-            "lean": "bullish",
-            "magnitude": 0.6,
-            "confidence": 0.7,
-            "disagreement": 0.0,
-            "summary": "",
-        },
-        "weights": {"technical": 1.0},
-        "per_analyst": {"technical": verdict},
-    }
 
     state = {
         "tick_id": "tick_ev",
         "as_of": _HISTORICAL_TS,
         "technical_evidence": [tech_ev],
-        # A2.6: EvidenceWriter reads from the temp:-prefixed key.
-        "temp:ticker_evidence_objects": [ticker_ev_obj],
     }
 
     writer = EvidenceWriter(db_session=db_session)
@@ -255,12 +268,10 @@ def test_evidence_writer_uses_as_of(db_session) -> None:
     # commit already called inside _run_async_impl
 
     analyst_row = db_session.query(AnalystEvidenceRow).one()
-    ticker_row  = db_session.query(TickerEvidenceRow).one()
 
     # SQLite's DateTime column strips tzinfo on round-trip; compare naive UTC values.
     naive_ts = _HISTORICAL_TS.replace(tzinfo=None)
     assert analyst_row.recorded_at == naive_ts
-    assert ticker_row.recorded_at  == naive_ts
 
 
 # ── ExecutorAgent: closed_at ──────────────────────────────────────────────────

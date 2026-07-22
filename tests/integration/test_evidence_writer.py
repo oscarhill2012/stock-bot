@@ -1,4 +1,11 @@
-"""EvidenceWriter persists analyst + ticker evidence from session state."""
+"""EvidenceWriter persists analyst evidence from session state.
+
+TickerEvidence persistence moved to ``StrategistDecisionWriter`` (Plan 3c,
+Task 1) — the pre-strategist EvidenceWriter ran before
+``temp:ticker_evidence_objects`` existed in state and silently wrote zero
+rows. See ``tests/unit/agents/strategist/test_decision_writer.py`` for the
+tests covering the new owner.
+"""
 from __future__ import annotations
 
 from unittest.mock import MagicMock
@@ -66,8 +73,8 @@ def _ticker_evidence(ticker):
 
 
 @pytest.mark.asyncio
-async def test_evidence_writer_persists_both_row_types(db_session):
-    """Writer must write one AnalystEvidenceRow per analyst and one TickerEvidenceRow per ticker."""
+async def test_evidence_writer_persists_analyst_evidence(db_session):
+    """Writer must write one AnalystEvidenceRow per evidence item across analysts."""
     writer = EvidenceWriter(db_session=db_session)
     state = {
         "tick_id": "2026-05-08T14:00:00Z",
@@ -75,8 +82,6 @@ async def test_evidence_writer_persists_both_row_types(db_session):
         "fundamental_evidence": [_evidence("fundamental", "AAPL")],
         "news_evidence": [],
         "smart_money_evidence": [],
-        # A2.6: EvidenceWriter reads from the temp:-prefixed key.
-        "temp:ticker_evidence_objects": [_ticker_evidence("AAPL")],
     }
     ctx = MagicMock()
     ctx.session.state = state
@@ -86,11 +91,6 @@ async def test_evidence_writer_persists_both_row_types(db_session):
     analyst_rows = db_session.query(AnalystEvidenceRow).all()
     assert len(analyst_rows) == 2
     assert {r.analyst for r in analyst_rows} == {"technical", "fundamental"}
-
-    ticker_rows = db_session.query(TickerEvidenceRow).all()
-    assert len(ticker_rows) == 1
-    assert ticker_rows[0].ticker == "AAPL"
-    assert ticker_rows[0].analyst_count == 2
 
 
 @pytest.mark.asyncio
@@ -146,3 +146,24 @@ async def test_evidence_writer_accepts_iso_string_as_of(db_session):
     # SQLite strips timezone info when storing, so compare naive datetimes.
     expected_dt = datetime.fromisoformat(iso_as_of).replace(tzinfo=None)
     assert rows[0].recorded_at == expected_dt
+
+
+@pytest.mark.asyncio
+async def test_evidence_writer_no_longer_writes_ticker_evidence(db_session):
+    """TickerEvidence persistence moved to the decision writer; the evidence writer
+    must not touch ticker_evidence even when the key is present in state."""
+    writer = build_evidence_writer(db_session=db_session)
+    state = {
+        "tick_id": "2026-05-08T14:00:00Z",
+        "technical_evidence": [],
+        "fundamental_evidence": [],
+        "news_evidence": [],
+        "smart_money_evidence": [],
+        "temp:ticker_evidence_objects": [_ticker_evidence("AAPL")],
+    }
+    ctx = MagicMock()
+    ctx.session.state = state
+    async for _ in writer._run_async_impl(ctx):
+        pass
+
+    assert db_session.query(TickerEvidenceRow).count() == 0

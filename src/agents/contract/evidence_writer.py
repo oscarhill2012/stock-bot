@@ -1,12 +1,11 @@
-"""Persist AnalystEvidence + TickerEvidence rows after every tick.
+"""Persist AnalystEvidence rows after every tick.
 
 ``EvidenceWriter`` is a lightweight ADK ``BaseAgent`` that reads five
 ``{analyst}_evidence`` keys (technical, fundamental, news, smart_money,
-social) and ``temp:ticker_evidence_objects`` from session state, then calls the
-savers in ``orchestrator.persistence`` to write one ``AnalystEvidenceRow``
-per evidence item and one ``TickerEvidenceRow`` per ticker.  It yields no
-events — it is a pure side-effectful write step wired into the orchestrator
-pipeline.
+social) from session state, then calls the saver in
+``orchestrator.persistence`` to write one ``AnalystEvidenceRow`` per
+evidence item.  It yields no events — it is a pure side-effectful write
+step wired into the orchestrator pipeline.
 """
 from __future__ import annotations
 
@@ -33,13 +32,11 @@ _EVIDENCE_KEYS = (
 
 
 class EvidenceWriter(BaseAgent):
-    """ADK agent that persists per-analyst and per-ticker evidence to the database.
+    """ADK agent that persists per-analyst evidence to the database.
 
-    Reads ``state["{analyst}_evidence"]`` lists and
-    ``state["temp:ticker_evidence_objects"]`` from the invocation context, then
-    writes one ``AnalystEvidenceRow`` per evidence item and one
-    ``TickerEvidenceRow`` per ticker via ``save_analyst_evidence`` and
-    ``save_ticker_evidence``.
+    Reads ``state["{analyst}_evidence"]`` lists from the invocation context,
+    then writes one ``AnalystEvidenceRow`` per evidence item via
+    ``save_analyst_evidence``.
 
     The agent is a no-op (and yields nothing) when ``db_session`` is ``None``.
     """
@@ -67,7 +64,7 @@ class EvidenceWriter(BaseAgent):
 
         # Lazy import keeps this module importable in environments that
         # stub out orchestrator.persistence.
-        from orchestrator.persistence import save_analyst_evidence, save_ticker_evidence
+        from orchestrator.persistence import save_analyst_evidence
 
         state = ctx.session.state
         tick_id = state.get("tick_id", "unknown")
@@ -99,27 +96,6 @@ class EvidenceWriter(BaseAgent):
                     features=ev_dict.get("features", {}),
                     recorded_at=evidence_recorded_at,
                 )
-
-        # Persist one TickerEvidenceRow per ticker's aggregated cross-analyst stance.
-        # Key carries the ``temp:`` prefix — written by StrategistContextShim (A2.1)
-        # or the legacy strategist callbacks and stripped by ADK at the invocation
-        # boundary so it never leaks into the next tick.
-        for te in state.get("temp:ticker_evidence_objects", []) or []:
-            # Same dict-vs-Pydantic duality as above.
-            te_dict = te if isinstance(te, dict) else te.model_dump()
-
-            save_ticker_evidence(
-                self.db_session,
-                tick_id=tick_id,
-                ticker=te_dict["ticker"],
-                aggregate=te_dict["aggregate"],
-                weights=te_dict.get("weights", {}),
-                # Derive analyst_count from the per_analyst mapping present in
-                # the TickerEvidence dict — len() gives the number of analysts
-                # whose evidence was aggregated into this row.
-                analyst_count=len(te_dict.get("per_analyst", {})),
-                recorded_at=evidence_recorded_at,
-            )
 
         # NOTE: no try/except wrapping the saver loop — a mid-loop failure leaves the
         # session dirty with flushed but uncommitted rows. The caller must catch the

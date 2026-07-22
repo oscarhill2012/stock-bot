@@ -14,7 +14,7 @@ from agents.strategist.decision_writer import (
 from agents.strategist.schema import StrategistDecision
 from agents.strategist.stance_schema import TickerStance
 from broker.portfolio import Portfolio, Position
-from orchestrator.persistence import Base, TickerStanceRow
+from orchestrator.persistence import Base, TickerEvidenceRow, TickerStanceRow
 
 
 class _StubCtx:
@@ -152,3 +152,81 @@ def test_accepts_iso_string_as_of(session):
     # SQLite strips timezone info when storing; compare naive datetimes.
     expected_dt = datetime.fromisoformat(iso_as_of).replace(tzinfo=None)
     assert rows[0].recorded_at == expected_dt
+
+
+def _ticker_evidence_dump(ticker: str) -> dict:
+    """Build a minimal TickerEvidence-shaped dict for use in session state.
+
+    Mirrors the shape produced by ``StrategistContextShim`` /
+    ``contract.digest.build_ticker_evidence`` — see ``contract/ticker_evidence.py``.
+    The decision writer accepts either a validated model or a plain dict (post
+    JSON round-trip through ADK state), so a dict is sufficient here.
+    """
+    return {
+        "ticker": ticker,
+        "tick_id": "2025-09-02T14:00:00Z",
+        "recorded_at": "2025-09-02T14:00:00Z",
+        "per_analyst": {},
+        "aggregate": {
+            "lean": "bullish",
+            "magnitude": 0.4,
+            "confidence": 0.6,
+            "disagreement": 0.1,
+            "summary": "2/2 bullish",
+        },
+        "weights": {"technical": 1.0, "fundamental": 1.0},
+    }
+
+
+def _minimal_decision_dump(tickers: list[str]) -> dict:
+    """Build a minimal StrategistDecision-shaped dict with one no_action
+    stance per ticker — enough to exercise the stance-persistence branch
+    without pulling in risk-gate weight/rationale constraints.
+    """
+    decision = StrategistDecision(
+        stances=[TickerStance(ticker=t, intent="no_action") for t in tickers],
+        target_weights=dict.fromkeys(tickers, 0.0),
+        decision_tag="test_tag",
+        reasoning="x",
+        confidence=0.5,
+    )
+    return decision.model_dump(mode="json")
+
+
+def test_decision_writer_persists_one_ticker_evidence_row_per_ticker(session):
+    """The post-strategist writer persists exactly one TickerEvidenceRow per ticker."""
+    te_objects = [
+        _ticker_evidence_dump("AAPL"),
+        _ticker_evidence_dump("MSFT"),
+    ]
+    state = {
+        "tickers": ["AAPL", "MSFT"],
+        "tick_id": "run-1-2025-09-02T14:00:00-mid",
+        "as_of": "2025-09-02T14:00:00",
+        "temp:ticker_evidence_objects": te_objects,
+        "strategist_decision": _minimal_decision_dump(["AAPL", "MSFT"]),
+    }
+
+    writer = build_strategist_decision_writer(session)
+    _run(writer._run_async_impl(_StubCtx(state)))
+    session.commit()
+
+    rows = session.query(TickerEvidenceRow).all()
+    assert len(rows) == 2                                   # POSITIVE: rows were written
+    assert {r.ticker for r in rows} == {"AAPL", "MSFT"}
+
+
+def test_decision_writer_raises_on_empty_ticker_evidence_with_tickers(session):
+    """Empty ticker-evidence while the watchlist is non-empty is the silent-degradation
+    bug — it must raise, never no-op."""
+    state = {
+        "tickers": ["AAPL"],
+        "tick_id": "run-1-x-mid",
+        "as_of": "2025-09-02T14:00:00",
+        "temp:ticker_evidence_objects": [],                # the bug's fingerprint
+        "strategist_decision": _minimal_decision_dump(["AAPL"]),
+    }
+
+    writer = build_strategist_decision_writer(session)
+    with pytest.raises(ValueError, match="ticker_evidence"):
+        _run(writer._run_async_impl(_StubCtx(state)))
