@@ -174,6 +174,11 @@ def _carried_news_evidence(
         rationale=(f"carried catalyst from {rec.fired_at[:10]} "
                    f"(day {elapsed_days}/{horizon}, decayed)"),
         key_factors=["carried"],
+        # The catalyst is live across the whole drift window, so the verdict
+        # must advertise that horizon rather than defaulting to 1 day — a ~1d
+        # render would contradict the "carried over N days" rationale above and
+        # mislead the strategist about how long the signal stays in force.
+        horizon_days=horizon,
         is_no_data=False,
         carried=True,
     )

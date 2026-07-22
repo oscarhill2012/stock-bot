@@ -332,15 +332,6 @@ class FundamentalCaps(BaseModel):
     # drift window (filing_delta_horizon_days from the filing date) is exhausted.
     filing_delta_decay: bool = Field(default=True)
 
-    # HIGH-VALUE TUNING KNOB: 8-K item codes that re-anchor the fundamental clock
-    # mid-quarter (a fresh sign may be taken).  WIDENING re-admits sign churn;
-    # NARROWING delays reaction to real thesis breaks.  Codes: 5.02 exec
-    # departure, 2.06 material impairment, 4.02 non-reliance, 1.03 bankruptcy,
-    # 2.04 accelerated debt, 3.01 delisting.
-    thesis_breaking_8k_items: list[str] = Field(
-        default_factory=lambda: ["1.03", "2.04", "2.06", "3.01", "4.02", "5.02"],
-    )
-
     llm:                        LlmCaps                        # per-call runtime caps
 
 

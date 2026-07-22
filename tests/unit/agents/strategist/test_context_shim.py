@@ -714,5 +714,10 @@ async def test_abstain_news_carries_decayed_last_fire() -> None:
         assert news["verdict"]["carried"] is True
         assert news["verdict"]["lean"] == "bullish"
         assert 0.5 < news["verdict"]["magnitude"] < 0.80        # decayed, not zeroed
+        # The carried catalyst is live across the full drift window, so the
+        # verdict must advertise that horizon (drift_horizon_days=20) rather
+        # than the 1-day default — a ~1d render would contradict the "carried
+        # over N days" rationale and mislead the strategist.
+        assert news["verdict"]["horizon_days"] == 20
     finally:
         reset_news_last_fire_store()

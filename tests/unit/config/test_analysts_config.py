@@ -417,7 +417,3 @@ def test_fundamental_recalibration_config():
 
     assert 0.0 <= f.filing_delta_trigger_similarity <= 1.0
     assert 0.0 < f.filing_delta_magnitude_cap <= 1.0
-    assert isinstance(f.thesis_breaking_8k_items, list)
-    assert f.thesis_breaking_8k_items                       # non-empty
-    # 8-K item codes look like "5.02" (departures), "2.06" (impairment), etc.
-    assert all(isinstance(x, str) for x in f.thesis_breaking_8k_items)
