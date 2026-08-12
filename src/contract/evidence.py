@@ -433,6 +433,16 @@ class AnalystEvidence(BaseModel):
     for deterministic analysts (Technical, Social, SmartMoney) where there
     is no provider prose.  Capped at 10 000 characters to keep the strategist
     prompt bounded.
+
+    `input_hash` is the report cache's blake2b digest of the "view of the
+    world" that produced this verdict — populated ONLY by the LLM analysts
+    that consult `agents.analysts.report_cache` (Fundamental, News).  It is
+    the exact identity the scoreboard's dedup pass keys on: two rows for the
+    same (analyst, ticker) sharing an `input_hash` are the SAME cached
+    verdict replayed across ticks, not independent observations.  Left
+    `None` for deterministic analysts (Technical, Social, SmartMoney), which
+    recompute every tick and have no cache entry to replay — their rows are
+    never deduped, by construction.
     """
 
     ticker: str
@@ -442,3 +452,4 @@ class AnalystEvidence(BaseModel):
     features: dict[str, float]
     verdict: AnalystVerdict
     raw_text: str | None = Field(default=None, max_length=10_000)
+    input_hash: str | None = None

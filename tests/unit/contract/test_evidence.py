@@ -258,3 +258,53 @@ def test_build_no_data_verdict_rejects_empty_reason():
 
     with pytest.raises(ValueError, match="non-empty reason"):
         build_no_data_verdict("TSLA", reason="")
+
+
+# ---------------------------------------------------------------------------
+# input_hash: cache-replay identity for the scoreboard's exact dedup pass
+# (Phase 14 defect fix — replaces the old (lean, magnitude, confidence)
+# tuple-equality heuristic).
+# ---------------------------------------------------------------------------
+
+
+def test_evidence_input_hash_defaults_to_none():
+    """Deterministic analysts (technical, social, smart_money) never populate
+    ``input_hash`` — they recompute every tick and have no report-cache entry
+    to replay.  The field must default to ``None`` so every existing
+    construction site (which never mentions it) keeps working unchanged."""
+    e = AnalystEvidence(
+        ticker="AAPL",
+        analyst="technical",
+        tick_id="2026-05-08T14:00:00Z",
+        recorded_at=_now(),
+        features={"rsi_14": 42.3},
+        verdict=_verdict(lean="bullish", magnitude=0.5, confidence=0.7),
+    )
+    assert e.input_hash is None, (
+        f"input_hash must default to None for a construction site that "
+        f"never mentions it; got {e.input_hash!r}"
+    )
+
+
+def test_evidence_input_hash_round_trips_when_set():
+    """An LLM analyst (fundamental, news) that supplies the report-cache's
+    ``input_hash`` must have that exact value carried through the
+    ``model_dump(mode='json')`` -> ``model_validate`` round trip the joiners
+    and evidence writer rely on."""
+    original = AnalystEvidence(
+        ticker="MSFT",
+        analyst="fundamental",
+        tick_id="2026-05-08T15:00:00Z",
+        recorded_at=_now(),
+        features={"pe_trailing": 32.5},
+        verdict=_verdict(lean="neutral", magnitude=0.1, confidence=0.4,
+                         rationale="balanced"),
+        input_hash="abc123deadbeef",
+    )
+    dumped = original.model_dump(mode="json")
+    rebuilt = AnalystEvidence.model_validate(dumped)
+
+    assert rebuilt.input_hash == "abc123deadbeef", (
+        f"input_hash must survive the JSON round trip; got {rebuilt.input_hash!r}"
+    )
+    assert rebuilt == original
