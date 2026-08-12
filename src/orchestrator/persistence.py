@@ -210,6 +210,14 @@ class AnalystEvidenceRow(Base):
 
     features_json: Mapped[str] = mapped_column(String, default="{}")
 
+    # Report cache's blake2b input hash — populated ONLY for LLM analysts
+    # (fundamental, news) that consult ``agents.analysts.report_cache``.
+    # NULL for deterministic analysts (technical, social, smart_money),
+    # which have no cache entry to replay.  This is the exact identity the
+    # scoreboard's dedup pass keys on (Phase 14 defect fix) — see
+    # ``src/backtest/scoreboard.py``.
+    input_hash: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+
 
 def save_analyst_evidence(
     session: Session,
@@ -220,6 +228,7 @@ def save_analyst_evidence(
     verdict: dict,
     features: dict,
     recorded_at: datetime | None = None,
+    input_hash: str | None = None,
 ) -> None:
     """Persist one AnalystEvidence row.
 
@@ -237,6 +246,10 @@ def save_analyst_evidence(
         recorded_at: Timestamp to stamp the row with.  Pass ``state["as_of"]``
             in backtest mode for deterministic replay.  Defaults to wall-clock
             when ``None`` (preserves live behaviour).
+        input_hash: The report cache's blake2b digest that produced this
+            verdict, for the LLM analysts (fundamental, news) only.  ``None``
+            for deterministic analysts, which have no cache entry to replay —
+            this is the exact identity the scoreboard's dedup pass keys on.
 
     Returns:
         None. The new row is flushed but **not** committed; the caller controls
@@ -258,6 +271,7 @@ def save_analyst_evidence(
         key_factors_json=json.dumps(verdict.get("key_factors", [])),
         is_no_data=bool(verdict.get("is_no_data", False)),
         features_json=json.dumps(features),
+        input_hash=input_hash,
     )
     session.add(row)
     session.flush()
