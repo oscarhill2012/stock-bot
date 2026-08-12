@@ -192,6 +192,16 @@ def make_report_cache_callbacks(
         per_ticker = data.get(ticker, {}) or {}
         input_hash = hash_inputs(per_ticker)
 
+        # Stash the hash the cache is about to be keyed on into a dedicated
+        # per-ticker/per-analyst state key, so the joiner can thread the SAME
+        # value into ``AnalystEvidence.input_hash`` for the scoreboard's
+        # exact cache-replay dedup (Phase 14 defect fix).  Written here,
+        # BEFORE the hit/miss branch, so it covers both outcomes: ``_before``
+        # always runs first for every call, hit or miss.  Reading the value
+        # back downstream rather than recomputing it guarantees the recorded
+        # hash is provably the one the cache actually used.
+        state[f"temp:_report_cache_input_hash_{analyst_name}_{ticker}"] = input_hash
+
         hit = read_cache(
             root, analyst_name, ticker,
             input_hash=input_hash,

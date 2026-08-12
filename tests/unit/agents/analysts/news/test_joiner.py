@@ -429,3 +429,84 @@ async def test_joiner_injects_config_horizon_days_into_the_verdict_batch():
 
     batch = events[-1].actions.state_delta["news_verdicts"]
     assert batch["verdicts"][0]["horizon_days"] == expected_horizon
+
+
+@pytest.mark.asyncio
+async def test_joiner_threads_report_cache_input_hash_into_evidence():
+    """The joiner must read the per-ticker hash ``cache_callbacks._before``
+    stashed at ``temp:_report_cache_input_hash_news_<TICKER>`` and carry it
+    through, unmodified, into ``news_evidence[i]["input_hash"]`` — this is
+    the exact identity the scoreboard's dedup pass keys on, so it must be
+    the SAME value the cache was keyed on, not recomputed here.
+    """
+    state = {
+        "tickers":  ["AAPL", "MSFT"],
+        "tick_id":  "t-1",
+        "as_of":    "2026-05-21T14:00",
+    }
+
+    svc = InMemorySessionService()
+    session = await svc.create_session(
+        app_name="test", user_id="test", state=state, session_id="t1",
+    )
+
+    # InMemorySessionService strips temp: keys from create_session — inject
+    # directly onto session.state afterwards (matches the pattern used
+    # throughout this file).
+    session.state["temp:news_data"] = {
+        "AAPL": {"news": [{"title": "AAPL beats"}]},
+        "MSFT": {"news": [{"title": "MSFT guides up"}]},
+    }
+    # LLM emit-schema is LlmTickerVerdict — requires a structured ``report``
+    # (summary + 2-4 drivers), not a flat ``rationale`` string.
+    session.state["temp:news_verdict_AAPL"] = {
+        "ticker": "AAPL", "lean": "bullish", "magnitude": 0.7,
+        "confidence": 0.8,
+        "key_factors": ["catalyst:earnings"], "is_no_data": False,
+        "report": {
+            "summary": "Earnings beat expectations.",
+            "drivers": [
+                {"name": "catalyst:earnings", "direction": "bull",
+                 "weight": 0.6, "body": "EPS above consensus."},
+                {"name": "direction:positive", "direction": "bull",
+                 "weight": 0.4, "body": "Price direction confirmed."},
+            ],
+        },
+    }
+    session.state["temp:news_verdict_MSFT"] = {
+        "ticker": "MSFT", "lean": "bullish", "magnitude": 0.5,
+        "confidence": 0.6,
+        "key_factors": ["catalyst:guidance"], "is_no_data": False,
+        "report": {
+            "summary": "Guidance raised for the coming quarter.",
+            "drivers": [
+                {"name": "catalyst:guidance", "direction": "bull",
+                 "weight": 0.6, "body": "Full-year guidance raised."},
+                {"name": "factor:cloud_growth", "direction": "bull",
+                 "weight": 0.4, "body": "Cloud segment accelerating."},
+            ],
+        },
+    }
+    # Only AAPL got a stashed hash (simulates a cache-enabled call for AAPL
+    # and — deliberately — nothing for MSFT so the "no hash" default path
+    # is exercised too).
+    session.state["temp:_report_cache_input_hash_news_AAPL"] = "hash-aapl-123"
+
+    agent = NewsJoinerAgent(name="NewsJoiner")
+    ctx = InvocationContext(
+        session_service=svc, session=session, invocation_id="inv-1", agent=agent,
+    )
+
+    events = [ev async for ev in agent.run_async(ctx)]
+    delta  = events[0].actions.state_delta
+
+    evidences = {row["ticker"]: row for row in delta["news_evidence"]}
+
+    assert evidences["AAPL"]["input_hash"] == "hash-aapl-123", (
+        f"Expected AAPL's evidence row to carry the stashed hash; got "
+        f"{evidences['AAPL']['input_hash']!r}"
+    )
+    assert evidences["MSFT"]["input_hash"] is None, (
+        f"MSFT has no stashed hash — evidence row must default to None, "
+        f"not fabricate one; got {evidences['MSFT']['input_hash']!r}"
+    )

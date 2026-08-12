@@ -592,3 +592,97 @@ async def test_going_concern_bypasses_the_clamp():
     )
 
     assert verdict["magnitude"] > cap
+
+
+@pytest.mark.asyncio
+async def test_joiner_threads_report_cache_input_hash_into_evidence():
+    """The joiner must read the per-ticker hash ``cache_callbacks._before``
+    stashed at ``temp:_report_cache_input_hash_fundamental_<TICKER>`` and
+    carry it through, unmodified, into
+    ``fundamental_evidence[i]["input_hash"]`` — this is the exact identity
+    the scoreboard's dedup pass keys on, so it must be the SAME value the
+    cache was keyed on, not recomputed here.
+
+    Mirror of the equivalent test in
+    ``tests/unit/agents/analysts/news/test_joiner.py``.
+    """
+    state = {
+        "tickers":  ["AAPL", "MSFT"],
+        "tick_id":  "t-1",
+        "as_of":    "2026-05-21T14:00",
+    }
+
+    svc = InMemorySessionService()
+    session = await svc.create_session(
+        app_name="test", user_id="test", state=state, session_id="t1",
+    )
+
+    # InMemorySessionService strips temp: keys from create_session — inject
+    # directly onto session.state afterwards.  Injecting directly (rather
+    # than via the create_session state= kwarg) means the extractor sees the
+    # REAL per-ticker slice, not the empty-dict short-circuit — so the
+    # current Phase-7 flat-list shape (insider_trades / insider_derivative_
+    # trades) is required here, not the legacy _make_ticker_slice() shape.
+    session.state["temp:fundamental_data"] = {
+        "AAPL": _make_no_periodic_filing_slice(pe=20.0),
+        "MSFT": _make_no_periodic_filing_slice(pe=30.0),
+    }
+    # LLM emit-schema is LlmTickerVerdict, not a flat rationale string — it
+    # requires a structured ``report`` (summary + 2-4 drivers); see
+    # ``_run_joiner_with_llm_verdict`` above for the same shape.
+    session.state["temp:fundamental_verdict_AAPL"] = {
+        "ticker":      "AAPL",
+        "lean":        "bullish",
+        "magnitude":   0.7,
+        "confidence":  0.8,
+        "key_factors": ["catalyst:earnings"],
+        "is_no_data":  False,
+        "report": {
+            "summary": "Strong earnings and low debt.",
+            "drivers": [
+                {"name": "catalyst:earnings", "direction": "bull",
+                 "weight": 0.6, "body": "Earnings beat expectations."},
+                {"name": "factor:low_debt", "direction": "bull",
+                 "weight": 0.4, "body": "Debt load remains low."},
+            ],
+        },
+    }
+    session.state["temp:fundamental_verdict_MSFT"] = {
+        "ticker":      "MSFT",
+        "lean":        "bullish",
+        "magnitude":   0.5,
+        "confidence":  0.6,
+        "key_factors": ["factor:cloud_growth"],
+        "is_no_data":  False,
+        "report": {
+            "summary": "Cloud segment growing fast.",
+            "drivers": [
+                {"name": "factor:cloud_growth", "direction": "bull",
+                 "weight": 0.6, "body": "Cloud revenue accelerating."},
+                {"name": "factor:margin_expansion", "direction": "bull",
+                 "weight": 0.4, "body": "Operating margin expanding."},
+            ],
+        },
+    }
+    # Only AAPL got a stashed hash — deliberately nothing for MSFT so the
+    # "no hash" default path is exercised too.
+    session.state["temp:_report_cache_input_hash_fundamental_AAPL"] = "hash-aapl-fund-456"
+
+    agent = FundamentalJoinerAgent(name="FundamentalJoiner")
+    ctx = InvocationContext(
+        session_service=svc, session=session, invocation_id="inv-1", agent=agent,
+    )
+
+    events = [ev async for ev in agent.run_async(ctx)]
+    delta  = events[0].actions.state_delta
+
+    evidences = {row["ticker"]: row for row in delta["fundamental_evidence"]}
+
+    assert evidences["AAPL"]["input_hash"] == "hash-aapl-fund-456", (
+        f"Expected AAPL's evidence row to carry the stashed hash; got "
+        f"{evidences['AAPL']['input_hash']!r}"
+    )
+    assert evidences["MSFT"]["input_hash"] is None, (
+        f"MSFT has no stashed hash — evidence row must default to None, "
+        f"not fabricate one; got {evidences['MSFT']['input_hash']!r}"
+    )

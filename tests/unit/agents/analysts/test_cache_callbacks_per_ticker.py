@@ -166,6 +166,97 @@ def test_after_writes_single_verdict_to_cache(tmp_path, monkeypatch):
     assert hit["verdict"]["lean"] == "bearish"
 
 
+def test_before_stashes_input_hash_into_state_on_cache_hit(tmp_path, monkeypatch):
+    """On a cache hit, ``_before`` must stash the computed ``input_hash`` into
+    a dedicated per-ticker/per-analyst state key so the joiner can thread it
+    into ``AnalystEvidence.input_hash`` for exact scoreboard dedup.
+
+    This is the state key the joiners read — it must be provably the SAME
+    value the cache was keyed on, not recomputed downstream.
+    """
+    from agents.analysts.report_cache import write_cache
+
+    write_cache(
+        tmp_path, "news", "AAPL",
+        input_hash="hash-stash-hit",
+        prompt_version="2026-05-21-a",
+        verdict={
+            "ticker": "AAPL", "lean": "bullish", "magnitude": 0.7,
+            "confidence": 0.8, "rationale": "",
+            "key_factors": ["catalyst:earnings", "direction:positive"],
+            "is_no_data": False,
+            "report": {
+                "summary": "Strong quarterly earnings with positive direction.",
+                "drivers": [
+                    {"name": "catalyst:earnings", "direction": "bull",
+                     "weight": 0.6, "body": "Earnings beat expectations."},
+                    {"name": "direction:positive", "direction": "bull",
+                     "weight": 0.4, "body": "Positive price direction confirmed."},
+                ],
+            },
+        },
+        report=None,
+    )
+
+    monkeypatch.setattr(
+        "agents.analysts.cache_callbacks.get_analysts_config",
+        lambda: MagicMock(cache=MagicMock(enabled=True, directory=str(tmp_path))),
+    )
+
+    before_cb, _after_cb = make_report_cache_callbacks(
+        analyst_name       = "news",
+        prompt_version     = "2026-05-21-a",
+        data_state_key     = "temp:news_data",
+        verdicts_state_key = "temp:news_verdict_AAPL",
+        ticker             = "AAPL",
+        output_schema      = TickerVerdict,
+        hash_inputs        = lambda d: "hash-stash-hit",
+        trace_label        = None,
+    )
+
+    state = {"tickers": ["AAPL"], "temp:news_data": {"AAPL": {"news": []}}}
+    callback_context = MagicMock(state=state)
+
+    before_cb(callback_context, MagicMock())
+
+    assert state["temp:_report_cache_input_hash_news_AAPL"] == "hash-stash-hit", (
+        f"Expected the stashed hash to equal the value the cache was keyed "
+        f"on ('hash-stash-hit'); state={state}"
+    )
+
+
+def test_before_stashes_input_hash_into_state_on_cache_miss(tmp_path, monkeypatch):
+    """On a cache miss, ``_before`` must STILL stash ``input_hash`` — the
+    hash is computed unconditionally before the hit/miss branch, so a fresh
+    LLM call also gets a recorded input_hash for the eventual AnalystEvidence
+    row (the tick that first computed a novel hash is itself a valid dedup
+    anchor for any future replay of that same hash)."""
+
+    monkeypatch.setattr(
+        "agents.analysts.cache_callbacks.get_analysts_config",
+        lambda: MagicMock(cache=MagicMock(enabled=True, directory=str(tmp_path))),
+    )
+
+    before_cb, _after_cb = make_report_cache_callbacks(
+        analyst_name       = "news",
+        prompt_version     = "2026-05-21-a",
+        data_state_key     = "temp:news_data",
+        verdicts_state_key = "temp:news_verdict_AAPL",
+        ticker             = "AAPL",
+        output_schema      = TickerVerdict,
+        hash_inputs        = lambda d: "hash-stash-miss",
+        trace_label        = None,
+    )
+
+    state = {"temp:news_data": {"AAPL": {"news": []}}}
+    callback_context = MagicMock(state=state)
+
+    result = before_cb(callback_context, MagicMock())
+
+    assert result is None  # cache miss — LLM must still run
+    assert state["temp:_report_cache_input_hash_news_AAPL"] == "hash-stash-miss"
+
+
 def test_after_skips_cache_write_when_response_fails_schema_validation(
     tmp_path, monkeypatch, caplog,
 ):

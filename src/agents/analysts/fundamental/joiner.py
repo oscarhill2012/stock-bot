@@ -172,6 +172,15 @@ class FundamentalJoinerAgent(BaseAgent):
                 {k: v for k, v in ticker_verdict.model_dump().items() if k != "ticker"}
             )
 
+            # Thread through the report cache's own input_hash, stashed by
+            # ``cache_callbacks._before`` at
+            # ``temp:_report_cache_input_hash_fundamental_<TICKER>``.  Read
+            # rather than recomputed, so the value recorded here is provably
+            # the same one the cache was keyed on — this is the exact
+            # identity the scoreboard's dedup pass keys on (Phase 14 defect
+            # fix).  Absent for ticks where the cache was disabled or bypassed.
+            input_hash = state.get(f"temp:_report_cache_input_hash_fundamental_{ticker}")
+
             ev = AnalystEvidence(
                 analyst     = "fundamental",
                 ticker      = ticker,
@@ -179,6 +188,7 @@ class FundamentalJoinerAgent(BaseAgent):
                 recorded_at = recorded_at,
                 verdict     = verdict,
                 features    = features,
+                input_hash  = input_hash,
             )
             evidence_list.append(ev.model_dump(mode="json"))
 
