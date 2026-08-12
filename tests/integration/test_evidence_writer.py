@@ -32,7 +32,7 @@ def db_session():
     session.close()
 
 
-def _evidence(analyst, ticker, lean="bullish"):
+def _evidence(analyst, ticker, lean="bullish", input_hash=None):
     """Build a minimal AnalystEvidence dict for use in session state."""
     return {
         "analyst": analyst,
@@ -48,6 +48,7 @@ def _evidence(analyst, ticker, lean="bullish"):
             "is_no_data": False,
         },
         "features": {f"{analyst}_feature": 1.0},
+        "input_hash": input_hash,
     }
 
 
@@ -111,6 +112,39 @@ def test_factory_returns_named_agent():
     """build_evidence_writer must produce an EvidenceWriter with the correct name."""
     w = build_evidence_writer(db_session=None)
     assert w.name == "EvidenceWriter"
+
+
+@pytest.mark.asyncio
+async def test_evidence_writer_persists_input_hash(db_session):
+    """The writer must thread ``input_hash`` from the evidence dict through to
+    the persisted ``AnalystEvidenceRow`` — fundamental/news rows carry the
+    report cache's hash; technical carries None (never fabricated)."""
+    writer = EvidenceWriter(db_session=db_session)
+    state = {
+        "tick_id": "2026-05-08T14:00:00Z",
+        "technical_evidence":   [_evidence("technical", "AAPL")],
+        "fundamental_evidence": [_evidence("fundamental", "AAPL", input_hash="hash-fund-1")],
+        "news_evidence":        [_evidence("news", "AAPL", input_hash="hash-news-1")],
+        "smart_money_evidence": [],
+    }
+    ctx = MagicMock()
+    ctx.session.state = state
+    async for _ in writer._run_async_impl(ctx):
+        pass
+
+    rows = {r.analyst: r for r in db_session.query(AnalystEvidenceRow).all()}
+
+    assert rows["fundamental"].input_hash == "hash-fund-1", (
+        f"Expected fundamental row to carry its input_hash; got "
+        f"{rows['fundamental'].input_hash!r}"
+    )
+    assert rows["news"].input_hash == "hash-news-1", (
+        f"Expected news row to carry its input_hash; got {rows['news'].input_hash!r}"
+    )
+    assert rows["technical"].input_hash is None, (
+        f"Expected technical row's input_hash to stay None (no cache concept); "
+        f"got {rows['technical'].input_hash!r}"
+    )
 
 
 @pytest.mark.asyncio

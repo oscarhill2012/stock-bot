@@ -95,6 +95,11 @@ class EvidenceWriter(BaseAgent):
                     verdict=ev_dict["verdict"],
                     features=ev_dict.get("features", {}),
                     recorded_at=evidence_recorded_at,
+                    # Report cache's input hash — present for the LLM analysts
+                    # (fundamental, news) only; ``.get`` defaults to None for
+                    # deterministic analysts (technical, social, smart_money),
+                    # which never populate this key on their evidence dicts.
+                    input_hash=ev_dict.get("input_hash"),
                 )
 
         # NOTE: no try/except wrapping the saver loop — a mid-loop failure leaves the
