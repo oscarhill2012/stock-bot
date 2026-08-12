@@ -104,6 +104,27 @@ of symbols — existing callers are unaffected by the format upgrade) and
 Strategist + risk gate both expect every ticker in this list to appear in
 their inputs (see `make_exhaustive_validator`).
 
+### Inert keys — parked universes and prose comments
+
+`_load_raw()` reads the `tickers` key and nothing else, so any sibling key is
+inert. JSON has no comment syntax, so the file uses two conventions:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `_comment_*` | list[string] | Prose commentary, one line per array element. Read by nothing — the JSON stand-in for a comment block. |
+| `tickers_retired_baseline` | list | A parked watchlist, same schema as `tickers`. Swap it into the `tickers` key to activate it. |
+
+The active universe is a momentum/quality midcap set **screened on its own
+realised return** over `long-baseline-2025` — it is a hindsight selection and
+backtests against it do not measure strategy skill. `tickers_retired_baseline`
+holds the original set, chosen without reference to returns, and is the honest
+out-of-sample comparison. See the `_comment_*` blocks in the file.
+
+Any ticker in either universe must also appear in `WATCHLIST_SECTORS`
+(`src/data/sector_map.py`), which is kept as a superset of both so swapping
+universes needs no code change. A ticker missing from that map silently
+resolves `company_ratios.sector` to `null`.
+
 ---
 
 ## `analyst_heuristics.json` — analyst thresholds + vocabularies

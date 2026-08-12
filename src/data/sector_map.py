@@ -22,7 +22,58 @@ from __future__ import annotations
 #
 # Strings MUST match the keys of ``SECTOR_TO_ETF`` (verified against
 # ``contract/extractors/_sector_map.py``) so the sector-ETF lookup resolves.
+#
+# The map is deliberately a SUPERSET of the active watchlist: it carries both
+# the current momentum universe and the retired baseline universe.  Entries for
+# off-watchlist tickers are inert (nothing iterates this map — every read goes
+# through ``sector_for``), so keeping both sets here means swapping the active
+# universe in ``config/watchlist.json`` needs no corresponding edit in this
+# file, and cannot silently null out ``company_ratios.sector``.
 WATCHLIST_SECTORS: dict[str, str] = {
+    # ══ Active universe — momentum/quality midcaps ══════════════════════════
+    # Technology
+    "LITE":  "Technology",             # Lumentum — optical components
+    "CIEN":  "Technology",             # Ciena — optical networking
+
+    # Healthcare
+    "ARWR":  "Healthcare",             # Arrowhead Pharmaceuticals — RNAi therapeutics
+    "ROIV":  "Healthcare",             # Roivant Sciences — biopharma holding company
+
+    # Communication Services
+    "WBD":   "Communication Services", # Warner Bros. Discovery — media
+    "NYT":   "Communication Services", # New York Times — publishing
+
+    # Basic Materials
+    "ALB":   "Basic Materials",        # Albemarle — lithium / speciality chemicals
+    "AA":    "Basic Materials",        # Alcoa — aluminium
+
+    # Industrials
+    "ATI":   "Industrials",            # ATI Inc. — speciality metals
+    "FIX":   "Industrials",            # Comfort Systems USA — mechanical contracting
+
+    # Energy
+    "VAL":   "Energy",                 # Valaris — offshore drilling
+    "FTI":   "Energy",                 # TechnipFMC — subsea energy services
+
+    # Consumer Defensive
+    "DAR":   "Consumer Defensive",     # Darling Ingredients — rendering / bioproducts
+    "BG":    "Consumer Defensive",     # Bunge Global — agribusiness
+
+    # Consumer Cyclical
+    "TPR":   "Consumer Cyclical",      # Tapestry — accessories / luxury
+    "FIVE":  "Consumer Cyclical",      # Five Below — discount retail
+
+    # Financial Services
+    "AMG":   "Financial Services",     # Affiliated Managers Group — asset management
+    "CBOE":  "Financial Services",     # Cboe Global Markets — exchange operator
+
+    # Utilities
+    "EIX":   "Utilities",              # Edison International — electric utility
+
+    # Real Estate
+    "VTR":   "Real Estate",            # Ventas — healthcare REIT
+
+    # ══ Retired baseline universe — inert unless swapped back in ════════════
     # Technology
     "MPWR":  "Technology",             # Monolithic Power Systems — semiconductors
     "FSLR":  "Technology",             # First Solar — solar / photovoltaics
