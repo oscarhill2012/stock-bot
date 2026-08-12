@@ -112,13 +112,22 @@ inert. JSON has no comment syntax, so the file uses two conventions:
 | Key | Type | Meaning |
 |---|---|---|
 | `_comment_*` | list[string] | Prose commentary, one line per array element. Read by nothing — the JSON stand-in for a comment block. |
-| `tickers_retired_baseline` | list | A parked watchlist, same schema as `tickers`. Swap it into the `tickers` key to activate it. |
+| `tickers_*` | list | A parked watchlist, same schema as `tickers`. Swap it into the `tickers` key to activate it. |
 
-The active universe is a momentum/quality midcap set **screened on its own
-realised return** over `long-baseline-2025` — it is a hindsight selection and
-backtests against it do not measure strategy skill. `tickers_retired_baseline`
-holds the original set, chosen without reference to returns, and is the honest
-out-of-sample comparison. See the `_comment_*` blocks in the file.
+The active universe is the original sector-balanced midcap set, chosen
+**without reference to realised returns**, and is the honest comparison
+universe — every Phase 14 baseline figure is measured against it. Equal-weight
+buy-and-hold returns ~+11.9% over `long-baseline-2025` against SPY +7.8%.
+
+`tickers_momentum_hindsight` is parked. It was **screened on its own realised
+return** over the same window (~+102% equal-weight buy-and-hold), so a P&L
+improvement measured on it cannot be attributed to any change in the bot. It
+remains useful only for questions independent of absolute return — render
+shape, cache behaviour, throughput. See the `_comment_*` blocks in the file.
+
+**Swapping universes invalidates every prior baseline.** Any before/after
+comparison against an earlier run must hold the universe fixed; otherwise the
+market does the work and the change under test gets the credit.
 
 Any ticker in either universe must also appear in `WATCHLIST_SECTORS`
 (`src/data/sector_map.py`), which is kept as a superset of both so swapping
