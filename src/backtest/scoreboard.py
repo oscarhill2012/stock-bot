@@ -51,17 +51,20 @@ Phase 14 defect fixes
    cache-hit rate).  Counting each replayed tick as a separate observation
    amplifies one confidently-wrong fresh call 6× into the score.
 
-   Fix: collapse consecutive identical (lean, magnitude, confidence) tuples for
-   the same (analyst, ticker) pair into a SINGLE observation anchored at the
-   FIRST tick in the run.  The forward return is measured from that anchor tick.
+   Fix: the ``analyst_evidence`` table carries the report cache's own
+   ``input_hash`` (the blake2b digest the cache was keyed on — populated only
+   for the LLM analysts that consult it, fundamental and news).  Dedup is
+   EXACT: every row sharing ``(analyst, ticker, input_hash)`` within a window
+   is the SAME cached verdict replayed, and only the FIRST occurrence (tick
+   order) is kept as a SINGLE observation, anchored at that first tick.  The
+   forward return is measured from that anchor tick.
 
-   Caveat: the ``analyst_evidence`` table carries NO hash or identity column
-   that directly tags a cache replay (it records only lean/magnitude/confidence/
-   rationale).  The consecutive-identical proxy is a best-effort heuristic:
-   it correctly handles the common replay pattern (many ticks with the same
-   verdict) but would merge two genuinely independent verdicts that happen to
-   be numerically identical.  This limitation is documented here and in the
-   config README.
+   Rows with no ``input_hash`` (deterministic analysts — technical,
+   smart_money, social — which recompute every tick and have no cache to
+   replay) are never deduped; each is scored as its own fresh observation.
+   An analyst with a MIX of hashed and unhashed rows within one window is a
+   plumbing bug, not a legitimate state, and raises loudly naming the analyst
+   and both counts rather than guessing which rule applies.
 
 2. **Per-analyst primary horizon** — news signals decay in ~1 day; scoring
    them at +20d measures noise.  The ``primary_horizon_by_analyst`` config key
@@ -107,12 +110,12 @@ traps had to be designed around explicitly:
    peer groups by construction.  ``_score_window_observations`` computes
    every peer mean using ONLY that window's own cache and ticks, before any
    pooling step sees the data.
-2. **Dedup must run per-window, before pooling.**  If the consecutive-
-   identical-verdict dedup ran on the concatenated multi-window record list,
-   a ticker's last verdict in window A could be wrongly collapsed with its
-   first verdict in window B if they happened to share a (lean, magnitude,
-   confidence) tuple.  ``_score_window_observations`` runs dedup internally,
-   scoped to its own window's rows only.
+2. **Dedup must run per-window, before pooling.**  If the exact-``input_hash``
+   dedup ran on the concatenated multi-window record list, a ticker's last
+   verdict in window A could be wrongly collapsed with its first verdict in
+   window B if a report-cache collision ever produced the same hash in both
+   (extremely unlikely, but not a risk worth taking).  ``_score_window_observations``
+   runs dedup internally, scoped to its own window's rows only.
 3. **Cluster-robust SE clusters by ``(ticker, window_id)`` when pooling.**
    Two windows months apart are not autocorrelated with each other, so
    clustering pooled data by bare ticker would over-cluster (collapse two
@@ -541,12 +544,6 @@ class _VerdictKey(NamedTuple):
     tick_id:  str
 
 
-# Proxy identity for a cached verdict: (lean, magnitude, confidence) tuple.
-# Two rows with the same identity are considered a cache-replay continuation;
-# only the first occurrence in tick order is used as the anchor observation.
-_VerdictIdentity = tuple[str, float, float]
-
-
 @dataclass(frozen=True)
 class _ObservationRecord:
     """One scored verdict, ready for aggregation.
@@ -916,10 +913,14 @@ def _score_window_observations(
     ---------
     1. Load all ``AnalystEvidenceRow`` records, ordered by (analyst, ticker,
        recorded_at) so consecutive ticks are adjacent.
-    2. **Dedup** (cache-replay fix): for each (analyst, ticker) pair, collapse
-       consecutive identical (lean, magnitude, confidence) tuples into a single
-       observation anchored at the FIRST occurrence.  Subsequent ticks with an
-       identical tuple are discarded.  Scoped to THIS window's rows only.
+    2. **Dedup** (cache-replay fix): rows carrying the report cache's
+       ``input_hash`` collapse EXACTLY on ``(analyst, ticker, input_hash)`` —
+       every row sharing that triple is the same cached verdict replayed, and
+       only the FIRST occurrence (tick order) is kept as the anchor.  Rows
+       with no ``input_hash`` (deterministic analysts, which never populate
+       it) are never deduped.  A mix of hashed and unhashed rows for one
+       analyst within this window is a plumbing bug and raises.  Scoped to
+       THIS window's rows only.
     3. For each deduplicated verdict, look up ``base_price`` (phase-matched)
        and forward closes per horizon from ``cache``.
     4. Compute per-tick cross-sectional means using the **peer group** for each
@@ -1009,44 +1010,74 @@ def _score_window_observations(
         key=lambda r: (r.analyst, r.ticker, _ensure_aware(r.recorded_at)),
     )
 
-    # ── 2. Dedup: collapse consecutive identical verdicts ────────────────────
-    # For each (analyst, ticker) pair, the 'last seen' identity tuple is tracked.
-    # When the tuple changes, the new row is a fresh call (anchor).
-    # When the tuple matches the last anchor, the row is a cache replay (discarded).
+    # ── 2. Dedup: collapse exact cache-replay observations ───────────────────
+    # Rows carrying an ``input_hash`` (cached LLM analysts — fundamental,
+    # news) dedup EXACTLY on ``(analyst, ticker, input_hash)``: every row
+    # sharing that triple within this window is the same underlying cached
+    # verdict replayed across ticks, and only the FIRST occurrence (tick
+    # order — guaranteed by ``rows_sorted`` above) is kept as the scoring
+    # anchor.  The forward return is measured from that anchor tick (see
+    # step 3 below, which resolves prices from each surviving row's own
+    # ``recorded_at``).
     #
-    # Proxy identity: (lean, magnitude, confidence).  Rationale/key_factors are
-    # excluded because they are narrative and may vary trivially even for a cached
-    # LLM output that was served from a content-addressed cache.
+    # Rows without an ``input_hash`` (deterministic analysts — technical,
+    # smart_money, social — plus the synthetic "aggregate" pseudo-analyst,
+    # which has no cache concept at all) are NEVER deduped: each is scored as
+    # its own fresh observation, because there is no cache-replay mechanism to
+    # collapse for them in the first place.
     #
-    # LIMITATION: two genuinely independent identical verdicts on adjacent ticks
-    # would be incorrectly merged.  This is unlikely in practice (independent
-    # verdicts vary in confidence if not in lean), and the alternative (counting
-    # every row) is far more misleading.  See module docstring.
+    # Consistency check: within THIS window, an analyst must have EITHER all
+    # rows hashed OR all rows unhashed.  A mix means input_hash plumbing is
+    # broken for that analyst (e.g. it fires for some tickers/ticks but not
+    # others) — raise loudly rather than silently under- or over-deduping.
+    # The check is derived from the data itself, not a hardcoded list of
+    # "cached analysts", so it fires however the inconsistency arises.
     #
     # Scoped to THIS window's rows: dedup never sees another window's data,
     # which is the property that makes per-window scoring safe to pool later.
 
-    # last_identity[(analyst, ticker)] = (lean, magnitude, confidence) of the
-    # last ANCHOR row for this pair.  Missing = no prior anchor.
-    last_identity: dict[tuple[str, str], _VerdictIdentity] = {}
+    hashed_count:   dict[str, int] = defaultdict(int)
+    unhashed_count: dict[str, int] = defaultdict(int)
+
+    for row in rows_sorted:
+        if row.input_hash is not None:
+            hashed_count[row.analyst] += 1
+        else:
+            unhashed_count[row.analyst] += 1
+
+    for analyst in sorted(set(hashed_count) & set(unhashed_count)):
+        raise ValueError(
+            f"scoreboard: window={window_id!r} analyst={analyst!r} has a mix "
+            f"of hashed and unhashed analyst_evidence rows "
+            f"({hashed_count[analyst]} with input_hash, "
+            f"{unhashed_count[analyst]} without) — this indicates broken "
+            f"input_hash plumbing for this analyst, not a legitimate mixed "
+            f"state.  Fix the producer that writes this analyst's evidence."
+        )
+
+    seen_triples: set[tuple[str, str, str]] = set()
     deduplicated_rows: list[AnalystEvidenceRow] = []
 
     for row in rows_sorted:
-        pair     = (row.analyst, row.ticker)
-        identity = (row.lean, float(row.magnitude), float(row.confidence))
+        if row.input_hash is None:
+            # No cache concept for this analyst (or the aggregate
+            # pseudo-analyst) — every row is its own fresh observation.
+            deduplicated_rows.append(row)
+            continue
 
-        if last_identity.get(pair) == identity:
-            # Same identity as prior anchor → cache replay; discard.
+        triple = (row.analyst, row.ticker, row.input_hash)
+        if triple in seen_triples:
+            # Exact cache replay: same analyst, same ticker, same cached
+            # input — discard; the anchor observation was already kept.
             logger.debug(
                 "scoreboard: dedup — discarding replayed verdict "
-                "(analyst=%s, ticker=%s, lean=%s, mag=%.2f, conf=%.2f, window=%s)",
-                row.analyst, row.ticker, row.lean, row.magnitude, row.confidence,
-                window_id,
+                "(analyst=%s, ticker=%s, input_hash=%s, window=%s)",
+                row.analyst, row.ticker, row.input_hash, window_id,
             )
             continue
 
-        # New identity or first occurrence → this is a fresh call (anchor).
-        last_identity[pair] = identity
+        # First occurrence of this triple → this is the scoring anchor.
+        seen_triples.add(triple)
         deduplicated_rows.append(row)
 
     logger.info(

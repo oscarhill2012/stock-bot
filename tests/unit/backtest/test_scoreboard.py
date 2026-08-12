@@ -39,12 +39,18 @@ def _make_evidence_row(
     lean: str,
     magnitude: float = 0.5,
     confidence: float = 0.7,
+    input_hash: str | None = None,
 ) -> AnalystEvidenceRow:
     """Build an ``AnalystEvidenceRow`` without persisting it.
 
     Parameters mirror the columns used by the scoreboard.  Rationale and
     feature columns are left at their defaults since the scoreboard does not
     read them.
+
+    ``input_hash`` defaults to ``None`` (the deterministic-analyst case —
+    technical, smart_money, social — which never populate it).  Cached LLM
+    analyst fixtures (fundamental, news) pass it explicitly to exercise the
+    scoreboard's exact cache-replay dedup.
     """
     return AnalystEvidenceRow(
         analyst=analyst,
@@ -54,6 +60,7 @@ def _make_evidence_row(
         lean=lean,
         magnitude=magnitude,
         confidence=confidence,
+        input_hash=input_hash,
     )
 
 
@@ -1200,37 +1207,38 @@ class TestRenderScoreboardMd:
 class TestCacheReplayDedup:
     """Defect 1: cache-replay amplification.
 
-    A single fresh verdict replayed across consecutive ticks (same analyst,
-    ticker, lean, magnitude, confidence) must count as EXACTLY ONE observation
-    in the scoreboard, anchored at the first tick.  The six replayed copies
-    must NOT each contribute an independent score.
+    A single fresh LLM verdict replayed across consecutive ticks (same
+    analyst, ticker, and ``input_hash``) must count as EXACTLY ONE observation
+    in the scoreboard, anchored at the first tick.  The replayed copies must
+    NOT each contribute an independent score.
 
-    Design note: the ``analyst_evidence`` table carries NO hash or identity
-    column that directly flags a cache replay.  We use a deterministic proxy:
-    a run of identical consecutive (lean, magnitude, confidence) values for the
-    same (analyst, ticker) sequence collapses to the first occurrence.  This is
-    documented in the scoreboard source and acknowledged here.
+    Design: the ``analyst_evidence`` table now carries the report cache's own
+    ``input_hash`` (Phase 14 defect fix — see the scoreboard module docstring).
+    Dedup is EXACT: rows sharing ``(analyst, ticker, input_hash)`` within a
+    window are the same cached verdict replayed, and only the first (by tick
+    order) survives as the scoring anchor.  Rows with no ``input_hash``
+    (deterministic analysts — technical, smart_money, social — which have no
+    cache to replay) are never deduped; each is its own fresh observation.
     """
 
     def _import(self):
         from backtest.scoreboard import build_analyst_scoreboard
         return build_analyst_scoreboard
 
-    def test_replayed_verdict_counts_once_not_six(
+    def test_replayed_verdict_with_shared_hash_counts_once_not_six(
         self, tmp_path: pytest.TempPathFactory,
     ) -> None:
-        """One bullish verdict replayed across 6 consecutive ticks for the same
-        (analyst, ticker) must produce exactly ONE scored observation, not six.
-
-        The proxy: collapse consecutive identical (lean, magnitude, confidence)
-        tuples for the same (analyst, ticker) pair into a single observation
-        anchored at the first tick.  The anchor tick's forward return is used.
+        """One bullish verdict replayed across 6 consecutive ticks, all sharing
+        the SAME ``input_hash``, must produce exactly ONE scored observation.
 
         Setup:
           - Analyst "fundamental" on AAPL, 6 ticks (2025-09-01 through 2025-09-08
-            on market days), all with lean="bullish", magnitude=0.5, confidence=0.7.
-          - One separate ticker MSFT also has 6 verdicts (lean="neutral"), so the
-            cross-sectional mean can be computed.
+            on market days), all sharing ``input_hash="hash-aapl"``.
+          - One separate ticker MSFT also has 6 verdicts (lean="neutral"), each
+            with its OWN distinct hash (6 genuinely independent fresh calls —
+            fundamental verdicts change every tick for MSFT), so the
+            cross-sectional mean can be computed and the fundamental analyst
+            never has a mixed hashed/unhashed roster.
           - AAPL rises 5 % from base on tick-1; MSFT flat.
 
         Expected: n=1 in the "fundamental" analyst cell at any horizon
@@ -1239,7 +1247,6 @@ class TestCacheReplayDedup:
         build = self._import()
 
         # Six consecutive ticks on market days for fundamental analyst on AAPL.
-        # All are identical in lean/magnitude/confidence — simulating a cache replay.
         tick_dates = [
             ("tick-2025-09-01", datetime(2025, 9, 1, 13, 30, tzinfo=UTC)),
             ("tick-2025-09-02", datetime(2025, 9, 2, 13, 30, tzinfo=UTC)),
@@ -1251,7 +1258,7 @@ class TestCacheReplayDedup:
 
         rows = []
         for tid, ts in tick_dates:
-            # Identical verdict across all 6 ticks — this is the cache-replay pattern.
+            # SAME input_hash across all 6 ticks — this is the cache-replay pattern.
             rows.append(_make_evidence_row(
                 analyst="fundamental",
                 ticker="AAPL",
@@ -1260,8 +1267,10 @@ class TestCacheReplayDedup:
                 lean="bullish",
                 magnitude=0.5,
                 confidence=0.7,
+                input_hash="hash-aapl",
             ))
-            # MSFT is neutral on each tick — exists to make cs_mean non-trivial
+            # MSFT is neutral on each tick, each with its own distinct hash
+            # (independent fresh calls) — exists to make cs_mean non-trivial
             # and to give the cross-sectional demean a second ticker.
             rows.append(_make_evidence_row(
                 analyst="fundamental",
@@ -1271,13 +1280,13 @@ class TestCacheReplayDedup:
                 lean="neutral",
                 magnitude=0.0,
                 confidence=0.5,
+                input_hash=f"hash-msft-{tid}",
             ))
 
         db_path = _build_fixture_db(tmp_path, rows)
 
         # Prices: each date's base bar returns AAPL=100, MSFT=100.
         # Forward bars return AAPL=105, MSFT=100 (AAPL outperforms by 5 %).
-        _ANCHOR_DATE = date(2025, 9, 1)  # first tick date
         _BASE_DATES = {
             date(2025, 9, 1), date(2025, 9, 2), date(2025, 9, 3),
             date(2025, 9, 4), date(2025, 9, 5), date(2025, 9, 8),
@@ -1301,65 +1310,58 @@ class TestCacheReplayDedup:
 
         cell = result.cell(analyst="fundamental", horizon=1, subset="directional")
 
-        # KEY ASSERTION: without dedup the old code gives n=12 (6 ticks × 2 tickers).
-        # With dedup, the replayed AAPL verdict collapses to 1 observation.
-        # MSFT is neutral throughout, so it is excluded entirely from the
-        # 'directional' subset (dedup also collapses its 6 replays to 1, but
-        # that 1 observation never enters 'directional').  n must be 1, not 12.
+        # KEY ASSERTION: without dedup the old code gives n=6 (6 replayed AAPL
+        # ticks). With exact-hash dedup, all 6 share "hash-aapl" and collapse
+        # to 1. MSFT is neutral throughout, so it never enters 'directional'
+        # regardless of its (correctly un-collapsed) 6 independent observations.
         assert cell.n == 1, (
-            f"Cache-replay dedup failed: expected n=1 (1 AAPL after dedup; "
-            f"MSFT neutral excluded from 'directional'); got n={cell.n}.  "
+            f"Cache-replay dedup failed: expected n=1 (1 AAPL after exact-hash "
+            f"dedup; MSFT neutral excluded from 'directional'); got n={cell.n}.  "
             f"Without dedup this would be 6 (6 ticks of AAPL)."
         )
 
-    def test_changed_verdict_breaks_dedup_run(
+    def test_deflation_case_shared_tuple_different_hash_does_not_dedup(
         self, tmp_path: pytest.TempPathFactory,
     ) -> None:
-        """A changed verdict (different lean) is treated as a NEW fresh call and
-        starts a new dedup run.  The transition verdict must also count.
+        """Two rows sharing the SAME (lean, magnitude, confidence) tuple but
+        DIFFERENT ``input_hash`` values are genuinely independent fresh calls
+        and must NOT be collapsed — this is the "deflation" failure mode the
+        old value-equality heuristic suffered (RMD: 9 distinct input hashes
+        wrongly scored as n=1).
 
-        Setup:
-          - Ticks 1–3: fundamental AAPL bullish (magnitude=0.5, confidence=0.7) — 1 obs.
-          - Tick 4:    fundamental AAPL bearish (magnitude=0.4, confidence=0.6) — new fresh call.
-          - Ticks 5–6: fundamental AAPL bearish (same as tick 4) — replays, collapse into tick 4.
+        Setup: fundamental AAPL emits the identical (bullish, 0.5, 0.7) tuple
+        on two ticks, but with DIFFERENT ``input_hash`` values (two genuinely
+        distinct LLM calls that happened to agree numerically).
 
-        Expected: n=2 (the first bullish observation + the first bearish observation).
-        We also need a second ticker to make the cross-sectional mean non-trivial.
+        Expected: n=2 — exact-hash dedup must not merge them.
         """
         build = self._import()
 
         tick_dates = [
             ("tick-1", datetime(2025, 9, 1, 13, 30, tzinfo=UTC)),
             ("tick-2", datetime(2025, 9, 2, 13, 30, tzinfo=UTC)),
-            ("tick-3", datetime(2025, 9, 3, 13, 30, tzinfo=UTC)),
-            ("tick-4", datetime(2025, 9, 4, 13, 30, tzinfo=UTC)),
-            ("tick-5", datetime(2025, 9, 5, 13, 30, tzinfo=UTC)),
-            ("tick-6", datetime(2025, 9, 8, 13, 30, tzinfo=UTC)),
         ]
 
         rows = []
         for i, (tid, ts) in enumerate(tick_dates):
-            lean       = "bullish" if i < 3 else "bearish"
-            magnitude  = 0.5       if i < 3 else 0.4
-            confidence = 0.7       if i < 3 else 0.6
             rows.append(_make_evidence_row(
                 analyst="fundamental", ticker="AAPL",
                 tick_id=tid, recorded_at=ts,
-                lean=lean, magnitude=magnitude, confidence=confidence,
+                lean="bullish", magnitude=0.5, confidence=0.7,
+                # Numerically identical verdict, but a DIFFERENT input hash —
+                # two independent fresh calls, not a cache replay.
+                input_hash=f"hash-aapl-{i}",
             ))
-            # MSFT anchor — neutral throughout.
             rows.append(_make_evidence_row(
                 analyst="fundamental", ticker="MSFT",
                 tick_id=tid, recorded_at=ts,
                 lean="neutral", magnitude=0.0, confidence=0.5,
+                input_hash=f"hash-msft-{i}",
             ))
 
         db_path = _build_fixture_db(tmp_path, rows)
 
-        _BASE_DATES = {
-            date(2025, 9, 1), date(2025, 9, 2), date(2025, 9, 3),
-            date(2025, 9, 4), date(2025, 9, 5), date(2025, 9, 8),
-        }
+        _BASE_DATES = {date(2025, 9, 1), date(2025, 9, 2)}
 
         def _mock_read(ticker, start, end):
             if start in _BASE_DATES:
@@ -1376,13 +1378,281 @@ class TestCacheReplayDedup:
         result = build(db_path=db_path, cache=mock_cache, horizons=[1])
 
         cell = result.cell(analyst="fundamental", horizon=1, subset="directional")
-        # 1 bullish AAPL observation + 1 bearish AAPL observation = 2 directional
-        # observations.  MSFT is neutral throughout, so its (deduplicated) single
-        # observation is excluded entirely from 'directional'.
+
         assert cell.n == 2, (
-            f"Expected n=2 after verdict-change dedup; got n={cell.n}.  "
-            f"Should count: tick-1 bullish AAPL (anchor), tick-4 bearish AAPL "
-            f"(new fresh).  MSFT's neutral anchor is excluded from 'directional'."
+            f"Expected n=2: two independent fresh calls that happen to share a "
+            f"(lean, magnitude, confidence) tuple must NOT be merged just "
+            f"because their values match — only a shared input_hash may dedup "
+            f"them. Got n={cell.n}."
+        )
+
+    def test_inflation_case_shared_hash_different_tuple_dedups_to_one(
+        self, tmp_path: pytest.TempPathFactory,
+    ) -> None:
+        """Two rows sharing the SAME ``input_hash`` but with DRIFTED
+        (lean, magnitude, confidence) values (e.g. a decayed replay) must
+        still collapse to ONE observation — this is the "inflation" failure
+        mode the old value-equality heuristic suffered (FDS: 6 real LLM calls
+        scored as 13 rows because decay nudged the tuple between replays).
+
+        Setup: fundamental AAPL emits ``input_hash="hash-aapl"`` on two ticks,
+        but with slightly different magnitude/confidence (simulating in-place
+        decay applied to a cached verdict between reads).
+
+        Expected: n=1 — exact-hash dedup must merge them despite the tuple drift.
+        """
+        build = self._import()
+
+        tick_dates = [
+            ("tick-1", datetime(2025, 9, 1, 13, 30, tzinfo=UTC)),
+            ("tick-2", datetime(2025, 9, 2, 13, 30, tzinfo=UTC)),
+        ]
+
+        rows = []
+        for i, (tid, ts) in enumerate(tick_dates):
+            rows.append(_make_evidence_row(
+                analyst="fundamental", ticker="AAPL",
+                tick_id=tid, recorded_at=ts,
+                lean="bullish",
+                # Magnitude/confidence drift slightly between replays (decay) —
+                # but the SAME cached verdict, so the hash stays identical.
+                magnitude=0.5 - (0.01 * i),
+                confidence=0.7 - (0.01 * i),
+                input_hash="hash-aapl",
+            ))
+            rows.append(_make_evidence_row(
+                analyst="fundamental", ticker="MSFT",
+                tick_id=tid, recorded_at=ts,
+                lean="neutral", magnitude=0.0, confidence=0.5,
+                input_hash=f"hash-msft-{i}",
+            ))
+
+        db_path = _build_fixture_db(tmp_path, rows)
+
+        _BASE_DATES = {date(2025, 9, 1), date(2025, 9, 2)}
+
+        def _mock_read(ticker, start, end):
+            if start in _BASE_DATES:
+                ts_bar = datetime(start.year, start.month, start.day, 13, 30, tzinfo=UTC)
+                return [_make_ohlcbar(ticker=ticker, ts=ts_bar, open=100.0, close=100.0)]
+            ts_bar = datetime(start.year, start.month, start.day, 13, 30, tzinfo=UTC)
+            if ticker == "AAPL":
+                return [_make_ohlcbar(ticker="AAPL", ts=ts_bar, open=105.0, close=105.0)]
+            return [_make_ohlcbar(ticker=ticker, ts=ts_bar, open=100.0, close=100.0)]
+
+        mock_cache = MagicMock()
+        mock_cache.read_ohlcv.side_effect = _mock_read
+
+        result = build(db_path=db_path, cache=mock_cache, horizons=[1])
+
+        cell = result.cell(analyst="fundamental", horizon=1, subset="directional")
+
+        assert cell.n == 1, (
+            f"Expected n=1: a cache replay whose decayed values drifted "
+            f"slightly must still collapse to its anchor via the shared "
+            f"input_hash, not read as a second fresh call. Got n={cell.n}."
+        )
+
+    def test_unhashed_rows_are_never_deduped(
+        self, tmp_path: pytest.TempPathFactory,
+    ) -> None:
+        """Deterministic-analyst rows (no ``input_hash`` — e.g. technical, which
+        recomputes every tick and has no cache to replay) must NEVER be
+        deduped, even when consecutive rows are numerically identical.
+
+        Setup: "technical" AAPL emits the identical (bullish, 0.5, 0.7) tuple
+        on 3 consecutive ticks, all with ``input_hash=None`` (the default —
+        technical never populates it).
+
+        Expected: n=3 — every row is its own fresh observation by construction.
+        """
+        build = self._import()
+
+        tick_dates = [
+            ("tick-1", datetime(2025, 9, 1, 13, 30, tzinfo=UTC)),
+            ("tick-2", datetime(2025, 9, 2, 13, 30, tzinfo=UTC)),
+            ("tick-3", datetime(2025, 9, 3, 13, 30, tzinfo=UTC)),
+        ]
+
+        rows = []
+        for tid, ts in tick_dates:
+            rows.append(_make_evidence_row(
+                analyst="technical", ticker="AAPL",
+                tick_id=tid, recorded_at=ts,
+                lean="bullish", magnitude=0.5, confidence=0.7,
+                # input_hash left at its default (None) — technical never sets it.
+            ))
+            rows.append(_make_evidence_row(
+                analyst="technical", ticker="MSFT",
+                tick_id=tid, recorded_at=ts,
+                lean="neutral", magnitude=0.0, confidence=0.5,
+            ))
+
+        db_path = _build_fixture_db(tmp_path, rows)
+
+        _BASE_DATES = {date(2025, 9, 1), date(2025, 9, 2), date(2025, 9, 3)}
+
+        def _mock_read(ticker, start, end):
+            if start in _BASE_DATES:
+                ts_bar = datetime(start.year, start.month, start.day, 13, 30, tzinfo=UTC)
+                return [_make_ohlcbar(ticker=ticker, ts=ts_bar, open=100.0, close=100.0)]
+            ts_bar = datetime(start.year, start.month, start.day, 13, 30, tzinfo=UTC)
+            if ticker == "AAPL":
+                return [_make_ohlcbar(ticker="AAPL", ts=ts_bar, open=105.0, close=105.0)]
+            return [_make_ohlcbar(ticker=ticker, ts=ts_bar, open=100.0, close=100.0)]
+
+        mock_cache = MagicMock()
+        mock_cache.read_ohlcv.side_effect = _mock_read
+
+        result = build(db_path=db_path, cache=mock_cache, horizons=[1])
+
+        cell = result.cell(analyst="technical", horizon=1, subset="directional")
+
+        assert cell.n == 3, (
+            f"Expected n=3: unhashed (deterministic-analyst) rows have no "
+            f"cache-replay concept and must never be deduped, even when "
+            f"numerically identical across ticks. Got n={cell.n}."
+        )
+
+    def test_mixed_hash_presence_within_analyst_raises(
+        self, tmp_path: pytest.TempPathFactory,
+    ) -> None:
+        """An analyst with SOME rows carrying an ``input_hash`` and SOME not,
+        within the same window, indicates broken input_hash plumbing (e.g. the
+        producer only stamps the hash for some tickers/ticks) — this must
+        raise loudly rather than silently guessing a dedup rule per row.
+
+        The check is derived from the data (does this analyst's row set
+        contain both a hashed and an unhashed row?), never from a hardcoded
+        list of "cached analysts" — so it fires however the inconsistency
+        arises.
+        """
+        build = self._import()
+
+        rows = [
+            # "fundamental" is a cached LLM analyst — this row is correctly hashed.
+            _make_evidence_row(
+                analyst="fundamental", ticker="AAPL",
+                tick_id="tick-1", recorded_at=datetime(2025, 9, 1, 13, 30, tzinfo=UTC),
+                lean="bullish", magnitude=0.5, confidence=0.7,
+                input_hash="hash-aapl",
+            ),
+            # ...but this row for the SAME analyst has no hash — a plumbing bug
+            # (e.g. the cache-callback stash was never threaded through for
+            # this ticker).
+            _make_evidence_row(
+                analyst="fundamental", ticker="MSFT",
+                tick_id="tick-1", recorded_at=datetime(2025, 9, 1, 13, 30, tzinfo=UTC),
+                lean="neutral", magnitude=0.0, confidence=0.5,
+                input_hash=None,
+            ),
+        ]
+
+        db_path = _build_fixture_db(tmp_path, rows)
+
+        mock_cache = MagicMock()
+        mock_cache.read_ohlcv.return_value = [
+            _make_ohlcbar(
+                ticker="AAPL", ts=datetime(2025, 9, 1, 13, 30, tzinfo=UTC),
+                open=100.0, close=100.0,
+            )
+        ]
+
+        with pytest.raises(ValueError, match="fundamental"):
+            build(db_path=db_path, cache=mock_cache, horizons=[1])
+
+    def test_first_occurrence_is_the_anchor_for_forward_return(
+        self, tmp_path: pytest.TempPathFactory,
+    ) -> None:
+        """When a cached verdict replays across ticks, the scored observation
+        must be anchored at the FIRST tick's price context — not a later
+        replay's — and the forward return must be measured from that anchor.
+
+        Setup: fundamental AAPL emits the SAME ``input_hash`` on 2025-09-01
+        (anchor) and 2025-09-02 (replay).  The anchor tick's +1d forward close
+        is 110 (a 10 % AAPL move); the replay tick's own +1d forward window
+        must NEVER be consulted, because the row is discarded before forward-
+        price resolution runs.
+
+        Expected: exactly one surviving observation, whose excess return
+        reflects the ANCHOR's 10 % move against MSFT's flat peer return
+        (cross-sectional mean of AAPL 10% and MSFT 0% = 5% → excess = +5%,
+        i.e. +500 bps), not the replay tick's (never-consulted) price path.
+        """
+        build = self._import()
+
+        _ANCHOR_DATE = date(2025, 9, 1)
+        _REPLAY_DATE = date(2025, 9, 2)
+
+        tick_dates = [
+            ("tick-1", datetime(2025, 9, 1, 13, 30, tzinfo=UTC)),
+            ("tick-2", datetime(2025, 9, 2, 13, 30, tzinfo=UTC)),
+        ]
+
+        rows = []
+        for tid, ts in tick_dates:
+            rows.append(_make_evidence_row(
+                analyst="fundamental", ticker="AAPL",
+                tick_id=tid, recorded_at=ts,
+                lean="bullish", magnitude=0.5, confidence=0.7,
+                input_hash="hash-shared",   # SAME hash both ticks — a cache replay.
+            ))
+            # MSFT gets its own distinct hash per tick (independent fresh
+            # calls) — required so the fundamental analyst doesn't trip the
+            # mixed-hash-presence check; its neutral lean keeps it out of the
+            # 'directional' subset regardless.
+            rows.append(_make_evidence_row(
+                analyst="fundamental", ticker="MSFT",
+                tick_id=tid, recorded_at=ts,
+                lean="neutral", magnitude=0.0, confidence=0.5,
+                input_hash=f"hash-msft-{tid}",
+            ))
+
+        db_path = _build_fixture_db(tmp_path, rows)
+
+        def _mock_read(ticker, start, end):
+            ts_bar = datetime(start.year, start.month, start.day, 13, 30, tzinfo=UTC)
+
+            if ticker != "AAPL":
+                # MSFT is flat throughout — both base and forward queries.
+                return [_make_ohlcbar(ticker=ticker, ts=ts_bar, open=100.0, close=100.0)]
+
+            if start == end:
+                # Base-price query (single-day range) — AAPL base is 100 on
+                # both the anchor's and the (never-scored) replay's own day.
+                return [_make_ohlcbar(ticker="AAPL", ts=ts_bar, open=100.0, close=100.0)]
+
+            # Forward-price query (multi-day range starting at base_date + h).
+            if start == _REPLAY_DATE:
+                # This is the ANCHOR tick's (2025-09-01) +1d forward window —
+                # AAPL rises 10 %.
+                return [_make_ohlcbar(ticker="AAPL", ts=ts_bar, open=110.0, close=110.0)]
+            # This would be the REPLAY tick's own +1d forward window
+            # (2025-09-02 + 1d = 2025-09-03) — must never be reached, since
+            # the replay row is discarded by dedup before this query fires.
+            raise AssertionError(
+                "forward-price query issued for the replay tick's own window "
+                "— the replay row should have been discarded by dedup before "
+                "forward-close resolution ever ran for it"
+            )
+
+        mock_cache = MagicMock()
+        mock_cache.read_ohlcv.side_effect = _mock_read
+
+        result = build(db_path=db_path, cache=mock_cache, horizons=[1])
+
+        cell = result.cell(analyst="fundamental", horizon=1, subset="directional")
+
+        assert cell.n == 1, (
+            f"Expected exactly 1 surviving directional observation (the "
+            f"anchor); got n={cell.n}."
+        )
+        assert cell.mean_excess_bps == pytest.approx(500.0, abs=1.0), (
+            f"Expected the anchor tick's 10% AAPL move net of the 5% peer "
+            f"mean (AAPL 10%, MSFT 0%) = +500 bps excess; got "
+            f"{cell.mean_excess_bps:.1f} bps.  A different value would mean "
+            f"the replay tick's price path leaked into scoring, or the "
+            f"anchor was mis-resolved."
         )
 
 
